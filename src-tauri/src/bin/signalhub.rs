@@ -484,11 +484,15 @@ fn install_hooks(agent: &str, flags: &Flags) -> Result<(), Failure> {
         println!("  新增  {} 个事件", report.added.len());
         println!("        {}", report.added.join(" "));
     }
+    if !report.updated.is_empty() {
+        println!("  更新  {} 个事件（写入的命令变了）", report.updated.len());
+        println!("        {}", report.updated.join(" "));
+    }
     if !report.already.is_empty() {
-        println!("  跳过  {} 个（已存在，未重复添加）", report.already.len());
+        println!("  跳过  {} 个（已存在且命令相同）", report.already.len());
     }
 
-    if report.added.is_empty() {
+    if report.added.is_empty() && report.updated.is_empty() {
         println!("无需改动。");
     } else if report.dry_run {
         println!("以上为演练结果；去掉 --dry-run 才会真正写入。");

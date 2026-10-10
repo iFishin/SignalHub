@@ -125,8 +125,10 @@ pub struct Report {
     pub command: Option<String>,
     /// 本次新写入的事件
     pub added: Vec<String>,
-    /// 已经装过、跳过的（幂等）
+    /// 已经装过、命令也相同，跳过的（幂等）
     pub already: Vec<String>,
+    /// 已经装过但写入的命令变了，原地更新的事件
+    pub updated: Vec<String>,
     /// 本次移除的事件（整个键被删掉的）
     pub removed: Vec<String>,
     /// 总共摘掉多少个 handler。
@@ -214,6 +216,7 @@ fn install_at(agent: Agent, command: &str, path: &Path, dry_run: bool) -> Result
 
     let mut added = Vec::new();
     let mut already = Vec::new();
+    let mut updated = Vec::new();
 
     let hooks = root
         .entry("hooks")
@@ -235,10 +238,31 @@ fn install_at(agent: Agent, command: &str, path: &Path, dry_run: bool) -> Result
             ));
         };
 
-        if groups.iter().any(entry_is_ours) {
-            already.push((*event).to_string());
+        // 已经装过了？装过但命令不同，就原地更新而不是跳过。
+        //
+        // 这正是「把 signalhub 放进 PATH 后重跑本命令」要走的路径。若在这里
+        // 简单地 continue，那条提示就是假的：条目会被判定为「已存在」，
+        // 绝对路径永远换不成裸名字。
+        if let Some((group, handler)) = locate_our_handler(groups) {
+            let slot = match handler {
+                Some(index) => &mut groups[group]["hooks"][index],
+                None => &mut groups[group],
+            };
+            let current = slot
+                .get("command")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+
+            if current == command {
+                already.push((*event).to_string());
+            } else {
+                slot["command"] = json!(command);
+                updated.push((*event).to_string());
+            }
             continue;
         }
+
         groups.push(handler_group(agent, command, *matcher));
         added.push((*event).to_string());
     }
@@ -248,13 +272,14 @@ fn install_at(agent: Agent, command: &str, path: &Path, dry_run: bool) -> Result
         root.entry("version").or_insert_with(|| json!(1));
     }
 
-    if added.is_empty() {
+    if added.is_empty() && updated.is_empty() {
         return Ok(Report {
             path: path.to_path_buf(),
             backup: None,
             command: Some(command.to_string()),
             added,
             already,
+            updated,
             removed: Vec::new(),
             removed_handlers: 0,
             dry_run,
@@ -272,6 +297,7 @@ fn install_at(agent: Agent, command: &str, path: &Path, dry_run: bool) -> Result
         command: Some(command.to_string()),
         added,
         already,
+        updated,
         removed: Vec::new(),
         removed_handlers: 0,
         dry_run,
@@ -285,6 +311,7 @@ fn uninstall_at(path: &Path, dry_run: bool) -> Result<Report, String> {
         command: None,
         added: Vec::new(),
         already: Vec::new(),
+        updated: Vec::new(),
         removed: Vec::new(),
         removed_handlers: 0,
         dry_run,
@@ -361,6 +388,7 @@ fn uninstall_at(path: &Path, dry_run: bool) -> Result<Report, String> {
         command: None,
         added: Vec::new(),
         already: Vec::new(),
+        updated: Vec::new(),
         removed,
         removed_handlers,
         dry_run,
@@ -396,15 +424,25 @@ fn prune_group(group: Value) -> Option<Value> {
     Some(group)
 }
 
-/// 一组里是否含我们的 handler。
-fn entry_is_ours(group: &Value) -> bool {
-    if is_our_handler(group) {
-        return true;
+/// 定位已有的属于我们的 handler。返回 `(组下标, 组内 handler 下标)`；
+/// 第二个为 None 表示 Cursor 那种「一组即一个 handler」的扁平形状。
+///
+/// 用下标而不是直接返回 `&mut Value` 是因为「在 `iter_mut()` 循环里 return
+/// 引用」在稳定版借用检查下过不了。
+fn locate_our_handler(groups: &[Value]) -> Option<(usize, Option<usize>)> {
+    for (group_index, group) in groups.iter().enumerate() {
+        if is_our_handler(group) {
+            return Some((group_index, None));
+        }
+        let found = group
+            .get("hooks")
+            .and_then(Value::as_array)
+            .and_then(|handlers| handlers.iter().position(is_our_handler));
+        if let Some(handler_index) = found {
+            return Some((group_index, Some(handler_index)));
+        }
     }
-    group
-        .get("hooks")
-        .and_then(Value::as_array)
-        .is_some_and(|handlers| handlers.iter().any(is_our_handler))
+    None
 }
 
 fn is_our_handler(handler: &Value) -> bool {
@@ -642,8 +680,60 @@ mod tests {
 
         let second = install_at(Agent::ClaudeCode, CMD, &path, false).unwrap();
         assert!(second.added.is_empty(), "第二次不该再加条目");
+        assert!(second.updated.is_empty(), "命令没变，不该算更新");
         assert_eq!(second.already.len(), events(Agent::ClaudeCode).len());
         assert_eq!(fs::read_to_string(&path).unwrap(), first, "文件内容不应变化");
+    }
+
+    /// 重跑安装时如果命令变了（放进 PATH、换了二进制位置），要原地更新。
+    /// 否则「放进 PATH 后重新执行本命令」这条提示就是假的。
+    #[test]
+    fn install_updates_the_command_when_it_changed() {
+        let dir = TempDir::new();
+        let path = dir.file("settings.json");
+
+        install_at(Agent::ClaudeCode, "/old/place/signalhub hook claude-code", &path, false)
+            .unwrap();
+
+        let report = install_at(Agent::ClaudeCode, "signalhub hook claude-code", &path, false)
+            .unwrap();
+        assert!(report.added.is_empty(), "条目已存在，不该重复新增");
+        assert_eq!(report.updated.len(), events(Agent::ClaudeCode).len());
+        assert!(report.already.is_empty());
+
+        let root = read(&path);
+        let hooks = root["hooks"].as_object().unwrap();
+        assert_eq!(hooks["PreToolUse"][0]["hooks"][0]["command"], "signalhub hook claude-code");
+        assert_eq!(hooks["Stop"][0]["hooks"][0]["command"], "signalhub hook claude-code");
+    }
+
+    /// 更新时要顺带清掉重复条目：早期版本可能装过两次
+    #[test]
+    fn install_does_not_add_a_second_copy_alongside_an_updated_one() {
+        let dir = TempDir::new();
+        let path = dir.file("settings.json");
+
+        install_at(Agent::ClaudeCode, "/old/signalhub hook claude-code", &path, false).unwrap();
+        install_at(Agent::ClaudeCode, "signalhub hook claude-code", &path, false).unwrap();
+
+        let root = read(&path);
+        let stop = root["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(stop.len(), 1, "同一个事件只该有一组是我们的");
+    }
+
+    #[test]
+    fn cursor_command_is_updated_in_place_too() {
+        let dir = TempDir::new();
+        let path = dir.file("hooks.json");
+
+        install_at(Agent::Cursor, "/old/signalhub hook cursor", &path, false).unwrap();
+        let report =
+            install_at(Agent::Cursor, "/new/signalhub hook cursor", &path, false).unwrap();
+
+        assert_eq!(report.updated.len(), events(Agent::Cursor).len());
+        let root = read(&path);
+        assert_eq!(root["hooks"]["preToolUse"][0]["command"], "/new/signalhub hook cursor");
+        assert_eq!(root["hooks"]["preToolUse"][0]["timeout"], 5, "其它字段不该被动");
     }
 
     #[test]

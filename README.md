@@ -57,9 +57,18 @@ signalhub install hooks claude-code      # 也支持 codex / cursor
 signalhub install hooks claude-code --dry-run   # 先看看会改什么
 ```
 
-它会往智能体的配置文件里写 hook（Claude Code 是 `~/.claude/settings.json`）。**只动 `hooks` 这一个键**，其余内容原样保留，写之前自动备份到 `*.signalhub-backup`，重复执行也不会产生重复条目；配置不是合法 JSON 时会直接中止、绝不覆盖。卸载用 `signalhub uninstall hooks claude-code`。
+它会往智能体的配置文件里写 hook（Claude Code 是 `~/.claude/settings.json`）。**只动 `hooks` 这一个键**，其余内容原样保留，写之前自动备份到 `*.signalhub-backup`；重复执行不会产生重复条目，命令变了会原地更新；配置不是合法 JSON 时会直接中止、绝不覆盖。卸载用 `signalhub uninstall hooks claude-code`。
 
 装完重启智能体即可生效。之后提问 → 绿快闪、调工具 → 绿慢闪、需要授权 → 红闪、答完亮一下再回常亮。
+
+建议先把 CLI 放进 PATH，这样写进配置的是可移植的裸名字而不是绝对路径：
+
+```bash
+ln -sfn "$(pwd)/src-tauri/target/debug/signalhub" ~/.local/bin/signalhub
+signalhub install hooks claude-code
+```
+
+绝对路径也能用，但二进制一挪动 hook 就会静默失效（智能体会话里什么都看不到），排查起来很费劲。
 
 完整接口规范见 [docs/api.md](docs/api.md)。架构与设计取舍见 [docs/architecture.md](docs/architecture.md)。
 
