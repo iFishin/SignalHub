@@ -1,0 +1,50 @@
+[package]
+name = "signalhub"
+version = "0.1.0"
+description = "Desktop floating status light for AI agents and any other program"
+authors = ["you"]
+edition = "2024"
+# 这个包里有两个二进制：app 和 CLI。两个都叫 signalhub 会冲突，而 app 的名字
+# 用户看不到（通过 .app 启动），CLI 的名字却要写进智能体的 hook 配置里，所以
+# 让给 CLI。default-run 让 `cargo run`（也就是 `tauri dev`）选 app 那个。
+default-run = "signalhub-app"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "signalhub_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "signalhub-app"
+path = "src/main.rs"
+
+# src/bin/signalhub.rs 由 cargo 自动发现，产出用户实际调用的 `signalhub` 命令。
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+axum = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# 直接用 tauri::async_runtime::spawn 起 sweep 和 HTTP 任务；tokio 由 Tauri 内置。
+# 锁用 std::sync::Mutex —— 临界区都是内存操作，没有 I/O 跨越 await。
+tokio = { version = "1", features = ["time", "net", "io-util", "macros", "rt-multi-thread"] }
+# getrandom 已在 Tauri 的依赖树里，复用版本可以避免重复编译
+getrandom = "0.3"
+# CLI 用的 HTTP 客户端。只连本机明文端口，所以关掉默认的 TLS 特性。
+ureq = { version = "3", default-features = false }
+
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

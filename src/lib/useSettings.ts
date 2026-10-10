@@ -1,0 +1,41 @@
+import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { inTauri } from "./env";
+
+/** 与 Rust 侧 `config::Settings` 对应（JSON 字段名保持 snake_case）。 */
+export interface Settings {
+  size: number;
+  always_on_top: boolean;
+}
+
+/** 与 Rust 侧 `config::DEFAULT_SIZE` 一致。 */
+const DEFAULTS: Settings = { size: 22, always_on_top: true };
+
+const SETTINGS_EVENT = "signalhub://settings";
+
+export function useSettings(): Settings {
+  const [settings, setSettings] = useState<Settings>(DEFAULTS);
+
+  useEffect(() => {
+    if (!inTauri) return;
+
+    // 先订阅再拉取：反过来的话，两步之间发生的变更会被永久丢掉。
+    const pending = listen<Settings>(SETTINGS_EVENT, (event) =>
+      setSettings(event.payload),
+    );
+    invoke<Settings>("get_settings")
+      .then(setSettings)
+      .catch((err) => console.error("get_settings 失败", err));
+
+    return () => {
+      pending.then((unlisten) => unlisten());
+    };
+  }, []);
+
+  return settings;
+}
+
+export function updateSettings(next: Settings): Promise<Settings> {
+  return invoke<Settings>("set_settings", { settings: next });
+}

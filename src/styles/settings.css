@@ -1,0 +1,295 @@
+/*
+ * 设置面板样式。
+ *
+ * 同样走朴素简约路线：没有阴影、没有渐变、控件扁平。
+ * 分隔靠 1px 细线，视觉层次靠字号与灰度，不靠立体感。
+ */
+
+:root {
+  --bg: #ffffff;
+  --fg: #1f2328;
+  --muted: #6b7280;
+  --line: #e5e7eb;
+  --hover: #f4f5f7;
+  --accent: #1f6feb;
+  --danger: #c0392b;
+  --danger-line: #e8c4c0;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1c1c1e;
+    --fg: #e8e8ea;
+    --muted: #9aa0a6;
+    --line: #333336;
+    --hover: #2a2a2d;
+    --accent: #4c8dff;
+    --danger: #ff7b72;
+    --danger-line: #5a2f2c;
+    color-scheme: dark;
+  }
+}
+
+/* 设置窗不是透明窗口，得自己铺底色。
+   用属性选择器而不是直接写 html/body，是为了稳定地压过 lamp.css 里的
+   透明重置，不依赖两个 CSS 文件的打包顺序。 */
+html[data-window="settings"],
+html[data-window="settings"] body,
+html[data-window="settings"] #root {
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.settings {
+  height: 100vh;
+  box-sizing: border-box;
+  padding: 18px 20px 20px;
+  overflow-y: auto;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.settings h1 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 2px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.settings .headline-message {
+  margin: 0 0 18px;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.section {
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.section + .section {
+  margin-top: 14px;
+}
+
+.section-title {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 30px;
+}
+
+.row + .row {
+  margin-top: 6px;
+}
+
+/* 状态圆点，颜色来自 state.css 的 --state */
+.dot {
+  width: 9px;
+  height: 9px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--state, var(--muted));
+}
+
+/* ---- 分段选择（灯球大小） ---- */
+
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.seg button {
+  padding: 4px 11px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.seg button + button {
+  border-left: 1px solid var(--line);
+}
+
+.seg button:hover {
+  background: var(--hover);
+}
+
+.seg button[data-active="true"] {
+  background: var(--hover);
+  color: var(--fg);
+  font-weight: 500;
+}
+
+/* ---- 开关 ---- */
+
+.switch {
+  position: relative;
+  width: 34px;
+  height: 20px;
+  flex: none;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--hover);
+  cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease;
+}
+
+.switch .knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition:
+    transform 140ms ease,
+    background-color 140ms ease;
+}
+
+.switch[data-on="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.switch[data-on="true"] .knob {
+  transform: translateX(14px);
+  background: #fff;
+}
+
+/* ---- 按钮 ---- */
+
+.btn {
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.btn:hover {
+  background: var(--hover);
+}
+
+.btn.danger {
+  border-color: var(--danger-line);
+  color: var(--danger);
+}
+
+/* ---- 接入信息 ---- */
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+}
+
+.hint {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.kv {
+  display: flex;
+  gap: 10px;
+  min-height: 22px;
+}
+
+.kv > .k {
+  flex: none;
+  width: 52px;
+  color: var(--muted);
+}
+
+/* ---- 会话列表 ---- */
+
+.sessions {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.session {
+  display: flex;
+  gap: 8px;
+  padding: 5px 0;
+  min-width: 0;
+}
+
+.session .dot {
+  margin-top: 5px;
+}
+
+/* min-width: 0 是让内部省略号生效的关键：flex 子项默认不肯收缩 */
+.session-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.session-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.session .id {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session .meta {
+  margin-left: auto;
+  flex: none;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.session .message {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.empty {
+  color: var(--muted);
+}
+
+.error {
+  margin-top: 12px;
+  color: var(--danger);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}

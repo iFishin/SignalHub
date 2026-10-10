@@ -1,0 +1,525 @@
+use crate::config;
+use crate::notify::Notifier;
+use crate::state::{Report, Snapshot, Store};
+use axum::{
+    extract::{rejection::JsonRejection, Path, Request, State},
+    http::{header, StatusCode},
+    middleware::Next,
+    response::{IntoResponse, Response},
+    routing::{delete, get, post},
+    Json, Router,
+};
+use serde::Deserialize;
+use serde_json::{json, Value};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+/// 首选端口。被占用就退到系统分配，两种情况下都把实际端口写进 `~/.signalhub/port`。
+const PREFERRED_PORT: u16 = 41320;
+
+#[derive(Clone)]
+struct Ctx {
+    store: Arc<Mutex<Store>>,
+    notify: Notifier,
+    token: String,
+    started: Instant,
+}
+
+/// 绑定 127.0.0.1 并开始服务。返回后不阻塞调用方。
+pub fn spawn(app: tauri::AppHandle, store: Arc<Mutex<Store>>, token: String) {
+    let ctx = Ctx {
+        store,
+        notify: crate::notify::to_lamp_window(app),
+        token,
+        started: Instant::now(),
+    };
+
+    tauri::async_runtime::spawn(async move {
+        let listener = match tokio::net::TcpListener::bind(("127.0.0.1", PREFERRED_PORT)).await {
+            Ok(listener) => listener,
+            Err(err) => {
+                eprintln!(
+                    "[signalhub] 端口 {PREFERRED_PORT} 不可用（{err}），改用系统分配端口"
+                );
+                tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                    .await
+                    .expect("无法绑定本地端口")
+            }
+        };
+
+        let port = listener.local_addr().expect("无法读取监听地址").port();
+        if let Err(err) = config::write_port(port) {
+            eprintln!("[signalhub] 写入端口文件失败: {err}（CLI 将无法自动发现端口）");
+        }
+        println!("[signalhub] HTTP 服务监听 127.0.0.1:{port}");
+
+        if let Err(err) = axum::serve(listener, router(ctx)).await {
+            eprintln!("[signalhub] HTTP 服务退出: {err}");
+        }
+    });
+}
+
+fn router(ctx: Ctx) -> Router {
+    // 只有 health 免鉴权，其余整组挂上中间件。
+    // 用中间件而不是在每个 handler 里手写一次检查：漏掉一处就是一个安全洞。
+    let protected = Router::new()
+        .route("/v1/state", get(read_state).post(report_state))
+        .route("/v1/sessions", get(list_sessions))
+        .route("/v1/sessions/{session}", delete(clear_session))
+        .route("/v1/sessions/{session}/state", post(report_state_at_path))
+        .route("/v1/monitor", post(set_monitor))
+        .route_layer(axum::middleware::from_fn_with_state(
+            ctx.clone(),
+            require_auth,
+        ));
+
+    Router::new()
+        .route("/v1/health", get(health))
+        .merge(protected)
+        .with_state(ctx)
+}
+
+// ---- 鉴权 ------------------------------------------------------------------
+
+async fn require_auth(
+    State(ctx): State<Ctx>,
+    request: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    // 浏览器发起的请求一定带 Origin，直接拒绝。这挡住的是「你正在浏览的某个
+    // 网页偷偷 POST 到你本地端口」——本地 HTTP 服务最现实的攻击面。
+    if request.headers().contains_key(header::ORIGIN) {
+        return Err(ApiError::unauthorized("拒绝携带 Origin 的请求"));
+    }
+
+    let presented = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "));
+
+    match presented {
+        Some(token) if token_matches(token, &ctx.token) => Ok(next.run(request).await),
+        _ => Err(ApiError::unauthorized("缺少或错误的 Bearer token")),
+    }
+}
+
+/// 定长比较，不短路。长度不同直接返回 false——长度不是秘密。
+fn token_matches(presented: &str, expected: &str) -> bool {
+    let (presented, expected) = (presented.as_bytes(), expected.as_bytes());
+    if presented.len() != expected.len() {
+        return false;
+    }
+    presented
+        .iter()
+        .zip(expected)
+        .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+        == 0
+}
+
+// ---- handlers --------------------------------------------------------------
+
+async fn health(State(ctx): State<Ctx>) -> Json<Value> {
+    Json(json!({
+        "ok": true,
+        "version": env!("CARGO_PKG_VERSION"),
+        "uptime_s": ctx.started.elapsed().as_secs(),
+    }))
+}
+
+async fn read_state(State(ctx): State<Ctx>) -> Json<Snapshot> {
+    Json(ctx.store.lock().expect("state store poisoned").snapshot())
+}
+
+async fn list_sessions(State(ctx): State<Ctx>) -> Json<Value> {
+    let sessions = ctx.store.lock().expect("state store poisoned").snapshot().sessions;
+    Json(json!({ "sessions": sessions }))
+}
+
+async fn report_state(
+    State(ctx): State<Ctx>,
+    body: Result<Json<Report>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    apply(&ctx, None, parse_body(body)?)
+}
+
+async fn report_state_at_path(
+    State(ctx): State<Ctx>,
+    Path(session): Path<String>,
+    body: Result<Json<Report>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    // 路径里的 session 覆盖请求体里的，避免两处不一致时行为难以预测
+    apply(&ctx, Some(session), parse_body(body)?)
+}
+
+async fn clear_session(State(ctx): State<Ctx>, Path(session): Path<String>) -> Json<Value> {
+    let (removed, changed, snapshot) = {
+        let mut guard = ctx.store.lock().expect("state store poisoned");
+        let (removed, changed) = guard.remove_session(&session);
+        (removed, changed, guard.snapshot())
+    };
+    if changed {
+        (ctx.notify)(&snapshot);
+    }
+    // 清除是幂等的：会话本来就不存在时返回 removed:false 而不是报错
+    Json(json!({ "ok": true, "removed": removed, "aggregate": snapshot.aggregate }))
+}
+
+#[derive(Deserialize)]
+struct MonitorRequest {
+    paused: bool,
+}
+
+async fn set_monitor(
+    State(ctx): State<Ctx>,
+    body: Result<Json<MonitorRequest>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let Json(request) = body.map_err(invalid_body)?;
+
+    let (changed, snapshot) = {
+        let mut guard = ctx.store.lock().expect("state store poisoned");
+        let changed = guard.set_paused(request.paused);
+        (changed, guard.snapshot())
+    };
+    if changed {
+        (ctx.notify)(&snapshot);
+    }
+    Ok(Json(json!({ "ok": true, "paused": snapshot.paused })))
+}
+
+// ---- 共用 ------------------------------------------------------------------
+
+fn apply(ctx: &Ctx, path_session: Option<String>, mut report: Report) -> Result<Json<Value>, ApiError> {
+    if let Some(session) = path_session {
+        report.session = Some(session);
+    }
+
+    let (changed, snapshot) = {
+        let mut guard = ctx.store.lock().expect("state store poisoned");
+        let changed = guard.apply(Instant::now(), report);
+        (changed, guard.snapshot())
+    };
+    if changed {
+        (ctx.notify)(&snapshot);
+    }
+
+    // 顺带把聚合结果回给调用方，这样一次 curl 就能看到全局状态
+    Ok(Json(json!({
+        "ok": true,
+        "aggregate": snapshot.aggregate,
+        "sessions": snapshot.sessions.len(),
+        "changed": changed,
+    })))
+}
+
+/// axum 的 Json rejection 默认给 422，而 `state` 非法应当算 400（客户端写错了）。
+fn parse_body(body: Result<Json<Report>, JsonRejection>) -> Result<Report, ApiError> {
+    body.map(|Json(report)| report).map_err(invalid_body)
+}
+
+fn invalid_body(rejection: JsonRejection) -> ApiError {
+    ApiError::bad_request(format!("请求体无效: {}", rejection.body_text()))
+}
+
+struct ApiError {
+    status: StatusCode,
+    message: String,
+}
+
+impl ApiError {
+    fn bad_request(message: impl Into<String>) -> Self {
+        Self { status: StatusCode::BAD_REQUEST, message: message.into() }
+    }
+
+    fn unauthorized(message: impl Into<String>) -> Self {
+        Self { status: StatusCode::UNAUTHORIZED, message: message.into() }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        (self.status, Json(json!({ "error": self.message }))).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    struct TestServer {
+        port: u16,
+        token: String,
+        notifications: Arc<AtomicUsize>,
+    }
+
+    async fn start() -> TestServer {
+        let notifications = Arc::new(AtomicUsize::new(0));
+        let counter = notifications.clone();
+
+        let ctx = Ctx {
+            store: Arc::new(Mutex::new(Store::default())),
+            notify: Arc::new(move |_header: &Snapshot| {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }),
+            token: "s3cret".to_string(),
+            started: Instant::now(),
+        };
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(listener, router(ctx)).await.unwrap();
+        });
+
+        TestServer { port, token: "s3cret".to_string(), notifications }
+    }
+
+    /// 手写一个 HTTP/1.1 请求，就为了几个测试引入一个 HTTP 客户端依赖不划算。
+    async fn call(
+        server: &TestServer,
+        method: &str,
+        path: &str,
+        token: Option<&str>,
+        origin: bool,
+        body: Option<&str>,
+    ) -> (u16, String) {
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", server.port))
+            .await
+            .unwrap();
+
+        let mut request = format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n");
+        if let Some(token) = token {
+            request.push_str(&format!("Authorization: Bearer {token}\r\n"));
+        }
+        if origin {
+            request.push_str("Origin: http://evil.example\r\n");
+        }
+        if let Some(body) = body {
+            request.push_str("Content-Type: application/json\r\n");
+            request.push_str(&format!("Content-Length: {}\r\n", body.len()));
+        }
+        request.push_str("\r\n");
+        if let Some(body) = body {
+            request.push_str(body);
+        }
+
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).await.unwrap();
+
+        let text = String::from_utf8_lossy(&raw).into_owned();
+        let status = text
+            .split_whitespace()
+            .nth(1)
+            .and_then(|code| code.parse().ok())
+            .unwrap_or(0);
+        let body = text.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default();
+        (status, body)
+    }
+
+    async fn post_state(server: &TestServer, body: &str) -> (u16, String) {
+        call(server, "POST", "/v1/state", Some(&server.token), false, Some(body)).await
+    }
+
+    #[test]
+    fn token_comparison_rejects_wrong_values() {
+        assert!(token_matches("abc", "abc"));
+        assert!(!token_matches("abc", "abd"));
+        assert!(!token_matches("abc", "abcd"));
+        assert!(!token_matches("", "abc"));
+    }
+
+    #[tokio::test]
+    async fn health_needs_no_token() {
+        let server = start().await;
+        let (status, body) = call(&server, "GET", "/v1/health", None, false, None).await;
+        assert_eq!(status, 200);
+        assert!(body.contains("\"ok\":true"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn state_requires_a_token() {
+        let server = start().await;
+        let (status, _) = call(&server, "GET", "/v1/state", None, false, None).await;
+        assert_eq!(status, 401);
+    }
+
+    #[tokio::test]
+    async fn wrong_token_is_rejected() {
+        let server = start().await;
+        let (status, _) = call(&server, "GET", "/v1/state", Some("nope"), false, None).await;
+        assert_eq!(status, 401);
+    }
+
+    /// 本地 HTTP 服务最现实的攻击面：网页带着 Origin 打过来
+    #[tokio::test]
+    async fn origin_header_is_rejected_even_with_a_valid_token() {
+        let server = start().await;
+        let (status, _) =
+            call(&server, "GET", "/v1/state", Some(&server.token), true, None).await;
+        assert_eq!(status, 401);
+    }
+
+    #[tokio::test]
+    async fn reporting_updates_the_aggregate_and_notifies_once() {
+        let server = start().await;
+
+        let (status, body) = post_state(&server, r#"{"state":"working","session":"a"}"#).await;
+        assert_eq!(status, 200);
+        assert!(body.contains("\"aggregate\":\"working\""), "body: {body}");
+        assert_eq!(server.notifications.load(Ordering::SeqCst), 1);
+
+        let (status, _) = call(&server, "GET", "/v1/state", Some(&server.token), false, None).await;
+        assert_eq!(status, 200);
+    }
+
+    #[tokio::test]
+    async fn a_repeat_report_of_an_unchanged_state_does_not_notify() {
+        let server = start().await;
+        post_state(&server, r#"{"state":"working","session":"a"}"#).await;
+        assert_eq!(server.notifications.load(Ordering::SeqCst), 1);
+
+        post_state(&server, r#"{"state":"working","session":"a"}"#).await;
+        assert_eq!(
+            server.notifications.load(Ordering::SeqCst),
+            1,
+            "聚合没变就不该再推一次给前端"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_state_is_a_400_not_a_422() {
+        let server = start().await;
+        let (status, body) = post_state(&server, r#"{"state":"nonsense"}"#).await;
+        assert_eq!(status, 400, "body: {body}");
+        assert!(body.contains("error"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn a_body_missing_state_is_a_400() {
+        let server = start().await;
+        let (status, _) = post_state(&server, r#"{}"#).await;
+        assert_eq!(status, 400);
+    }
+
+    #[tokio::test]
+    async fn state_aliases_are_accepted_over_http() {
+        let server = start().await;
+        let (status, body) = post_state(&server, r#"{"state":"blocked"}"#).await;
+        assert_eq!(status, 200);
+        assert!(body.contains("\"aggregate\":\"error\""), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn the_path_session_overrides_the_body_session() {
+        let server = start().await;
+        let (status, _) = call(
+            &server,
+            "POST",
+            "/v1/sessions/from-path/state",
+            Some(&server.token),
+            false,
+            Some(r#"{"state":"permission","session":"from-body"}"#),
+        )
+        .await;
+        assert_eq!(status, 200);
+
+        let (_, body) = call(&server, "GET", "/v1/state", Some(&server.token), false, None).await;
+        assert!(body.contains("from-path"), "body: {body}");
+        assert!(!body.contains("from-body"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn clearing_a_session_is_idempotent() {
+        let server = start().await;
+        post_state(&server, r#"{"state":"error","session":"a"}"#).await;
+
+        let (status, body) = call(
+            &server,
+            "DELETE",
+            "/v1/sessions/a",
+            Some(&server.token),
+            false,
+            None,
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert!(body.contains("\"removed\":true"), "body: {body}");
+        assert!(body.contains("\"aggregate\":\"idle\""), "body: {body}");
+
+        let (status, body) = call(
+            &server,
+            "DELETE",
+            "/v1/sessions/a",
+            Some(&server.token),
+            false,
+            None,
+        )
+        .await;
+        assert_eq!(status, 200, "清除不存在的会话不该是错误");
+        assert!(body.contains("\"removed\":false"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn pausing_shows_off_but_keeps_the_sessions() {
+        let server = start().await;
+        post_state(&server, r#"{"state":"working","session":"a"}"#).await;
+
+        let (status, body) = call(
+            &server,
+            "POST",
+            "/v1/monitor",
+            Some(&server.token),
+            false,
+            Some(r#"{"paused":true}"#),
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert!(body.contains("\"paused\":true"), "body: {body}");
+
+        let (_, body) = call(&server, "GET", "/v1/state", Some(&server.token), false, None).await;
+        assert!(body.contains("\"aggregate\":\"off\""), "body: {body}");
+        assert!(body.contains("\"id\":\"a\""), "暂停不该丢掉会话: {body}");
+
+        call(
+            &server,
+            "POST",
+            "/v1/monitor",
+            Some(&server.token),
+            false,
+            Some(r#"{"paused":false}"#),
+        )
+        .await;
+        let (_, body) = call(&server, "GET", "/v1/state", Some(&server.token), false, None).await;
+        assert!(
+            body.contains("\"aggregate\":\"working\""),
+            "恢复后应立刻回到真实状态: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn decoding_the_state_endpoint_matches_the_documented_shape() {
+        let server = start().await;
+        post_state(&server, r#"{"state":"permission","session":"a","message":"需要授权"}"#).await;
+
+        let (_, body) = call(&server, "GET", "/v1/state", Some(&server.token), false, None).await;
+        let parsed: Value = serde_json::from_str(&body).unwrap();
+
+        assert_eq!(parsed["aggregate"], "permission");
+        assert_eq!(parsed["paused"], false);
+        assert_eq!(parsed["message"], "需要授权");
+        assert!(parsed["since_ms"].is_number());
+        assert_eq!(parsed["sessions"][0]["id"], "a");
+        assert_eq!(parsed["sessions"][0]["state"], "permission");
+        assert!(parsed["sessions"][0]["age_ms"].is_number());
+    }
+
+    #[tokio::test]
+    async fn an_unknown_path_is_a_404() {
+        let server = start().await;
+        let (status, _) = call(&server, "GET", "/v1/nope", Some(&server.token), false, None).await;
+        assert_eq!(status, 404);
+    }
+}

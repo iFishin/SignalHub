@@ -1,0 +1,33 @@
+/*
+ * 状态配色。灯球和设置面板里的会话小圆点共用这一份定义，
+ * 所以只在这里写一次颜色。
+ *
+ * 比常规的 500 号色深一档：扁平色块没有描边也没有阴影，
+ * 太亮的颜色在浅色桌面上会糊掉。这套值在浅色和深色背景上都还看得清。
+ */
+
+[data-state="idle"] {
+  --state: #16a34a;
+}
+
+[data-state="thinking"],
+[data-state="working"] {
+  --state: #16a34a;
+}
+
+[data-state="done"] {
+  --state: #16a34a;
+}
+
+[data-state="attention"] {
+  --state: #d99a06;
+}
+
+[data-state="permission"],
+[data-state="error"] {
+  --state: #d0342c;
+}
+
+[data-state="off"] {
+  --state: #9ca3af;
+}

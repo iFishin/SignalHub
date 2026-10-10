@@ -1,0 +1,457 @@
+# SignalHub 上报接口规范
+
+本文档定义外部程序（智能体、脚本、CI 任务）向 SignalHub 推送状态的两种接口：**HTTP API** 和 **CLI**。CLI 是 HTTP 的瘦客户端，两者语义完全一致。
+
+- 状态模型与聚合算法见 [architecture.md](./architecture.md#3-状态模型与聚合)
+- 当前实现进度：**HTTP 与 CLI 均已实现并验证**。`signalhub hook <agent>` 的事件映射表已完整（§4），但 `install hooks`（自动写入智能体配置）仍属 Phase 5，尚未实现。§5 的降级通道也未实现。
+- 本文件里的响应示例与状态码是照着实现写的，两边应保持一致；改动接口时请同步这里。
+
+---
+
+## 1. 状态取值
+
+`state` 字段的合法值（小写）：
+
+| 值 | 视觉 | 含义 |
+|---|---|---|
+| `idle` | 绿、常亮 | 空闲，无任务 |
+| `thinking` | 绿、快闪 | 正在推理 |
+| `working` | 绿、慢闪 | 正在执行工具/任务 |
+| `done` | 绿、常亮 + 亮脉冲 | 任务完成（30s 后自动回 `idle`） |
+| `attention` | 黄、闪 | 需要关注 |
+| `permission` | 红、闪 | 需要授权/确认 |
+| `error` | 红、快闪 | 出错/阻塞 |
+| `off` | 灰、熄灭 | 监控暂停 |
+
+**别名（`state` 与 `--state` 位置参数都接受）**，便于对接不同来源的事件名：
+
+| 别名 | 归一化为 |
+|---|---|
+| `blocked`, `fail`, `failure`, `stuck` | `error` |
+| `notification`, `needs_attention` | `attention` |
+| `permission_request`, `needs_permission` | `permission` |
+| `tool_done`, `tool_use`, `active` | `working` |
+| `reasoning`, `processing` | `thinking` |
+| `completed`, `complete`, `success` | `done` |
+| `pause`, `paused`, `disabled` | `off` |
+
+非法值一律返回 `400`（HTTP）或退出码 `1`（CLI），**不做静默忽略**——写错状态名却看到灯没反应是最难排查的一类问题。
+
+优先级与默认 TTL 见 architecture.md §3.1。简言之：`error` > `permission` > `attention` > `working` > `thinking` > `done` > `idle`。
+
+---
+
+## 2. HTTP API
+
+默认监听 `127.0.0.1`。端口优先取 **41320**，被占用则退到系统分配端口，**两种情况下实际端口都写入 `~/.signalhub/port`**。
+
+### 2.1 鉴权
+
+除 `/v1/health` 外全部需要：
+
+```
+Authorization: Bearer <token>
+```
+
+`token` 是 app 首次启动生成的 32 字节随机串，写入 `~/.signalhub/token`（权限 `0600`）。
+
+服务端同时**拒绝任何携带 `Origin` 头的请求**——浏览器发起的跨源请求一定带该头，这挡住了「你浏览的某个网页偷偷 POST 到你本地端口」这类本地 CSRF 攻击。
+
+### 2.2 端点
+
+| 方法 | 路径 | 说明 | 鉴权 |
+|---|---|---|---|
+| GET | `/v1/health` | 存活探测 | 免 |
+| GET | `/v1/state` | 当前聚合状态 + 会话列表 | 需要 |
+| POST | `/v1/state` | 上报状态（`session` 在 body 里） | 需要 |
+| POST | `/v1/sessions/{session}/state` | 上报状态（`session` 在路径里） | 需要 |
+| DELETE | `/v1/sessions/{session}` | 清除某个会话 | 需要 |
+| GET | `/v1/sessions` | 会话列表 | 需要 |
+| POST | `/v1/monitor` | 全局暂停 / 恢复 | 需要 |
+
+> axum 0.8 的路径参数写作 `/{session}`；0.7 写作 `/:session`。
+
+### 2.3 `POST /v1/state`
+
+请求体：
+
+```json
+{
+  "state":   "working",
+  "session": "abc123",
+  "agent":   "claude-code",
+  "cwd":     "/Users/me/proj",
+  "message": "Bash: npm test",
+  "ttl_ms":  300000
+}
+```
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+|---|---|---|---|---|
+| `state` | string | ✅ | — | 见 §1。`off` 等价于清除该会话 |
+| `session` | string | | `"default"` | 会话标识。多智能体并行时用来区分 |
+| `agent` | string | | `"unknown"` | 上报方名字，用于 UI 归因 |
+| `cwd` | string | | `null` | 项目路径，UI 显示成项目名 |
+| `message` | string | | `null` | 悬停 tooltip 显示 |
+| `ttl_ms` | number | | 按状态默认 | 覆盖默认过期时间；长任务显式传大值 |
+
+响应 `200`：
+
+```json
+{ "ok": true, "aggregate": "working", "sessions": 2, "changed": true }
+```
+
+返回聚合结果而非简单 `{"ok":true}`，好处是**一次 `curl` 调用就能看到全局状态**，调试体验显著更好。
+
+### 2.4 `GET /v1/state`
+
+```json
+{
+  "aggregate": "permission",
+  "paused": false,
+  "since_ms": 1697030400000,
+  "message": "需要批准: rm -rf build",
+  "sessions": [
+    {
+      "id": "abc123",
+      "state": "permission",
+      "agent": "claude-code",
+      "cwd": "/Users/me/proj",
+      "message": "需要批准: rm -rf build",
+      "age_ms": 4200
+    }
+  ]
+}
+```
+
+`aggregate` 就是灯球当前显示的状态；`message` 来自聚合胜出的那个会话。
+
+### 2.5 `POST /v1/monitor`
+
+```json
+{ "paused": true }
+```
+
+响应 `{ "ok": true, "paused": true }`。暂停期间 `GET /v1/state` 的 `aggregate` 恒为 `off`，但会话表原样保留，恢复后立即回到真实状态。
+
+### 2.6 `DELETE /v1/sessions/{session}`
+
+清除会话（智能体正常结束时应调用）。响应：
+
+```json
+{ "ok": true, "removed": true, "aggregate": "idle" }
+```
+
+会话不存在时 `removed: false` 且仍返回 `200`——清除是幂等操作，重复调用不该是错误。只有**非法状态值**才返回 `400`。
+
+注意 `aggregate` 是清除**之后**重算的结果：如果还有别的会话在报状态，它可能仍是红或黄，而不是 `idle`。
+
+`POST /v1/sessions/{session}/state` 的路径参数会**覆盖**请求体里的 `session` 字段，避免两处不一致时行为难以预测。
+
+### 2.7 错误码
+
+| 码 | 场景 |
+|---|---|
+| `400` | `state` 非法；body 不是合法 JSON |
+| `401` | 缺 token / token 错误 / 请求带 `Origin` 头 |
+| `404` | 路径不存在 |
+
+错误体统一为 `{"error": "<原因>"}`。
+
+### 2.8 curl 示例
+
+```bash
+PORT=$(cat ~/.signalhub/port)
+TOKEN=$(cat ~/.signalhub/token)
+
+curl -s -X POST "http://127.0.0.1:$PORT/v1/state" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"state":"permission","session":"demo","message":"需要授权"}'
+```
+
+```bash
+curl -s "http://127.0.0.1:$(cat ~/.signalhub/port)/v1/health"
+```
+
+---
+
+## 3. CLI
+
+```
+signalhub <state> [flags]                    上报状态
+signalhub hook <agent>                       从 stdin 读智能体 hook JSON 并上报
+signalhub status [--json]                    查询当前聚合状态
+signalhub clear --session <id>               清除会话
+signalhub monitor on|off                     全局暂停 / 恢复
+signalhub on | off                           monitor 的简写
+signalhub install hooks <agent>              写入智能体 hook 配置（Phase 5，未实现）
+signalhub uninstall hooks <agent>            移除（Phase 5，未实现）
+```
+
+选项可以写在子命令之前或之后，两种写法等价（`signalhub --port 1 status` 与 `signalhub status --port 1`）。
+
+示例：
+
+```bash
+signalhub working --session build-1 --agent ci --message "compiling"
+signalhub permission --session abc123 --message "需要批准: rm -rf"
+signalhub done --session build-1
+signalhub error --session ci --ttl 60s
+signalhub status
+```
+
+### 3.1 flags
+
+| flag | 说明 |
+|---|---|
+| `--session <id>` | 会话标识，默认 `default` |
+| `--agent <name>` | 上报方名字 |
+| `--cwd <path>` | 项目路径 |
+| `--message <text>` | 悬停提示文本 |
+| `--ttl <dur>` | 覆盖默认 TTL，如 `30s` `5m` `1h` |
+| `--json` | `status` 输出原始 JSON |
+| `--never-fail` | 任何错误都以 0 退出（供 hook 使用） |
+| `--port <n>` | 覆盖端口自动发现 |
+
+### 3.2 退出码
+
+| 码 | 含义 |
+|---|---|
+| `0` | 成功 |
+| `1` | 参数错误或服务端返回错误 |
+| `3` | **app 未运行**（`~/.signalhub/port` 不存在或连接被拒） |
+
+退出码 3 独立于 1，让脚本能区分「我参数写错了」和「app 没开」这两种完全不同的情况。`--never-fail` 时恒返回 0；**`hook` 模式隐含该行为**——上报客户端不该有能力弄坏它监控的对象。
+
+CLI 自己不校验状态名，而是原样转发给服务端：别名表只有一份（`state::Signal::parse`），因此不可能出现 CLI 与服务端理解不一致的情况。写错状态名会拿到服务端的 400 和它的错误文本。
+
+### 3.3 `off` 的两个含义（容易混淆，特此明确）
+
+`off` 既是会话状态也是全局开关，两者不是一回事：
+
+| 写法 | 作用范围 | 效果 |
+|---|---|---|
+| `DELETE /v1/sessions/{id}` 或 `signalhub clear --session <id>` | 单个会话 | 清除该会话，聚合可能仍由别的会话决定 |
+| `POST /v1/state` 带 `"state": "off"` | 单个会话 | 同上——会话上的 `off` 就是清除 |
+| `POST /v1/monitor` `{"paused": true}` 或 `signalhub monitor off` | **全局** | 聚合恒为 `off`，但会话表原样保留，恢复后立即回到真实状态 |
+
+`signalhub off` / `signalhub on` 是 `monitor off` / `monitor on` 的简写，作用于全局。想清除某个会话请用 `clear`。
+
+**代码里 `off` 永远不会成为某个会话的 state**：`Store::apply` 遇到 `off` 直接转成 `clear`，全局暂停存在独立的 `paused` 位。这样聚合函数不需要在会话层面处理 `off` 这个特例。
+
+---
+
+## 4. 智能体接入
+
+### 4.1 为什么 CLI 要有 `hook` 子命令
+
+如果用 shell 脚本做事件映射，需要 `jq`（macOS 默认不装）、要处理各种转义、要给每个事件各写一份。改为 CLI 内置解析后：
+
+- 零外部依赖，不需要 `jq` / `python`
+- 安装 hook = 把**同一行命令**注册到所有事件
+- 映射表用 Rust 写，可单测
+- hook 模式下 stdout 保持绝对为空（原因见 §4.4 第 3 条），诊断信息只走 stderr 和日志文件
+
+### 4.2 Claude Code 事件映射
+
+事件名以官方文档 https://code.claude.com/docs/en/hooks 为准。该页面记录了 **33 个**事件，下表覆盖我们实际映射的 14 个，以及明确**忽略**的其余部分。
+
+**上报**
+
+| hook 事件 | matcher | SignalHub 状态 | 说明 |
+|---|---|---|---|
+| `SessionStart` | `startup\|resume` | `idle` | 见下文的 matcher 注意事项 |
+| `UserPromptSubmit` | — | `thinking` | 提交 prompt 后、Claude 处理前 |
+| `PreToolUse` | `*` | `working` | |
+| `PostToolUse` | `*` | `working` | 工具成功 |
+| `PostToolUseFailure` | `*` | `attention` | 工具失败，但 Claude 通常会自行恢复，不算 `error` |
+| `PermissionRequest` | — | `permission` | **主路径**：权限点即时触发 |
+| `Notification` | `permission_prompt` | `permission` | 回落路径，触发明显晚于 `PermissionRequest`（官方文档未给出具体延迟，不写死秒数） |
+| `Notification` | `agent_needs_input` | `attention` | |
+| `Notification` | `agent_completed` | `done` | |
+| `Notification` | `idle_prompt` | `attention` | Claude 停下等你开口 |
+| `SubagentStart` | — | `thinking` | |
+| `SubagentStop` | — | `working` | 子智能体结束，主智能体继续 |
+| `PermissionDenied` | — | `working` | 权限点已解决，红灯应该灭 |
+| `Stop` | — | `done` | 一轮回复结束 |
+| `StopFailure` | — | `error` | 轮次因 API 错误中断 |
+| `PreCompact` / `PostCompact` | — | `thinking` / `working` | 压缩上下文时仍有动作 |
+| `TeammateIdle` | — | `attention` | agent-team 队友待输入 |
+| `SessionEnd` | — | 清除会话 | |
+
+**明确忽略**（收到这些事件就原样退出，不上报）
+
+`Setup`、`UserPromptExpansion`、`PostToolBatch`、`MessageDisplay`、`TaskCreated`、`TaskCompleted`、`InstructionsLoaded`、`ConfigChange`、`CwdChanged`、`DirectoryAdded`、`FileChanged`、`WorktreeCreate`、`WorktreeRemove`、`PreModelSwitch`、`PostModelSwitch`、`Elicitation`、`ElicitationResult`。
+
+**为什么要把「忽略」也写清楚**：`TaskCreated`/`TaskCompleted` 指的是 Claude 内部的待办清单，跟「一轮工作」不是一回事；`FileChanged`/`CwdChanged` 在会话里非常频繁。把它们当活动信号会让灯球乱闪。少报一点比报错好。
+
+**两个 matcher 注意事项**
+
+- `SessionStart` 的 matcher 有 `startup` / `resume` / `clear` / `compact` / `fork`。只有 `startup` 和 `resume` 才该报 `idle`——`compact` 表示上下文压缩，此时智能体**仍在工作中**，报 idle 是错的。
+- `SessionEnd` 的 matcher 有 `clear` / `resume` / `logout` / `prompt_input_exit` / `other`，全部都应清除会话。
+
+**字段**
+
+所有事件都在 stdin 上收到共同的 `session_id`、`transcript_path`、`cwd`、`hook_event_name`，多数还带 `permission_mode`。会话 ID 取 `session_id`，`cwd` 一并上报用于多会话归因。
+
+`Notification` 另有 `message`、`title`、`notification_type`。完整的 `notification_type` 取值：`permission_prompt`、`idle_prompt`、`auth_success`、`elicitation_dialog`、`elicitation_url_dialog`、`elicitation_complete`、`elicitation_response`、`agent_needs_input`、`agent_completed`、`quota_auto_resume_fired`、`quota_auto_resume_stale`、`quota_auto_resume_disabled`。
+
+`Stop` 另有 `stop_hook_active`（bool）、`last_assistant_message`、`background_tasks`、`session_crons`。`stop_hook_active` 为 `true` 表示 Claude 已经因 stop hook 在继续——我们不上报决策，所以不影响。
+
+### 4.3 写入的 hook 配置
+
+`signalhub install hooks claude-code` 会**合并**（不是覆盖）以下内容进 `~/.claude/settings.json`，并先备份原文件。注意 hook 条目在各级 settings 之间是**合并**语义，不会互相替换。
+
+```json
+{
+  "hooks": {
+    "SessionStart":      [{ "matcher": "startup|resume", "hooks": [{ "type": "command", "command": "signalhub hook claude-code", "async": true }] }],
+    "UserPromptSubmit":  [{ "hooks": [{ "type": "command", "command": "signalhub hook claude-code", "async": true }] }],
+    "PreToolUse":        [{ "matcher": "*", "hooks": [{ "type": "command", "command": "signalhub hook claude-code", "async": true }] }],
+    "PostToolUse":       [{ "matcher": "*", "hooks": [{ "type": "command", "command": "signalhub hook claude-code", "async": true }] }],
+    "PostToolUseFailure":[{ "matcher": "*", "hooks": [{ "type": "command", "command": "signalhub hook claude-code", "async": true }] }],
+    "PermissionRequest": [{ "hooks": [{ "type": "command", "command": "signalhub hook claude-code", "async": true }] }],
+    "PermissionDenied":  [{ "hooks": [{ "type": "command", "command": "signalhub hook claude-code", "async": true }] }],
+    "Notification":      [{ "hooks": [{ "type": "command", "command": "signalhub hook claude-code", "async": true }] }],
+    "SubagentStart":     [{ "hooks": [{ "type": "command", "command": "signalhub hook claude-code", "async": true }] }],
+    "SubagentStop":      [{ "hooks": [{ "type": "command", "command": "signalhub hook claude-code", "async": true }] }],
+    "Stop":              [{ "hooks": [{ "type": "command", "command": "signalhub hook claude-code", "async": true }] }],
+    "StopFailure":       [{ "hooks": [{ "type": "command", "command": "signalhub hook claude-code", "async": true }] }],
+    "PreCompact":        [{ "hooks": [{ "type": "command", "command": "signalhub hook claude-code", "async": true }] }],
+    "PostCompact":       [{ "hooks": [{ "type": "command", "command": "signalhub hook claude-code", "async": true }] }],
+    "TeammateIdle":      [{ "hooks": [{ "type": "command", "command": "signalhub hook claude-code", "async": true }] }],
+    "SessionEnd":        [{ "hooks": [{ "type": "command", "command": "signalhub hook claude-code", "async": true }] }]
+  }
+}
+```
+
+### 4.4 `async: true` 的语义（已核实，有三条要小心）
+
+官方文档确认 `async` 是 `type: "command"` 独有的字段。它的实际行为：
+
+1. **异步 hook 不受 `timeout` 约束。** 文档原文：一旦异步 hook 在后台跑起来，Claude Code 就不对它执行 `timeout`。所以我们**不能**靠 `timeout` 兜底，必须在 CLI 内部自己限制 HTTP 连接超时（计划用 1 秒），否则一个卡住的 `signalhub` 进程会一直悬着。
+2. **异步 hook 不能做决策。** `decision`、`permissionDecision`、`continue` 等字段一律无效。这对我们是好事——上报型 hook 本来就不该影响智能体。
+3. **异步 hook 不能在 stdout 输出畸形 JSON。** 文档明确警告：v2.1.202 之前，异步 hook 输出畸形 JSON **会导致会话崩溃**，且每次恢复会话都会重现。
+
+> 结论：`signalhub hook <agent>` 在 hook 模式下 **stdout 必须保持完全为空**，所有诊断信息写 stderr 或日志文件。这要作为 CLI 的硬性约束来测。
+
+另外还有 `asyncRewake`：它**会**被施加 `timeout`，而且退出码 2 能在会话空闲时立刻唤醒 Claude。信号灯不需要这个能力，不用。
+
+不用 `timeout` 字段：既然异步 hook 不执行超时，写上只会误导读者以为有保护。
+
+### 4.5 卸载与逃生口
+
+`signalhub uninstall hooks claude-code` 从 settings 中移出我们写入的条目（按 `command` 字段精确匹配，不动别人的 hook）。
+
+如果需要临时、彻底地关掉所有 hook，不必动 settings：`claude --settings '{"disableAllHooks": true}'`，或在 settings 里设 `"disableAllHooks": true`。这是出问题时的逃生口，值得写进 README。
+
+### 4.6 Codex CLI
+
+配置位置：`~/.codex/hooks.json`、`~/.codex/config.toml`、`<repo>/.codex/hooks.json`、`<repo>/.codex/config.toml`。JSON 与 TOML 两种写法等价：
+
+```json
+{"hooks":{"PreToolUse":[{"matcher":"^.*$","hooks":[
+  {"type":"command","command":"signalhub hook codex","async":true}]}]}}
+```
+
+```toml
+[[hooks.PreToolUse]]
+matcher = "^.*$"
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "signalhub hook codex"
+async = true
+```
+
+**12 个事件**（PascalCase，与 Claude Code 高度同构）：
+
+| 事件 | 映射 |
+|---|---|
+| `SessionStart` | `idle` |
+| `UserPromptSubmit` | `thinking` |
+| `PreToolUse` / `PostToolUse` | `working` |
+| `PermissionRequest` | `permission` |
+| `SubagentStart` / `SubagentStop` | `thinking` / `working` |
+| `PreCompact` / `PostCompact` | `thinking` / `working` |
+| `Stop` | `done` |
+| `Interrupt` | 清除会话 |
+| `SessionEnd` | 清除会话 |
+
+stdin 字段：`session_id`、`turn_id`、`agent_id`、`agent_type`、`transcript_path`、`cwd`、`hook_event_name`、`model`、`permission_mode`；工具事件另有 `tool_name`、`tool_input`、`tool_use_id`。
+
+差异要注意：Codex 有 `session_id`（不是 `thread-id`——那是老式 `notify` 的字段名）。异步 hook 每会话最多 8 个并发。`SessionEnd` 总是同步执行，默认超时仅 1 秒（上限 3 秒），所以这条路径上的 HTTP 调用必须极快，超时要更短。
+
+### 4.7 Cursor
+
+配置位置：`~/.cursor/hooks.json`（用户级）、`<project>/.cursor/hooks.json`（项目级），另有企业级路径。优先级：企业 → 团队 → 项目 → 用户。**`version` 字段是必填的**：
+
+```json
+{"version":1,"hooks":{
+  "preToolUse":[{"command":"signalhub hook cursor","timeout":5}],
+  "beforeSubmitPrompt":[{"command":"signalhub hook cursor","timeout":5}]
+}}
+```
+
+这里**保留了 `timeout`，与 Claude Code 那节刻意不同**：Cursor 只有 `sessionStart`、`sessionEnd`、`preCompact` 是 fire-and-forget，`preToolUse`、`beforeSubmitPrompt` 这类是**会被等待**的，所以超时保护有意义。Claude Code 那边因为 `async: true` 让 `timeout` 失效，写上去只会误导。
+
+**事件名是 camelCase**（与另外两家都不同）：
+
+| 事件 | 映射 |
+|---|---|
+| `sessionStart` | `idle` |
+| `beforeSubmitPrompt` | `thinking` |
+| `preToolUse` / `postToolUse` | `working` |
+| `postToolUseFailure` | `attention` |
+| `subagentStart` / `subagentStop` | `thinking` / `working` |
+| `beforeShellExecution` / `afterShellExecution` | `working` |
+| `afterAgentThought` | `thinking` |
+| `afterAgentResponse` | `done` |
+| `stop` (`status: "error"` / `"aborted"`) | `error` |
+| `stop` (`status: "completed"`) | `done` |
+| `preCompact` | `thinking` |
+| `sessionEnd` | 清除会话 |
+
+stdin 字段：`conversation_id`、`generation_id`、`model`、`hook_event_name`、`workspace_roots`、`transcript_path`；`sessionStart`/`sessionEnd` 另有 `session_id`；`preToolUse` 另有 `tool_name`、`tool_input`、`cwd`。会话 ID 优先取 `conversation_id`。
+
+Cursor 的 **`stop` 事件带 `status`（`completed` / `aborted` / `error`）**，这是三家里唯一能直接区分「正常结束」和「异常中断」的，所以 Cursor 的 `error` 判定比 Claude Code 更准（后者只能靠 `StopFailure`）。
+
+只有当 Cursor 的 hook 返回 `permission: allow|deny|ask` 时才涉及授权，而上报型 hook 不返回这个字段，因此**就没有对应的「需要授权」事件可映射**——这是 Cursor 侧的能力缺口，不要在文档里假装有。
+
+### 4.8 不用 CLI 的最小接入
+
+任何程序只要能发 HTTP 就能上报，无需安装 CLI：
+
+```bash
+curl -sf -m 1 -X POST "http://127.0.0.1:$(cat ~/.signalhub/port)/v1/state" \
+  -H "Authorization: Bearer $(cat ~/.signalhub/token)" \
+  -H 'Content-Type: application/json' \
+  -d '{"state":"working","session":"'"$MY_SESSION_ID"'"}' || true
+```
+
+`-m 1` 保证不阻塞，`-sf` + `|| true` 保证失败不影响调用方。
+
+---
+
+## 5. 降级通道（v1.1，未实现）
+
+app 未运行时，CLI 可以把事件追加到 `~/.signalhub/pending.jsonl`，app 下次启动时回放。这给的是「app 重启不丢状态」，但会让写者从一个变成两个。v1 明确不做，需要用退出码 3 让调用方自己决定。
+
+---
+
+## 6. dev 调试入口（v1 已有）
+
+Phase 1–2 阶段还没有 HTTP 和 CLI，前端内置了调试快捷键：灯球窗口获得焦点后按 `1`–`8` 直接切换状态。
+
+| 键 | 状态 |
+|---|---|
+| `1` | `idle` |
+| `2` | `thinking` |
+| `3` | `working` |
+| `4` | `done` |
+| `5` | `attention` |
+| `6` | `permission` |
+| `7` | `error` |
+| `8` | `off` |
+
+这些快捷键直接调 Rust 侧的 `set_state` 命令，走的是与 HTTP 完全相同的 Store 路径，所以能顺带验证聚合、TTL、事件推送三条链路。仅在 `debug` 构建中注册。
