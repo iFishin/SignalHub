@@ -3,8 +3,8 @@
 本文档定义外部程序（智能体、脚本、CI 任务）向 SignalHub 推送状态的两种接口：**HTTP API** 和 **CLI**。CLI 是 HTTP 的瘦客户端，两者语义完全一致。
 
 - 状态模型与聚合算法见 [architecture.md](./architecture.md#3-状态模型与聚合)
-- 当前实现进度：**HTTP 与 CLI 均已实现并验证**。`signalhub hook <agent>` 的事件映射表已完整（§4），但 `install hooks`（自动写入智能体配置）仍属 Phase 5，尚未实现。§5 的降级通道也未实现。
-- 本文件里的响应示例与状态码是照着实现写的，两边应保持一致；改动接口时请同步这里。
+- 当前实现进度：**HTTP、CLI、hook 自动接线均已实现并验证**。只有 §5 的降级通道（app 未运行时暂存事件）还没做。
+- 本文件里的响应示例、状态码和 hook 配置样例是照着实现写的，两边应保持一致；改动接口时请同步这里。
 
 ---
 
@@ -185,8 +185,8 @@ signalhub status [--json]                    查询当前聚合状态
 signalhub clear --session <id>               清除会话
 signalhub monitor on|off                     全局暂停 / 恢复
 signalhub on | off                           monitor 的简写
-signalhub install hooks <agent>              写入智能体 hook 配置（Phase 5，未实现）
-signalhub uninstall hooks <agent>            移除（Phase 5，未实现）
+signalhub install hooks <agent>              写入智能体 hook 配置
+signalhub uninstall hooks <agent>            移除本工具写进去的 hook
 ```
 
 选项可以写在子命令之前或之后，两种写法等价（`signalhub --port 1 status` 与 `signalhub status --port 1`）。
@@ -340,11 +340,33 @@ CLI 自己不校验状态名，而是原样转发给服务端：别名表只有�
 
 不用 `timeout` 字段：既然异步 hook 不执行超时，写上只会误导读者以为有保护。
 
-### 4.5 卸载与逃生口
+### 4.5 安装、卸载与安全边界
 
-`signalhub uninstall hooks claude-code` 从 settings 中移出我们写入的条目（按 `command` 字段精确匹配，不动别人的 hook）。
+`signalhub install hooks <agent>` 会改动智能体的配置文件：
 
-如果需要临时、彻底地关掉所有 hook，不必动 settings：`claude --settings '{"disableAllHooks": true}'`，或在 settings 里设 `"disableAllHooks": true`。这是出问题时的逃生口，值得写进 README。
+| 智能体 | 文件 | 形态 |
+|---|---|---|
+| Claude Code | `~/.claude/settings.json` | 嵌套 `{ matcher?, hooks: [ { type, command, async } ] }` |
+| Codex | `~/.codex/hooks.json` | 同上 |
+| Cursor | `~/.cursor/hooks.json` | 扁平 `{ command, timeout }`，且顶层必须有 `version: 1` |
+
+Codex 也可以用 `config.toml` 写 hook，但这里刻意选独立的 `hooks.json`：改 TOML 要保留格式和注释，而 JSON 可以整份解析后重写，安全得多。
+
+**五条安全边界**（都有对应单测）：
+
+1. **只动 `hooks` 一个键。** 同一个文件里的 `env`、`theme`、别的工具的 hook 一律原样保留。
+2. **解析失败就中止，绝不覆盖。** 配置不是合法 JSON 时报错退出（码 1），文件一字不改。把一个手写的 `settings.json` 弄坏的代价远大于功能暂时不可用。
+3. **幂等。** 已装过的事件会跳过，重复执行不会产生重复条目——否则每次工具调用会跑 N 次上报。
+4. **先备份。** 文件原本存在时会写到 `<文件名>.signalhub-backup`；原本不存在则没有可备份的东西，不生成备份文件。
+5. **只摘自己的 handler。** 卸载时按「第一个词是 signalhub 二进制且参数含 `hook`」识别自己的条目，所以**二进制路径变了（重装、挪目录）也照样认得出来**。如果某个 matcher-group 里同时还有别人的 handler，只摘掉自己的、整组保留。
+
+后一条有个不显然的推论：**事件的整个键被删掉时 `removed` 才有内容，而只摘掉组内一个 handler 时 `removed` 为空。** 判断「有没有改动」必须看摘掉的数量，不能看 `removed` 是否为空——否则会出现「摘了但没落盘」的静默失效。这是实现时真实踩到的 bug。
+
+`--dry-run` 只演算不写盘，适合先看一眼会改什么。
+
+**hook 命令写什么。** 优先写裸名字 `signalhub`（可移植，重装或挪动二进制都不失效）；PATH 里没有时退回**当前可执行文件的绝对路径**，保证装完立刻可用。路径含空格时会自动加引号。用绝对路径时 CLI 会额外提醒一句——因为这种失效是静默的（智能体会话里什么都看不到）。
+
+**逃生口。** 要临时彻底关掉所有 hook，不必动配置文件：`claude --settings '{"disableAllHooks": true}'`，或在 settings 里设 `"disableAllHooks": true`。二进制找不到时 `signalhub uninstall hooks <agent>` 也可能失效，此时手动删掉 `hooks` 键即可（有备份文件兜底）。
 
 ### 4.6 Codex CLI
 

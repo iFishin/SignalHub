@@ -32,7 +32,7 @@ pub fn data_dir() -> io::Result<PathBuf> {
 /// 代价是 HOME / USERPROFILE 都缺失的极端情况会失败（此时会明确报错，不会
 /// 静默写错地方）；换来的是 CLI 的依赖树里少一整棵。app 由终端或 launchd
 /// 启动时两者必有其一，所以这个取舍是安全的。
-fn home_dir() -> Option<PathBuf> {
+pub fn home_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     let key = "USERPROFILE";
     #[cfg(not(windows))]

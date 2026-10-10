@@ -299,14 +299,13 @@ SignalHub/
       ├─ sweep.rs                TTL 清扫 + 聚合重算
       ├─ notify.rs               通知出口（Notifier）— 让 HTTP 层能脱离 AppHandle 单测
       ├─ config.rs               ~/.signalhub 路径、token、端口文件、用户设置
+      ├─ hooks.rs                智能体 hook 的安装/卸载（app 与 CLI 共用）
       ├─ server.rs               axum 路由 + 鉴权 + 端口发现，含 12 个 HTTP 层单测
       ├─ tray.rs                 托盘菜单
-      ├─ integration/            智能体 hook 安装器             （Phase 5）
-      │  ├─ claude_code.rs
-      │  ├─ codex.rs
-      │  └─ cursor.rs
       └─ bin/signalhub.rs        CLI ← 用户实际调用的 `signalhub` 命令
 ```
+
+**关于 `hooks.rs` 为什么不是 `integration/{claude_code,codex,cursor}.rs`：** 原计划按智能体拆三个文件，实际写下来发现三者的差异只在「配置路径 + 事件名清单 + handler 形状」这张表里，而**安装逻辑（保留无关键、幂等、备份、解析失败中止、精确摘除自己的 handler）三家完全一样且是最需要谨慎的部分**。拆成三个文件会把这段逻辑抄三遍，或者抽出一层反而更绕。所以是一个 `hooks.rs`，内部用一个小 `Agent` 枚举和一张事件表区分差异。
 
 **关于两个二进制。** 这个包里有两个 bin：app（`signalhub-app`，源自 `src/main.rs`）和 CLI（`signalhub`，源自 `src/bin/signalhub.rs`）。两者同名会冲突，而 app 的名字用户看不到（通过 .app 启动），CLI 的名字却要写进智能体的 hook 配置里，所以让给 CLI。`[package] default-run = "signalhub-app"` 让 `cargo run`（也就是 `tauri dev`）选 app 那个，`tauri.conf.json` 的 `mainBinaryName` 同步设为 `signalhub-app`。
 
@@ -354,7 +353,7 @@ SignalHub/
 | 2 | 状态机 + TTL sweep + 前后端联动 + 单测 | ✅ 已完成 |
 | 3 | HTTP 服务：axum 路由、token、端口发现 | ✅ 已完成 |
 | 4 | CLI（`hook` 子命令 + 状态上报 + status/clear/monitor） | ✅ 已完成 |
-| 5 | Claude Code hook 接入 + `install hooks` | ⏳ 待做 |
+| 5 | hook 自动接线：`install hooks` / `uninstall hooks`（三家智能体） | ✅ 已完成 |
 | 6 | 设置面板（圆点大小、置顶、暂停、会话列表） | ✅ 已完成 |
 | 6b | 打磨：窗口位置持久化、开机自启、单实例、全局快捷键、穿透模式 | ⏳ 待做 |
 | 7 | 后续：Codex/Cursor 接线、出站 webhook、`watch` 跟随、`stale` | ⏳ 待做 |

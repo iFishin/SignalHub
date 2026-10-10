@@ -20,10 +20,14 @@ use std::time::Duration;
 
 // 直接包含源码，而不是 `use signalhub_lib::config`：lib.rs 是 Tauri 应用，
 // 链接它会把整个 Tauri 拖进这个本该只有几 MB 的 CLI 二进制。
-// config.rs 里写端口、生成 token 的函数只有 app 侧用得到，CLI 只读不写。
+// config.rs / hooks.rs 里有些函数只有 app 侧用得到，CLI 只用其中一部分。
 #[allow(dead_code)]
 #[path = "../config.rs"]
 mod config;
+
+#[allow(dead_code)]
+#[path = "../hooks.rs"]
+mod hooks;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(800);
 const CALL_TIMEOUT: Duration = Duration::from_millis(1500);
@@ -86,6 +90,7 @@ struct Flags {
     message: Option<String>,
     ttl_ms: Option<u64>,
     json: bool,
+    dry_run: bool,
     port: Option<u16>,
 }
 
@@ -121,6 +126,7 @@ impl Flags {
                     })?);
                 }
                 "--json" => flags.json = true,
+                "--dry-run" => flags.dry_run = true,
                 "--never-fail" => {} // main 已经从原始参数里处理过了
                 other if other.starts_with("--") => {
                     return Err(Failure::other(format!("未知选项 {other}，用 --help 看用法")));
@@ -204,6 +210,18 @@ fn run(args: &[String]) -> Result<(), Failure> {
         // signalhub on / off 是 monitor 的简写
         "on" => monitor(true, &flags),
         "off" => monitor(false, &flags),
+        "install" => match rest.first().map(String::as_str) {
+            Some("hooks") => install_hooks(required_agent(rest, "install hooks")?, &flags),
+            other => Err(Failure::other(format!(
+                "install 只支持 hooks，收到 {other:?}"
+            ))),
+        },
+        "uninstall" => match rest.first().map(String::as_str) {
+            Some("hooks") => uninstall_hooks(required_agent(rest, "uninstall hooks")?, &flags),
+            other => Err(Failure::other(format!(
+                "uninstall 只支持 hooks，收到 {other:?}"
+            ))),
+        },
         state => {
             if !rest.is_empty() {
                 return Err(Failure::other(format!(
@@ -438,6 +456,85 @@ fn format_ms(ms: u64) -> String {
     }
 }
 
+// ---- hook 安装 / 卸载 ------------------------------------------------------
+
+fn required_agent<'a>(rest: &'a [String], what: &str) -> Result<&'a str, Failure> {
+    rest.get(1).map(String::as_str).ok_or_else(|| {
+        Failure::other(format!("{what} 需要智能体名，例如 signalhub {what} claude-code"))
+    })
+}
+
+fn install_hooks(agent: &str, flags: &Flags) -> Result<(), Failure> {
+    let agent = hooks::Agent::parse(agent).map_err(Failure::other)?;
+    let report = hooks::install(agent, flags.dry_run).map_err(Failure::other)?;
+
+    println!(
+        "{} 的 hook{}",
+        agent.name(),
+        if report.dry_run { "（演练，未写入任何文件）" } else { " 已安装" }
+    );
+    if let Some(command) = &report.command {
+        println!("  命令  {command}");
+    }
+    println!("  配置  {}", report.path.display());
+    if let Some(backup) = &report.backup {
+        println!("  备份  {}", backup.display());
+    }
+    if !report.added.is_empty() {
+        println!("  新增  {} 个事件", report.added.len());
+        println!("        {}", report.added.join(" "));
+    }
+    if !report.already.is_empty() {
+        println!("  跳过  {} 个（已存在，未重复添加）", report.already.len());
+    }
+
+    if report.added.is_empty() {
+        println!("无需改动。");
+    } else if report.dry_run {
+        println!("以上为演练结果；去掉 --dry-run 才会真正写入。");
+    } else {
+        println!("重启 {} 后生效。", agent.name());
+    }
+
+    // 没在 PATH 里就只能写绝对路径，此时二进制一挪动 hook 就失效——这种失效
+    // 是静默的（智能体会话里什么都看不到），所以必须主动提醒。
+    if !report.dry_run && !hooks::signalhub_on_path() {
+        println!();
+        println!("提示：signalhub 不在 PATH 中，已写入绝对路径。");
+        println!("      若移动或删除了该二进制，hook 会静默失效。");
+        println!("      把它放进 PATH（例如软链到 /usr/local/bin）后重新执行本命令即可改为裸名字。");
+    }
+    Ok(())
+}
+
+fn uninstall_hooks(agent: &str, flags: &Flags) -> Result<(), Failure> {
+    let agent = hooks::Agent::parse(agent).map_err(Failure::other)?;
+    let report = hooks::uninstall(agent, flags.dry_run).map_err(Failure::other)?;
+
+    println!(
+        "{} 的 hook{}",
+        agent.name(),
+        if report.dry_run { "（演练，未写入任何文件）" } else { " 已移除" }
+    );
+    println!("  配置  {}", report.path.display());
+    if let Some(backup) = &report.backup {
+        println!("  备份  {}", backup.display());
+    }
+
+    if report.removed_handlers == 0 {
+        println!("没有找到本工具装过的 hook，无需改动。");
+    } else {
+        println!("  移除  {} 个 handler", report.removed_handlers);
+        if !report.removed.is_empty() {
+            println!("        {}", report.removed.join(" "));
+        }
+        if report.dry_run {
+            println!("以上为演练结果；去掉 --dry-run 才会真正写入。");
+        }
+    }
+    Ok(())
+}
+
 // ---- hook ------------------------------------------------------------------
 
 /// hook 路径上**不允许**出现任何 `println!`。见文件头的约束 1。
@@ -597,6 +694,8 @@ signalhub {version} —— 桌面悬浮状态灯的上报客户端
   signalhub clear --session <id>     清除某个会话
   signalhub monitor on|off           全局暂停 / 恢复监控
   signalhub on | off                 monitor 的简写
+  signalhub install hooks <智能体>   把 hook 写进智能体的配置文件
+  signalhub uninstall hooks <智能体> 移除本工具写进去的 hook
 
 状态:
   idle thinking working done attention permission error off
@@ -610,6 +709,7 @@ signalhub {version} —— 桌面悬浮状态灯的上报客户端
   --message <text>  悬停提示文本
   --ttl <时长>      覆盖默认过期时间，如 30s / 5m / 1h / 90（裸数字按秒）
   --json            status 输出原始 JSON
+  --dry-run         install / uninstall 只打印将要做的改动，不写文件
   --port <n>        覆盖端口自动发现
   --never-fail      任何错误都以退出码 0 结束（hook 模式隐含此行为）
   -h, --help        显示本帮助
@@ -621,6 +721,7 @@ signalhub {version} —— 桌面悬浮状态灯的上报客户端
   3  SignalHub 没有在运行
 
 智能体: claude-code codex cursor
+  install hooks 会改动它们的配置文件，写之前自动备份，且只动 hooks 这一个键。
 ",
         version = env!("CARGO_PKG_VERSION")
     )
@@ -915,8 +1016,9 @@ mod tests {
     fn help_documents_every_exit_code_and_command() {
         let text = help();
         for expected in [
-            "hook", "status", "clear", "monitor", "claude-code", "codex", "cursor",
-            "--never-fail", "--ttl", "退出码",
+            "hook", "status", "clear", "monitor", "install", "uninstall",
+            "claude-code", "codex", "cursor", "--never-fail", "--ttl", "--dry-run",
+            "退出码",
         ] {
             assert!(text.contains(expected), "帮助文本缺少 {expected}");
         }

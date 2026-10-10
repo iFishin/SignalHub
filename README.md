@@ -50,10 +50,21 @@ signalhub status
 
 完整接口规范见 [docs/api.md](docs/api.md)。架构与设计取舍见 [docs/architecture.md](docs/architecture.md)。
 
+## 接入智能体
+
+```bash
+signalhub install hooks claude-code      # 也支持 codex / cursor
+signalhub install hooks claude-code --dry-run   # 先看看会改什么
+```
+
+它会往智能体的配置文件里写 hook（Claude Code 是 `~/.claude/settings.json`）。**只动 `hooks` 这一个键**，其余内容原样保留，写之前自动备份到 `*.signalhub-backup`，重复执行也不会产生重复条目；配置不是合法 JSON 时会直接中止、绝不覆盖。卸载用 `signalhub uninstall hooks claude-code`。
+
+装完重启智能体即可生效。之后提问 → 绿快闪、调工具 → 绿慢闪、需要授权 → 红闪、答完亮一下再回常亮。
+
+完整接口规范见 [docs/api.md](docs/api.md)。架构与设计取舍见 [docs/architecture.md](docs/architecture.md)。
+
 ## 进度
 
-已完成：悬浮灯球、状态聚合与 TTL、HTTP 上报接口、CLI、设置面板。
+已完成：悬浮灯球、状态聚合与 TTL、HTTP 上报接口、CLI、设置面板、hook 自动接线（Claude Code / Codex / Cursor）。
 
-待做：`signalhub install hooks` 与 Claude Code / Codex / Cursor 的自动接线、开机自启、全局快捷键、窗口位置记忆、点击穿透模式。
-
-**现在要把智能体接上得手写 hook 配置**——事件映射表和配置样例已经在 [docs/api.md §4](docs/api.md) 里写好，照着粘贴即可。
+待做：开机自启、全局快捷键、窗口位置记忆、点击穿透模式。

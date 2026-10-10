@@ -4,9 +4,10 @@ mod state;
 mod sweep;
 mod tray;
 
-// CLI (`src/bin/signalhub.rs`) 通过 #[path] 直接包含 config.rs 的源码，
-// 因此它是 lib 的公开 API，而不是只给 app 内部用的私有模块。
+// CLI (`src/bin/signalhub.rs`) 通过 #[path] 直接包含这两个模块的源码，
+// 因此它们是 lib 的公开 API，而不是只给 app 内部用的私有模块。
 pub mod config;
+pub mod hooks;
 
 use config::Settings;
 use notify::Notifier;
