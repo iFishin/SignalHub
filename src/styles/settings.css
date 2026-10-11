@@ -83,54 +83,77 @@ html[data-window="settings"] #root {
   overflow-wrap: anywhere;
 }
 
-/* ---- 页签 ---- */
+/* ---- 页签（左栏）---- */
 
-.tabs {
+/* 两栏：左边这一列页签名，右边是内容。
+   `min-height: 0` 是必需的 —— 没有它，`flex: 1` 的子项会被内容撑高，
+   于是 `.page` 自己的 `overflow-y: auto` 永远不触发，整块面板溢出去。 */
+.settings .settings-body {
   display: flex;
-  /* 页签之间不留 gap：相邻标签各有 10px 的 padding，已经隔开了 20px。窗口加宽到
-     560 之后七个标签（含最长的 Forwarding）加起来约 465px，而内容区有 520px ——
-     有余量，所以 padding 恢复成舒服的值，不必再靠收紧字号硬塞。 */
-  gap: 0;
+  gap: 16px;
+  flex: 1;
+  min-height: 0;
   margin-top: 14px;
-  border-bottom: 1px solid var(--line);
 }
 
-.tab {
-  padding: 6px 10px 7px;
+/* 定宽 140px。宽度按最长的页签名（英文 Forwarding / Guide）量出来，
+   再宽就是白占地方 —— 横向的每一像素都是从那块逐状态表身上拿的。 */
+.settings .rail {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  width: 140px;
+}
+
+.settings .rail-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 与 `.btn` 同一套：12px、6px 圆角、hover 才出底色。
+   选中态用 `--hover` 底 + 正文字色 + 中等字重，和 `.seg button` 逐字一致 ——
+   这两个都是「一组里选一个」，长得不一样只会让人以为是两种东西。 */
+.settings .rail-item {
+  padding: 5px 10px;
   border: 0;
-  /* 2px 下划线当作选中指示；负 margin 让它压在边框上 */
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
+  border-radius: 6px;
   background: transparent;
   color: var(--muted);
   font: inherit;
   font-size: 12px;
+  text-align: left;
   cursor: pointer;
 }
 
-.tab:hover {
+.settings .rail-item:hover {
+  background: var(--hover);
   color: var(--fg);
 }
 
-.tab[data-active="true"] {
+.settings .rail-item[data-active="true"] {
+  background: var(--hover);
   color: var(--fg);
   font-weight: 500;
-  border-bottom-color: var(--accent);
 }
 
-/* 内容区固定高度：窗口尺寸因此恒定，切页签不会跳。
-   高度取「最高的那几个普通页签」。
+/* 「暂停监控」这类**不随页签变**的全局入口。压到左栏底部并加一道细线，
+   是为了和上面那组「去哪儿」分开 —— 它不是一个页签，是一个开关。
+   `margin-top: auto` 把它推到最下面。 */
+.settings .rail-foot {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
 
-   **「指南」页是个例外，它本来就该滚**：那是一份手册（快速上手、接口速查、常见
-   问题），长度由内容决定，不该为了让它不滚把窗口撑得更高。合并了灯效的外观页也
-   可能略微超一点，同样允许它滚。
-
-   495 而不是贴着内容的更小值：**英文比中文占地方**（同一个提示会多折一行），
-   贴着中文量出来的高度会让英文界面在每个页签底部压出一条滚动条 —— 在 Windows
-   上那是常驻可见的。留出这一层差异。 */
-.page {
-  height: 495px;
-  padding-top: 14px;
+/* 内容区占满余下的宽度和高度，**自己滚**。
+   高度不再是写死的 495px：窗口高度固定，`.page` 用 flex 吃掉标题区和
+   底部之间的全部空间，于是「切页签不会跳」这条性质从「写死一个够大的数」
+   变成了「结构性成立」—— 不再需要为英文比中文多折一行而预留余量。 */
+.settings .page {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
   overflow-y: auto;
 }
 
@@ -149,7 +172,9 @@ html[data-window="settings"] #root {
   margin-top: 14px;
 }
 
-/* 页签内容里已经不用小节标题了（分组交给页签），但保留样式以备后用 */
+/* 小节标题。分组交给左栏页签之后，一页里**仍然**要分小节 —— 「外观」页的
+   「逐个状态覆盖」和「各组的显示」就是两层不同的东西，混在一起会被读成一层。
+   所以这条不是备而未用。 */
 .section-title {
   margin-bottom: 8px;
   color: var(--muted);
@@ -169,6 +194,13 @@ html[data-window="settings"] #root {
 
 .row + .row {
   margin-top: 6px;
+}
+
+/* 一行里并排放几个按钮（系统页的「配置目录 / 日志」）。
+   `.row` 是「标签在左、控件在右」的两端分布，两个并列按钮用它会一左一右分开。 */
+.settings .row-start {
+  display: flex;
+  gap: 6px;
 }
 
 /* 状态圆点，颜色来自 state.css 的 --state。
@@ -284,12 +316,13 @@ html[data-window="settings"] #root {
   font-size: 11.5px;
 }
 
+/* 补充说明。原先是有边框有内边距的盒子，一页三到六个，比正文还抢眼 ——
+   和「靠字号与灰度分层」这条自述原则直接冲突。降成次级文字：它本来就只是
+   一句注解，不该有自己的容器。 */
 .hint {
   margin-top: 8px;
-  padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
   color: var(--muted);
+  font-size: 11.5px;
   overflow-wrap: anywhere;
 }
 
@@ -311,17 +344,6 @@ html[data-window="settings"] #root {
 }
 
 /* ---- 文本输入 ---- */
-
-.field {
-  margin-top: 8px;
-}
-
-.field label {
-  display: block;
-  margin-bottom: 4px;
-  color: var(--muted);
-  font-size: 11.5px;
-}
 
 .input {
   box-sizing: border-box;
@@ -569,14 +591,19 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   background: var(--hover);
 }
 
+/* 选中态与 `.seg button[data-active]` 同一套：浅灰底 + 正文字色 + 中等字重。
+   原先这里是 accent 整块实心 + 白字，是全窗最重的元素 —— 而它表达的只是
+   「这几个筛选项开着」。多出来的那一笔是 accent 边框：chip 没有 seg 那样的
+   外框容器，不给边框的话「选中」和「hover」会长得一模一样。 */
 .chip[data-active="true"] {
   border-color: var(--accent);
-  background: var(--accent);
-  color: #fff;
+  background: var(--hover);
+  color: var(--fg);
+  font-weight: 500;
 }
 
-/* 挤在一行里的 chips（预设、牌上显示哪几段）。
-   默认那份是给钩子页的过滤条件用的，会折成两三行并留出下边距；这里两种都不想要。 */
+/* 挤在一行里的 chips（「牌上显示」哪几段）。
+   默认那份是给「通知转发」页的过滤条件用的，会折成两三行并留出下边距；这里两种都不想要。 */
 .chips-tight {
   flex-wrap: nowrap;
   margin-bottom: 0;
@@ -596,6 +623,11 @@ input[type="color"].style-swatch::-webkit-color-swatch {
    和这个面板的扁平风不搭 */
 .slider input[type="range"] {
   flex: 1;
+  /* **必须显式写 `min-width: 0`。** flex 项默认 `min-width: auto`，也就是「不小于
+     内在最小宽度」；range 输入的内在宽度是 129px，于是 `flex: 1` 根本压不动它 ——
+     129 + gap 10 + 读数 34 = 173，比外面这 168px 的盒子宽 5px，读数就被顶出去了。
+     写死 168 的盒子宽度不会把它救回来，只有这一句会。 */
+  min-width: 0;
   height: 12px;
   margin: 0;
   background: transparent;
@@ -662,48 +694,13 @@ input[type="color"].style-swatch::-webkit-color-swatch {
 }
 
 /* 已隐藏的组：把会话列表压暗，一眼看出它在灯上不占位置。
-   组名那一行**不**压暗 —— 那行里有「显示」按钮，压暗了会被当成禁用，
-   而它恰恰是这个状态下的主要操作。 */
+   组名那一行**不**压暗 —— 它是这块牌的身份，压暗了就分不清是哪一组。 */
 .group[data-hidden="true"] .sessions {
   opacity: 0.5;
 }
 
-.group-hidden {
-  padding: 1px 5px;
-  border-radius: 3px;
-  background: var(--hover);
-  color: var(--muted);
-  font-size: 10px;
-}
-
 .hidden-summary {
   margin-bottom: 12px;
-}
-
-/* ---- 顶部栏：不随页签变的那几个入口 ---- */
-
-.topbar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 12px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--line);
-}
-
-.topbar-pause {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  flex: none;
-  cursor: pointer;
-}
-
-.topbar-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-left: auto;
 }
 
 /* ---- 接入页：接口速查 ---- */
@@ -764,9 +761,17 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   margin-bottom: 4px;
 }
 
+/* 组名和原始组名都可能很长 —— 按 cwd 分组时原始名就是一条绝对路径。两个都允许
+   收缩并省略，否则 `flex: none` 会把它整条顶出面板（路径里没有空格可断，浏览器的
+   最小内容宽度就是一整行）。改名优先看得见的是**显示名**，原始名只是「它对应哪一路上报」
+   的线索，所以两者都截断、原始名在后。悬停有 title 补全。 */
 .group-name {
+  min-width: 0;
+  overflow: hidden;
   font-size: 12px;
   font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .group-meta {
@@ -776,11 +781,16 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   font-size: 11.5px;
 }
 
-/* 改过显示名时，原始组名跟在后面 —— 用户得知道它对应的是哪一路上报 */
+/* 改过显示名时，原始组名跟在后面 —— 用户得知道它对应的是哪一路上报。
+   `shrink` 给 3：两者都要缩的时候先牺牲原始名，显示名才是用户自己起的那一个。 */
 .group-raw {
-  flex: none;
+  min-width: 0;
+  overflow: hidden;
+  flex: 0 3 auto;
   color: var(--muted);
   font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 每组的显示偏好：显示名 + 置顶。单独一行，不塞进已经挤满的组头 */

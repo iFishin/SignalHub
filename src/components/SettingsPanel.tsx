@@ -379,15 +379,15 @@ function PerStateStyles({
   return (
     <>
       <Row label={m.presets}>
-        <div className="chips chips-tight">
+        {/* seg 而不是 chip：这是一组里选一个，和下面的形状 / 节奏两列同一件事。
+            预设给的是**完整**一份表，所以是整份替换而不是合并。 */}
+        <div className="seg">
           {stylePresets(m).map((preset) => (
             <button
               key={preset.id}
               type="button"
-              className="chip"
               title={preset.hint}
               data-active={isActiveStylePreset(preset, settings)}
-              // 预设给的是**完整**一份表，所以是整份替换而不是合并
               onClick={() => patch({ styles: preset.styles })}
             >
               {preset.label}
@@ -611,11 +611,30 @@ export function SettingsPanel({ snapshot }: Props) {
   const setField = (key: keyof Settings["show"], on: boolean) =>
     patch({ show: { ...settings.show, [key]: on } });
 
-  /** 把某一组从「已隐藏」里放回来。 */
-  const unhide = (group: string) =>
+  /** 把某一组在灯上隐藏 / 重新显示。 */
+  const setHidden = (group: string, hidden: boolean) =>
     patch({
-      hidden_groups: settings.hidden_groups.filter((name) => name !== group),
+      hidden_groups: hidden
+        ? [...settings.hidden_groups, group]
+        : settings.hidden_groups.filter((name) => name !== group),
     });
+
+  /**
+   * 「各组的显示」那一节要列出的组。
+   *
+   * **不能只取 `snapshot.groups`** —— 那是「此刻正在上报的组」。一组被隐藏之后
+   * 可能再也不上报，而恰恰是那时候最需要能把它单独放回来：只列上报中的组，它就
+   * 从界面上彻底消失，只剩「全部恢复」那条把所有组一起清掉的路。
+   * 所以并上设置里记过的所有组名（改过名的、钉过的、隐藏的、静音的）。
+   */
+  const knownGroups = [
+    ...new Set([
+      ...snapshot.groups.map((group) => group.name),
+      ...Object.keys(settings.group_meta),
+      ...settings.hidden_groups,
+      ...settings.muted_groups,
+    ]),
+  ].sort();
 
   /**
    * 静音 / 取消静音某一组。
@@ -745,33 +764,14 @@ export function SettingsPanel({ snapshot }: Props) {
           <>
             <TimelineStrip segments={timeline} m={m} lang={lang} />
 
-            {(settings.hidden_groups.length > 0 ||
-              settings.muted_groups.length > 0) && (
-              <div className="row hidden-summary">
-                <span className="muted-text">
-                  {settings.hidden_groups.length > 0 &&
-                    m.hiddenOnLamp(settings.hidden_groups.length)}
-                  {settings.hidden_groups.length > 0 &&
-                    settings.muted_groups.length > 0 &&
-                    " · "}
-                  {settings.muted_groups.length > 0 &&
-                    m.mutedGroups(settings.muted_groups.length)}
-                </span>
-                <button
-                  type="button"
-                  className="btn btn-tiny"
-                  onClick={() => patch({ hidden_groups: [], muted_groups: [] })}
-                >
-                  {m.restoreAll}
-                </button>
-              </div>
-            )}
-
+            {/* 这一页只回答「现在发生了什么」。改显示名、置顶、隐藏、静音这些都是
+                **写入偏好**，和这里只读的实时状态刷新频率、心智模型都不同 ——
+                它们搬去了「外观」页的「各组的显示」。 */}
             {snapshot.groups.length === 0 ? (
               <div className="section">
                 <p className="empty">{m.emptySessions}</p>
                 {/* 空态是「第一次用」最可能撞上的地方，所以手册的入口放在这里 ——
-                    只挂在页签栏里等于等人自己去找。 */}
+                    只挂在左栏里等于等人自己去找。 */}
                 <div className="row">
                   <span>{m.guideEntry}</span>
                   <button type="button" className="btn" onClick={() => setTab("guide")}>
@@ -782,85 +782,24 @@ export function SettingsPanel({ snapshot }: Props) {
             ) : (
               snapshot.groups.map((group) => {
                 const hidden = settings.hidden_groups.includes(group.name);
-                const muted = settings.muted_groups.includes(group.name);
                 return (
                   <div className="group" key={group.name} data-hidden={hidden}>
                     <div className="group-head" data-state={group.aggregate}>
                       <span className="state-dot" />
-                      <span className="group-name">
+                      <span className="group-name" title={group.name}>
                         {settings.group_meta[group.name]?.name ?? group.name}
                       </span>
                       {/* 改过名就把原始组名也标出来 —— 用户得知道它对应的是
                           哪一路上报，否则灯上那个「构建」到底是谁就说不清了 */}
                       {settings.group_meta[group.name]?.name && (
-                        <span className="group-raw">{group.name}</span>
-                      )}
-                      {/* 两个标记本身就是开关：点一下恢复。做成按钮而不是纯标签，
-                          是因为恢复这件事必须在这里做得到 —— 灯上右键固然也行，
-                          但那个组可能已经被藏起来、根本右键不到。 */}
-                      {hidden && (
-                        <button
-                          type="button"
-                          className="badge"
-                          title={m.hiddenBadgeHint}
-                          onClick={() => unhide(group.name)}
-                        >
-                          {m.hidden}
-                        </button>
-                      )}
-                      {muted && (
-                        <button
-                          type="button"
-                          className="badge"
-                          title={m.mutedBadgeHint}
-                          onClick={() => setMuted(group.name, false)}
-                        >
-                          {m.muted}
-                        </button>
+                        <span className="group-raw" title={group.name}>
+                          {group.name}
+                        </span>
                       )}
                       <span className="group-meta">
                         {signalLabel(lang, group.aggregate)} ·{" "}
                         {m.sessions(group.sessions.length)}
                       </span>
-                      {!muted && (
-                        <button
-                          type="button"
-                          className="btn btn-tiny"
-                          title={m.muteHint}
-                          onClick={() => setMuted(group.name, true)}
-                        >
-                          {m.mute}
-                        </button>
-                      )}
-                    </div>
-                    {/* 显示偏好：显示名 + 置顶。放在组头下面单独一行，而不是塞进
-                        组头 —— 那里已经有状态点、两个标记、会话数和静音按钮了。 */}
-                    <div className="group-edit">
-                      <span className="muted-text">{m.displayName}</span>
-                      <input
-                        className="input input-tiny"
-                        spellCheck={false}
-                        placeholder={m.displayNamePlaceholder(group.name)}
-                        value={
-                          nameDraft?.group === group.name
-                            ? nameDraft.value
-                            : (settings.group_meta[group.name]?.name ?? "")
-                        }
-                        onChange={(event) =>
-                          setNameDraft({ group: group.name, value: event.target.value })
-                        }
-                        onBlur={commitNameDraft}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter") event.currentTarget.blur();
-                        }}
-                      />
-                      <label className="pin" title={m.pinHint}>
-                        <span className="muted-text">{m.pin}</span>
-                        <Switch
-                          on={settings.group_meta[group.name]?.order != null}
-                          onChange={(on) => setPinned(group.name, on)}
-                        />
-                      </label>
                     </div>
                     <ul className="sessions">
                       {group.sessions.map((session) => (
@@ -922,12 +861,12 @@ export function SettingsPanel({ snapshot }: Props) {
         return (
           <>
             <Row label={m.presets}>
-              <div className="chips chips-tight">
+              {/* 同上：一组里选一个，所以是 seg 不是 chip。 */}
+              <div className="seg">
                 {presets(m).map((preset) => (
                   <button
                     key={preset.id}
                     type="button"
-                    className="chip"
                     title={preset.hint}
                     data-active={isActivePreset(preset, settings)}
                     onClick={() => patch(preset.apply)}
@@ -1048,6 +987,108 @@ export function SettingsPanel({ snapshot }: Props) {
               shapes={shapes}
               blinkChoices={blinkChoices}
             />
+
+            {/* 各组的显示。和上面那张表是**两层**：那张表是「某个状态长什么样」，
+                这一节是「哪个组叫什么、排在哪、上不上灯、响不响」。原先这些散在
+                「状态」页的组卡上，和只读的实时会话混在一起 —— 那一页因此成了
+                最长的一页，而两者的刷新频率和心智模型都不一样。 */}
+            <div className="section">
+              <div className="section-title">{m.groupDisplayTitle}</div>
+              {knownGroups.length === 0 ? (
+                <p className="muted-text">{m.groupDisplayEmpty}</p>
+              ) : (
+                <>
+                  {(settings.hidden_groups.length > 0 ||
+                    settings.muted_groups.length > 0) && (
+                    <div className="row hidden-summary">
+                      <span className="muted-text">
+                        {settings.hidden_groups.length > 0 &&
+                          m.hiddenOnLamp(settings.hidden_groups.length)}
+                        {settings.hidden_groups.length > 0 &&
+                          settings.muted_groups.length > 0 &&
+                          " · "}
+                        {settings.muted_groups.length > 0 &&
+                          m.mutedGroups(settings.muted_groups.length)}
+                      </span>
+                      <button
+                        type="button"
+                        className="btn btn-tiny"
+                        onClick={() =>
+                          patch({ hidden_groups: [], muted_groups: [] })
+                        }
+                      >
+                        {m.restoreAll}
+                      </button>
+                    </div>
+                  )}
+
+                  {knownGroups.map((name) => {
+                    const meta = settings.group_meta[name];
+                    return (
+                      <div className="group" key={name}>
+                        <div className="group-head">
+                          <span className="group-name" title={name}>
+                            {meta?.name ?? name}
+                          </span>
+                          {/* 改过名就把原始组名标出来，理由同状态页 */}
+                          {meta?.name && (
+                            <span className="group-raw" title={name}>
+                              {name}
+                            </span>
+                          )}
+                        </div>
+                        <div className="group-edit">
+                          <input
+                            className="input input-tiny"
+                            spellCheck={false}
+                            placeholder={m.displayNamePlaceholder(name)}
+                            value={
+                              nameDraft?.group === name
+                                ? nameDraft.value
+                                : (meta?.name ?? "")
+                            }
+                            onChange={(event) =>
+                              setNameDraft({
+                                group: name,
+                                value: event.target.value,
+                              })
+                            }
+                            onBlur={commitNameDraft}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") event.currentTarget.blur();
+                            }}
+                          />
+                          <label className="pin" title={m.pinHint}>
+                            <span className="muted-text">{m.pin}</span>
+                            <Switch
+                              on={meta?.order != null}
+                              onChange={(on) => setPinned(name, on)}
+                            />
+                          </label>
+                          {/* 「隐藏」和「静音」各是一个开关 —— 原先它们在状态页上是
+                              两个「点一下恢复」的徽标加一个「静音」按钮，三种控件
+                              表达两个布尔量。 */}
+                          <label className="pin" title={m.hiddenBadgeHint}>
+                            <span className="muted-text">{m.hidden}</span>
+                            <Switch
+                              on={settings.hidden_groups.includes(name)}
+                              onChange={(on) => setHidden(name, on)}
+                            />
+                          </label>
+                          <label className="pin" title={m.muteHint}>
+                            <span className="muted-text">{m.muted}</span>
+                            <Switch
+                              on={settings.muted_groups.includes(name)}
+                              onChange={(on) => setMuted(name, on)}
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </>
+              )}
+            </div>
           </>
         );
 
@@ -1600,6 +1641,30 @@ export function SettingsPanel({ snapshot }: Props) {
                 toggles.pass_through_shortcut || m.shortcutFallback,
               )}
             </p>
+
+            {/* 这两个原先挂在顶部栏上。搬到这一页是因为它们是**诊断入口**
+                （看配置、看日志），而这一页本来就是「系统层面的事」——
+                而顶部栏那个位置现在归左栏了，留在那儿等于占着每一页。
+                用 `row-start` 而不是 `row`：后者是「标签在左、控件在右」的
+                两端分布，两个并列按钮用它会被拆到两头。 */}
+            <div className="section">
+              <div className="row-start">
+                <button
+                  type="button"
+                  className="btn btn-tiny"
+                  onClick={() => invoke("open_app_dir", { what: "config" }).catch(reported)}
+                >
+                  {m.openConfigDir}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-tiny"
+                  onClick={() => invoke("open_app_dir", { what: "log" }).catch(reported)}
+                >
+                  {m.openLogs}
+                </button>
+              </div>
+            </div>
           </>
         );
     }
@@ -1633,51 +1698,38 @@ export function SettingsPanel({ snapshot }: Props) {
         </p>
       )}
 
-      {/* 顶部栏：**不随页签变**的那几个入口。
-          目前是「暂停监控」和两个「打开某个目录」—— 它们是任何时候都可能想按的，
-          塞进某个页签里就得先找一遍。以后要加同类的东西（检查更新、导入导出设置、
-          版本号……）也放这儿，别再加一层导航。 */}
-      <nav className="topbar">
-        <label className="topbar-pause" title={m.pauseHint}>
-          <span className="muted-text">{m.pauseMonitoring}</span>
-          <Switch on={snapshot.paused} onChange={setPaused} />
-        </label>
-        <div className="topbar-actions">
-          <button
-            type="button"
-            className="btn btn-tiny"
-            onClick={() => invoke("open_app_dir", { what: "config" }).catch(reported)}
-          >
-            {m.openConfigDir}
-          </button>
-          <button
-            type="button"
-            className="btn btn-tiny"
-            onClick={() => invoke("open_app_dir", { what: "log" }).catch(reported)}
-          >
-            {m.openLogs}
-          </button>
-        </div>
-      </nav>
+      {/* 两栏：左栏是「去哪儿」（七个页签 + 底部的全局开关），右栏是内容。
+          原先页签横排在顶部、内容区写死 495px 高 —— 那个高度得手写一个「够大
+          又不过分大」的数，改内容就得重新量。改成 flex 之后这条性质由结构保证。 */}
+      <div className="settings-body">
+        <nav className="rail">
+          <div className="rail-nav">
+            {tabs.map((entry) => (
+              <button
+                key={entry.id}
+                type="button"
+                className="rail-item"
+                data-active={tab === entry.id}
+                aria-current={tab === entry.id ? "page" : undefined}
+                onClick={() => setTab(entry.id)}
+              >
+                {entry.label}
+              </button>
+            ))}
+          </div>
 
-      <div className="tabs" role="tablist">
-        {tabs.map((entry) => (
-          <button
-            key={entry.id}
-            type="button"
-            role="tab"
-            className="tab"
-            data-active={tab === entry.id}
-            aria-selected={tab === entry.id}
-            onClick={() => setTab(entry.id)}
-          >
-            {entry.label}
-          </button>
-        ))}
+          {/* 全局入口压在最下面：它不是一个页签，是一个开关 —— 放在这一组里
+              会让人以为切过去能看到别的东西。 */}
+          <div className="rail-foot">
+            <label className="row" title={m.pauseHint}>
+              <span className="muted-text">{m.pauseMonitoring}</span>
+              <Switch on={snapshot.paused} onChange={setPaused} />
+            </label>
+          </div>
+        </nav>
+
+        <div className="page">{page()}</div>
       </div>
-
-      {/* 固定高度 + 内部滚动：窗口尺寸因此恒定，切页签不会跳 */}
-      <div className="page">{page()}</div>
 
       {error && <p className="error">{error}</p>}
 

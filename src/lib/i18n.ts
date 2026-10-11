@@ -133,6 +133,8 @@ export interface Messages {
   resetToGlobal: string;
   styleHint: string;
   perStateStyle: string;
+  groupDisplayTitle: string;
+  groupDisplayEmpty: string;
 
   // 提醒页
   notifyWhenNeeded: string;
@@ -143,14 +145,13 @@ export interface Messages {
   alertHint: string;
   delayNow: string;
 
-  // 顶部栏
+  // 全局入口（左栏底部）与「打开某个目录」那两个按钮（系统页）
   pauseMonitoring: string;
   openConfigDir: string;
   openLogs: string;
   pauseHint: string;
 
   // 接入页
-  connectHint: string;
   outboundHooks: string;
   configure: string;
   connectHookHint: string;
@@ -378,6 +379,8 @@ export const MESSAGES: Record<Lang, Messages> = {
     resetToGlobal: "恢复成跟随全局",
     styleHint: "「跟随」= 用「外观」页选的那两项（形状、节奏倍率）。",
     perStateStyle: "逐个状态覆盖",
+    groupDisplayTitle: "各组的显示",
+    groupDisplayEmpty: "还没有任何分组 —— 接上智能体、或调用上报接口之后，它们会出现在这里。",
 
     notifyWhenNeeded: "需要时弹通知",
     soundWithNotify: "通知带提示音",
@@ -393,8 +396,6 @@ export const MESSAGES: Record<Lang, Messages> = {
     openConfigDir: "配置目录",
     openLogs: "日志",
     pauseHint: "暂停后灯球显示为熄灭，但会话仍在记录 —— 恢复时立刻回到真实状态",
-    connectHint:
-      "暂停后灯球显示为熄灭，但会话仍在记录 —— 恢复时立刻回到真实状态。弹不弹通知在「提醒」页。",
     outboundHooks: "通知转发",
     configure: "去配置",
     connectHookHint: "状态变化时转发到你的服务器，或跑一条本地命令 —— 在「通知转发」页配置。",
@@ -625,6 +626,8 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     resetToGlobal: "Reset to follow global",
     styleHint: '"Follow" = use the two chosen on the Look tab (shape, blink speed).',
     perStateStyle: "Per-state overrides",
+    groupDisplayTitle: "Per-group display",
+    groupDisplayEmpty: "No groups yet — they show up here once an agent or the report API tells us about one.",
 
     notifyWhenNeeded: "Notify when needed",
     soundWithNotify: "Sound with notification",
@@ -641,8 +644,6 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     openConfigDir: "Config folder",
     openLogs: "Logs",
     pauseHint: "Pausing blanks the lamp, but sessions are still recorded — resuming returns to the real state",
-    connectHint:
-      "Paused, the lamp shows as off, but sessions are still recorded — resuming returns to the real state at once. Notification settings are on the Alerts tab.",
     outboundHooks: "Forwarding",
     configure: "Configure",
     connectHookHint:
