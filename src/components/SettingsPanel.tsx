@@ -91,16 +91,25 @@ function alertDelayOptions(m: Messages): { label: string; value: number }[] {
   ];
 }
 
-type Tab = "status" | "look" | "style" | "alert" | "connect" | "hooks" | "system";
+/**
+ * 页签。
+ *
+ * **七个，不再有「灯效」**：那一页和「外观」是同一件事的两层（全局默认 + 逐状态
+ * 覆盖），分成两个页签只会让人在两个之间来回找「改颜色到底在哪」。
+ *
+ * 「指南」排在接入之后、系统之前 —— 它是一份手册，属于「看」而不是「调」，放在
+ * 一堆开关中间会打断手感。
+ */
+type Tab = "status" | "look" | "alert" | "connect" | "hooks" | "guide" | "system";
 
 function tabOptions(m: Messages): { id: Tab; label: string }[] {
   return [
     { id: "status", label: m.tabStatus },
     { id: "look", label: m.tabLook },
-    { id: "style", label: m.tabStyle },
     { id: "alert", label: m.tabAlert },
     { id: "connect", label: m.tabConnect },
     { id: "hooks", label: m.tabHooks },
+    { id: "guide", label: m.tabGuide },
     { id: "system", label: m.tabSystem },
   ];
 }
@@ -293,6 +302,207 @@ function TimelineStrip({
         <span>{m.timelineStart}</span>
         <span>{m.timelineNow}</span>
       </div>
+    </div>
+  );
+}
+
+/**
+ * 逐个状态的外观覆盖：颜色 / 形状 / 节奏，各自可以只覆盖其中几样。
+ *
+ * 单独提出来而不是内联在「外观」那个 case 里：它自成一块（一组预设 + 一张表 +
+ * 两个改表的 helper），塞进去会把那一段撑得没法读。
+ *
+ * **三样都没设就把整条记录删掉。** 留一条全 null 的空记录会让「当前是哪套预设」
+ * 判断不出来（预设比的是整份表），而它本身没有任何作用。
+ */
+function PerStateStyles({
+  settings,
+  patch,
+  m,
+  lang,
+  shapes,
+  blinkChoices,
+}: {
+  settings: Settings;
+  patch: (next: Partial<Settings>) => void;
+  m: Messages;
+  lang: Lang;
+  shapes: { label: string; value: Shape }[];
+  blinkChoices: { label: string; value: string }[];
+}) {
+  const resolved = resolveColors(settings);
+
+  const setStyle = (state: string, next: Partial<StateStyle>) => {
+    const merged = { ...(settings.styles[state] ?? {}), ...next };
+    const styles = { ...settings.styles };
+    const empty =
+      merged.color == null && merged.shape == null && merged.blink_ms == null;
+    if (empty) delete styles[state];
+    else styles[state] = merged;
+    patch({ styles });
+  };
+
+  const resetStyle = (state: string) => {
+    const styles = { ...settings.styles };
+    delete styles[state];
+    patch({ styles });
+  };
+
+  return (
+    <>
+      <Row label={m.presets}>
+        <div className="chips chips-tight">
+          {stylePresets(m).map((preset) => (
+            <button
+              key={preset.id}
+              type="button"
+              className="chip"
+              title={preset.hint}
+              data-active={isActiveStylePreset(preset, settings)}
+              // 预设给的是**完整**一份表，所以是整份替换而不是合并
+              onClick={() => patch({ styles: preset.styles })}
+            >
+              {preset.label}
+            </button>
+          ))}
+        </div>
+      </Row>
+
+      <div className="style-head">
+        <span className="style-swatch" />
+        <span className="style-name">{m.state}</span>
+        <span className="style-col">{m.shape}</span>
+        <span className="style-col">{m.rhythm}</span>
+        <span className="style-reset" />
+      </div>
+
+      <div className="styles">
+        {SIGNALS.map((state) => {
+          const style = settings.styles[state] ?? {};
+          const overridden =
+            style.color != null || style.shape != null || style.blink_ms != null;
+          const blink = style.blink_ms == null ? "" : String(style.blink_ms);
+          // 手改配置文件可能写出选项里没有的毫秒数，临时补一个选项，
+          // 否则 select 会显示成空白 —— 看起来像「没设」，其实设了
+          const extraBlink =
+            blink !== "" && !blinkChoices.some((o) => o.value === blink) ? blink : null;
+
+          return (
+            <div className="style-row" key={state} data-state={state}>
+              {/* 原生取色器。onChange 在拖动时连续触发，也就连续保存 ——
+                  这是刻意的：改颜色必须能实时看到效果。 */}
+              <input
+                type="color"
+                className="style-swatch"
+                title={m.lightColor}
+                value={resolved[state]}
+                onChange={(event) => setStyle(state, { color: event.target.value })}
+              />
+              <span className="style-name">{signalLabel(lang, state)}</span>
+              <select
+                className="select style-col"
+                title={m.lightShape}
+                value={style.shape ?? ""}
+                onChange={(event) =>
+                  setStyle(state, {
+                    shape: (event.target.value || null) as Shape | null,
+                  })
+                }
+              >
+                <option value="">{m.follow}</option>
+                {shapes.map((shape) => (
+                  <option key={shape.value} value={shape.value}>
+                    {shape.label}
+                  </option>
+                ))}
+              </select>
+              <select
+                className="select style-col"
+                title={m.blinkInterval}
+                value={blink}
+                onChange={(event) =>
+                  setStyle(state, {
+                    blink_ms:
+                      event.target.value === "" ? null : Number(event.target.value),
+                  })
+                }
+              >
+                {blinkChoices.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+                {extraBlink && <option value={extraBlink}>{extraBlink}ms</option>}
+              </select>
+              <button
+                type="button"
+                className="btn btn-tiny style-reset"
+                title={m.resetToGlobal}
+                disabled={!overridden}
+                onClick={() => resetStyle(state)}
+              >
+                ↺
+              </button>
+            </div>
+          );
+        })}
+      </div>
+
+      <p className="hint">{m.styleHint}</p>
+    </>
+  );
+}
+
+/**
+ * 系统通知权限的状态，以及「要一次」的入口。
+ *
+ * 这一行的理由很具体：**没有权限时通知是静默丢弃的** —— 不弹、不响，也没有任何
+ * 地方会报错（从 Dock 启动的话连 stderr 都没地方看）。用户看到的是「通知功能
+ * 坏了」，但代码里其实什么都对，只是系统没放行。把状态摆出来，「到底通没通」
+ * 才是个能回答的问题。
+ *
+ * `enabled` 是通知开关：打开开关时 Rust 那边会去申请一次权限，所以这里跟着重取
+ * 一次，好让刚点完开关就能看到结果。
+ */
+function NotifyPermission({ m, enabled }: { m: Messages; enabled: boolean }) {
+  const [state, setState] = useState("unknown");
+
+  useEffect(() => {
+    if (!inTauri) return;
+    invoke<string>("get_notify_permission")
+      .then(setState)
+      .catch(() => setState("unknown"));
+  }, [enabled]);
+
+  const labels: Record<string, string> = {
+    granted: m.permGranted,
+    denied: m.permDenied,
+    prompt: m.permPrompt,
+    unknown: m.permUnknown,
+  };
+
+  return (
+    <div className="section">
+      <div className="row">
+        <span>{m.notifyPermission}</span>
+        <span className="badge" data-on={state === "granted"}>
+          {labels[state] ?? m.permUnknown}
+        </span>
+        {state === "prompt" && (
+          <button
+            type="button"
+            className="btn btn-tiny"
+            onClick={() =>
+              invoke<string>("request_notify_permission")
+                .then(setState)
+                .catch((err) => console.error("request_notify_permission 失败", err))
+            }
+          >
+            {m.permRequest}
+          </button>
+        )}
+      </div>
+      {state !== "granted" && <p className="hint">{m.permHint}</p>}
     </div>
   );
 }
@@ -523,7 +733,17 @@ export function SettingsPanel({ snapshot }: Props) {
             )}
 
             {snapshot.groups.length === 0 ? (
-              <p className="empty">{m.emptySessions}</p>
+              <div className="section">
+                <p className="empty">{m.emptySessions}</p>
+                {/* 空态是「第一次用」最可能撞上的地方，所以手册的入口放在这里 ——
+                    只挂在页签栏里等于等人自己去找。 */}
+                <div className="row">
+                  <span>{m.guideEntry}</span>
+                  <button type="button" className="btn" onClick={() => setTab("guide")}>
+                    {m.tabGuide}
+                  </button>
+                </div>
+              </div>
             ) : (
               snapshot.groups.map((group) => {
                 const hidden = settings.hidden_groups.includes(group.name);
@@ -781,144 +1001,20 @@ export function SettingsPanel({ snapshot }: Props) {
               <Switch on={settings.quiet} onChange={(on) => patch({ quiet: on })} />
             </Row>
             <p className="hint">{m.lookHint}</p>
+
+            {/* 逐状态覆盖和上面的全局项是**两层**，所以单独起一个标题分开 ——
+                混在一起会让人以为改颜色是全局的。 */}
+            <div className="section-title">{m.perStateStyle}</div>
+            <PerStateStyles
+              settings={settings}
+              patch={patch}
+              m={m}
+              lang={lang}
+              shapes={shapes}
+              blinkChoices={blinkChoices}
+            />
           </>
         );
-
-      case "style": {
-        const resolved = resolveColors(settings);
-
-        /**
-         * 改某一个状态的三样里的一样。
-         *
-         * 三样都没设就把整条记录删掉 —— 留一条全 null 的空记录会让「当前是哪套
-         * 预设」判断不出来（预设比的是整份表），而它本身没有任何作用。
-         */
-        const setStyle = (state: string, next: Partial<StateStyle>) => {
-          const merged = { ...(settings.styles[state] ?? {}), ...next };
-          const styles = { ...settings.styles };
-          const empty =
-            merged.color == null && merged.shape == null && merged.blink_ms == null;
-          if (empty) delete styles[state];
-          else styles[state] = merged;
-          patch({ styles });
-        };
-
-        const resetStyle = (state: string) => {
-          const styles = { ...settings.styles };
-          delete styles[state];
-          patch({ styles });
-        };
-
-        return (
-          <>
-            <Row label={m.presets}>
-              <div className="chips chips-tight">
-                {stylePresets(m).map((preset) => (
-                  <button
-                    key={preset.id}
-                    type="button"
-                    className="chip"
-                    title={preset.hint}
-                    data-active={isActiveStylePreset(preset, settings)}
-                    // 预设给的是**完整**一份表，所以是整份替换而不是合并
-                    onClick={() => patch({ styles: preset.styles })}
-                  >
-                    {preset.label}
-                  </button>
-                ))}
-              </div>
-            </Row>
-
-            <div className="style-head">
-              <span className="style-swatch" />
-              <span className="style-name">{m.state}</span>
-              <span className="style-col">{m.shape}</span>
-              <span className="style-col">{m.rhythm}</span>
-              <span className="style-reset" />
-            </div>
-
-            <div className="styles">
-              {SIGNALS.map((state) => {
-                const style = settings.styles[state] ?? {};
-                const overridden =
-                  style.color != null || style.shape != null || style.blink_ms != null;
-                const blink = style.blink_ms == null ? "" : String(style.blink_ms);
-                // 手改配置文件可能写出选项里没有的毫秒数，临时补一个选项，
-                // 否则 select 会显示成空白 —— 看起来像「没设」，其实设了
-                const extraBlink =
-                  blink !== "" && !blinkChoices.some((o) => o.value === blink)
-                    ? blink
-                    : null;
-
-                return (
-                  <div className="style-row" key={state} data-state={state}>
-                    {/* 原生取色器。onChange 在拖动时连续触发，也就连续保存 ——
-                        这是刻意的：改颜色必须能实时看到效果。 */}
-                    <input
-                      type="color"
-                      className="style-swatch"
-                      title={m.lightColor}
-                      value={resolved[state]}
-                      onChange={(event) =>
-                        setStyle(state, { color: event.target.value })
-                      }
-                    />
-                    <span className="style-name">{signalLabel(lang, state)}</span>
-                    <select
-                      className="select style-col"
-                      title={m.lightShape}
-                      value={style.shape ?? ""}
-                      onChange={(event) =>
-                        setStyle(state, {
-                          shape: (event.target.value || null) as Shape | null,
-                        })
-                      }
-                    >
-                      <option value="">{m.follow}</option>
-                      {shapes.map((shape) => (
-                        <option key={shape.value} value={shape.value}>
-                          {shape.label}
-                        </option>
-                      ))}
-                    </select>
-                    <select
-                      className="select style-col"
-                      title={m.blinkInterval}
-                      value={blink}
-                      onChange={(event) =>
-                        setStyle(state, {
-                          blink_ms:
-                            event.target.value === ""
-                              ? null
-                              : Number(event.target.value),
-                        })
-                      }
-                    >
-                      {blinkChoices.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                      {extraBlink && <option value={extraBlink}>{extraBlink}ms</option>}
-                    </select>
-                    <button
-                      type="button"
-                      className="btn btn-tiny style-reset"
-                      title={m.resetToGlobal}
-                      disabled={!overridden}
-                      onClick={() => resetStyle(state)}
-                    >
-                      ↺
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-
-            <p className="hint">{m.styleHint}</p>
-          </>
-        );
-      }
 
       case "alert": {
         // 阈值给一列固定档位而不是滑块：这是个粗选择（「立刻」还是「等一会儿」），
@@ -935,6 +1031,10 @@ export function SettingsPanel({ snapshot }: Props) {
             <Row label={m.soundWithNotify}>
               <Switch on={settings.sound} onChange={(on) => patch({ sound: on })} />
             </Row>
+
+            {/* 通知关着的时候不显示权限状态 —— 那时候它不说明任何问题 */}
+            {settings.notify && <NotifyPermission m={m} enabled={settings.notify} />}
+
             <Row label={m.alertAfter}>
               <select
                 className="select"
@@ -1020,14 +1120,6 @@ export function SettingsPanel({ snapshot }: Props) {
       }
 
       case "connect": {
-        const endpoints: [string, string, string][] = [
-          ["POST", "/v1/state", m.apiEndpointReport],
-          ["GET", "/v1/state", m.apiEndpointState],
-          ["GET", "/v1/sessions", m.apiEndpointSessions],
-          ["DELETE", "/v1/sessions/{id}", m.apiEndpointClear],
-          ["GET", "/v1/health", m.apiEndpointHealth],
-        ];
-
         // 已接入的排最前，其次检测到的，最后没检测到的 —— 有用的在上面。
         // 同组内保持后端给的顺序（Array.sort 是稳定的）。
         const agentRank = (agent: AgentStatus) =>
@@ -1039,8 +1131,9 @@ export function SettingsPanel({ snapshot }: Props) {
         return (
           <>
             {/* ---- 智能体接入 ----
-                放在最前：这是「怎么让灯亮起来」的第一步，而接口速查是给已经
-                接好的人查细节用的。没有这一节，界面上根本看不出有接入这回事。 */}
+                这一页现在只做一件事：把智能体接上。接口速查、状态词表那些「查
+                细节」的内容搬去了「指南」—— 它们是给已经接好的人读的，混在这里
+                会把「点哪个按钮」淹没掉（原来这一页有两倍于可视区的内容）。 */}
             <div className="section">
               <div className="section-title">{m.agentsTitle}</div>
               <p className="hint">{m.agentsHint}</p>
@@ -1100,6 +1193,49 @@ export function SettingsPanel({ snapshot }: Props) {
                 </button>
               </div>
               <p className="hint">{m.connectHookHint}</p>
+            </div>
+
+          </>
+        );
+      }
+
+      case "guide": {
+        // 端点表跟着接口速查一起搬过来了 —— 它就长在这四节里
+        const endpoints: [string, string, string][] = [
+          ["POST", "/v1/state", m.apiEndpointReport],
+          ["GET", "/v1/state", m.apiEndpointState],
+          ["GET", "/v1/sessions", m.apiEndpointSessions],
+          ["DELETE", "/v1/sessions/{id}", m.apiEndpointClear],
+          ["GET", "/v1/health", m.apiEndpointHealth],
+        ];
+
+        return (
+          <>
+            {/* 手册的顺序：先说这是什么，再说怎么接上，然后才是查细节用的速查表，
+                最后是「不工作了怎么办」。倒过来写的话，第一次用的人得先读一份
+                接口规范才知道这软件是干嘛的。 */}
+            <div className="section">
+              <div className="section-title">{m.guideWhatTitle}</div>
+              <p className="doc">{m.guideWhat}</p>
+            </div>
+
+            <div className="section">
+              <div className="section-title">{m.guideStepsTitle}</div>
+              <ol className="steps">
+                <li>{m.guideStep1}</li>
+                <li>{m.guideStep2}</li>
+                <li>{m.guideStep3}</li>
+              </ol>
+              <div className="row">
+                <span>{m.agentsTitle}</span>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => setTab("connect")}
+                >
+                  {m.tabConnect}
+                </button>
+              </div>
             </div>
 
             {/* ---- 接口速查 ----
@@ -1181,6 +1317,14 @@ export function SettingsPanel({ snapshot }: Props) {
                   {m.openDocs}
                 </button>
               </div>
+            </div>
+
+            <div className="section">
+              <div className="section-title">{m.guideFaqTitle}</div>
+              <p className="faq-q">{m.guideFaqNoLightQ}</p>
+              <p className="doc">{m.guideFaqNoLightA}</p>
+              <p className="faq-q">{m.guideFaqNoNotifyQ}</p>
+              <p className="doc">{m.guideFaqNoNotifyA}</p>
             </div>
           </>
         );

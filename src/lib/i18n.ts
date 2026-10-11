@@ -35,11 +35,34 @@ export interface Messages {
   // 页签
   tabStatus: string;
   tabLook: string;
-  tabStyle: string;
   tabAlert: string;
   tabConnect: string;
   tabHooks: string;
+  tabGuide: string;
   tabSystem: string;
+
+  // 指南（引导手册）
+  guideEntry: string;
+  guideWhatTitle: string;
+  guideWhat: string;
+  guideStepsTitle: string;
+  guideStep1: string;
+  guideStep2: string;
+  guideStep3: string;
+  guideFaqTitle: string;
+  guideFaqNoLightQ: string;
+  guideFaqNoLightA: string;
+  guideFaqNoNotifyQ: string;
+  guideFaqNoNotifyA: string;
+
+  // 系统通知权限
+  notifyPermission: string;
+  permGranted: string;
+  permDenied: string;
+  permPrompt: string;
+  permUnknown: string;
+  permRequest: string;
+  permHint: string;
 
   // 通用动作
   restoreAll: string;
@@ -109,6 +132,7 @@ export interface Messages {
   blinkInterval: string;
   resetToGlobal: string;
   styleHint: string;
+  perStateStyle: string;
 
   // 提醒页
   notifyWhenNeeded: string;
@@ -255,11 +279,39 @@ export const MESSAGES: Record<Lang, Messages> = {
 
     tabStatus: "状态",
     tabLook: "外观",
-    tabStyle: "灯效",
     tabAlert: "提醒",
     tabConnect: "接入",
     tabHooks: "通知转发",
+    tabGuide: "指南",
     tabSystem: "系统",
+
+    guideEntry: "第一次用？",
+    guideWhatTitle: "这是什么",
+    guideWhat:
+      "SignalHub 是一盏常驻桌面的信号灯。任何能发一条 HTTP 请求的程序都能让它亮起来 —— 智能体、构建脚本、你自己写的服务，都行。绿灯是在干活，红灯是需要你，黄灯是等你授权；牌上写着是哪一组、卡在哪一步、已经多久了。",
+    guideStepsTitle: "三步接上",
+    guideStep1:
+      "让上报方说话：智能体在「接入」页一键接上，别的程序往下面的接口 POST 一条状态即可。",
+    guideStep2:
+      "看灯：灯球默认展开成一叠牌，点一下折叠成一颗灯，位置和形态都记得住。",
+    guideStep3:
+      "别错过：需要你注意时会弹系统通知。「提醒」页可以设勿扰时段、提醒阈值，以及只对某几个状态生效的出站转发。",
+    guideFaqTitle: "不工作了怎么办",
+    guideFaqNoLightQ: "灯一直是灰的？",
+    guideFaqNoLightA:
+      "灰 = 没有任何会话在上报，或者「暂停监控」开着。先看顶部那行标题写的是什么，再去「接入」页确认上报方接上了。",
+    guideFaqNoNotifyQ: "通知不弹、也没有声音？",
+    guideFaqNoNotifyA:
+      "多半是系统没放行 —— 没权限时通知会被静默丢弃，不弹也不报错。「提醒」页顶部能看到权限状态；显示「已被拒绝」的话，要去系统设置的「通知」里手动打开。",
+
+    notifyPermission: "系统通知权限",
+    permGranted: "已允许",
+    permDenied: "已被拒绝",
+    permPrompt: "还没申请",
+    permUnknown: "读不到",
+    permRequest: "请求权限",
+    permHint:
+      "没有权限时通知会被静默丢弃 —— 不弹、不响，也不报错。显示「已被拒绝」的话，需要去系统设置的「通知」里手动打开 SignalHub。",
 
     restoreAll: "全部恢复",
     mute: "静音",
@@ -325,6 +377,7 @@ export const MESSAGES: Record<Lang, Messages> = {
     blinkInterval: "闪烁间隔",
     resetToGlobal: "恢复成跟随全局",
     styleHint: "「跟随」= 用「外观」页选的那两项（形状、节奏倍率）。",
+    perStateStyle: "逐个状态覆盖",
 
     notifyWhenNeeded: "需要时弹通知",
     soundWithNotify: "通知带提示音",
@@ -472,11 +525,39 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
 
     tabStatus: "Status",
     tabLook: "Look",
-    tabStyle: "Style",
     tabAlert: "Alerts",
     tabConnect: "Connect",
     tabHooks: "Forwarding",
+    tabGuide: "Guide",
     tabSystem: "System",
+
+    guideEntry: "New here?",
+    guideWhatTitle: "What this is",
+    guideWhat:
+      "SignalHub is a status light that sits on your desktop. Anything that can send one HTTP request can light it up — an agent, a build script, a service you wrote yourself. Green means working, red means it needs you, amber means it is waiting on your approval; the card says which group, what step it is on, and how long it has been there.",
+    guideStepsTitle: "Three steps to hook it up",
+    guideStep1:
+      "Get a reporter talking: connect an agent with one click on the Connect tab, or have your program POST a state to the API below.",
+    guideStep2:
+      "Watch the light: it opens as a stack of cards by default, and a click folds it into a single lamp. Its position and shape are remembered.",
+    guideStep3:
+      "Do not miss it: a system notification fires when something needs you. The Alerts tab holds quiet hours, the alert threshold, and outbound forwarding that can be limited to specific states.",
+    guideFaqTitle: "When it is not working",
+    guideFaqNoLightQ: "The light stays grey?",
+    guideFaqNoLightA:
+      "Grey means no session is reporting, or Pause monitoring is on. Check what the heading at the top says, then confirm the reporter is connected on the Connect tab.",
+    guideFaqNoNotifyQ: "No notification, and no sound?",
+    guideFaqNoNotifyA:
+      "Most likely the system has not let it through — without permission a notification is dropped silently, with no popup and no error. The top of the Alerts tab shows the permission state; if it says Denied, turn SignalHub on by hand under Notifications in System Settings.",
+
+    notifyPermission: "System notification permission",
+    permGranted: "Granted",
+    permDenied: "Denied",
+    permPrompt: "Not asked yet",
+    permUnknown: "Unreadable",
+    permRequest: "Request",
+    permHint:
+      "Without permission a notification is dropped silently — no popup, no sound, no error. If it says Denied, you need to turn SignalHub on by hand under Notifications in System Settings.",
 
     restoreAll: "Restore all",
     mute: "Mute",
@@ -543,6 +624,7 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     blinkInterval: "Blink interval",
     resetToGlobal: "Reset to follow global",
     styleHint: '"Follow" = use the two chosen on the Look tab (shape, blink speed).',
+    perStateStyle: "Per-state overrides",
 
     notifyWhenNeeded: "Notify when needed",
     soundWithNotify: "Sound with notification",

@@ -409,6 +409,10 @@ fn mute(app: &tauri::AppHandle, target: &AlertTarget) {
 ///
 /// 放在启动时而不是「第一次要发通知时」，是因为弹权限框和发通知没法同时发生
 /// —— 那样第一条通知必然丢掉，而第一条往往正是最要紧的那条。
+///
+/// **也在每次设置变更时调**（见 `lib.rs` 的 `apply_settings`）。原来只在启动时申请，
+/// 于是「启动时通知是关着的」用户永远不会被问一次 —— 而没权限时通知是**静默丢弃**
+/// 的：不弹、不响、也没有任何地方报错。那正是「通知功能好像坏了」最难查的形态。
 pub fn ensure_permission(app: &tauri::AppHandle, settings: &Settings) {
     if !settings.notify {
         // 用户关掉了通知就完全不要打扰他，连权限框也不要弹
@@ -417,7 +421,10 @@ pub fn ensure_permission(app: &tauri::AppHandle, settings: &Settings) {
 
     let notification = app.notification();
     match notification.permission_state() {
-        Ok(tauri_plugin_notification::PermissionState::Granted) => {}
+        Ok(tauri_plugin_notification::PermissionState::Granted)
+        | Ok(tauri_plugin_notification::PermissionState::Denied) => {}
+        // 只有「还没问过」才弹框。**被拒绝之后不再弹** —— 系统本来也不会再问，
+        // 反复调只会掩盖真正该做的事：告诉用户去系统设置里打开。
         Ok(_) => {
             if let Err(err) = notification.request_permission() {
                 eprintln!("[signalhub] 申请通知权限失败: {err}");
@@ -425,6 +432,29 @@ pub fn ensure_permission(app: &tauri::AppHandle, settings: &Settings) {
         }
         Err(err) => eprintln!("[signalhub] 读取通知权限失败: {err}"),
     }
+}
+
+/// 系统通知权限的当前状态，给界面显示用。取值：`granted` / `denied` / `prompt` / `unknown`。
+///
+/// 存在的理由很具体：**没权限时 `show()` 是静默失败的** —— 通知不弹、声音不响，而且
+/// 没有任何地方会报错（从 Dock 启动的话连 stderr 都没地方看）。用户看到的是「通知
+/// 功能坏了」，但其实代码里什么都对，只是系统没放行。界面上能回答这个问题，才不至于
+/// 让人去猜。
+pub fn permission_state(app: &tauri::AppHandle) -> &'static str {
+    match app.notification().permission_state() {
+        Ok(tauri_plugin_notification::PermissionState::Granted) => "granted",
+        Ok(tauri_plugin_notification::PermissionState::Denied) => "denied",
+        Ok(_) => "prompt",
+        Err(_) => "unknown",
+    }
+}
+
+/// 主动要一次通知权限，返回要过之后的状态。界面上的「请求权限」按钮走它。
+pub fn request_permission(app: &tauri::AppHandle) -> &'static str {
+    if let Err(err) = app.notification().request_permission() {
+        eprintln!("[signalhub] 申请通知权限失败: {err}");
+    }
+    permission_state(app)
 }
 
 #[cfg(test)]

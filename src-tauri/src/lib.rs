@@ -422,6 +422,21 @@ fn get_outbound_log(log: tauri::State<'_, SharedOutbound>) -> Vec<outbound::Atte
         .collect()
 }
 
+/// 系统通知权限的当前状态（`granted` / `denied` / `prompt` / `unknown`）。
+///
+/// 界面上要能回答「通知到底通没通」—— 没权限时通知是静默丢弃的，不弹也不报错，
+/// 光看界面和日志都查不出来（见 `alerts::permission_state`）。
+#[tauri::command]
+fn get_notify_permission(app: tauri::AppHandle) -> &'static str {
+    alerts::permission_state(&app)
+}
+
+/// 主动要一次通知权限，返回要过之后的状态。
+#[tauri::command]
+fn request_notify_permission(app: tauri::AppHandle) -> &'static str {
+    alerts::request_permission(&app)
+}
+
 /// 一个智能体在这台机器上的状态。
 #[derive(serde::Serialize)]
 struct AgentStatus {
@@ -601,6 +616,9 @@ fn apply_settings(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapsh
     apply_window_size(app, settings, snapshot);
     // 开关可能刚被改过，所以尺寸之外还要重画一次托盘
     refresh_tray(app);
+    // 用户刚把通知打开时也要能申请到权限 —— 只在启动时申请的话，启动时通知是关着的
+    // 用户永远不会被问一次，而没权限时通知是静默丢弃的（见 alerts::ensure_permission）。
+    alerts::ensure_permission(app, settings);
 }
 
 /// 灯上真正会画出来的组：右键隐藏掉的不算，再按优先级截断到 `MAX_SIGNS`。
@@ -857,6 +875,8 @@ pub fn run() {
             get_timeline,
             get_messages,
             get_outbound_log,
+            get_notify_permission,
+            request_notify_permission,
             detect_agents,
             install_agent_hooks,
             uninstall_agent_hooks,

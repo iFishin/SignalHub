@@ -71,16 +71,16 @@ html[data-window="settings"] #root {
 
 .tabs {
   display: flex;
-  /* 不留间距：**英文标签比中文宽得多**（七个加起来就贴到 380px 的边），靠
-     padding 收紧才放得下。不留 gap 时相邻标签仍有 10px 的空白（各 5px），足够
-     分辨；再多一个像素的 gap 就会把最后一个页签挤出去。 */
+  /* 页签之间不留 gap：相邻标签各有 10px 的 padding，已经隔开了 20px。窗口加宽到
+     560 之后七个标签（含最长的 Forwarding）加起来约 465px，而内容区有 520px ——
+     有余量，所以 padding 恢复成舒服的值，不必再靠收紧字号硬塞。 */
   gap: 0;
   margin-top: 14px;
   border-bottom: 1px solid var(--line);
 }
 
 .tab {
-  padding: 5px 5px 6px;
+  padding: 6px 10px 7px;
   border: 0;
   /* 2px 下划线当作选中指示；负 margin 让它压在边框上 */
   border-bottom: 2px solid transparent;
@@ -88,7 +88,7 @@ html[data-window="settings"] #root {
   background: transparent;
   color: var(--muted);
   font: inherit;
-  font-size: 11.5px;
+  font-size: 12px;
   cursor: pointer;
 }
 
@@ -103,15 +103,17 @@ html[data-window="settings"] #root {
 }
 
 /* 内容区固定高度：窗口尺寸因此恒定，切页签不会跳。
-   高度取「最高的那几个普通页签」—— 灯效页有一张 10 行的表，外观页控件最多。
-   **「接入」页是个例外，它本来就该滚**：那是一份接口速查（端点表、状态词表、
-   示例），长度由内容决定，不该为了让它不滚把窗口撑得更高。
+   高度取「最高的那几个普通页签」。
 
-   420 而不是贴着内容的更小值：**英文比中文占地方**（同一个提示会多折一行），
+   **「指南」页是个例外，它本来就该滚**：那是一份手册（快速上手、接口速查、常见
+   问题），长度由内容决定，不该为了让它不滚把窗口撑得更高。合并了灯效的外观页也
+   可能略微超一点，同样允许它滚。
+
+   495 而不是贴着内容的更小值：**英文比中文占地方**（同一个提示会多折一行），
    贴着中文量出来的高度会让英文界面在每个页签底部压出一条滚动条 —— 在 Windows
    上那是常驻可见的。留出这一层差异。 */
 .page {
-  height: 420px;
+  height: 495px;
   padding-top: 14px;
   overflow-y: auto;
 }
@@ -945,3 +947,38 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   font-size: 11.5px;
   overflow-wrap: anywhere;
 }
+
+/* ---- 指南页 ---- */
+
+/* 「三步接上」。用编号列表而不是三段小标题：它们确实有先后，编号是这个意思
+   最省字的表达。 */
+.steps {
+  margin: 0;
+  padding-left: 20px;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.steps li + li {
+  margin-top: 6px;
+}
+
+/* 常见问题里的「问」。它下面紧跟一句 `.doc` 当「答」，所以问句给一点重量，
+   两者才不会糊成一团。 */
+.faq-q {
+  margin: 10px 0 2px;
+  font-size: 12px;
+}
+
+/* 指南页的正文。**刻意不套 `.hint` 那个边框盒子**：短提示套框是好的（它把
+   「这是一句补充」和上面的设置项分开），但一整页手册每段都套框，看到的就是一堆
+   框而不是字。 */
+.doc {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
