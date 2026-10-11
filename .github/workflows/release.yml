@@ -34,6 +34,8 @@ jobs:
       contents: write
     outputs:
       release_id: ${{ steps.create.outputs.result }}
+      tag: ${{ steps.create.outputs.tag }}
+      version: ${{ steps.create.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -46,6 +48,9 @@ jobs:
               fs.readFileSync('src-tauri/tauri.conf.json', 'utf8'),
             );
             const tag = `v${conf.version}`;
+            // 后面那个 portable 步骤要拿这两个值来命名和上传，所以一并输出
+            core.setOutput('tag', tag);
+            core.setOutput('version', conf.version);
 
             // 幂等：这个 tag 已经有发布就复用（重跑 workflow 走这条）。
             // listReleases 对有权写入的人是**包含草稿**的，所以草稿也认得出来。
@@ -132,3 +137,32 @@ jobs:
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
           args: --target ${{ matrix.target }}
+
+      # 免安装的 portable 包（解压即用，不写注册表、不建开始菜单项）。
+      #
+      # **必须把 CLI 一起打进去。** 应用会去找和它同目录的 `signalhub.exe`
+      # （见 `hooks::resolve_hook_command` 的第二条路径），少了它「一键接入」写出来的
+      # 命令就是一条跑不起来的东西 —— 而且静默失效。这两个文件正是 macOS 包里
+      # `Contents/MacOS/` 下那两个，布局一致。
+      #
+      # 只装两个 exe 就够，是查过的：`webview2-com-sys` 在 msvc 目标上链的是
+      # `WebView2LoaderStatic`（静态），所以 Tauri 2 的 Windows 应用是单文件，
+      # 不需要额外的 `WebView2Loader.dll`。
+      #
+      # 产物落在 `target/<三元组>/release/` 下：app 由 Tauri 放那儿，CLI 由
+      # `scripts/stage-cli.mjs` 用同一个三元组编到那儿。
+      - name: 打 portable zip
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $rel = "src-tauri/target/${{ matrix.target }}/release"
+          $stage = "portable/SignalHub"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "$rel/signalhub-app.exe" "$stage/"
+          Copy-Item "$rel/signalhub.exe" "$stage/"
+
+          $zip = "SignalHub_${{ needs.create-release.outputs.version }}_x64_portable.zip"
+          Compress-Archive -Path $stage -DestinationPath $zip
+          gh release upload "${{ needs.create-release.outputs.tag }}" $zip --clobber
