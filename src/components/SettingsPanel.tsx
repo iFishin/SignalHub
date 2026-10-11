@@ -13,7 +13,7 @@ import { useStats } from "../lib/useStats";
 import { useTimeline, type TimelineSegment } from "../lib/useTimeline";
 import { colorVars, resolveColors } from "../lib/palettes";
 import { presets, isActivePreset, stylePresets, isActiveStylePreset } from "../lib/presets";
-import { SIGNALS, type Snapshot } from "../lib/types";
+import { SIGNALS, REPORTABLE_SIGNALS, type Snapshot } from "../lib/types";
 
 /** 与 Rust 侧 config.rs 的 MIN_SIZE / MAX_SIZE / DEFAULT_SIZE 保持一致。 */
 function sizeOptions(m: Messages): { label: string; value: number }[] {
@@ -105,7 +105,10 @@ function tabOptions(m: Messages): { id: Tab; label: string }[] {
 
 interface Endpoint {
   port: number | null;
-  token_preview: string | null;
+  /** 完整 token，不是前几位 —— 对接方要拿它去调接口。 */
+  token: string | null;
+  /** `~/.signalhub`，token / port / config.json / hooks.log 都在里面。 */
+  dir: string | null;
 }
 
 interface Props {
@@ -362,11 +365,31 @@ export function SettingsPanel({ snapshot }: Props) {
     invoke("set_paused", { paused }).catch(reported);
   };
 
+  // 示例里**填真实的端口和 token**，而不是 `$(cat ~/.signalhub/token)`：
+  // 后者在 Windows 的 PowerShell 里跑不了，而这一页的主要读者是「想粘一条命令
+  // 试一下」的对接方。代价是 token 会进 shell 历史 —— 它是本机接口的凭据，
+  // 能读到它的本来就只有这台机器上的人。
   const curlExample = endpoint?.port
-    ? `curl -s -X POST http://127.0.0.1:${endpoint.port}/v1/state ` +
-      `-H "Authorization: Bearer $(cat ~/.signalhub/token)" ` +
-      `-H 'Content-Type: application/json' -d '{"state":"working"}'`
+    ? [
+        `curl -s -X POST "http://127.0.0.1:${endpoint.port}/v1/state" \\`,
+        `  -H "Authorization: Bearer ${endpoint.token ?? "<token>"}" \\`,
+        `  -H 'Content-Type: application/json' \\`,
+        `  -d '{"state":"working","session":"demo","message":"hi"}'`,
+      ].join("\n")
     : null;
+
+  // 复制反馈。1.5 秒后自动收回，否则用户不知道刚才那下有没有生效。
+  const [copied, setCopied] = useState<string | null>(null);
+  const copy = (what: string, text: string) => {
+    navigator.clipboard
+      .writeText(text)
+      .then(() => {
+        setCopied(what);
+        window.setTimeout(() => setCopied(null), 1500);
+      })
+      .catch(reported);
+  };
+  const copyLabel = (what: string) => (copied === what ? m.copied : m.copy);
 
   // 每个页签的内容。写成函数而不是子组件，是为了免去把十几个 prop 一路传下去。
   const page = () => {
@@ -859,36 +882,111 @@ export function SettingsPanel({ snapshot }: Props) {
         );
       }
 
-      case "connect":
+      case "connect": {
+        const endpoints: [string, string, string][] = [
+          ["POST", "/v1/state", m.apiEndpointReport],
+          ["GET", "/v1/state", m.apiEndpointState],
+          ["GET", "/v1/sessions", m.apiEndpointSessions],
+          ["DELETE", "/v1/sessions/{id}", m.apiEndpointClear],
+          ["GET", "/v1/health", m.apiEndpointHealth],
+        ];
+
         return (
           <>
-            <Row label={m.pauseMonitoring}>
-              <Switch on={snapshot.paused} onChange={setPaused} />
-            </Row>
-            <p className="hint">{m.connectHint}</p>
+            {/* ---- 接口速查 ----
+                接入方最需要的那几样都在这一页：端口、token、端点表、状态词表、
+                能直接粘的示例。**这一份是跟着包走的** —— 装了 .app 的人手上没有
+                仓库，而 docs/ 刻意没打进 bundle（见 lib.rs 的 DOCS_URL）。 */}
+            <div className="section">
+              <div className="section-title">{m.apiTitle}</div>
+              <div className="kv">
+                <span className="k">{m.port}</span>
+                <span className="mono">{endpoint?.port ?? "—"}</span>
+              </div>
+              <div className="kv">
+                <span className="k">{m.apiToken}</span>
+                <span className="mono token">{endpoint?.token ?? "—"}</span>
+              </div>
+              <div className="row">
+                <span className="muted-text mono">{endpoint?.dir ?? "—"}</span>
+                <button
+                  type="button"
+                  className="btn btn-tiny"
+                  onClick={() =>
+                    invoke("open_app_dir", { what: "config" }).catch(reported)
+                  }
+                >
+                  {m.openConfigDir}
+                </button>
+              </div>
+              <p className="hint">{m.apiAuthHint}</p>
+            </div>
+
+            <div className="section">
+              <div className="section-title">{m.apiEndpoints}</div>
+              {endpoints.map(([method, path, note]) => (
+                <div className="kv endpoint" key={method + path}>
+                  <span className="method mono">{method}</span>
+                  <span className="mono">{path}</span>
+                  <span className="muted-text">{note}</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="section">
+              <div className="section-title">{m.apiStates}</div>
+              <p className="mono states">{REPORTABLE_SIGNALS.join("  ")}</p>
+              <p className="hint">{m.apiStatesHint}</p>
+            </div>
+
+            <div className="section">
+              <div className="section-title">{m.apiExamples}</div>
+              {curlExample && (
+                <>
+                  <pre className="code">{curlExample}</pre>
+                  <div className="row">
+                    <button
+                      type="button"
+                      className="btn btn-tiny"
+                      onClick={() => copy("curl", curlExample)}
+                    >
+                      {copyLabel("curl")}
+                    </button>
+                  </div>
+                </>
+              )}
+              <pre className="code">{m.cliExample}</pre>
+              <div className="row">
+                <button
+                  type="button"
+                  className="btn btn-tiny"
+                  onClick={() => copy("cli", m.cliExample)}
+                >
+                  {copyLabel("cli")}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-tiny"
+                  onClick={() => invoke("open_docs").catch(reported)}
+                >
+                  {m.openDocs}
+                </button>
+              </div>
+            </div>
 
             {/* 转发搬到了「钩子」页（多条、可过滤、支持命令），这里只留入口 */}
-            <div className="row">
-              <span>{m.outboundHooks}</span>
-              <button type="button" className="btn" onClick={() => setTab("hooks")}>
-                {m.configure}
-              </button>
+            <div className="section">
+              <div className="row">
+                <span>{m.outboundHooks}</span>
+                <button type="button" className="btn" onClick={() => setTab("hooks")}>
+                  {m.configure}
+                </button>
+              </div>
+              <p className="hint">{m.connectHookHint}</p>
             </div>
-            <p className="hint">{m.connectHookHint}</p>
-
-            <div className="kv">
-              <span className="k">{m.port}</span>
-              <span className="mono">{endpoint?.port ?? "—"}</span>
-            </div>
-            <div className="kv">
-              <span className="k">Token</span>
-              <span className="mono">
-                {endpoint?.token_preview ? `${endpoint.token_preview}…` : "—"}
-              </span>
-            </div>
-            {curlExample && <div className="hint mono">{curlExample}</div>}
           </>
         );
+      }
 
       case "hooks":
         return (
@@ -1083,6 +1181,33 @@ export function SettingsPanel({ snapshot }: Props) {
             .join(" · ")}
         </p>
       )}
+
+      {/* 顶部栏：**不随页签变**的那几个入口。
+          目前是「暂停监控」和两个「打开某个目录」—— 它们是任何时候都可能想按的，
+          塞进某个页签里就得先找一遍。以后要加同类的东西（检查更新、导入导出设置、
+          版本号……）也放这儿，别再加一层导航。 */}
+      <nav className="topbar">
+        <label className="topbar-pause" title={m.pauseHint}>
+          <span className="muted-text">{m.pauseMonitoring}</span>
+          <Switch on={snapshot.paused} onChange={setPaused} />
+        </label>
+        <div className="topbar-actions">
+          <button
+            type="button"
+            className="btn btn-tiny"
+            onClick={() => invoke("open_app_dir", { what: "config" }).catch(reported)}
+          >
+            {m.openConfigDir}
+          </button>
+          <button
+            type="button"
+            className="btn btn-tiny"
+            onClick={() => invoke("open_app_dir", { what: "log" }).catch(reported)}
+          >
+            {m.openLogs}
+          </button>
+        </div>
+      </nav>
 
       <div className="tabs" role="tablist">
         {tabs.map((entry) => (

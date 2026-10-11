@@ -104,13 +104,34 @@ export interface Messages {
   alertHint: string;
   delayNow: string;
 
-  // 接入页
+  // 顶部栏
   pauseMonitoring: string;
+  openConfigDir: string;
+  openLogs: string;
+  pauseHint: string;
+
+  // 接入页
   connectHint: string;
   outboundHooks: string;
   configure: string;
   connectHookHint: string;
   port: string;
+  apiTitle: string;
+  apiToken: string;
+  apiAuthHint: string;
+  apiEndpoints: string;
+  apiEndpointReport: string;
+  apiEndpointState: string;
+  apiEndpointSessions: string;
+  apiEndpointClear: string;
+  apiEndpointHealth: string;
+  apiStates: string;
+  apiStatesHint: string;
+  apiExamples: string;
+  copy: string;
+  copied: string;
+  openDocs: string;
+  cliExample: string;
 
   // 钩子页
   noHooks: string;
@@ -276,12 +297,36 @@ export const MESSAGES: Record<Lang, Messages> = {
     delayNow: "立刻",
 
     pauseMonitoring: "暂停监控",
+    openConfigDir: "配置目录",
+    openLogs: "日志",
+    pauseHint: "暂停后灯球显示为熄灭，但会话仍在记录 —— 恢复时立刻回到真实状态",
     connectHint:
       "暂停后灯球显示为熄灭，但会话仍在记录 —— 恢复时立刻回到真实状态。弹不弹通知在「提醒」页。",
     outboundHooks: "出站钩子",
     configure: "去配置",
     connectHookHint: "状态变化时可以 POST 到某个地址或跑一条命令 —— 在「钩子」页配置。",
     port: "端口",
+    apiTitle: "接口速查",
+    apiToken: "Token",
+    apiAuthHint:
+      "本机接口的凭据，别外传。请求要带 Authorization: Bearer <token>，并且不能带 Origin 头（防本地 CSRF）。端口和 token 都写在配置目录下的两个文件里。",
+    apiEndpoints: "端点",
+    apiEndpointReport: "上报状态",
+    apiEndpointState: "当前聚合 + 各组",
+    apiEndpointSessions: "会话列表",
+    apiEndpointClear: "清除某个会话",
+    apiEndpointHealth: "健康检查（不需要鉴权）",
+    apiStates: "可上报的状态",
+    apiStatesHint:
+      "写错状态名会被明确拒绝（400），不会静默忽略 —— 那是「灯没反应」最难排查的一种成因。stale / offline 是聚合派生出来的，不能上报。",
+    apiExamples: "示例",
+    copy: "复制",
+    copied: "已复制",
+    openDocs: "完整文档（GitHub）",
+    cliExample: `# 或者用 CLI：
+signalhub working --session build-1 --agent ci --message "compiling"
+signalhub status
+signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
 
     noHooks: "还没有钩子。加一条，就能在状态变化时 POST 到某个地址或跑一条命令。",
     hookN: (n) => `钩子 ${n}`,
@@ -442,12 +487,36 @@ export const MESSAGES: Record<Lang, Messages> = {
     delayNow: "Now",
 
     pauseMonitoring: "Pause monitoring",
+    openConfigDir: "Config folder",
+    openLogs: "Logs",
+    pauseHint: "Pausing blanks the lamp, but sessions are still recorded — resuming returns to the real state",
     connectHint:
       "Paused, the lamp shows as off, but sessions are still recorded — resuming returns to the real state at once. Notification settings are on the Alerts tab.",
     outboundHooks: "Outbound hooks",
     configure: "Configure",
     connectHookHint: "On state changes you can POST to a URL or run a command — set it up on the Hooks tab.",
     port: "Port",
+    apiTitle: "API quick reference",
+    apiToken: "Token",
+    apiAuthHint:
+      "The credential for the local API — keep it to yourself. Requests need Authorization: Bearer <token> and must not carry an Origin header (local CSRF guard). Both the port and the token live in two files under the config folder.",
+    apiEndpoints: "Endpoints",
+    apiEndpointReport: "Report a state",
+    apiEndpointState: "Current aggregate + groups",
+    apiEndpointSessions: "Session list",
+    apiEndpointClear: "Remove a session",
+    apiEndpointHealth: "Health check (no auth)",
+    apiStates: "Reportable states",
+    apiStatesHint:
+      "A misspelled state is rejected outright (400), never silently ignored — that is the hardest kind of “the lamp did nothing” to diagnose. stale / offline are derived by aggregation and cannot be reported.",
+    apiExamples: "Examples",
+    copy: "Copy",
+    copied: "Copied",
+    openDocs: "Full reference (GitHub)",
+    cliExample: `# or use the CLI:
+signalhub working --session build-1 --agent ci --message "compiling"
+signalhub status
+signalhub watch --until done --timeout 10m   # wait for a state in CI`,
 
     noHooks: "No hooks yet. Add one to POST to a URL or run a command on state changes.",
     hookN: (n) => `Hook ${n}`,

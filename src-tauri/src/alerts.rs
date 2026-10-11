@@ -376,12 +376,9 @@ pub fn wire_actions(app: &tauri::AppHandle) {
 
 /// 在文件管理器里打开那个项目目录。
 ///
-/// 走系统自带的命令而不是引一个「打开文件管理器」的 crate：三个平台各一条命令，
-/// 为这一件事多一个依赖不划算。
-///
-/// **路径作为独立的 argv 传，绝不过 shell** —— 它来自智能体上报的 `cwd`，是不可信
-/// 输入，拼进 `sh -c` 就是一个命令注入。（`outbound.rs` 的钩子走 shell 是因为那里
-/// 用户就是要写管道和重定向，这里没有那个需求。）
+/// 具体怎么调系统命令在 `crate::open` 里 —— 那里还管着「打开配置目录」之类的
+/// 其它入口，而且**参数一律走独立 argv、不过 shell**（这个路径来自智能体上报的
+/// `cwd`，是不可信输入）。
 fn reveal(target: &AlertTarget) {
     let Some(cwd) = target.cwd.as_deref() else {
         return;
@@ -391,45 +388,9 @@ fn reveal(target: &AlertTarget) {
     if !std::path::Path::new(cwd).is_dir() {
         return;
     }
-    if let Err(err) = open_directory(cwd) {
+    if let Err(err) = crate::open::reveal(cwd) {
         eprintln!("[signalhub] 打开项目目录失败: {err}");
     }
-}
-
-/// 在 Finder 里**选中**那个目录，而不是打开它：用户要的是「它在哪」，
-/// 弹一个新窗口反而挡事。
-#[cfg(target_os = "macos")]
-fn open_directory(path: &str) -> std::io::Result<()> {
-    let mut command = std::process::Command::new("open");
-    command.args(["-R", path]);
-    spawn_detached(command)
-}
-
-/// explorer 的选择语法很怪：`/select,<路径>` 必须当成**一个**参数传。
-#[cfg(target_os = "windows")]
-fn open_directory(path: &str) -> std::io::Result<()> {
-    let mut command = std::process::Command::new("explorer");
-    command.arg(format!("/select,{path}"));
-    spawn_detached(command)
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn open_directory(path: &str) -> std::io::Result<()> {
-    let mut command = std::process::Command::new("xdg-open");
-    command.arg(path);
-    spawn_detached(command)
-}
-
-/// 起一个进程，然后在一条后台线程上回收它。
-///
-/// 直接 `spawn()` 不管的话，子进程退出后会变成僵尸留在进程表里 —— 这是个常驻
-/// 应用，攒起来是要出问题的。这里不需要它的结果，所以只回收、不阻塞。
-fn spawn_detached(mut command: std::process::Command) -> std::io::Result<()> {
-    let mut child = command.spawn()?;
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
-    Ok(())
 }
 
 /// 从通知里静音那一组。

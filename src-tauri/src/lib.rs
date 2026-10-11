@@ -2,6 +2,7 @@ mod alerts;
 mod lang;
 mod menu;
 mod notify;
+mod open;
 mod outbound;
 mod server;
 mod state;
@@ -18,6 +19,7 @@ use config::Settings;
 use notify::Notifier;
 use state::{GroupView, Report, Signal, Snapshot, Store};
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, LogicalSize, Manager};
@@ -179,14 +181,55 @@ pub(crate) fn current_settings(app: &tauri::AppHandle) -> Settings {
 
 /// 给设置面板显示「怎么手动调用这个服务」用。端口和 token 都从文件读，
 /// 与 CLI 用的是同一份来源，因此界面显示的和 CLI 实际使用的必然一致。
+///
+/// **给完整的 token，不给前 8 位。** 对接方要拿它去调接口，给一截等于没给；
+/// 而且它就是 `~/.signalhub/token` 那个文件的内容，能打开设置面板的人本来就能
+/// 读到它 —— 只显示前几位换来的是「看起来安全」而不是安全。
 #[tauri::command]
 fn get_endpoint() -> serde_json::Value {
     serde_json::json!({
         "port": config::read_port().ok(),
-        "token_preview": config::read_token()
-            .map(|token| token.chars().take(8).collect::<String>())
-            .ok(),
+        "token": config::read_token().ok(),
+        "dir": config::data_dir()
+            .ok()
+            .map(|path| path.to_string_lossy().into_owned()),
     })
+}
+
+/// 文档在 GitHub 上。
+///
+/// **刻意不把 `docs/` 打进 bundle**：那份文档大半是维护者向的设计取舍（为什么
+/// 这么决定、踩过什么坑），对只想接个接口的人来说太吵。对接方要的那部分在设置
+/// 面板的「接入」页里有一份速查，跟包一起走、不联网也能看。
+const DOCS_URL: &str = "https://github.com/iFishin/SignalHub/blob/main/docs/api.md";
+
+#[tauri::command]
+fn open_docs() -> Result<(), String> {
+    open::open(DOCS_URL).map_err(|err| format!("打开浏览器失败: {err}"))
+}
+
+/// 在文件管理器里指出应用自己的文件。
+///
+/// 接入方最需要的那几样都在 `~/.signalhub/` 里（`token`、`port`、`config.json`），
+/// 而「它在哪」这件事从界面上说不清楚，直接打开最省事。
+#[tauri::command]
+fn open_app_dir(what: String) -> Result<(), String> {
+    let path = match what.as_str() {
+        "config" => config::data_dir(),
+        "log" => config::hook_log_path(),
+        other => return Err(format!("不认识的目录 {other:?}；可用 config / log")),
+    }
+    .map_err(|err| format!("找不到目录: {err}"))?;
+
+    // 日志文件可能还不存在（一次 hook 都没跑过）。那就退回到它的父目录 ——
+    // 报「文件不存在」对用户没有任何帮助。
+    let target = if path.exists() {
+        path
+    } else {
+        path.parent().map(Path::to_path_buf).unwrap_or(path)
+    };
+
+    open::reveal(&target.to_string_lossy()).map_err(|err| format!("打开失败: {err}"))
 }
 
 #[tauri::command]
@@ -700,6 +743,8 @@ pub fn run() {
             get_settings,
             set_settings,
             get_endpoint,
+            open_docs,
+            open_app_dir,
             open_settings,
             get_toggles,
             set_autostart,

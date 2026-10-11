@@ -103,13 +103,13 @@ html[data-window="settings"] #root {
 }
 
 /* 内容区固定高度：窗口尺寸因此恒定，切页签不会跳。
-   高度取「最高那一页」—— 灯效页有一张 10 行的表，是最高的那一页。这样七个页签
-   都不必滚动，窗口也只有 588px 高。超出仍会在这一块里滚（状态页的组多了就会），
-   而不是让整个窗口变高。
+   高度取「最高的那几个普通页签」—— 灯效页有一张 10 行的表，外观页控件最多。
+   **「接入」页是个例外，它本来就该滚**：那是一份接口速查（端点表、状态词表、
+   示例），长度由内容决定，不该为了让它不滚把窗口撑得更高。
 
-   420 而不是贴着内容的 412：**英文比中文占地方**（同一个提示会多折一行），
+   420 而不是贴着内容的更小值：**英文比中文占地方**（同一个提示会多折一行），
    贴着中文量出来的高度会让英文界面在每个页签底部压出一条滚动条 —— 在 Windows
-   上那是常驻可见的。留 8px 给这一层差异。 */
+   上那是常驻可见的。留出这一层差异。 */
 .page {
   height: 420px;
   padding-top: 14px;
@@ -626,6 +626,75 @@ input[type="color"].style-swatch::-webkit-color-swatch {
 
 .hidden-summary {
   margin-bottom: 12px;
+}
+
+/* ---- 顶部栏：不随页签变的那几个入口 ---- */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.topbar-pause {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+  cursor: pointer;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+/* ---- 接入页：接口速查 ---- */
+
+/* 代码块。等宽 + **可换行** —— 长命令在 380px 里必然要折行，
+   横向滚动条比折行更难用。 */
+.code {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--hover);
+  color: var(--fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 端点表：方法定宽、路径紧跟着、说明靠右 */
+.endpoint .method {
+  flex: none;
+  width: 48px;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.endpoint .muted-text {
+  margin-left: auto;
+  flex: none;
+  font-size: 11px;
+}
+
+/* token 是 64 位十六进制，窄面板里必须能断开 */
+.token {
+  overflow-wrap: anywhere;
+}
+
+.states {
+  margin: 0 0 8px;
+  font-size: 11.5px;
+  line-height: 1.6;
 }
 
 /* ---- 状态页：按组列出会话 ---- */
