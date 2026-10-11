@@ -5,11 +5,14 @@ import { SettingsPanel } from "./components/SettingsPanel";
 import { useSignal } from "./lib/useSignal";
 import { useSettings } from "./lib/useSettings";
 import { inTauri, windowKind } from "./lib/env";
-import { SIGNALS } from "./lib/types";
+import { REPORTABLE_SIGNALS } from "./lib/types";
 
 /**
  * dev 调试：按 1–8 直接切状态。走的是与 HTTP 上报完全相同的 Store 路径，
  * 所以能顺带验证聚合、TTL、事件推送三条链路。仅 debug 构建、且仅灯球窗口注册。
+ *
+ * 遍历 REPORTABLE_SIGNALS 而不是全部状态：stale / offline 是派生出来的，
+ * 服务端会拒绝上报。
  */
 function useDevKeys() {
   useEffect(() => {
@@ -18,9 +21,9 @@ function useDevKeys() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       const index = Number(event.key) - 1;
-      if (!Number.isInteger(index) || index < 0 || index >= SIGNALS.length) return;
+      if (!Number.isInteger(index) || index < 0 || index >= REPORTABLE_SIGNALS.length) return;
       event.preventDefault();
-      invoke("set_state", { state: SIGNALS[index] }).catch(console.error);
+      invoke("set_state", { state: REPORTABLE_SIGNALS[index] }).catch(console.error);
     };
 
     window.addEventListener("keydown", onKeyDown);
@@ -58,9 +61,10 @@ export default function App() {
 
   return (
     <SignalLamp
-      state={snapshot.aggregate}
-      message={snapshot.message}
+      aggregate={snapshot.aggregate}
+      sessions={snapshot.sessions}
       size={settings.size}
+      quiet={settings.quiet}
     />
   );
 }

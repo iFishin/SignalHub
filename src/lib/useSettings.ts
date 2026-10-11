@@ -7,10 +7,12 @@ import { inTauri } from "./env";
 export interface Settings {
   size: number;
   always_on_top: boolean;
+  /** 安静模式：空闲 / 沉默 / 离线时圆点几乎透明，悬停恢复。 */
+  quiet: boolean;
 }
 
-/** 与 Rust 侧 `config::DEFAULT_SIZE` 一致。 */
-const DEFAULTS: Settings = { size: 22, always_on_top: true };
+/** 与 Rust 侧 `config::Settings::default()` 一致。 */
+const DEFAULTS: Settings = { size: 22, always_on_top: true, quiet: true };
 
 const SETTINGS_EVENT = "signalhub://settings";
 

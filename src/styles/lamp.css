@@ -2,7 +2,9 @@
  * 悬浮灯球样式。
  *
  * 朴素简约路线：纯色圆点，没有发光、没有渐变、没有阴影。
- * 状态靠颜色（见 state.css）+ 明暗节奏表达。
+ * 状态靠颜色 + 明暗节奏表达，另有两处非颜色编码：
+ *   - permission / error 用圆角方形（色盲友好，见下）
+ *   - stale 用细环显示还剩多少宽限期
  *
  * 两条硬性约束：
  * 1) html/body/#root 必须完全透明，否则 webview 会画出白底，透明窗口就白做了。
@@ -21,10 +23,17 @@ body,
 }
 
 .lamp-root {
+  --size: 22px;
+
   width: 100%;
   height: 100%;
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 与 Rust 侧 config::Settings::window_size 的 gap = size / 3 对齐。
+     浏览器算出的是小数、Rust 是整数除法，最多差 0.67px；留白有 10px 一侧，
+     这点误差看不出来，所以不值得把几何再往上传一遍。 */
+  gap: calc(var(--size) / 3);
   cursor: grab;
   /* 拖窗口时不要顺手选中文本，也不要触发原生文本拖拽 */
   user-select: none;
@@ -35,52 +44,116 @@ body,
   cursor: grabbing;
 }
 
-.lamp {
-  --size: 22px;
-
+.dot {
+  position: relative;
+  flex: none;
+  box-sizing: border-box;
   width: var(--size);
   height: var(--size);
+  border: 1px solid var(--edge);
   border-radius: 50%;
   background: var(--state);
-  transition: background-color 180ms ease;
+  transition:
+    background-color 180ms ease,
+    border-color 180ms ease,
+    opacity 220ms ease;
   will-change: opacity;
 }
 
-/* 闪动节奏区分状态。颜色相同的一族靠节奏区分，颜色本身的语义见 state.css。 */
+/* ---- 形状：色盲友好 ---------------------------------------------------- */
+
+/* 红绿是色盲最难分的一对，而 permission / error 恰好是最需要你注意的两个。
+   改成圆角方形后，不依赖颜色也能一眼区分「需要我」和「在正常干活」。
+   其余状态保持圆形 —— 一种形状区分解决关键场景，比换掉整套配色克制。 */
+.dot[data-state="permission"],
+.dot[data-state="error"] {
+  border-radius: 28%;
+}
+
+/* ---- 沉默：细环显示还剩多少宽限期 -------------------------------------- */
+
+/* --progress 由前端按服务端给的 stale_progress 设成 1.0 → 0.0。
+   环逐渐缩短，比一个纯灰点信息量大得多，而且仍然只有一个元素。 */
+.dot[data-state="stale"]::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  background: conic-gradient(
+    var(--ring) calc(var(--progress, 1) * 360deg),
+    transparent 0
+  );
+  -webkit-mask: radial-gradient(
+    farthest-side,
+    transparent calc(100% - 2px),
+    #000 calc(100% - 2px)
+  );
+  mask: radial-gradient(
+    farthest-side,
+    transparent calc(100% - 2px),
+    #000 calc(100% - 2px)
+  );
+}
+
+/* ---- 节奏 -------------------------------------------------------------- */
 
 /* 推理：快闪，读起来像「在转」 */
-[data-state="thinking"] .lamp {
+.dot[data-state="thinking"] {
   animation: pulse 640ms ease-in-out infinite;
 }
 
 /* 执行：慢闪 */
-[data-state="working"] .lamp {
+.dot[data-state="working"] {
   animation: pulse 1600ms ease-in-out infinite;
 }
 
 /* 完成：常亮 + 一次入场脉冲。颜色与 idle 相同，靠这一下闪动区分，
-   30s TTL 到期后自然收敛成 idle。 */
-[data-state="done"] .lamp {
+   30s TTL 到期后该会话消失。 */
+.dot[data-state="done"] {
   animation: pop 380ms ease-out 1;
 }
 
-[data-state="attention"] .lamp {
+.dot[data-state="attention"] {
   animation: pulse 1000ms ease-in-out infinite;
 }
 
 /* 需授权：红，平滑闪烁 */
-[data-state="permission"] .lamp {
+.dot[data-state="permission"] {
   animation: pulse 900ms ease-in-out infinite;
 }
 
 /* 出错：红 + steps() 硬切做频闪，一眼与 permission 的平滑闪烁区分开 */
-[data-state="error"] .lamp {
+.dot[data-state="error"] {
   animation: pulse 340ms steps(2, end) infinite;
 }
 
-/* 暂停：弱化到不打扰 */
-[data-state="off"] .lamp {
-  opacity: 0.5;
+/* 三档「不在工作」都不闪，靠不透明度区分：
+   stale 常亮（有会话，只是不说话了），offline / off 更淡。 */
+.dot[data-state="stale"] {
+  opacity: 1;
+}
+
+.dot[data-state="offline"],
+.dot[data-state="off"] {
+  opacity: 0.45;
+}
+
+/* ---- 安静模式：有事才显形 ---------------------------------------------- */
+
+/* 没事时压到几乎看不见，只有真正有活动或需要你注意时才完全显形。
+   从「一个常驻圆点」变成「只在有事时存在的圆点」。
+   done 也算「有事」—— 它是任务完成的确认，压暗就失去意义了。 */
+[data-quiet="true"][data-aggregate="idle"] .dot,
+[data-quiet="true"][data-aggregate="stale"] .dot,
+[data-quiet="true"][data-aggregate="offline"] .dot,
+[data-quiet="true"][data-aggregate="off"] .dot {
+  opacity: 0.15;
+}
+
+/* 悬停恢复，否则压暗之后找不到它来拖。规则放在压暗规则之后：两者特异性
+   相同，靠源码顺序决定胜负。 */
+.lamp-root:hover .dot {
+  opacity: 1;
 }
 
 @keyframes pulse {
@@ -107,7 +180,7 @@ body,
 
 /* 无障碍：系统开了「减少动态效果」时，闪烁一律降级为常亮，由颜色承载语义 */
 @media (prefers-reduced-motion: reduce) {
-  .lamp {
+  .dot {
     animation: none !important;
   }
 }

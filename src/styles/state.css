@@ -1,33 +1,49 @@
 /*
- * 状态配色。灯球和设置面板里的会话小圆点共用这一份定义，
- * 所以只在这里写一次颜色。
+ * 状态配色。灯球上的圆点和设置面板里的会话小圆点共用这一份定义，
+ * 所以颜色只在这里写一次。
  *
- * 比常规的 500 号色深一档：扁平色块没有描边也没有阴影，
- * 太亮的颜色在浅色桌面上会糊掉。这套值在浅色和深色背景上都还看得清。
+ * 每个状态给三样东西：
+ *   --state  填充色
+ *   --edge   1px 描边色（同色系深一档）
+ *   --ring   仅 stale 用：细环的颜色
+ *
+ * 描边的存在理由很实际：扁平色块没有阴影（用户明确不要），在浅色桌面上
+ * 边缘会糊掉。1px 同色系描边是唯一能保住边界又不显装饰的手段。
+ *
+ * 填充色比常规的 500 号色深一档，同样是为了在浅色背景上站得住。
  */
 
-[data-state="idle"] {
-  --state: #16a34a;
-}
-
+[data-state="idle"],
 [data-state="thinking"],
-[data-state="working"] {
-  --state: #16a34a;
-}
-
+[data-state="working"],
 [data-state="done"] {
   --state: #16a34a;
+  --edge: #0e7a37;
 }
 
 [data-state="attention"] {
   --state: #d99a06;
+  --edge: #a87704;
 }
 
 [data-state="permission"],
 [data-state="error"] {
   --state: #d0342c;
+  --edge: #9d2620;
 }
 
+/* 灰色这一族：stale 与 offline/off 颜色相同，靠 lamp.css 里的不透明度区分。
+   offline 与 off 视觉一致是刻意的 —— 它们都表示「没有在追踪任何东西」，
+   差别只在语义，由 tooltip 和设置面板说明。 */
+[data-state="stale"] {
+  --state: #9ca3af;
+  --edge: #7d838d;
+  /* 细环要比填充深得多才看得见，所以单独给一个值 */
+  --ring: #4b5563;
+}
+
+[data-state="offline"],
 [data-state="off"] {
   --state: #9ca3af;
+  --edge: #7d838d;
 }

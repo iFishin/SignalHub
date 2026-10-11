@@ -14,9 +14,10 @@
 //! 另外 `hook` 模式隐含 `--never-fail`：上报客户端不该有能力弄坏它监控的对象。
 
 use serde_json::{json, Value};
-use std::io::Read;
+use std::fs;
+use std::io::{Read, Write};
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // 直接包含源码，而不是 `use signalhub_lib::config`：lib.rs 是 Tauri 应用，
 // 链接它会把整个 Tauri 拖进这个本该只有几 MB 的 CLI 二进制。
@@ -548,40 +549,94 @@ fn hook(agent: &str, flags: &Flags) -> Result<(), Failure> {
         .read_to_string(&mut input)
         .map_err(|err| Failure::other(format!("读取 stdin 失败: {err}")))?;
 
-    let payload: Value = serde_json::from_str(&input)
-        .map_err(|err| Failure::other(format!("stdin 不是合法 JSON: {err}")))?;
+    let payload: Value = match serde_json::from_str(&input) {
+        Ok(payload) => payload,
+        Err(err) => {
+            log_hook(agent, "?", "-", &format!("stdin 不是合法 JSON: {err}"));
+            return Err(Failure::other(format!("stdin 不是合法 JSON: {err}")));
+        }
+    };
+
+    let event = payload["hook_event_name"].as_str().unwrap_or("?").to_string();
+    let session = session_id(&payload).unwrap_or_else(|| agent.to_string());
 
     let Some(action) = map_event(agent, &payload) else {
-        // 明确忽略的事件：一次 HTTP 都不发
+        // 明确忽略的事件：一次 HTTP 都不发，但日志里要留痕 ——
+        // 「某个事件其实一直在触发、只是被我们忽略了」正是需要能看见的信息
+        log_hook(agent, &event, &session, "ignored");
         return Ok(());
     };
 
-    let endpoint = Endpoint::discover(flags)?;
-    let session = session_id(&payload).unwrap_or_else(|| agent.to_string());
+    let outcome = match &action {
+        Action::Report(state) => (*state).to_string(),
+        Action::Clear => "clear".to_string(),
+    };
 
-    match action {
-        Action::Report(state) => {
-            let mut body = json!({ "state": state, "session": session, "agent": agent });
-            if let Some(cwd) = cwd_of(&payload) {
-                body["cwd"] = json!(cwd);
+    // 端口/token 解析失败也要记进日志：那是失败里最常见的一种
+    let result = match Endpoint::discover(flags) {
+        Err(err) => Err(err),
+        Ok(endpoint) => match action {
+            Action::Report(state) => {
+                let mut body = json!({ "state": state, "session": session, "agent": agent });
+                if let Some(cwd) = cwd_of(&payload) {
+                    body["cwd"] = json!(cwd);
+                }
+                let (status, text) = read_response!(client()
+                    .post(&endpoint.url("/state"))
+                    .header("Authorization", &endpoint.auth())
+                    .header("Content-Type", "application/json")
+                    .send(body.to_string()));
+                expect_success(status, &text).map(|_| ())
             }
-            let (status, text) = read_response!(client()
-                .post(&endpoint.url("/state"))
-                .header("Authorization", &endpoint.auth())
-                .header("Content-Type", "application/json")
-                .send(body.to_string()));
-            expect_success(status, &text)?;
-        }
-        Action::Clear => {
-            let (status, text) = read_response!(client()
-                .delete(&endpoint.url(&format!("/sessions/{session}")))
-                .header("Authorization", &endpoint.auth())
-                .call());
-            expect_success(status, &text)?;
-        }
+            Action::Clear => {
+                let (status, text) = read_response!(client()
+                    .delete(&endpoint.url(&format!("/sessions/{session}")))
+                    .header("Authorization", &endpoint.auth())
+                    .call());
+                expect_success(status, &text).map(|_| ())
+            }
+        },
+    };
+
+    match &result {
+        Ok(()) => log_hook(agent, &event, &session, &outcome),
+        Err(err) => log_hook(agent, &event, &session, &format!("失败: {}", err.message)),
+    }
+    result
+}
+
+/// 记一行 hook 调用。
+///
+/// **只写日志文件，绝不碰 stdout**（约束 1）。任何失败都忽略：为了记日志而
+/// 弄坏智能体的 hook 是本末倒置。
+fn log_hook(agent: &str, event: &str, session: &str, outcome: &str) {
+    let Ok(path) = config::hook_log_path() else {
+        return;
+    };
+
+    // 单代轮转。每次工具调用一行，不设上限的话会无界增长。
+    const MAX_BYTES: u64 = 512 * 1024;
+    if fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0) > MAX_BYTES {
+        let _ = fs::rename(&path, path.with_extension("log.1"));
     }
 
-    Ok(())
+    let line = format!(
+        "{}  {agent:<12} {event:<20} session={session:<38} {outcome}\n",
+        utc_hms()
+    );
+    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = file.write_all(line.as_bytes());
+    }
+}
+
+/// 日志时间戳。用 UTC 并在值上标 `Z`：不引入时区数据依赖，且不会含糊。
+fn utc_hms() -> String {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+        % 86_400;
+    format!("{:02}:{:02}:{:02}Z", secs / 3600, (secs % 3600) / 60, secs % 60)
 }
 
 enum Action {
@@ -614,8 +669,9 @@ fn map_claude(event: &str, payload: &Value) -> Option<Action> {
             }
         }
         "UserPromptSubmit" | "SubagentStart" | "PreCompact" => Action::Report("thinking"),
-        "PreToolUse" | "PostToolUse" | "PermissionDenied" | "SubagentStop"
-        | "PostCompact" => Action::Report("working"),
+        "PreToolUse" | "PostToolUse" | "PermissionDenied" | "PostCompact" => {
+            Action::Report("working")
+        }
         "PostToolUseFailure" => Action::Report("attention"),
         "PermissionRequest" => Action::Report("permission"),
         "Notification" => match payload["notification_type"].as_str().unwrap_or("") {
@@ -637,9 +693,7 @@ fn map_codex(event: &str) -> Option<Action> {
     Some(match event {
         "SessionStart" => Action::Report("idle"),
         "UserPromptSubmit" | "SubagentStart" | "PreCompact" => Action::Report("thinking"),
-        "PreToolUse" | "PostToolUse" | "SubagentStop" | "PostCompact" => {
-            Action::Report("working")
-        }
+        "PreToolUse" | "PostToolUse" | "PostCompact" => Action::Report("working"),
         "PermissionRequest" => Action::Report("permission"),
         "Stop" => Action::Report("done"),
         "Interrupt" | "SessionEnd" => Action::Clear,
@@ -656,8 +710,9 @@ fn map_cursor(event: &str, payload: &Value) -> Option<Action> {
         "beforeSubmitPrompt" | "afterAgentThought" | "subagentStart" | "preCompact" => {
             Action::Report("thinking")
         }
-        "preToolUse" | "postToolUse" | "beforeShellExecution" | "afterShellExecution"
-        | "subagentStop" => Action::Report("working"),
+        "preToolUse" | "postToolUse" | "beforeShellExecution" | "afterShellExecution" => {
+            Action::Report("working")
+        }
         "postToolUseFailure" => Action::Report("attention"),
         "afterAgentResponse" => Action::Report("done"),
         // 三家里只有 Cursor 的结束事件带 status，能直接区分正常结束和异常中断
@@ -823,6 +878,32 @@ mod tests {
             map_event("claude-code", &event("SessionEnd")),
             Some(Action::Clear)
         ));
+    }
+
+    /// 实测踩到的 bug：`Stop` 之后约 9 秒会跟来一个 `SubagentStop`。
+    /// 把它映射成 working 会把刚设好的 done 覆盖掉 —— 于是轮次明明结束了，
+    /// 灯却继续闪绿直到 TTL 到期。三家都有这个事件，所以三家都忽略它：
+    /// 主智能体还在干活时，PreToolUse / PostToolUse 本来就会持续报 working，
+    /// 丢掉这个事件几乎没有信息损失。
+    #[test]
+    fn subagent_stop_is_ignored_so_it_cannot_clobber_done() {
+        for (agent, subagent_event, stop_event) in [
+            ("claude-code", "SubagentStop", "Stop"),
+            ("codex", "SubagentStop", "Stop"),
+            ("cursor", "subagentStop", "stop"),
+        ] {
+            assert_eq!(
+                state_of(agent, &event(subagent_event)),
+                None,
+                "{agent} 的 {subagent_event} 应被忽略"
+            );
+            // 而轮次结束本身仍要正常报 done
+            assert_eq!(
+                state_of(agent, &event(stop_event)),
+                Some("done"),
+                "{agent} 的 {stop_event} 仍应报 done"
+            );
+        }
     }
 
     /// 这些事件频繁且与「一轮工作」无关，误报会让灯球乱闪

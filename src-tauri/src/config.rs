@@ -9,9 +9,12 @@ const MIN_SIZE: u16 = 12;
 const MAX_SIZE: u16 = 64;
 pub const DEFAULT_SIZE: u16 = 22;
 
-/// 圆点四周留出的透明边距，决定窗口比圆点大多少。
-/// 留一点是为了好抓取圆点来拖动。
+/// 圆点四周留白的**总量**（不是每边）。留白是为了好抓取圆点来拖动。
 pub const LAMP_MARGIN: u16 = 20;
+
+/// 灯球最多同时显示几个会话。超出的按优先级截断 —— 会话列表本就是按优先级
+/// 排的，所以截断后剩下的恰好是最紧急的那几个。
+pub const MAX_DOTS: u16 = 3;
 
 /// `~/.signalhub`
 ///
@@ -95,6 +98,15 @@ pub fn write_port(port: u16) -> io::Result<()> {
     fs::write(port_file()?, port.to_string())
 }
 
+/// hook 调用日志的路径。
+///
+/// 存在的原因很实际：出问题时（「灯为什么显示成这样」）需要知道**哪些事件
+/// 真的触发了**。事件本身看不到的话，这类问题只能靠猜——而「一轮结束时
+/// Stop 有没有触发」正是这样一个问题。
+pub fn hook_log_path() -> io::Result<PathBuf> {
+    Ok(data_dir()?.join("hooks.log"))
+}
+
 // ---- 用户设置 --------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,11 +114,14 @@ pub struct Settings {
     /// 圆点直径（px）
     pub size: u16,
     pub always_on_top: bool,
+    /// 「有事才显形」：空闲 / 沉默 / 离线时把圆点压到几乎透明，
+    /// 只有真正有活动或需要你注意时才完全显形。
+    pub quiet: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { size: DEFAULT_SIZE, always_on_top: true }
+        Self { size: DEFAULT_SIZE, always_on_top: true, quiet: true }
     }
 }
 
@@ -118,9 +133,17 @@ impl Settings {
         self
     }
 
-    /// 窗口边长：圆点加上四周留白。
-    pub fn window_side(self) -> u16 {
-        self.size + LAMP_MARGIN
+    /// 按可见圆点个数算出窗口尺寸。
+    ///
+    /// 只有一个会话时窗口仍是 `size + LAMP_MARGIN` 的方形（默认 22+20=42）——
+    /// 多点只在真有多个会话时才占宽。否则一个常驻的宽透明窗口会白白吃掉桌面的
+    /// 点击，而那正是这个工具最不该有的副作用。
+    pub fn window_size(self, dots: u16) -> (u16, u16) {
+        let dots = dots.clamp(1, MAX_DOTS);
+        let gap = self.size / 3;
+        let width = dots * self.size + (dots - 1) * gap + LAMP_MARGIN;
+        let height = self.size + LAMP_MARGIN;
+        (width, height)
     }
 }
 

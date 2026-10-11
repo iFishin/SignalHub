@@ -447,7 +447,8 @@ mod tests {
         .await;
         assert_eq!(status, 200);
         assert!(body.contains("\"removed\":true"), "body: {body}");
-        assert!(body.contains("\"aggregate\":\"idle\""), "body: {body}");
+        // 清掉最后一个会话后就没人上报了，因此是 offline 而不是 idle
+        assert!(body.contains("\"aggregate\":\"offline\""), "body: {body}");
 
         let (status, body) = call(
             &server,

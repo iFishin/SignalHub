@@ -71,7 +71,13 @@ fn set_settings(
     config::save_settings(settings).map_err(|err| format!("保存设置失败: {err}"))?;
 
     *state.lock().expect("settings poisoned") = settings;
-    apply_settings(&app, settings);
+
+    let snapshot = app
+        .state::<SharedStore>()
+        .lock()
+        .expect("state store poisoned")
+        .snapshot();
+    apply_settings(&app, settings, &snapshot);
     // 两个窗口都要跟着变（灯球改尺寸，设置窗改控件状态）
     let _ = app.emit("signalhub://settings", settings);
     Ok(settings)
@@ -101,13 +107,43 @@ fn quit(app: tauri::AppHandle) {
     app.exit(0);
 }
 
-fn apply_settings(app: &tauri::AppHandle, settings: Settings) {
+fn apply_settings(app: &tauri::AppHandle, settings: Settings, snapshot: &Snapshot) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_always_on_top(settings.always_on_top);
+    }
+    apply_window_size(app, settings, snapshot);
+}
+
+/// 灯球上可见的圆点个数。没有会话时也要显示一个点（表示 offline），所以下限是
+/// 1；上限是 `MAX_DOTS`，超出的按优先级截断 —— 会话列表本就按优先级排，
+/// 所以剩下的恰好是最紧急的那几个。
+fn visible_dots(snapshot: &Snapshot) -> u16 {
+    (snapshot.sessions.len() as u16).clamp(1, config::MAX_DOTS)
+}
+
+/// 按圆点个数调整窗口尺寸。
+///
+/// 只在尺寸真的变了才 `set_size`：状态变化一秒可能好几次，每次都 resize
+/// 是没必要的系统调用。
+fn apply_window_size(app: &tauri::AppHandle, settings: Settings, snapshot: &Snapshot) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
-    let side = settings.window_side();
-    let _ = window.set_size(LogicalSize::new(side, side));
-    let _ = window.set_always_on_top(settings.always_on_top);
+    let (width, height) = settings.window_size(visible_dots(snapshot));
+
+    // inner_size 给的是物理像素，要除掉缩放比才能和逻辑尺寸比较
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let needs_resize = window
+        .inner_size()
+        .map(|size| {
+            (size.width as f64 / scale).round() as u16 != width
+                || (size.height as f64 / scale).round() as u16 != height
+        })
+        .unwrap_or(true);
+
+    if needs_resize {
+        let _ = window.set_size(LogicalSize::new(width, height));
+    }
 }
 
 /// 由命令和托盘菜单共用。
@@ -185,7 +221,12 @@ pub fn run() {
             app.manage(SharedSettings::new(settings));
 
             // 先套用尺寸和置顶，再显示：否则会先按配置里的默认尺寸闪一下
-            apply_settings(app.handle(), settings);
+            let initial = app
+                .state::<SharedStore>()
+                .lock()
+                .expect("state store poisoned")
+                .snapshot();
+            apply_settings(app.handle(), settings, &initial);
             if let Some(window) = app.get_webview_window("main") {
                 window.set_visible_on_all_workspaces(true)?;
                 window.show()?;
@@ -195,7 +236,20 @@ pub fn run() {
             // 让启动直接失败并打出来，好过一个「能启动但上报接口静默不工作」的 app。
             let token = config::load_or_create_token()?;
 
-            let notify: Notifier = notify::to_lamp_window(app.handle().clone());
+            // 通知出口多包一层：每次状态变化都要先按圆点个数核对窗口尺寸，
+            // 再推给前端。放在这里而不是 sweep 里，是因为尺寸取决于快照内容。
+            let emit = notify::to_lamp_window(app.handle().clone());
+            let notify: Notifier = {
+                let app_handle = app.handle().clone();
+                Arc::new(move |snapshot: &Snapshot| {
+                    let settings = *app_handle
+                        .state::<SharedSettings>()
+                        .lock()
+                        .expect("settings poisoned");
+                    apply_window_size(&app_handle, settings, snapshot);
+                    emit(snapshot);
+                })
+            };
             app.manage(notify.clone());
 
             wire_settings_window(app);

@@ -99,8 +99,10 @@ html[data-window="settings"] #root {
   margin-top: 6px;
 }
 
-/* 状态圆点，颜色来自 state.css 的 --state */
-.dot {
+/* 状态圆点，颜色来自 state.css 的 --state。
+   类名刻意不叫 .dot：灯球（lamp.css）用的是 .dot，而两个样式表在同一个
+   bundle 里全局加载，同名会互相覆盖 —— 之前就因此把灯球的点压成了 9px。 */
+.state-dot {
   width: 9px;
   height: 9px;
   flex: none;
@@ -246,7 +248,7 @@ html[data-window="settings"] #root {
   min-width: 0;
 }
 
-.session .dot {
+.session .state-dot {
   margin-top: 5px;
 }
 

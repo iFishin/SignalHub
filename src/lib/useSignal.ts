@@ -7,9 +7,9 @@ import type { Snapshot } from "./types";
 /** 与 Rust 侧 sweep::STATE_EVENT 必须一致。 */
 const STATE_EVENT = "signalhub://state";
 
-/** 初始值取 off：在拿到真实状态之前不该假装自己是绿的。 */
+/** 初始值取 offline：在拿到真实状态之前不该假装自己是绿的，也不该假装有人在上报。 */
 const INITIAL: Snapshot = {
-  aggregate: "off",
+  aggregate: "offline",
   paused: false,
   since_ms: 0,
   message: null,

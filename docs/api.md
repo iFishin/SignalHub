@@ -17,11 +17,20 @@
 | `idle` | 绿、常亮 | 空闲，无任务 |
 | `thinking` | 绿、快闪 | 正在推理 |
 | `working` | 绿、慢闪 | 正在执行工具/任务 |
-| `done` | 绿、常亮 + 亮脉冲 | 任务完成（30s 后自动回 `idle`） |
+| `done` | 绿、常亮 + 亮脉冲 | 任务完成（30s 后该会话消失） |
 | `attention` | 黄、闪 | 需要关注 |
 | `permission` | 红、闪 | 需要授权/确认 |
 | `error` | 红、快闪 | 出错/阻塞 |
-| `off` | 灰、熄灭 | 监控暂停 |
+| `off` | 灰、熄灭 | 暂停该会话的监控 |
+
+> **`stale`、`offline`、`off` 这三个是聚合派生出来的，不能上报。** `GET /v1/state` 的
+> `aggregate` 字段可能出现它们（`stale` = 有会话但不说话了，`offline` = 一个会话都
+> 没有），但把它们当 `state` 上报会得到 400。它们是「观测到的结果」，不是外部程序
+> 该声称的状态。
+
+**每个状态都有静默超时**，超时后会话转入 `stale` 而不是消失。所以「上报完就不管」是
+安全的：`working` 90 秒、`thinking` 60 秒、`done` 30 秒（到期直接消失）、`idle` 600 秒、
+`permission` 600 秒、`attention`/`error` 300 秒。长任务请显式传 `ttl_ms` 覆盖。
 
 **别名（`state` 与 `--state` 位置参数都接受）**，便于对接不同来源的事件名：
 
@@ -118,13 +127,16 @@ Authorization: Bearer <token>
       "agent": "claude-code",
       "cwd": "/Users/me/proj",
       "message": "需要批准: rm -rf build",
-      "age_ms": 4200
+      "age_ms": 4200,
+      "stale_progress": null
     }
   ]
 }
 ```
 
 `aggregate` 就是灯球当前显示的状态；`message` 来自聚合胜出的那个会话。
+
+`stale_progress` 只有 `stale` 会话有值（0.0–1.0，1.0 = 刚转 `stale`，0.0 = 即将被删除），灯球用它在圆点上画细环。**它由服务端算好**，客户端不必复刻 TTL 常量——`age_ms` 是「距上次状态变化」，并不等于「沉默多久」。
 
 ### 2.5 `POST /v1/monitor`
 
@@ -272,7 +284,6 @@ CLI 自己不校验状态名，而是原样转发给服务端：别名表只有�
 | `Notification` | `agent_completed` | `done` | |
 | `Notification` | `idle_prompt` | `attention` | Claude 停下等你开口 |
 | `SubagentStart` | — | `thinking` | |
-| `SubagentStop` | — | `working` | 子智能体结束，主智能体继续 |
 | `PermissionDenied` | — | `working` | 权限点已解决，红灯应该灭 |
 | `Stop` | — | `done` | 一轮回复结束 |
 | `StopFailure` | — | `error` | 轮次因 API 错误中断 |
@@ -282,9 +293,11 @@ CLI 自己不校验状态名，而是原样转发给服务端：别名表只有�
 
 **明确忽略**（收到这些事件就原样退出，不上报）
 
-`Setup`、`UserPromptExpansion`、`PostToolBatch`、`MessageDisplay`、`TaskCreated`、`TaskCompleted`、`InstructionsLoaded`、`ConfigChange`、`CwdChanged`、`DirectoryAdded`、`FileChanged`、`WorktreeCreate`、`WorktreeRemove`、`PreModelSwitch`、`PostModelSwitch`、`Elicitation`、`ElicitationResult`。
+`Setup`、`UserPromptExpansion`、`PostToolBatch`、`MessageDisplay`、`TaskCreated`、`TaskCompleted`、`InstructionsLoaded`、`ConfigChange`、`CwdChanged`、`DirectoryAdded`、`FileChanged`、`WorktreeCreate`、`WorktreeRemove`、`PreModelSwitch`、`PostModelSwitch`、`Elicitation`、`ElicitationResult`、**`SubagentStop`**。
 
 **为什么要把「忽略」也写清楚**：`TaskCreated`/`TaskCompleted` 指的是 Claude 内部的待办清单，跟「一轮工作」不是一回事；`FileChanged`/`CwdChanged` 在会话里非常频繁。把它们当活动信号会让灯球乱闪。少报一点比报错好。
+
+**`SubagentStop` 为什么必须忽略**（实测踩到的 bug）：它在 `Stop` 之后约 9 秒还会触发一次。若把它映射成 `working`，就会把刚设好的 `done` 覆盖掉——轮次明明结束了，灯却继续闪绿直到 TTL 到期。而主智能体还在干活时，`PreToolUse`/`PostToolUse` 本来就会持续报 `working`，所以丢掉这个事件几乎没有信息损失。Codex 与 Cursor 的同名事件同理。
 
 **两个 matcher 注意事项**
 
@@ -399,7 +412,8 @@ async = true
 | `UserPromptSubmit` | `thinking` |
 | `PreToolUse` / `PostToolUse` | `working` |
 | `PermissionRequest` | `permission` |
-| `SubagentStart` / `SubagentStop` | `thinking` / `working` |
+| `SubagentStart` | `thinking` |
+| `SubagentStop` | **忽略**（见 §4.2 的说明） |
 | `PreCompact` / `PostCompact` | `thinking` / `working` |
 | `Stop` | `done` |
 | `Interrupt` | 清除会话 |
@@ -430,7 +444,8 @@ stdin 字段：`session_id`、`turn_id`、`agent_id`、`agent_type`、`transcrip
 | `beforeSubmitPrompt` | `thinking` |
 | `preToolUse` / `postToolUse` | `working` |
 | `postToolUseFailure` | `attention` |
-| `subagentStart` / `subagentStop` | `thinking` / `working` |
+| `subagentStart` | `thinking` |
+| `subagentStop` | **忽略**（见 §4.2 的说明） |
 | `beforeShellExecution` / `afterShellExecution` | `working` |
 | `afterAgentThought` | `thinking` |
 | `afterAgentResponse` | `done` |
@@ -444,6 +459,22 @@ stdin 字段：`conversation_id`、`generation_id`、`model`、`hook_event_name`
 Cursor 的 **`stop` 事件带 `status`（`completed` / `aborted` / `error`）**，这是三家里唯一能直接区分「正常结束」和「异常中断」的，所以 Cursor 的 `error` 判定比 Claude Code 更准（后者只能靠 `StopFailure`）。
 
 只有当 Cursor 的 hook 返回 `permission: allow|deny|ask` 时才涉及授权，而上报型 hook 不返回这个字段，因此**就没有对应的「需要授权」事件可映射**——这是 Cursor 侧的能力缺口，不要在文档里假装有。
+
+### 4.9 hook 调用日志
+
+hook 模式会把每次调用追加到 `~/.signalhub/hooks.log`：
+
+```
+15:23:02Z  claude-code  PreToolUse           session=log-test  working
+15:23:02Z  claude-code  FileChanged          session=log-test  ignored
+15:23:02Z  claude-code  SessionEnd           session=log-test  clear
+```
+
+时间戳是 **UTC**（后缀 `Z`），刻意不引入时区依赖。四列分别是时间、智能体、事件名、会话、结果；结果是上报的状态、`clear`、`ignored`（事件被明确忽略）、或 `失败: …`。
+
+**为什么需要它**：出问题时（「灯为什么显示成这样」）要知道**哪些事件真的触发了**。比如「一轮结束时 `Stop` 有没有触发」就只能靠它回答——从状态本身看不出来，因为状态会停在最后一个事件上。被忽略的事件也记，因为「某个事件其实一直在触发、只是被我们忽略了」同样是需要能看见的信息。
+
+日志超过 512KB 会轮转一次（`hooks.log.1`），只保留一代。写日志失败一律忽略——为了记日志而弄坏智能体的 hook 是本末倒置。
 
 ### 4.8 不用 CLI 的最小接入
 

@@ -3,14 +3,22 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// 没有显式 TTL 的会话（即 idle）静默多久后被回收。
-/// 只作用于无 TTL 的会话，因此不会与用户显式传入的 ttl_ms 冲突。
-const IDLE_SESSION_GC: Duration = Duration::from_secs(30 * 60);
+/// 会话静默超时后转入 `stale`（而不是直接消失）并再保留多久。
+///
+/// 这一段存在的意义是把「智能体不说话了」和「智能体空闲待命」分开显示。
+/// 直接删掉的话，智能体崩溃/被强杀（SessionEnd 没触发）会表现为灯保持原状
+/// 直到 TTL 到期，用户看不出区别。
+const STALE_GRACE: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Signal {
+    /// 一个会话都没有。派生状态，不可上报。
+    Offline,
+    /// 监控被全局暂停。派生状态，不可上报。
     Off,
+    /// 会话静默超过 TTL。派生状态，不可上报。
+    Stale,
     Idle,
     Done,
     Thinking,
@@ -22,6 +30,9 @@ pub enum Signal {
 
 impl Signal {
     /// 别名表只存在于这一处，CLI 与 HTTP 共用（见下面的 Deserialize 实现）。
+    ///
+    /// `stale` / `offline` / `off` 之外的派生状态**不在**这里，因此无法被上报：
+    /// 它们是聚合出来的结果，不是外部程序该声称的状态。
     pub fn parse(s: &str) -> Result<Self, String> {
         let key = s.trim().to_ascii_lowercase().replace('-', "_");
         Ok(match key.as_str() {
@@ -33,16 +44,31 @@ impl Signal {
             "attention" | "notification" | "needs_attention" => Signal::Attention,
             "permission" | "permission_request" | "needs_permission" => Signal::Permission,
             "error" | "blocked" | "fail" | "failure" | "stuck" => Signal::Error,
-            other => return Err(format!("unknown state {other:?}")),
+            "stale" | "offline" => {
+                return Err(format!(
+                    "{key:?} 是聚合派生出来的状态，不能上报；\
+                     可上报的状态: idle thinking working done attention permission error off"
+                ));
+            }
+            other => {
+                return Err(format!(
+                    "unknown state {other:?}；\
+                     可上报的状态: idle thinking working done attention permission error off"
+                ));
+            }
         })
     }
 
     /// 聚合时取 max。数值本身无意义，只有相对顺序有意义。
+    ///
+    /// `stale` 刻意排在 `idle` 之下：一路会话在报 idle（活着）时，不该被另一路
+    /// 已经沉默的会话盖成灰的。
     pub fn priority(self) -> u8 {
         match self {
-            Signal::Off => 0,
-            Signal::Idle => 1,
-            Signal::Done => 5,
+            Signal::Offline | Signal::Off => 0,
+            Signal::Stale => 1,
+            Signal::Idle => 2,
+            Signal::Done => 6,
             Signal::Thinking => 15,
             Signal::Working => 20,
             Signal::Attention => 30,
@@ -51,17 +77,25 @@ impl Signal {
         }
     }
 
-    /// 到期后会话被丢弃，聚合自然回落到下一个会话或 idle。
-    /// None 表示最后写入者胜、不自动过期。
-    pub fn default_ttl(self) -> Option<Duration> {
+    /// 静默多久后该状态视为过期。
+    ///
+    /// 现在**每个状态都有 TTL**（早先 `idle` 没有，导致一个忘关的会话能一直
+    /// 显示「空闲」长达半小时）。工作类状态的窗口刻意很短：干活时每次工具调用
+    /// 都会触发 hook，静默 60–90 秒基本可以断定不在工作了。这决定了「智能体
+    /// 消失后灯还会错多久」。
+    pub fn default_ttl(self) -> Duration {
         match self {
-            Signal::Off | Signal::Idle => None,
-            Signal::Done => Some(Duration::from_secs(30)),
-            Signal::Thinking => Some(Duration::from_secs(120)),
-            Signal::Working => Some(Duration::from_secs(300)),
-            Signal::Attention => Some(Duration::from_secs(300)),
-            Signal::Permission => Some(Duration::from_secs(600)),
-            Signal::Error => Some(Duration::from_secs(300)),
+            // 这两个永远不会成为会话状态（Off 在 apply 里转成 clear，
+            // Offline 是聚合产物），取值无实际意义。
+            Signal::Off | Signal::Offline => Duration::from_secs(600),
+            Signal::Stale => STALE_GRACE,
+            Signal::Idle => Duration::from_secs(600),
+            Signal::Done => Duration::from_secs(30),
+            Signal::Thinking => Duration::from_secs(60),
+            Signal::Working => Duration::from_secs(90),
+            Signal::Attention => Duration::from_secs(300),
+            Signal::Permission => Duration::from_secs(600),
+            Signal::Error => Duration::from_secs(300),
         }
     }
 }
@@ -113,11 +147,10 @@ struct Session {
     agent: Option<String>,
     cwd: Option<String>,
     message: Option<String>,
-    /// 单调时钟，用于 TTL 判定
-    expires_at: Option<Instant>,
-    /// 最后一次上报时间，用于空闲回收
-    last_seen: Instant,
-    /// 进入当前状态的时间，用于 UI 的「已持续多久」
+    /// 单调时钟，用于 TTL 判定。每个状态都有 TTL，所以这里必定有值。
+    expires_at: Instant,
+    /// 进入当前状态的时间，用于 UI 的「已持续多久」。
+    /// 转入 `stale` 时刻意不改它，这样它读起来就是「沉默多久了」。
     since: SystemTime,
 }
 
@@ -129,6 +162,11 @@ pub struct SessionView {
     pub cwd: Option<String>,
     pub message: Option<String>,
     pub age_ms: u64,
+    /// 仅 `stale` 会话有值：距被删除还剩多少宽限期，1.0 = 刚转 stale，0.0 = 即将消失。
+    ///
+    /// 由服务端算好给前端画细环。不在前端算是因为那要求前端也复刻一遍 TTL 常量
+    /// —— 而 `age_ms` 是「距上次状态变化」，并不等于「沉默多久」。
+    pub stale_progress: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -178,11 +216,11 @@ impl Store {
             Some(p) if p.state == req.state => p.since,
             _ => SystemTime::now(),
         };
-        let expires_at = req
+        let ttl = req
             .ttl_ms
             .map(Duration::from_millis)
-            .or_else(|| req.state.default_ttl())
-            .map(|ttl| now + ttl);
+            .unwrap_or_else(|| req.state.default_ttl());
+        let expires_at = now + ttl;
 
         self.sessions.insert(
             session.clone(),
@@ -193,7 +231,6 @@ impl Store {
                 cwd,
                 message: req.message,
                 expires_at,
-                last_seen: now,
                 since,
             },
         );
@@ -225,13 +262,40 @@ impl Store {
         self.settle(before)
     }
 
-    /// 丢弃过期会话，并回收长时间无事件的会话。由 sweep 任务定期调用。
+    /// 处理静默超时的会话：转入 `stale`，而不是直接删掉。
+    ///
+    /// 由 sweep 任务定期调用。这是「智能体消失后灯还会错多久」的唯一闸门。
     pub fn expire(&mut self, now: Instant) -> bool {
         let before = self.visible();
-        self.sessions.retain(|_, s| match s.expires_at {
-            Some(expires_at) => now < expires_at,
-            None => now.saturating_duration_since(s.last_seen) < IDLE_SESSION_GC,
-        });
+
+        // 两趟处理：先只读地判定谁该走哪条路，再改动。
+        // 一趟里同时 retain + 改字段需要绕借用检查，反而更难看。
+        let mut to_remove = Vec::new();
+        let mut to_stale = Vec::new();
+        for (id, session) in &self.sessions {
+            if now < session.expires_at {
+                continue;
+            }
+            // done 的语义就是「完成，回到常态」，直接消失；
+            // 已经是 stale 的再到期就真删掉。
+            if matches!(session.state, Signal::Done | Signal::Stale) {
+                to_remove.push(id.clone());
+            } else {
+                to_stale.push(id.clone());
+            }
+        }
+
+        for id in to_remove {
+            self.sessions.remove(&id);
+        }
+        for id in to_stale {
+            if let Some(session) = self.sessions.get_mut(&id) {
+                session.state = Signal::Stale;
+                session.expires_at = now + STALE_GRACE;
+                // since 保持不动，于是面板里的 age 读起来是「沉默多久了」
+            }
+        }
+
         self.settle(before)
     }
 
@@ -242,10 +306,17 @@ impl Store {
         if self.paused {
             return Signal::Off;
         }
-        self.winner().map(|s| s.state).unwrap_or(Signal::Idle)
+        // 没有任何会话时给 Offline 而不是 Idle：后者会被读成
+        // 「智能体在待命」，那是错的。
+        self.winner().map(|s| s.state).unwrap_or(Signal::Offline)
     }
 
     pub fn snapshot(&self) -> Snapshot {
+        self.snapshot_at(Instant::now())
+    }
+
+    /// 时间可注入的版本。`stale_progress` 依赖「现在」，用真实时钟就没法单测。
+    pub fn snapshot_at(&self, now: Instant) -> Snapshot {
         let mut sessions: Vec<SessionView> = self
             .sessions
             .values()
@@ -261,6 +332,10 @@ impl Store {
                     .duration_since(s.since)
                     .unwrap_or_default()
                     .as_millis() as u64,
+                stale_progress: (s.state == Signal::Stale).then(|| {
+                    let remaining = s.expires_at.saturating_duration_since(now);
+                    (remaining.as_secs_f32() / STALE_GRACE.as_secs_f32()).clamp(0.0, 1.0)
+                }),
             })
             .collect();
         sessions.sort_by(|a, b| {
@@ -324,10 +399,11 @@ mod tests {
         s.apply(t, req)
     }
 
+    /// 没有任何会话时是 Offline 而不是 Idle：后者会被读成「智能体在待命」
     #[test]
-    fn empty_store_is_idle() {
+    fn an_empty_store_is_offline_not_idle() {
         let s = Store::default();
-        assert_eq!(s.aggregate(), Signal::Idle);
+        assert_eq!(s.aggregate(), Signal::Offline);
     }
 
     #[test]
@@ -362,8 +438,9 @@ mod tests {
         assert_eq!(s.aggregate(), Signal::Working);
     }
 
+    /// done 的语义是「完成，回到常态」，所以它到期后直接消失，不转 stale
     #[test]
-    fn done_expires_back_to_idle() {
+    fn done_expires_away_without_becoming_stale() {
         let (mut s, t) = (Store::default(), Instant::now());
         rep(&mut s, t, "a", Signal::Done);
 
@@ -371,7 +448,8 @@ mod tests {
         assert_eq!(s.aggregate(), Signal::Done);
 
         assert!(s.expire(t + Duration::from_secs(31)));
-        assert_eq!(s.aggregate(), Signal::Idle);
+        assert!(s.snapshot().sessions.is_empty(), "不该留下 stale 会话");
+        assert_eq!(s.aggregate(), Signal::Offline);
     }
 
     #[test]
@@ -429,7 +507,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_ttl_protects_a_long_task_from_idle_gc() {
+    fn explicit_ttl_overrides_the_short_working_window() {
         let (mut s, t) = (Store::default(), Instant::now());
         let mut req = Report::new(Signal::Working);
         req.session = Some("long".into());
@@ -440,15 +518,144 @@ mod tests {
         assert_eq!(s.aggregate(), Signal::Working);
     }
 
+    /// idle 会话静默过久也会转 stale。早先它没有 TTL（半小时才回收），
+    /// 于是一个忘关的会话能一直显示「空闲」—— 这正是「智能体走了灯还亮着」
+    /// 的成因之一。
     #[test]
-    fn idle_sessions_are_gc_ed_after_silence() {
+    fn a_silent_idle_session_eventually_goes_stale() {
         let (mut s, t) = (Store::default(), Instant::now());
         rep(&mut s, t, "a", Signal::Idle);
-        assert_eq!(s.snapshot().sessions.len(), 1);
-
-        assert!(s.expire(t + IDLE_SESSION_GC + Duration::from_secs(1)));
-        assert!(s.snapshot().sessions.is_empty());
         assert_eq!(s.aggregate(), Signal::Idle);
+
+        let idle_ttl = Signal::Idle.default_ttl();
+        assert!(!s.expire(t + idle_ttl - Duration::from_secs(1)));
+        assert_eq!(s.aggregate(), Signal::Idle, "还没到时间，不该变");
+
+        assert!(s.expire(t + idle_ttl));
+        assert_eq!(s.aggregate(), Signal::Stale);
+        assert_eq!(s.snapshot().sessions.len(), 1, "stale 会话要保留，不是删掉");
+    }
+
+    /// 会话静默超时后转 stale，而不是消失 —— 这是「智能体不说话了」和
+    /// 「智能体空闲待命」能分开显示的关键
+    #[test]
+    fn a_silent_working_session_becomes_stale_not_gone() {
+        let (mut s, t) = (Store::default(), Instant::now());
+        rep(&mut s, t, "a", Signal::Working);
+
+        assert!(s.expire(t + Signal::Working.default_ttl()));
+
+        let view = &s.snapshot().sessions[0];
+        assert_eq!(view.state, Signal::Stale);
+        assert_eq!(view.id, "a", "会话还在，只是标记为沉默");
+        assert_eq!(s.aggregate(), Signal::Stale);
+    }
+
+    #[test]
+    fn a_stale_session_is_dropped_after_its_grace_period() {
+        let (mut s, t) = (Store::default(), Instant::now());
+        rep(&mut s, t, "a", Signal::Working);
+        let ttl = Signal::Working.default_ttl();
+
+        s.expire(t + ttl);
+        assert_eq!(s.aggregate(), Signal::Stale);
+
+        assert!(!s.expire(t + ttl + Duration::from_secs(299)));
+        assert_eq!(s.aggregate(), Signal::Stale, "宽限期内仍应保留");
+
+        assert!(s.expire(t + ttl + Duration::from_secs(301)));
+        assert!(s.snapshot().sessions.is_empty());
+        assert_eq!(s.aggregate(), Signal::Offline);
+    }
+
+    /// 一路会话还活着（idle）时，不该被另一路已经沉默的会话盖成灰的
+    #[test]
+    fn a_live_idle_session_outranks_a_stale_one() {
+        let (mut s, t) = (Store::default(), Instant::now());
+        rep(&mut s, t, "silent", Signal::Working);
+        rep(&mut s, t, "alive", Signal::Idle);
+
+        s.expire(t + Signal::Working.default_ttl());
+
+        let states: Vec<Signal> = s.snapshot().sessions.iter().map(|v| v.state).collect();
+        assert!(states.contains(&Signal::Stale), "{states:?}");
+        assert!(states.contains(&Signal::Idle), "{states:?}");
+        assert_eq!(s.aggregate(), Signal::Idle, "活着的那一路优先");
+    }
+
+    #[test]
+    fn stale_progress_counts_down_from_one_to_zero() {
+        let (mut s, t) = (Store::default(), Instant::now());
+        rep(&mut s, t, "a", Signal::Working);
+        let ttl = Signal::Working.default_ttl();
+
+        // 非 stale 会话没有这个值
+        assert_eq!(s.snapshot_at(t).sessions[0].stale_progress, None);
+
+        // 刚转 stale：还剩满额宽限
+        s.expire(t + ttl);
+        let fresh = s.snapshot_at(t + ttl).sessions[0].stale_progress.unwrap();
+        assert!(fresh > 0.98, "刚转 stale 应接近 1.0，实际 {fresh}");
+
+        // 宽限期过半
+        let half = s
+            .snapshot_at(t + ttl + Duration::from_secs(150))
+            .sessions[0]
+            .stale_progress
+            .unwrap();
+        assert!((0.4..0.6).contains(&half), "过半时应接近 0.5，实际 {half}");
+
+        // 到点：归零
+        let gone = s
+            .snapshot_at(t + ttl + Duration::from_secs(300))
+            .sessions[0]
+            .stale_progress
+            .unwrap();
+        assert!(gone < 0.02, "宽限用尽应接近 0.0，实际 {gone}");
+    }
+
+    #[test]
+    fn reporting_again_clears_stale() {
+        let (mut s, t) = (Store::default(), Instant::now());
+        rep(&mut s, t, "a", Signal::Working);
+        s.expire(t + Signal::Working.default_ttl());
+        assert_eq!(s.aggregate(), Signal::Stale);
+
+        rep(&mut s, t, "a", Signal::Working);
+        assert_eq!(s.aggregate(), Signal::Working, "恢复上报就该离开 stale");
+    }
+
+    /// stale / offline 是聚合派生出来的，外部程序不该声称自己处于其中
+    #[test]
+    fn derived_states_cannot_be_reported() {
+        for raw in ["stale", "offline"] {
+            let err = raw.parse::<Signal>().unwrap_err();
+            assert!(err.contains("不能上报"), "{raw}: {err}");
+        }
+        assert!(serde_json::from_str::<Report>(r#"{"state":"stale"}"#).is_err());
+        assert!(serde_json::from_str::<Report>(r#"{"state":"offline"}"#).is_err());
+    }
+
+    /// 每个状态都必须有 TTL。工作类状态的窗口尤其要短 —— 它决定了
+    /// 「智能体消失后灯还会错多久」。
+    #[test]
+    fn every_state_has_a_ttl_and_working_is_short() {
+        for state in [
+            Signal::Offline,
+            Signal::Off,
+            Signal::Stale,
+            Signal::Idle,
+            Signal::Done,
+            Signal::Thinking,
+            Signal::Working,
+            Signal::Attention,
+            Signal::Permission,
+            Signal::Error,
+        ] {
+            assert!(state.default_ttl() > Duration::ZERO, "{state:?} 缺少 TTL");
+        }
+        assert!(Signal::Working.default_ttl() <= Duration::from_secs(120));
+        assert!(Signal::Thinking.default_ttl() <= Duration::from_secs(120));
     }
 
     #[test]
@@ -457,7 +664,7 @@ mod tests {
         rep(&mut s, t, "a", Signal::Error);
         assert!(rep(&mut s, t, "a", Signal::Off), "清除应报告变化");
         assert!(s.snapshot().sessions.is_empty());
-        assert_eq!(s.aggregate(), Signal::Idle);
+        assert_eq!(s.aggregate(), Signal::Offline);
     }
 
     #[test]
@@ -483,9 +690,9 @@ mod tests {
         // 再删一次：既没移除，也没有任何可见变化
         assert_eq!(s.remove_session("b"), (false, false));
 
-        // 删掉最后一个会话，聚合回到 idle
+        // 删掉最后一个会话，就没有任何会话在报了
         assert_eq!(s.remove_session("a"), (true, true));
-        assert_eq!(s.aggregate(), Signal::Idle);
+        assert_eq!(s.aggregate(), Signal::Offline);
     }
 
     #[test]
@@ -524,11 +731,15 @@ mod tests {
     fn serde_serialize_uses_canonical_lowercase() {
         assert_eq!(serde_json::to_string(&Signal::Permission).unwrap(), r#""permission""#);
         assert_eq!(serde_json::to_string(&Signal::Error).unwrap(), r#""error""#);
+        // 派生状态也要能序列化出去（前端的灯球与设置面板都按这个值取色）
+        assert_eq!(serde_json::to_string(&Signal::Stale).unwrap(), r#""stale""#);
+        assert_eq!(serde_json::to_string(&Signal::Offline).unwrap(), r#""offline""#);
     }
 
     #[test]
     fn priority_order_matches_spec() {
         let ascending = [
+            Signal::Stale,
             Signal::Idle,
             Signal::Done,
             Signal::Thinking,
@@ -545,6 +756,7 @@ mod tests {
                 pair[1]
             );
         }
-        assert_eq!(Signal::Off.priority(), 0, "off 最低");
+        assert_eq!(Signal::Offline.priority(), 0, "没有任何会话时最低");
+        assert_eq!(Signal::Off.priority(), 0, "暂停时最低");
     }
 }

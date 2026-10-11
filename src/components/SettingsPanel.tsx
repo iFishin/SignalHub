@@ -78,7 +78,7 @@ export function SettingsPanel({ snapshot }: Props) {
   return (
     <div className="settings">
       <h1 data-state={snapshot.aggregate}>
-        <span className="dot" />
+        <span className="state-dot" />
         {SIGNAL_LABEL[snapshot.aggregate]}
       </h1>
       <p className="headline-message">
@@ -109,6 +109,13 @@ export function SettingsPanel({ snapshot }: Props) {
             onChange={(on) => patch({ always_on_top: on })}
           />
         </Row>
+        <Row label="安静模式">
+          <Switch on={settings.quiet} onChange={(on) => patch({ quiet: on })} />
+        </Row>
+        <p className="hint">
+          安静模式下，空闲或沉默时圆点几乎透明，只有真正有活动或需要你注意时才显形；
+          鼠标移到它上面会恢复。关掉则始终完全可见。
+        </p>
       </div>
 
       <div className="section">
@@ -143,7 +150,7 @@ export function SettingsPanel({ snapshot }: Props) {
           <ul className="sessions">
             {snapshot.sessions.map((session) => (
               <li key={session.id} className="session" data-state={session.state}>
-                <span className="dot" />
+                <span className="state-dot" />
                 {/* 窄面板里挤成一行会把 id 压没，所以状态/来源单独放上行 */}
                 <div className="session-body">
                   <div className="session-line">
