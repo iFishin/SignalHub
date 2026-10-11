@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { inTauri } from "../lib/env";
 import { SIGNAL_LABEL } from "../lib/signals";
+import type { Palette, Shape } from "../lib/useSettings";
 import type { SessionView, SignalState } from "../lib/types";
 
 /** 与 Rust 侧 `config::MAX_DOTS` 一致。 */
@@ -17,6 +18,10 @@ interface Props {
   size: number;
   /** 安静模式：没事时压到几乎看不见，悬停恢复。 */
   quiet: boolean;
+  /** 形状 / 外壳 / 配色 —— 都通过根元素的 data 属性交给 CSS 处理。 */
+  shape: Shape;
+  bezel: boolean;
+  palette: Palette;
 }
 
 /** 取路径最后一段作为项目名，比整条路径更适合做提示。 */
@@ -80,7 +85,7 @@ function useDragOrClick(onClick: () => void) {
   };
 }
 
-export function SignalLamp({ aggregate, sessions, size, quiet }: Props) {
+export function SignalLamp({ aggregate, sessions, size, quiet, shape, bezel, palette }: Props) {
   const [expanded, setExpanded] = useState(false);
 
   const toggle = () => {
@@ -127,6 +132,9 @@ export function SignalLamp({ aggregate, sessions, size, quiet }: Props) {
         className="lamp-root lamp-panel-root"
         data-aggregate={aggregate}
         data-quiet="false"
+        data-shape={shape}
+        data-bezel={bezel}
+        data-palette={palette}
         title="点击收起"
         onClick={toggle}
       >
@@ -168,6 +176,9 @@ export function SignalLamp({ aggregate, sessions, size, quiet }: Props) {
       style={{ "--size": `${size}px` } as React.CSSProperties}
       data-aggregate={aggregate}
       data-quiet={quiet}
+      data-shape={shape}
+      data-bezel={bezel}
+      data-palette={palette}
       title={tooltip(aggregate, sessions)}
       {...drag}
     >

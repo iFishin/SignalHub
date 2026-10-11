@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { inTauri } from "../lib/env";
 import { SIGNAL_LABEL } from "../lib/signals";
-import { useSettings, updateSettings, type Settings } from "../lib/useSettings";
+import { useSettings, updateSettings, type Settings, type Shape, type Palette } from "../lib/useSettings";
 import {
   useToggles,
   setAutostart,
@@ -16,6 +16,20 @@ const SIZES = [
   { label: "小", value: 16 },
   { label: "中", value: 22 },
   { label: "大", value: 32 },
+];
+
+/** 与 Rust 侧 `config::Shape` 一致。 */
+const SHAPES: { label: string; value: Shape }[] = [
+  { label: "圆", value: "circle" },
+  { label: "圆角方", value: "rounded" },
+  { label: "环", value: "ring" },
+];
+
+/** 与 Rust 侧 `config::Palette` 一致。给预设而不是任意取色。 */
+const PALETTES: { label: string; value: Palette }[] = [
+  { label: "默认", value: "default" },
+  { label: "色盲友好", value: "colorblind" },
+  { label: "高饱和", value: "vivid" },
 ];
 
 type Tab = "status" | "look" | "connect" | "system";
@@ -163,6 +177,37 @@ export function SettingsPanel({ snapshot }: Props) {
                 ))}
               </div>
             </Row>
+            <Row label="形状">
+              <div className="seg">
+                {SHAPES.map((shape) => (
+                  <button
+                    key={shape.value}
+                    type="button"
+                    data-active={settings.shape === shape.value}
+                    onClick={() => patch({ shape: shape.value })}
+                  >
+                    {shape.label}
+                  </button>
+                ))}
+              </div>
+            </Row>
+            <Row label="外壳">
+              <Switch on={settings.bezel} onChange={(on) => patch({ bezel: on })} />
+            </Row>
+            <Row label="配色">
+              <div className="seg">
+                {PALETTES.map((palette) => (
+                  <button
+                    key={palette.value}
+                    type="button"
+                    data-active={settings.palette === palette.value}
+                    onClick={() => patch({ palette: palette.value })}
+                  >
+                    {palette.label}
+                  </button>
+                ))}
+              </div>
+            </Row>
             <Row label="保持在最前">
               <Switch
                 on={settings.always_on_top}
@@ -172,7 +217,10 @@ export function SettingsPanel({ snapshot }: Props) {
             <Row label="安静模式">
               <Switch on={settings.quiet} onChange={(on) => patch({ quiet: on })} />
             </Row>
-            <p className="hint">空闲或沉默时圆点几乎透明，悬停恢复。</p>
+            <p className="hint">
+              外壳是一圈中性细环，让它读起来像指示灯而不是普通色块。改成圆角方或环
+              会让 permission / error 的方角区分失效，此时建议配合色盲友好配色。
+            </p>
           </>
         );
 
@@ -258,7 +306,8 @@ export function SettingsPanel({ snapshot }: Props) {
   };
 
   return (
-    <div className="settings">
+    // 会话列表里的状态点也跟着配色走，否则面板和灯球会对不上
+    <div className="settings" data-palette={settings.palette}>
       <h1 data-state={snapshot.aggregate}>
         <span className="state-dot" />
         {SIGNAL_LABEL[snapshot.aggregate]}

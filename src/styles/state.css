@@ -47,3 +47,78 @@
   --state: #9ca3af;
   --edge: #7d838d;
 }
+
+/* ---- 配色方案 ------------------------------------------------------------
+ *
+ * 上面是默认配色。下面两套是覆盖，靠后代选择器提高特异性（根元素带
+ * data-palette，圆点/状态点是它的后代）。
+ *
+ * 给的是预设而不是任意取色：红 = 危险、黄 = 注意是有语义的，让用户随便改
+ * 会把这层含义弄没。
+ */
+
+/* 色盲友好：Okabe-Ito 的三个色相。
+   红绿是红绿色盲最难分的一对，所以「正常」用蓝、「需你注意」用橙/朱红。
+   注意与需授权之间的区分同时还有形状（permission/error 是圆角方）。 */
+[data-palette="colorblind"] [data-state="idle"],
+[data-palette="colorblind"] [data-state="thinking"],
+[data-palette="colorblind"] [data-state="working"],
+[data-palette="colorblind"] [data-state="done"] {
+  --state: #0072b2;
+  --edge: #005a8c;
+}
+
+[data-palette="colorblind"] [data-state="attention"] {
+  --state: #e69f00;
+  --edge: #b87d00;
+}
+
+[data-palette="colorblind"] [data-state="permission"],
+[data-palette="colorblind"] [data-state="error"] {
+  --state: #d55e00;
+  --edge: #a84400;
+}
+
+[data-palette="colorblind"] [data-state="stale"] {
+  --state: #8b8f96;
+  --edge: #6f7378;
+  --ring: #3f4246;
+}
+
+[data-palette="colorblind"] [data-state="offline"],
+[data-palette="colorblind"] [data-state="off"] {
+  --state: #8b8f96;
+  --edge: #6f7378;
+}
+
+/* 高饱和：在花哨或深色的桌面上更容易看清。代价是在白底上略扎眼。 */
+[data-palette="vivid"] [data-state="idle"],
+[data-palette="vivid"] [data-state="thinking"],
+[data-palette="vivid"] [data-state="working"],
+[data-palette="vivid"] [data-state="done"] {
+  --state: #00b34a;
+  --edge: #00802f;
+}
+
+[data-palette="vivid"] [data-state="attention"] {
+  --state: #ffab00;
+  --edge: #c07f00;
+}
+
+[data-palette="vivid"] [data-state="permission"],
+[data-palette="vivid"] [data-state="error"] {
+  --state: #ff2d2d;
+  --edge: #c00000;
+}
+
+[data-palette="vivid"] [data-state="stale"] {
+  --state: #9aa1ab;
+  --edge: #767c85;
+  --ring: #454a52;
+}
+
+[data-palette="vivid"] [data-state="offline"],
+[data-palette="vivid"] [data-state="off"] {
+  --state: #9aa1ab;
+  --edge: #767c85;
+}

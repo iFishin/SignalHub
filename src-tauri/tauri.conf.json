@@ -35,7 +35,7 @@
         "title": "SignalHub 设置",
         "url": "index.html?window=settings",
         "width": 420,
-        "height": 470,
+        "height": 480,
         "resizable": false,
         "center": true,
         "visible": false,

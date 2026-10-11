@@ -60,14 +60,73 @@ body,
   will-change: opacity;
 }
 
-/* ---- 形状：色盲友好 ---------------------------------------------------- */
+/* ---- 形状 ---------------------------------------------------------------- */
 
-/* 红绿是色盲最难分的一对，而 permission / error 恰好是最需要你注意的两个。
-   改成圆角方形后，不依赖颜色也能一眼区分「需要我」和「在正常干活」。
-   其余状态保持圆形 —— 一种形状区分解决关键场景，比换掉整套配色克制。 */
-.dot[data-state="permission"],
-.dot[data-state="error"] {
+/* 全局形状设置。默认 circle 时不动，permission / error 会额外画成圆角方 ——
+   那是给色盲用的形状区分（红绿是红绿色盲最难分的一对）。用户把形状改成别的，
+   这个区分就失效了，设置面板里会说明。 */
+[data-shape="rounded"] .dot {
   border-radius: 28%;
+}
+
+[data-shape="circle"] .dot[data-state="permission"],
+[data-shape="circle"] .dot[data-state="error"] {
+  border-radius: 28%;
+}
+
+/* 空心圆环：用 mask 把圆环切出来。弧长同时承载「沉默进度」—— 沉默时环
+   逐渐缩短，所以这一种形状不需要额外的细环。 */
+[data-shape="ring"] .dot {
+  --thickness: max(3px, calc(var(--size) / 4));
+
+  border: none;
+  background: conic-gradient(
+    var(--state) calc(var(--progress, 1) * 360deg),
+    transparent 0
+  );
+  -webkit-mask: radial-gradient(
+    farthest-side,
+    transparent calc(100% - var(--thickness)),
+    #000 calc(100% - var(--thickness))
+  );
+  mask: radial-gradient(
+    farthest-side,
+    transparent calc(100% - var(--thickness)),
+    #000 calc(100% - var(--thickness))
+  );
+}
+
+[data-shape="ring"] .dot[data-state="stale"]::after {
+  display: none;
+}
+
+/* ---- 外壳 ---------------------------------------------------------------- */
+
+/* 一圈中性细环，中间留一点空隙 —— 读起来像「灰壳里的一颗灯」，
+   也就是实体指示灯的样子，而不是一个可以和别的 UI 元素混淆的色块。
+ *
+ * 用 ::before 画而不是 box-shadow：box-shadow 会被 dot 上的 mask 裁掉
+ * （环形状用 mask），而且这里要的是实心色环，不是阴影。
+ * 环形状自带轮廓，所以不套外壳。 */
+[data-bezel="true"] .dot::before {
+  content: "";
+  position: absolute;
+  inset: calc(-1 * var(--bezel-gap) - var(--bezel-width));
+  border: var(--bezel-width) solid var(--bezel-color);
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+[data-shape="ring"] .dot::before {
+  display: none;
+}
+
+.dot {
+  --bezel-width: 1.5px;
+  --bezel-gap: 1.5px;
+  /* 中灰带透明度：在浅色和深色桌面上都看得见。
+     固定成某个浅灰或深灰只会在一种背景上消失。 */
+  --bezel-color: rgba(120, 124, 132, 0.7);
 }
 
 /* ---- 沉默：细环显示还剩多少宽限期 -------------------------------------- */

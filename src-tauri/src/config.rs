@@ -122,6 +122,47 @@ pub fn hook_log_path() -> io::Result<PathBuf> {
 /// 都会把用户已经调好的其他设置一起重置。
 ///
 /// 不派生 `Copy`：`webhook_url` 是 `Option<String>`。相关方法因此都取 `&self`。
+/// 圆点形状。
+///
+/// 默认是圆；此时 `permission` / `error` 会额外画成**圆角方**，那是给色盲用的
+/// 形状区分（红绿是红绿色盲最难分的一对）。用户若把形状改成别的，这个区分就
+/// 失效了 —— 设置面板里会说明这一点。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Shape {
+    Circle,
+    Rounded,
+    /// 空心圆环。桌面上几乎没有别的东西长这样，最好认。
+    Ring,
+}
+
+impl Default for Shape {
+    fn default() -> Self {
+        Shape::Circle
+    }
+}
+
+/// 配色方案。
+///
+/// 给的是**预设而不是任意取色**：红 = 危险、黄 = 注意是有语义的，
+/// 让用户随便改会把这层含义弄没。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Palette {
+    /// 默认：绿 / 黄 / 红，颜色压暗一档以便在浅色桌面上站得住
+    Default,
+    /// 色盲友好：Okabe-Ito 的蓝 / 橙 / 朱红
+    Colorblind,
+    /// 高饱和：在花哨或深色的桌面上更容易看清
+    Vivid,
+}
+
+impl Default for Palette {
+    fn default() -> Self {
+        Palette::Default
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -136,6 +177,15 @@ pub struct Settings {
     /// 出站转发目标。填了就说明「不止本地想知道」，聚合进入需要注意的状态时
     /// 会往这里 POST 一段 JSON（ntfy / Slack / 自建接口都行）。
     pub webhook_url: Option<String>,
+    /// 圆点形状
+    pub shape: Shape,
+    /// 给圆点套一圈中性细环。
+    ///
+    /// 解决的是「一个纯色点很容易和桌面上别的 UI 元素混在一起」—— 加了外壳
+    /// 之后它读起来像「灰壳里的一颗灯」，也就是实体指示灯的样子。默认开。
+    pub bezel: bool,
+    /// 配色方案
+    pub palette: Palette,
 }
 
 impl Default for Settings {
@@ -146,6 +196,9 @@ impl Default for Settings {
             quiet: true,
             notify: true,
             webhook_url: None,
+            shape: Shape::default(),
+            bezel: true,
+            palette: Palette::default(),
         }
     }
 }

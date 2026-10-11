@@ -3,6 +3,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { inTauri } from "./env";
 
+/** 圆点形状。默认 circle 时 permission / error 会额外画成圆角方（色盲友好）。 */
+export type Shape = "circle" | "rounded" | "ring";
+
+/** 配色预设。给预设而不是任意取色 —— 红=危险、黄=注意是有语义的。 */
+export type Palette = "default" | "colorblind" | "vivid";
+
 /** 与 Rust 侧 `config::Settings` 对应（JSON 字段名保持 snake_case）。 */
 export interface Settings {
   size: number;
@@ -13,6 +19,10 @@ export interface Settings {
   notify: boolean;
   /** 出站转发目标；null 表示不转发。 */
   webhook_url: string | null;
+  shape: Shape;
+  /** 给圆点套一圈中性细环，让它读起来像指示灯而不是 UI 色块。 */
+  bezel: boolean;
+  palette: Palette;
 }
 
 /** 与 Rust 侧 `config::Settings::default()` 一致。 */
@@ -22,6 +32,9 @@ const DEFAULTS: Settings = {
   quiet: true,
   notify: true,
   webhook_url: null,
+  shape: "circle",
+  bezel: true,
+  palette: "default",
 };
 
 const SETTINGS_EVENT = "signalhub://settings";
