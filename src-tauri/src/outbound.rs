@@ -11,17 +11,32 @@
 //! 3. **命令要带超时。** 挂死的钩子会把 tokio 的阻塞线程池占满。
 
 use crate::config::{Hook, HookAction};
-use crate::state::Snapshot;
+use crate::state::{Signal, Snapshot};
+use serde::Serialize;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// 单条钩子的执行上限。HTTP 有 ureq 自己的超时；命令靠这个兜底。
 const HOOK_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// 触发所有匹配的钩子。**不阻塞**：每条都丢进 `spawn_blocking`。
-pub fn fire(hooks: &[Hook], snapshot: &Snapshot) {
+///
+/// `transitioned` 是全局聚合本次有没有跃迁，`changes` 是本次跃迁了的组 ——
+/// 前者给不限定组的钩子用，后者给限定了组的钩子用（见 `config::Hook::fires`）。
+pub fn fire(
+    hooks: &[Hook],
+    snapshot: &Snapshot,
+    transitioned: bool,
+    changes: &[(String, Signal)],
+    log: &OutboundLog,
+) {
     let aggregate = snapshot.aggregate.name();
 
-    for hook in hooks.iter().filter(|hook| hook.matches(aggregate)) {
+    for hook in hooks
+        .iter()
+        .filter(|hook| hook.fires(aggregate, transitioned, changes))
+    {
         // 还没填目标的钩子不触发 —— 它是编辑器里的中间态，不是错误
         if !hook.action.is_configured() {
             continue;
@@ -38,16 +53,74 @@ pub fn fire(hooks: &[Hook], snapshot: &Snapshot) {
                 continue;
             }
         };
+        let log = log.clone();
 
         tauri::async_runtime::spawn_blocking(move || {
-            let result = match action {
-                HookAction::Http { url } => post(&url, &payload),
-                HookAction::Command { command } => run_command(&command),
+            let (ok, detail) = match &action {
+                HookAction::Http { url } => match post(url, &payload) {
+                    Ok(status) => (true, status),
+                    Err(err) => (false, err),
+                },
+                HookAction::Command { command } => match run_command(command) {
+                    Ok(()) => (true, String::new()),
+                    Err(err) => (false, err),
+                },
             };
-            if let Err(err) = result {
-                eprintln!("[signalhub] 钩子执行失败: {err}");
-            }
+            record(&log, action.target(), ok, &detail);
         });
+    }
+}
+
+/// 一条钩子的执行结果。
+///
+/// 存在的理由很具体：「我的服务器没收到」这件事，光看 stderr 是查不出来的（从
+/// Dock 启动的话 stderr 根本没地方去）。界面上要能回答「发出去没有、对方回了几」。
+#[derive(Debug, Clone, Serialize)]
+pub struct Attempt {
+    pub at_ms: u64,
+    /// 目标（网址或命令）。
+    ///
+    /// **按目标而不是按下标去对应钩子**：钩子列表可以增删、可以排序，下标会错位，
+    /// 于是界面上会显示成「另一条钩子的结果」—— 比不显示更糟。
+    pub target: String,
+    pub ok: bool,
+    /// 成功是 HTTP 状态码（命令为空），失败是原因。
+    pub detail: String,
+}
+
+/// 最近几次出站调用，从旧到新。
+pub type OutboundLog = Arc<Mutex<VecDeque<Attempt>>>;
+
+/// 记多少条。出站钩子本来就不频繁（只在跃迁时触发），200 条够回溯很久。
+const LOG_CAPACITY: usize = 200;
+
+/// 记一笔结果：写日志文件、失败时打 stderr、推进环形缓冲。
+fn record(log: &OutboundLog, target: String, ok: bool, detail: &str) {
+    let at_ms = now_ms();
+    let outcome = if ok {
+        format!("ok {detail}")
+    } else {
+        format!("失败: {detail}")
+    };
+
+    // 和入站（智能体调 CLI）写的是同一个文件，`→` 是出站的标记
+    crate::config::append_hook_log(&format!(
+        "{}  → {target:<44} {outcome}\n",
+        crate::config::utc_hms()
+    ));
+    if !ok {
+        eprintln!("[signalhub] 钩子执行失败（{target}）: {detail}");
+    }
+
+    let mut log = log.lock().expect("outbound log poisoned");
+    log.push_back(Attempt {
+        at_ms,
+        target,
+        ok,
+        detail: detail.to_string(),
+    });
+    while log.len() > LOG_CAPACITY {
+        log.pop_front();
     }
 }
 
@@ -58,18 +131,21 @@ struct Payload<'a> {
     at_ms: u64,
 }
 
-fn post(url: &str, payload: &str) -> Result<(), String> {
+/// 发一条 POST。成功时把**状态码**带回来 —— 只报「没报错」区分不了 200 和 500，
+/// 而「对方到底收没收到」正是用户要看的。
+fn post(url: &str, payload: &str) -> Result<String, String> {
     let config = ureq::Agent::config_builder()
         .timeout_connect(Some(Duration::from_secs(3)))
         .timeout_per_call(Some(HOOK_TIMEOUT))
         .build();
 
+    // ureq 默认把 4xx/5xx 也当成 Err（http_status_as_error），所以 Ok 就意味着 2xx
     ureq::Agent::new_with_config(config)
         .post(url.trim())
         .header("Content-Type", "application/json")
         .send(payload)
-        .map(|_| ())
-        .map_err(|err| format!("POST {url} 失败: {err}"))
+        .map(|response| response.status().as_u16().to_string())
+        .map_err(|err| err.to_string())
 }
 
 /// 跑一条 shell 命令。
@@ -129,7 +205,16 @@ mod tests {
     fn hook(when: &[&str], action: HookAction) -> Hook {
         Hook {
             when: when.iter().map(|s| s.to_string()).collect(),
+            groups: Vec::new(),
             action,
+        }
+    }
+
+    fn grouped_hook(when: &[&str], groups: &[&str]) -> Hook {
+        Hook {
+            when: when.iter().map(|s| s.to_string()).collect(),
+            groups: groups.iter().map(|s| s.to_string()).collect(),
+            action: HookAction::Http { url: "https://x/y".into() },
         }
     }
 
@@ -160,5 +245,59 @@ mod tests {
         let stale_only = hook(&["stale"], HookAction::Command { command: "true".into() });
         assert!(stale_only.matches("stale"));
         assert!(!stale_only.matches("idle"));
+    }
+
+    // ---- 按组过滤 -------------------------------------------------------------
+
+    /// 不限定组的钩子看**全局聚合的跃迁**。这是原有语义，不能变 —— 改成「任何组
+    /// 一变就发」会让用户已经配好的钩子静默变成刷屏。
+    #[test]
+    fn an_ungrouped_hook_fires_only_on_an_aggregate_transition() {
+        let any = hook(&["error"], HookAction::Http { url: "https://x/y".into() });
+        let changes = vec![("ci".to_string(), Signal::Error)];
+
+        assert!(any.fires("error", true, &changes), "聚合跃迁到 error 要触发");
+        assert!(
+            !any.fires("error", false, &changes),
+            "聚合没跃迁就不触发 —— 否则任何组一变都会发"
+        );
+        assert!(!any.fires("idle", true, &changes), "when 不匹配就不触发");
+    }
+
+    /// 限定了组的钩子看**那几个组各自的跃迁**，不看全局聚合
+    #[test]
+    fn a_grouped_hook_fires_on_that_groups_own_transition() {
+        let ci_errors = grouped_hook(&["error"], &["ci"]);
+
+        assert!(
+            !ci_errors.fires("error", true, &[("deploy".into(), Signal::Error)]),
+            "别的组跃迁不该触发"
+        );
+        assert!(
+            ci_errors.fires("working", false, &[("ci".into(), Signal::Error)]),
+            "自己跃迁到 error 就触发，不需要全局聚合也跃迁"
+        );
+        assert!(
+            !ci_errors.fires("working", false, &[("ci".into(), Signal::Working)]),
+            "自己跃迁了，但状态不在 when 里"
+        );
+    }
+
+    #[test]
+    fn a_grouped_hook_can_watch_several_groups() {
+        let both = grouped_hook(&["error"], &["ci", "deploy"]);
+        assert!(both.fires("idle", false, &[("deploy".into(), Signal::Error)]));
+        assert!(!both.fires("idle", false, &[("docs".into(), Signal::Error)]));
+    }
+
+    /// **这条就是按组过滤存在的理由**：一组失败时，别的组更紧急会把这件事从全局
+    /// 聚合里整个盖掉 —— 只看聚合的话，ci 的失败会被另一组在等授权这件事吞掉。
+    #[test]
+    fn a_grouped_hook_is_not_gagged_by_a_more_urgent_group() {
+        let ci_errors = grouped_hook(&["error"], &["ci"]);
+        assert!(
+            ci_errors.fires("permission", false, &[("ci".into(), Signal::Error)]),
+            "别的组更紧急不该把 ci 的失败吞掉"
+        );
     }
 }

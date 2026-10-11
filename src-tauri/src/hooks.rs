@@ -79,6 +79,90 @@ impl Agent {
 /// 免得新增一个之后忘改其中一处、报错里少列一个。
 pub const ALL_NAMES: [&str; 5] = ["claude-code", "codex", "cursor", "gemini", "goose"];
 
+impl Agent {
+    /// 这个智能体在机器上留下的**目录**痕迹，用来判断它装没装。
+    ///
+    /// 与 `config_relative_path` 分开：那个是我们**写** hook 的地方，这个是我们
+    /// **看**它在不在的地方，两者不总是同一个 —— Goose 的 hook 装在我们自己的
+    /// 插件目录里，而它本体的痕迹在 `~/.config/goose`。
+    fn marker_dir(self) -> &'static str {
+        match self {
+            Agent::ClaudeCode => ".claude",
+            Agent::Codex => ".codex",
+            Agent::Cursor => ".cursor",
+            Agent::Gemini => ".gemini",
+            Agent::Goose => ".config/goose",
+        }
+    }
+
+    /// PATH 上的命令名。Windows 上会自动补 `.exe`（见 `candidates`）。
+    fn command_names(self) -> &'static [&'static str] {
+        match self {
+            Agent::ClaudeCode => &["claude"],
+            Agent::Codex => &["codex"],
+            // Cursor 的命令行工具新旧两个名字都用过
+            Agent::Cursor => &["cursor-agent", "cursor"],
+            Agent::Gemini => &["gemini"],
+            Agent::Goose => &["goose"],
+        }
+    }
+}
+
+/// 这台机器上有没有这个智能体。
+///
+/// **看的是痕迹，不是注册表** —— 没有哪个智能体会把自己登记到系统里，能用的信号
+/// 只有两个：它的配置目录在不在、它的命令在不在 PATH 上。
+///
+/// 判错的代价很小：检测只决定界面上「检测到」那一行怎么显示，装的时候照装不误。
+/// 所以宁可宽松（配置目录在就算），也不要因为路径记错而把一个装了的智能体报成没装。
+pub fn detect(agent: Agent) -> bool {
+    let dir_exists = crate::config::home_dir()
+        .map(|home| home.join(agent.marker_dir()).is_dir())
+        .unwrap_or(false);
+    dir_exists
+        || agent
+            .command_names()
+            .iter()
+            .any(|name| on_path(name).is_some())
+}
+
+/// 我们给它装过 hook 没有。
+///
+/// 判据是「配置文件里有没有我们写的 handler」，**不是「配置文件在不在」** ——
+/// 那个文件本来就可能存在（用户自己配的别的东西），光看它会把没装的说成装了。
+pub fn is_installed(agent: Agent) -> bool {
+    // Goose 是插件：整个目录都是我们建的，看它在不在就够了
+    if let Some(dir) = plugin_dir(agent) {
+        return dir.is_dir();
+    }
+
+    let Ok(path) = config_path(agent) else {
+        return false;
+    };
+    fs::read_to_string(&path)
+        .map(|text| config_has_our_hooks(&text))
+        .unwrap_or(false)
+}
+
+/// 一份配置内容里有没有我们写的 handler。
+///
+/// 抽成纯函数是为了能单测：`is_installed` 自己依赖 `$HOME`，而测试里改 `HOME`
+/// 是进程级的、和并行跑的其它用例会打架。
+fn config_has_our_hooks(text: &str) -> bool {
+    let Ok(root) = serde_json::from_str::<Value>(text) else {
+        return false;
+    };
+    root.get("hooks")
+        .and_then(Value::as_object)
+        .is_some_and(|hooks| {
+            hooks.values().any(|groups| {
+                groups
+                    .as_array()
+                    .is_some_and(|groups| locate_our_handler(groups).is_some())
+            })
+        })
+}
+
 /// 事件名清单。[`须写 matcher`]: 只有 Claude Code 的 SessionStart 需要
 /// —— 不加限制的话，上下文压缩时触发的 SessionStart 会被当成「会话开始」，
 /// 在智能体仍工作时把灯报成 idle。
@@ -883,6 +967,53 @@ mod tests {
             let agent = Agent::parse(name).unwrap();
             assert_eq!(agent_name_for_cli(agent), name, "{name} 的 CLI 名字对不上");
         }
+    }
+
+    /// 每个智能体都要有「痕迹目录」和「命令名」，否则界面上会有一个永远显示
+    /// 「未检测到」的条目
+    #[test]
+    fn every_agent_has_a_marker_and_a_command() {
+        for name in ALL_NAMES {
+            let agent = Agent::parse(name).unwrap();
+            assert!(!agent.marker_dir().is_empty(), "{name} 缺痕迹目录");
+            assert!(!agent.command_names().is_empty(), "{name} 缺命令名");
+        }
+        // Goose 的痕迹目录和它的 hook 位置**不一样**（hook 装在我们的插件目录里），
+        // 这条是刻意的，别在重构时被「统一」掉
+        assert_eq!(Agent::Goose.marker_dir(), ".config/goose");
+        assert!(Agent::Goose.config_relative_path().contains(".agents/plugins"));
+    }
+
+    /// 「装过没有」的判据是**配置里有没有我们的 handler**，不是「配置文件在不在」
+    /// —— 那个文件本来就可能存在（用户自己配的别的东西）
+    #[test]
+    fn installed_is_decided_by_our_handlers_not_by_the_file_existing() {
+        assert!(!config_has_our_hooks(""), "空文件 = 没装");
+        assert!(!config_has_our_hooks("{}"), "没有 hooks 键 = 没装");
+        assert!(!config_has_our_hooks(r#"{"hooks":{}}"#), "空的 hooks = 没装");
+        assert!(
+            !config_has_our_hooks(
+                r#"{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"someone-elses-tool hook x"}]}]}}"#
+            ),
+            "别人的 hook 不算我们装的"
+        );
+        assert!(
+            !config_has_our_hooks("not json at all"),
+            "解析不了就当没装 —— 不能因为文件坏了就报「已接入」"
+        );
+
+        assert!(
+            config_has_our_hooks(
+                r#"{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"signalhub hook claude-code"}]}]}}"#
+            ),
+            "裸名字要认得出来"
+        );
+        assert!(
+            config_has_our_hooks(
+                r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"\"/opt/x/signalhub\" hook codex"}]}]}}"#
+            ),
+            "带引号的绝对路径也要认得出来"
+        );
     }
 
     /// 这是最重要的一条：settings.json 里往往还有别的东西

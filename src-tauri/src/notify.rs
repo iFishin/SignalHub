@@ -3,6 +3,7 @@ use crate::outbound;
 use crate::state::{Signal, Snapshot};
 use crate::tray;
 use crate::{SharedPalette, SharedSettings, SharedStats, SharedStore};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
@@ -36,6 +37,8 @@ pub fn compose(app: tauri::AppHandle) -> Notifier {
     let last_aggregate: Arc<Mutex<Option<Signal>>> = Arc::new(Mutex::new(None));
     // 通知另有一套判断：排除静音组、要够「持续」、还要避开勿扰时段。
     let gate: Arc<Mutex<alerts::Gate>> = Arc::new(Mutex::new(alerts::Gate::default()));
+    // 上一次各组的聚合值，用来算「哪个组跃迁了」—— 限定了组的出站钩子看它。
+    let last_groups: Arc<Mutex<HashMap<String, Signal>>> = Arc::new(Mutex::new(HashMap::new()));
 
     Arc::new(move |snapshot: &Snapshot| {
         let settings = app
@@ -68,9 +71,37 @@ pub fn compose(app: tauri::AppHandle) -> Notifier {
                 .expect("palette poisoned")
                 .clone();
             tray::sync(&app, snapshot.aggregate, settings.tray_follows_state, &colors);
-            // 钩子自带过滤条件（`when`），所以只按「聚合跃迁了」触发，
-            // 不像通知那样限定在需要注意的状态 —— 用户可以配「done 时跑个脚本」。
-            outbound::fire(&settings.hooks, snapshot);
+        }
+
+        // 每个组**各自**的跃迁。限定了组的钩子看这个（见 `config::Hook::fires`）——
+        // 只看全局聚合的话，「ci 组失败了」这件事会在别的组更紧急时被整个吞掉。
+        let group_changes = {
+            let mut previous = last_groups.lock().expect("group state poisoned");
+            let mut changes = Vec::new();
+            for group in &snapshot.groups {
+                if previous.get(&group.name) != Some(&group.aggregate) {
+                    changes.push((group.name.clone(), group.aggregate));
+                }
+            }
+            // 整份替换而不是逐个更新：已经消失的组要跟着删掉，否则它下次出现时
+            // 会被当成「没变」，那一次跃迁就丢了。
+            previous.clear();
+            for group in &snapshot.groups {
+                previous.insert(group.name.clone(), group.aggregate);
+            }
+            changes
+        };
+
+        // 钩子自带过滤条件（`when`），所以只按「有东西跃迁了」触发，
+        // 不像通知那样限定在需要注意的状态 —— 用户可以配「done 时跑个脚本」。
+        if transitioned || !group_changes.is_empty() {
+            outbound::fire(
+                &settings.hooks,
+                snapshot,
+                transitioned,
+                &group_changes,
+                app.state::<crate::SharedOutbound>().inner(),
+            );
         }
 
         if settings.notify {

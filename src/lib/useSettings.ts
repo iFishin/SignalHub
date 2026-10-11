@@ -15,15 +15,15 @@ export type HookAction =
   | { type: "command"; command: string };
 
 /**
- * 一条出站钩子：聚合变成 `when` 里的某个状态时执行 `action`。
+ * 一条出站钩子：状态变化时执行 `action`。
  *
- * `when` 为空 = 任何变化都触发。值是状态名，含 `stale` / `offline` 这类
+ * `when` 为空 = 任何状态变化都触发。值是状态名，含 `stale` / `offline` 这类
  * 派生状态（用户可能只想知道「会话沉默了」）。
  *
  * Rust 侧用 `#[serde(flatten)]`，所以 `type` 是和 `when` 平级的字段，
  * 而不是嵌在 `action` 对象里。
  */
-export type Hook = { when: string[] } & HookAction;
+export type Hook = { when: string[]; groups: string[] } & HookAction;
 
 /** 展开的牌上显示哪几段内容。四段都可以单独关掉 —— 有人只要一眼颜色，
  *  有人要看清「卡在哪一步」。 */

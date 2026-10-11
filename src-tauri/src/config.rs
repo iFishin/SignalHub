@@ -144,6 +144,42 @@ pub fn hook_log_path() -> io::Result<PathBuf> {
     Ok(data_dir()?.join("hooks.log"))
 }
 
+/// 日志时间戳。用 UTC 并在值上标 `Z`：不引入时区数据依赖，且不会含糊。
+pub fn utc_hms() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+        % 86_400;
+    format!("{:02}:{:02}:{:02}Z", secs / 3600, (secs % 3600) / 60, secs % 60)
+}
+
+/// 往 hook 日志追加一行。
+///
+/// **入站（智能体调 CLI）和出站（SignalHub 发钩子）共用这一个出口。** 两处各写
+/// 一遍轮转逻辑的话，迟早有一处忘了加，那个文件就会无界增长。
+///
+/// 单代轮转：超过 512KB 就改名为 `.log.1`（覆盖上一次的）。日志是排查用的，不是
+/// 档案 —— 保留一代够回答「刚才到底发生了什么」。
+///
+/// app 和 CLI 是两个进程，可能同时写。`O_APPEND` 下单行的写入是原子的，所以不会
+/// 互相截断；但**行与行的先后顺序不保证**。
+pub fn append_hook_log(line: &str) {
+    let Ok(path) = hook_log_path() else {
+        return;
+    };
+
+    const MAX_BYTES: u64 = 512 * 1024;
+    if fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0) > MAX_BYTES {
+        let _ = fs::rename(&path, path.with_extension("log.1"));
+    }
+
+    use std::io::Write;
+    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = file.write_all(line.as_bytes());
+    }
+}
+
 // ---- 用户设置 --------------------------------------------------------------
 
 /// 加 `serde(default)` 是为了向前兼容：这是用户可手改、也会跨版本留存的文件，
@@ -201,6 +237,19 @@ pub struct Hook {
     /// 单独用 `Signal::ALL_NAMES` 校验，因为 `Signal::parse` 不接受派生状态。
     #[serde(default)]
     pub when: Vec<String>,
+    /// 限定只看哪几个组的跃迁。**空 = 看全局聚合。**
+    ///
+    /// 两种语义是有意的，不是二选一：
+    ///
+    /// - **空**：关心「整体现在出事了没有」。一组在等授权、另一组在跑，整体是
+    ///   `permission` —— 这时不该因为「某个组变成 error 了」就发。
+    /// - **非空**：关心「这一组怎么了」。于是每个组**各自的跃迁**都算数，不必等
+    ///   它成为全局最高的那个。想「ci 组失败发到 A、deploy 组失败发到 B」就得用它。
+    ///
+    /// 之所以不去掉第一种：现有的钩子都是按全局聚合配的，改掉会让用户已经配好的
+    /// 自动化静默变行为 —— 那是这类改动里最不该发生的事。
+    #[serde(default)]
+    pub groups: Vec<String>,
     #[serde(flatten)]
     pub action: HookAction,
 }
@@ -218,9 +267,31 @@ pub enum HookAction {
 }
 
 impl Hook {
-    /// 这次聚合变化该不该触发它。
+    /// 这次聚合变化该不该触发它（只看 `when` 那部分）。
     pub fn matches(&self, aggregate: &str) -> bool {
         self.when.is_empty() || self.when.iter().any(|name| name == aggregate)
+    }
+
+    /// 这次该不该触发它。
+    ///
+    /// `aggregate` 是全局聚合，`transitioned` 是全局聚合**本次有没有跃迁**，
+    /// `changes` 是本次发生跃迁的组（组名 + 新状态）。两条路径的区别见 `groups`
+    /// 字段的说明。
+    pub fn fires(
+        &self,
+        aggregate: &str,
+        transitioned: bool,
+        changes: &[(String, crate::state::Signal)],
+    ) -> bool {
+        if self.groups.is_empty() {
+            // 不限定组：只在**全局聚合跃迁**时触发。这个语义是从一开始就有的，
+            // 去掉它会让用户已经配好的钩子变成「任何组一变就发」—— 静默改行为
+            // 是这类改动里最不该发生的事。
+            return transitioned && self.matches(aggregate);
+        }
+        changes.iter().any(|(name, state)| {
+            self.groups.iter().any(|group| group == name) && self.matches(state.name())
+        })
     }
 }
 
@@ -231,6 +302,17 @@ impl HookAction {
         match self {
             HookAction::Http { url } => !url.trim().is_empty(),
             HookAction::Command { command } => !command.trim().is_empty(),
+        }
+    }
+
+    /// 目标本身（网址或命令）。
+    ///
+    /// 日志和界面都**按它去认一条钩子**，而不是按下标 —— 钩子列表可以增删排序，
+    /// 下标会错位，于是会显示成「另一条钩子的结果」，比不显示更糟。
+    pub fn target(&self) -> String {
+        match self {
+            HookAction::Http { url } => url.clone(),
+            HookAction::Command { command } => command.clone(),
         }
     }
 }
@@ -600,6 +682,10 @@ impl Settings {
         self.group_meta.retain(|_, meta| !meta.is_empty());
         // 同样地，写坏的钩子只丢掉那一条，不让整份设置失效
         self.hooks.retain(|hook| hook_problem(hook).is_none());
+        // 钩子里的组名也要规整，理由同 hidden_groups
+        for hook in &mut self.hooks {
+            hook.groups = normalize_groups(std::mem::take(&mut hook.groups));
+        }
         self
     }
 
@@ -697,6 +783,8 @@ fn migrate_legacy_webhook(mut settings: Settings) -> Settings {
             eprintln!("[signalhub] 把旧的 webhook 地址搬成了一条钩子：{url}");
             settings.hooks.push(Hook {
                 when: vec!["permission".into(), "attention".into(), "error".into()],
+                // 旧的单条 webhook 只看全局聚合，这正是 groups 为空的语义
+                groups: Vec::new(),
                 action: HookAction::Http { url },
             });
         }
@@ -788,6 +876,7 @@ mod tests {
     fn http_hook(when: &[&str], url: &str) -> Hook {
         Hook {
             when: when.iter().map(|s| s.to_string()).collect(),
+            groups: Vec::new(),
             action: HookAction::Http { url: url.to_string() },
         }
     }
@@ -808,6 +897,7 @@ mod tests {
         assert!(hook_problem(&http_hook(&[], "")).is_none());
         let empty_command = Hook {
             when: vec![],
+            groups: Vec::new(),
             action: HookAction::Command { command: "   ".into() },
         };
         assert!(hook_problem(&empty_command).is_none());

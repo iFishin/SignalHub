@@ -1,5 +1,5 @@
 use serde::{Deserialize, Deserializer, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::str::FromStr;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -147,6 +147,27 @@ impl<'de> Deserialize<'de> for Signal {
     }
 }
 
+/// 消息流最多记多少条。
+///
+/// 一轮工具调用就能产生十几条不同的消息，200 条约等于十几轮 —— 够回答「刚才到底
+/// 发生了什么」，又不会让一个常驻应用无限长胖。
+const MESSAGE_HISTORY: usize = 200;
+
+/// 一条上报过的消息。
+///
+/// 灯上只显示每个会话**当前**那条；这个流是用来回答「刚才发生了什么」的 ——
+/// 「十分钟前灯为什么红了」这种事，当前状态答不了。
+#[derive(Debug, Clone, Serialize)]
+pub struct MessageEntry {
+    /// epoch 毫秒
+    pub at_ms: u64,
+    pub session: String,
+    pub group: String,
+    /// 上报时的状态
+    pub state: Signal,
+    pub message: String,
+}
+
 /// 一次状态上报。HTTP 请求体与 CLI 参数都归一化成它。
 #[derive(Debug, Clone, Deserialize)]
 pub struct Report {
@@ -269,6 +290,8 @@ pub struct Store {
     paused: bool,
     /// 聚合值最后一次发生变化的时间
     since: Option<SystemTime>,
+    /// 最近上报过的消息，从旧到新。满了丢最旧的。
+    messages: VecDeque<MessageEntry>,
 }
 
 impl Store {
@@ -298,13 +321,33 @@ impl Store {
             .unwrap_or_else(|| req.state.default_ttl());
         let expires_at = now + ttl;
 
+        // 消息流只在**消息真的变了**时记一笔。一轮工具调用里同一条说明会被反复
+        // 上报（每次 PreToolUse 都带同一个 message），每次都记就成了噪音。
+        //
+        // 在 insert 之前算好：`prev` 是 `self.sessions` 的不可变借用，而下面那次
+        // insert 要可变借用，两者不能重叠。
+        let state = req.state;
+        let previous_message = prev.and_then(|s| s.message.clone());
+        let feed = req
+            .message
+            .as_deref()
+            .filter(|text| !text.trim().is_empty())
+            .filter(|text| previous_message.as_deref() != Some(*text))
+            .map(|text| MessageEntry {
+                at_ms: epoch_ms(SystemTime::now()),
+                session: session.clone(),
+                group: group.clone(),
+                state,
+                message: text.to_string(),
+            });
+
         self.sessions.insert(
             session.clone(),
             Session {
                 id: session,
                 // 组和状态一样是后写覆盖：换个组上报就把这个会话挪过去
                 group,
-                state: req.state,
+                state,
                 agent,
                 cwd,
                 message: req.message,
@@ -313,7 +356,24 @@ impl Store {
             },
         );
 
+        if let Some(entry) = feed {
+            self.record_message(entry);
+        }
+
         self.settle(before)
+    }
+
+    /// 记一条消息进历史流。满了丢最旧的 —— 常驻应用不该无界增长。
+    fn record_message(&mut self, entry: MessageEntry) {
+        self.messages.push_back(entry);
+        while self.messages.len() > MESSAGE_HISTORY {
+            self.messages.pop_front();
+        }
+    }
+
+    /// 最近上报过的消息，**从旧到新**。前端要倒序显示就自己 reverse。
+    pub fn messages(&self) -> Vec<MessageEntry> {
+        self.messages.iter().cloned().collect()
     }
 
     pub fn clear(&mut self, session: &str) -> bool {
@@ -919,6 +979,90 @@ mod tests {
 
         assert!(sessions(&s.snapshot()).is_empty());
         assert_eq!(s.aggregate(), Signal::Offline);
+    }
+
+    // ---- 消息流 ---------------------------------------------------------------
+
+    fn rep_with_message(
+        s: &mut Store,
+        t: Instant,
+        session: &str,
+        state: Signal,
+        message: &str,
+    ) -> bool {
+        let mut req = Report::new(state);
+        req.session = Some(session.to_string());
+        req.message = Some(message.to_string());
+        s.apply(t, req)
+    }
+
+    #[test]
+    fn a_message_is_recorded_in_the_feed() {
+        let (mut s, t) = (Store::default(), Instant::now());
+        rep_with_message(&mut s, t, "a", Signal::Working, "npm test");
+
+        let feed = s.messages();
+        assert_eq!(feed.len(), 1);
+        assert_eq!(feed[0].message, "npm test");
+        assert_eq!(feed[0].session, "a");
+        assert_eq!(feed[0].group, DEFAULT_GROUP);
+        assert_eq!(feed[0].state, Signal::Working);
+    }
+
+    /// 一轮工具调用里同一条说明会被反复上报（每次 PreToolUse 都带同一个
+    /// message），每次都记就成了噪音
+    #[test]
+    fn repeating_the_same_message_records_it_once() {
+        let (mut s, t) = (Store::default(), Instant::now());
+        for _ in 0..10 {
+            rep_with_message(&mut s, t, "a", Signal::Working, "npm test");
+        }
+        assert_eq!(s.messages().len(), 1, "同一条消息不该刷屏");
+
+        rep_with_message(&mut s, t, "a", Signal::Working, "cargo build");
+        assert_eq!(s.messages().len(), 2, "换了内容才记第二笔");
+    }
+
+    /// 没有消息的上报（绝大多数心跳）不该在流里留空行
+    #[test]
+    fn a_report_without_a_message_adds_nothing() {
+        let (mut s, t) = (Store::default(), Instant::now());
+        rep(&mut s, t, "a", Signal::Working);
+        assert!(s.messages().is_empty());
+
+        rep_with_message(&mut s, t, "a", Signal::Working, "   ");
+        assert!(s.messages().is_empty(), "只有空白也算没消息");
+    }
+
+    /// 流是封顶的，满了丢最旧的 —— 常驻应用不该无界增长
+    #[test]
+    fn the_feed_is_capped_and_drops_the_oldest() {
+        let (mut s, t) = (Store::default(), Instant::now());
+        for i in 0..(MESSAGE_HISTORY + 50) {
+            rep_with_message(&mut s, t, "a", Signal::Working, &format!("msg {i}"));
+        }
+
+        let feed = s.messages();
+        assert_eq!(feed.len(), MESSAGE_HISTORY);
+        assert_eq!(
+            feed.last().unwrap().message,
+            format!("msg {}", MESSAGE_HISTORY + 49),
+            "最新的在最后"
+        );
+        assert_ne!(feed[0].message, "msg 0", "最旧的应该已经被丢掉");
+    }
+
+    /// 从旧到新 —— 前端要倒序显示就自己 reverse，别在两边各倒一次
+    #[test]
+    fn the_feed_is_oldest_first() {
+        let (mut s, t) = (Store::default(), Instant::now());
+        rep_with_message(&mut s, t, "a", Signal::Working, "first");
+        rep_with_message(&mut s, t + Duration::from_secs(1), "a", Signal::Working, "second");
+
+        let feed = s.messages();
+        assert_eq!(feed[0].message, "first");
+        assert_eq!(feed[1].message, "second");
+        assert!(feed[0].at_ms <= feed[1].at_ms);
     }
 
     #[test]

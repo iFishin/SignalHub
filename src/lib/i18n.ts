@@ -7,6 +7,19 @@ import type { SignalState } from "./types";
 export type Lang = "zh" | "en";
 
 /**
+ * 一次接入 / 卸载改了什么，用来拼一行结果。
+ *
+ * 只放**数量**，不放 Rust 那边的字符串数组 —— 文案要分语言，而数组内容
+ * （事件名）是给机器看的，界面上只关心「加了几条、改了几条、摘了几个」。
+ */
+export interface HookResult {
+  added: number;
+  updated: number;
+  already: number;
+  removed: number;
+}
+
+/**
  * 全部界面文案。加一条就得两种语言都加 —— 类型系统会盯着。
  *
  * 用「一张对象表」而不是 `t("key")` 那种查表：`MESSAGES[lang].look` 在编译期
@@ -56,6 +69,8 @@ export interface Messages {
   displayNamePlaceholder: (raw: string) => string;
   pin: string;
   pinHint: string;
+  feedTitle: string;
+  feedEmpty: string;
 
   // 外观页
   presets: string;
@@ -133,7 +148,17 @@ export interface Messages {
   openDocs: string;
   cliExample: string;
 
-  // 钩子页
+  // 智能体接入
+  agentsTitle: string;
+  agentsHint: string;
+  agentInstalled: string;
+  agentDetected: string;
+  agentMissing: string;
+  agentConnect: string;
+  agentDisconnect: string;
+  hookResult: (change: HookResult) => string;
+
+  // 通知转发页
   noHooks: string;
   hookN: (n: number) => string;
   noTarget: string;
@@ -142,6 +167,18 @@ export interface Messages {
   addHook: string;
   hooksHint: string;
   commandPlaceholder: string;
+  /** 组过滤那一排的小标题。和上面的状态过滤是两回事，得分开 */
+  hookGroups: string;
+  /** 组过滤的说明：空 = 全局聚合，非空 = 看各组自己的跃迁 */
+  hookGroupsHint: string;
+  /** 悬停提示：这一组当前没有上报，但它还挂在钩子上 */
+  groupNotReporting: string;
+  /** 从没触发过的钩子 */
+  neverFired: string;
+  /** 「多久以前」的后缀，如「2m前」/「2m ago」 */
+  firedAgo: (age: string) => string;
+  /** 提醒页里指向通知转发页的一行 */
+  alertForwardHint: string;
 
   // 系统页
   alwaysOnTop: string;
@@ -221,7 +258,7 @@ export const MESSAGES: Record<Lang, Messages> = {
     tabStyle: "灯效",
     tabAlert: "提醒",
     tabConnect: "接入",
-    tabHooks: "钩子",
+    tabHooks: "通知转发",
     tabSystem: "系统",
 
     restoreAll: "全部恢复",
@@ -249,6 +286,8 @@ export const MESSAGES: Record<Lang, Messages> = {
     displayNamePlaceholder: (raw) => `留空就用 ${raw}`,
     pin: "置顶",
     pinHint: "置顶的组永远排在灯上最前面；没置顶的仍按紧急程度排",
+    feedTitle: "最近消息",
+    feedEmpty: "还没有上报过消息。",
 
     presets: "预设",
     form: "形态",
@@ -295,6 +334,7 @@ export const MESSAGES: Record<Lang, Messages> = {
     alertHint:
       "需要授权、需要关注或出错时弹一条系统通知。声音挂在通知上，所以关掉通知也就没有声音。勿扰时段里不弹也不出声，灯照常显示 —— 而且不补发：早上醒来收到一堆昨晚的通知，正是勿扰想避免的。",
     delayNow: "立刻",
+    alertForwardHint: "想让状态变化转发到服务器，或跑一条命令？在「通知转发」页。",
 
     pauseMonitoring: "暂停监控",
     openConfigDir: "配置目录",
@@ -302,9 +342,9 @@ export const MESSAGES: Record<Lang, Messages> = {
     pauseHint: "暂停后灯球显示为熄灭，但会话仍在记录 —— 恢复时立刻回到真实状态",
     connectHint:
       "暂停后灯球显示为熄灭，但会话仍在记录 —— 恢复时立刻回到真实状态。弹不弹通知在「提醒」页。",
-    outboundHooks: "出站钩子",
+    outboundHooks: "通知转发",
     configure: "去配置",
-    connectHookHint: "状态变化时可以 POST 到某个地址或跑一条命令 —— 在「钩子」页配置。",
+    connectHookHint: "状态变化时转发到你的服务器，或跑一条本地命令 —— 在「通知转发」页配置。",
     port: "端口",
     apiTitle: "接口速查",
     apiToken: "Token",
@@ -328,6 +368,25 @@ signalhub working --session build-1 --agent ci --message "compiling"
 signalhub status
 signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
 
+    agentsTitle: "智能体接入",
+    agentsHint:
+      "把 hook 写进智能体自己的配置文件，重启那个智能体就会开始上报状态。只动 hooks 这一个键，写之前先把整个文件备份一份，随时可以卸载。",
+    agentInstalled: "已接入",
+    agentDetected: "检测到，未接入",
+    agentMissing: "未检测到",
+    agentConnect: "接入",
+    agentDisconnect: "卸载",
+    hookResult: ({ added, updated, already, removed }) => {
+      const parts: string[] = [];
+      if (added > 0) parts.push(`新增 ${added} 个事件`);
+      if (updated > 0) parts.push(`更新 ${updated} 个事件`);
+      if (removed > 0) parts.push(`移除 ${removed} 个 handler`);
+      if (parts.length === 0) {
+        return already > 0 ? `无需改动（${already} 个事件已是最新）` : "无需改动";
+      }
+      return parts.join("，");
+    },
+
     noHooks: "还没有钩子。加一条，就能在状态变化时 POST 到某个地址或跑一条命令。",
     hookN: (n) => `钩子 ${n}`,
     noTarget: "未填目标",
@@ -337,6 +396,12 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     hooksHint:
       "状态全不选 = 任何变化都触发。命令通过 sh -c 执行，超时 10 秒 —— 配置文件在你手里，所以这里没有额外的开关。",
     commandPlaceholder: "say 完成",
+    hookGroups: "只看这几组",
+    hookGroupsHint:
+      "不选组 = 看全局聚合：整体状态变到上面勾选的状态时才触发。选了组 = 只看这几个组各自的跃迁，不看整体 —— 这样一组出错时，别的组更紧急不会把它盖掉。",
+    groupNotReporting: "这一组当前没有上报，仍然挂在钩子上",
+    neverFired: "还没触发过",
+    firedAgo: (age) => `${age}前`,
 
     alwaysOnTop: "保持在最前",
     trayFollowsState: "托盘跟随状态",
@@ -410,7 +475,7 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     tabStyle: "Style",
     tabAlert: "Alerts",
     tabConnect: "Connect",
-    tabHooks: "Hooks",
+    tabHooks: "Forwarding",
     tabSystem: "System",
 
     restoreAll: "Restore all",
@@ -439,6 +504,8 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     displayNamePlaceholder: (raw) => `Empty uses ${raw}`,
     pin: "Pin",
     pinHint: "Pinned groups always come first on the lamp; the rest stay in urgency order",
+    feedTitle: "Recent messages",
+    feedEmpty: "Nothing reported yet.",
 
     presets: "Presets",
     form: "Form",
@@ -485,6 +552,8 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     alertHint:
       "A system notification when approval, attention or error happens. Sound rides on the notification, so turning notifications off silences it too. During quiet hours nothing pops or sounds and the lamp still shows — and nothing is replayed: waking to a pile of last night's notifications is exactly what quiet hours avoids.",
     delayNow: "Now",
+    alertForwardHint:
+      "Want state changes forwarded to your server, or a command run? See the Forwarding tab.",
 
     pauseMonitoring: "Pause monitoring",
     openConfigDir: "Config folder",
@@ -492,9 +561,10 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     pauseHint: "Pausing blanks the lamp, but sessions are still recorded — resuming returns to the real state",
     connectHint:
       "Paused, the lamp shows as off, but sessions are still recorded — resuming returns to the real state at once. Notification settings are on the Alerts tab.",
-    outboundHooks: "Outbound hooks",
+    outboundHooks: "Forwarding",
     configure: "Configure",
-    connectHookHint: "On state changes you can POST to a URL or run a command — set it up on the Hooks tab.",
+    connectHookHint:
+      "Forward state changes to your server, or run a local command — set it up on the Forwarding tab.",
     port: "Port",
     apiTitle: "API quick reference",
     apiToken: "Token",
@@ -518,6 +588,27 @@ signalhub working --session build-1 --agent ci --message "compiling"
 signalhub status
 signalhub watch --until done --timeout 10m   # wait for a state in CI`,
 
+    agentsTitle: "Connect an agent",
+    agentsHint:
+      "SignalHub writes hooks into the agent's own config file. Restart the agent and it starts reporting. It only touches the hooks key, backs the file up first, and can be undone any time.",
+    agentInstalled: "Installed",
+    agentDetected: "Detected, not installed",
+    agentMissing: "Not detected",
+    agentConnect: "Connect",
+    agentDisconnect: "Disconnect",
+    hookResult: ({ added, updated, already, removed }) => {
+      const parts: string[] = [];
+      if (added > 0) parts.push(`${plural(added, "event", "events")} added`);
+      if (updated > 0) parts.push(`${plural(updated, "event", "events")} updated`);
+      if (removed > 0) parts.push(`${plural(removed, "handler", "handlers")} removed`);
+      if (parts.length === 0) {
+        return already > 0
+          ? `Nothing to change (${plural(already, "event", "events")} already up to date)`
+          : "Nothing to change";
+      }
+      return parts.join(", ");
+    },
+
     noHooks: "No hooks yet. Add one to POST to a URL or run a command on state changes.",
     hookN: (n) => `Hook ${n}`,
     noTarget: "No target",
@@ -527,6 +618,12 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     hooksHint:
       "No states selected = triggers on any change. Commands run via sh -c with a 10-second timeout — the config file is yours, so there is no extra switch here.",
     commandPlaceholder: "say done",
+    hookGroups: "Only these groups",
+    hookGroupsHint:
+      "No group selected watches the global aggregate: it fires when the overall state moves into one of the states ticked above. Pick groups to watch their own transitions instead — that way one group failing is not swallowed by another being more urgent.",
+    groupNotReporting: "This group is not reporting right now, but is still on the hook",
+    neverFired: "Not fired yet",
+    firedAgo: (age) => `${age} ago`,
 
     alwaysOnTop: "Always on top",
     trayFollowsState: "Tray follows state",

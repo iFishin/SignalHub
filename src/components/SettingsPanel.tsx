@@ -11,9 +11,11 @@ import {
 } from "../lib/useToggles";
 import { useStats } from "../lib/useStats";
 import { useTimeline, type TimelineSegment } from "../lib/useTimeline";
+import { useOutboundLog, lastAttemptFor, type Attempt } from "../lib/useOutboundLog";
+import { useAgents, type AgentStatus, type HookChange } from "../lib/useAgents";
 import { colorVars, resolveColors } from "../lib/palettes";
 import { presets, isActivePreset, stylePresets, isActiveStylePreset } from "../lib/presets";
-import { SIGNALS, REPORTABLE_SIGNALS, type Snapshot } from "../lib/types";
+import { SIGNALS, REPORTABLE_SIGNALS, type SignalState, type Snapshot } from "../lib/types";
 
 /** 与 Rust 侧 config.rs 的 MIN_SIZE / MAX_SIZE / DEFAULT_SIZE 保持一致。 */
 function sizeOptions(m: Messages): { label: string; value: number }[] {
@@ -183,6 +185,76 @@ function formatDuration(seconds: number): string {
   return rest === 0 ? `${hours}h` : `${hours}h${rest}m`;
 }
 
+/** 「多久以前」。与灯球的 formatAge 同一套算法，只是入参是 epoch 毫秒（at_ms）。 */
+function formatAge(atMs: number): string {
+  const seconds = Math.max(0, Math.round((Date.now() - atMs) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
+}
+
+/**
+ * 一条出站结果的一行字：`✓ 200 · 2m前` / `✗ connection refused · 5m前`。
+ *
+ * 成功时 `detail` 是状态码（命令成功则是空的），失败时是原因 —— 两种都摆出来，
+ * 用户要的就是「对方回了几 / 为什么没成」。命令成功没有状态码，那一段就省掉，
+ * 不留一个空的分隔点。
+ */
+function attemptLine(m: Messages, attempt: Attempt): string {
+  const mark = attempt.ok ? "✓" : "✗";
+  const detail = attempt.detail.trim();
+  const age = m.firedAgo(formatAge(attempt.at_ms));
+  return detail ? `${mark} ${detail} · ${age}` : `${mark} ${age}`;
+}
+
+/** 与 Rust 侧 state::MessageEntry 对应。 */
+interface MessageEntry {
+  /** epoch 毫秒 */
+  at_ms: number;
+  session: string;
+  group: string;
+  state: SignalState;
+  message: string;
+}
+
+/** 消息流最多渲染这么多行。后端留 200 条，但 420px 的面板里列 200 行没法用，
+    而最旧的那些本来也最不重要。 */
+const FEED_LIMIT = 50;
+
+/** 兜底刷新间隔。快照一变也会重取，这里只是防止长时间没人上报时列表不动。 */
+const FEED_REFRESH_MS = 15_000;
+
+/**
+ * 最近上报过的消息，从新到旧。
+ *
+ * 与 useStats / useTimeline 同构：挂载时取一次 + 定时兜底。这里**另外**跟着
+ * `aggregate` 重取 —— 状态一变往往意味着刚有人上报，于是新消息立刻出现，不必
+ * 等下一个兜底周期。间隔取 15 秒：比状态慢，但足够让「没改聚合的那一路上报」
+ * 也浮上来。
+ */
+function useMessageFeed(aggregate: SignalState): MessageEntry[] {
+  const [entries, setEntries] = useState<MessageEntry[]>([]);
+
+  useEffect(() => {
+    if (!inTauri) return;
+
+    const load = () => {
+      invoke<MessageEntry[]>("get_messages")
+        // 后端给的是从旧到新，这里倒过来 —— 最新的排在最上面
+        .then((rows) => setEntries(rows.slice().reverse()))
+        .catch((err) => console.error("get_messages 失败", err));
+    };
+
+    load();
+    const timer = window.setInterval(load, FEED_REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, [aggregate]);
+
+  return entries;
+}
+
 /**
  * 近 30 分钟的状态条带。
  *
@@ -230,6 +302,9 @@ export function SettingsPanel({ snapshot }: Props) {
   const toggles = useToggles();
   const stats = useStats();
   const timeline = useTimeline(snapshot.aggregate);
+  const feed = useMessageFeed(snapshot.aggregate);
+  const outboundLog = useOutboundLog(snapshot.aggregate);
+  const { agents, refresh: refreshAgents } = useAgents();
   const m = useMessages();
   const lang = useLang();
   const sizes = sizeOptions(m);
@@ -242,6 +317,11 @@ export function SettingsPanel({ snapshot }: Props) {
   const [tab, setTab] = useState<Tab>("status");
   const [endpoint, setEndpoint] = useState<Endpoint | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // 正在接入 / 卸载的那个智能体（按 id），用来禁用按钮。同时只可能有一个在飞。
+  const [busyAgent, setBusyAgent] = useState<string | null>(null);
+  // 每个智能体最近一次接入 / 卸载改了什么，就地显示一行结果 —— 这是用户唯一
+  // 能看到「刚才那下到底做了什么」的地方。
+  const [agentChanges, setAgentChanges] = useState<Record<string, HookChange>>({});
 
   useEffect(() => {
     if (!inTauri) return;
@@ -251,6 +331,26 @@ export function SettingsPanel({ snapshot }: Props) {
   }, []);
 
   const reported = (err: unknown) => setError(String(err));
+
+  /**
+   * 给一个智能体接入 / 卸载 hook。
+   *
+   * 接入和卸载走同一段逻辑，只换命令名 —— 结果里那行「新增 N 个事件 / 移除 N 个
+   * handler」就是它俩的区别。调用返回后重取一次列表：`installed` 变了，状态标记
+   * 和按钮文案都得跟着变。
+   */
+  const changeAgent = (agent: AgentStatus, install: boolean) => {
+    setError(null);
+    setBusyAgent(agent.id);
+    const command = install ? "install_agent_hooks" : "uninstall_agent_hooks";
+    invoke<HookChange>(command, { agent: agent.id })
+      .then((change) => {
+        setAgentChanges((prev) => ({ ...prev, [agent.id]: change }));
+        refreshAgents();
+      })
+      .catch(reported)
+      .finally(() => setBusyAgent(null));
+  };
 
   const sessionCount = snapshot.groups.reduce(
     (sum, group) => sum + group.sessions.length,
@@ -344,8 +444,9 @@ export function SettingsPanel({ snapshot }: Props) {
   const addHook = () =>
     setHooks([
       ...settings.hooks,
-      // 目标先留空：空目标不算错（不触发），用户填了才开始工作
-      { when: ["permission", "attention", "error"], type: "http", url: "" },
+      // 目标先留空：空目标不算错（不触发），用户填了才开始工作。
+      // groups 也先空着 = 看全局聚合，这是原有语义，新钩子不该默认变成按组过滤
+      { when: ["permission", "attention", "error"], groups: [], type: "http", url: "" },
     ]);
 
   const commitHookDraft = () => {
@@ -534,6 +635,31 @@ export function SettingsPanel({ snapshot }: Props) {
                 );
               })
             )}
+
+            {/* 最近消息：灯上只有每个会话**当前**那条，这一节回答「刚才发生了什么」。
+                放在最后 —— 它是回顾，不如上面的实时状态要紧。 */}
+            <div className="section">
+              <div className="section-title">{m.feedTitle}</div>
+              {feed.length === 0 ? (
+                <p className="muted-text">{m.feedEmpty}</p>
+              ) : (
+                <ul className="feed">
+                  {feed.slice(0, FEED_LIMIT).map((entry, index) => (
+                    <li className="feed-item" key={`${entry.at_ms}-${index}`}>
+                      <span className="state-dot" data-state={entry.state} />
+                      <div className="feed-body">
+                        <div className="feed-line">
+                          <span className="muted-text">{formatAge(entry.at_ms)}</span>
+                          <span className="muted-text">{entry.group}</span>
+                          <span className="feed-session mono">{entry.session}</span>
+                        </div>
+                        <div className="feed-message">{entry.message}</div>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </>
         );
 
@@ -878,6 +1004,17 @@ export function SettingsPanel({ snapshot }: Props) {
               </div>
             </Row>
             <p className="hint">{m.alertHint}</p>
+            {/* 想去「转发到服务器」的人多半先来提醒页找，给一条通往「通知转发」的路 */}
+            <div className="row">
+              <span className="muted-text">{m.alertForwardHint}</span>
+              <button
+                type="button"
+                className="btn btn-tiny"
+                onClick={() => setTab("hooks")}
+              >
+                {m.configure}
+              </button>
+            </div>
           </>
         );
       }
@@ -891,8 +1028,80 @@ export function SettingsPanel({ snapshot }: Props) {
           ["GET", "/v1/health", m.apiEndpointHealth],
         ];
 
+        // 已接入的排最前，其次检测到的，最后没检测到的 —— 有用的在上面。
+        // 同组内保持后端给的顺序（Array.sort 是稳定的）。
+        const agentRank = (agent: AgentStatus) =>
+          agent.installed ? 0 : agent.detected ? 1 : 2;
+        const sortedAgents = [...agents].sort(
+          (a, b) => agentRank(a) - agentRank(b),
+        );
+
         return (
           <>
+            {/* ---- 智能体接入 ----
+                放在最前：这是「怎么让灯亮起来」的第一步，而接口速查是给已经
+                接好的人查细节用的。没有这一节，界面上根本看不出有接入这回事。 */}
+            <div className="section">
+              <div className="section-title">{m.agentsTitle}</div>
+              <p className="hint">{m.agentsHint}</p>
+              {sortedAgents.map((agent) => {
+                const busy = busyAgent === agent.id;
+                const change = agentChanges[agent.id];
+                const status = agent.installed
+                  ? m.agentInstalled
+                  : agent.detected
+                    ? m.agentDetected
+                    : m.agentMissing;
+                return (
+                  <div className="agent" key={agent.id}>
+                    <div className="agent-info">
+                      <div className="agent-line">
+                        <span className="agent-name">{agent.name}</span>
+                        <span className="badge" data-on={agent.installed}>
+                          {status}
+                        </span>
+                      </div>
+                      {/* 路径就是「要写哪儿」，摆出来这条操作才可信 */}
+                      {agent.config && (
+                        <span className="agent-config mono">{agent.config}</span>
+                      )}
+                      {change && (
+                        <span className="agent-result muted-text">
+                          {m.hookResult({
+                            added: change.added.length,
+                            updated: change.updated.length,
+                            already: change.already.length,
+                            removed: change.removed_handlers,
+                          })}
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-tiny"
+                      disabled={busy}
+                      onClick={() => changeAgent(agent, !agent.installed)}
+                    >
+                      {agent.installed ? m.agentDisconnect : m.agentConnect}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* ---- 通知转发入口 ----
+                放在「接入」页靠上的位置、接口速查之前：想「完成后 POST 到我的
+                服务器」的人不会去翻「钩子」，得在接入流程里就看见它。 */}
+            <div className="section">
+              <div className="row">
+                <span>{m.outboundHooks}</span>
+                <button type="button" className="btn" onClick={() => setTab("hooks")}>
+                  {m.configure}
+                </button>
+              </div>
+              <p className="hint">{m.connectHookHint}</p>
+            </div>
+
             {/* ---- 接口速查 ----
                 接入方最需要的那几样都在这一页：端口、token、端点表、状态词表、
                 能直接粘的示例。**这一份是跟着包走的** —— 装了 .app 的人手上没有
@@ -973,22 +1182,15 @@ export function SettingsPanel({ snapshot }: Props) {
                 </button>
               </div>
             </div>
-
-            {/* 转发搬到了「钩子」页（多条、可过滤、支持命令），这里只留入口 */}
-            <div className="section">
-              <div className="row">
-                <span>{m.outboundHooks}</span>
-                <button type="button" className="btn" onClick={() => setTab("hooks")}>
-                  {m.configure}
-                </button>
-              </div>
-              <p className="hint">{m.connectHookHint}</p>
-            </div>
           </>
         );
       }
 
-      case "hooks":
+      case "hooks": {
+        // 组过滤的选项：当前在上报的组，外加钩子上挂着、此刻没上报的组（下面补
+        // chip，见 extraGroups）。没有它，一个暂时消失的组会从选项里静默溜走。
+        const reporting = snapshot.groups.map((group) => group.name);
+
         return (
           <>
             {settings.hooks.length === 0 && <p className="empty">{m.noHooks}</p>}
@@ -998,6 +1200,19 @@ export function SettingsPanel({ snapshot }: Props) {
               const shown =
                 hookDraft?.index === index ? hookDraft.value : (target ?? "");
               const configured = (target ?? "").trim().length > 0;
+
+              // 钩子上挂着、当前没上报的组：补一个 chip 让它可见可删，而不是
+              // 静默留着（同「灯效」页给表外的 blink_ms 补选项的做法）。
+              const extraGroups = hook.groups.filter(
+                (name) => !reporting.includes(name),
+              );
+              const groupChoices = [...reporting, ...extraGroups];
+
+              // 按**目标**找最近一次结果，不按下标 —— 钩子可增删排序，下标会错位，
+              // 那会显示成「另一条钩子的结果」，比不显示更糟。目标为空则无从匹配。
+              const attempt = configured
+                ? lastAttemptFor(outboundLog, target)
+                : undefined;
 
               return (
                 <div className="hook" key={index}>
@@ -1037,6 +1252,35 @@ export function SettingsPanel({ snapshot }: Props) {
                     ))}
                   </div>
 
+                  {/* 组过滤。和上面的状态过滤是两回事，所以单独一行带个小标题，
+                      免得两排 chip 看起来像同一组条件。不选 = 看全局聚合。 */}
+                  <div className="hook-groups">
+                    <span className="hook-groups-label">{m.hookGroups}</span>
+                    <div className="chips">
+                      {groupChoices.map((name) => {
+                        const stale = !reporting.includes(name);
+                        return (
+                          <button
+                            key={name}
+                            type="button"
+                            className="chip"
+                            title={stale ? m.groupNotReporting : undefined}
+                            data-active={hook.groups.includes(name)}
+                            onClick={() =>
+                              updateHook(index, {
+                                groups: hook.groups.includes(name)
+                                  ? hook.groups.filter((group) => group !== name)
+                                  : [...hook.groups, name],
+                              })
+                            }
+                          >
+                            {name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
                   <Row label={m.type}>
                     <div className="seg">
                       <button
@@ -1073,6 +1317,14 @@ export function SettingsPanel({ snapshot }: Props) {
                       if (event.key === "Enter") event.currentTarget.blur();
                     }}
                   />
+
+                  {/* 最近一次结果。目标为空时无从匹配，不渲染 —— 宁可什么都不显示，
+                      也不要拿别的钩子的结果显示在这里。 */}
+                  {configured && (
+                    <span className="hook-result mono">
+                      {attempt ? attemptLine(m, attempt) : m.neverFired}
+                    </span>
+                  )}
                 </div>
               );
             })}
@@ -1081,8 +1333,10 @@ export function SettingsPanel({ snapshot }: Props) {
               {m.addHook}
             </button>
             <p className="hint">{m.hooksHint}</p>
+            <p className="hint">{m.hookGroupsHint}</p>
           </>
         );
+      }
 
       case "system":
         return (

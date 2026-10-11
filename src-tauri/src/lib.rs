@@ -51,6 +51,10 @@ type SharedPalette = Mutex<BTreeMap<String, String>>;
 /// 状态时长统计。按前端给的本地日期分桶，见 stats.rs。
 type SharedStats = Arc<Mutex<stats::Stats>>;
 
+/// 最近几次出站钩子的执行结果。界面上要能回答「我的服务器到底收到没有」——
+/// 光看 stderr 是查不出来的（从 Dock 启动的话根本没地方看）。
+type SharedOutbound = outbound::OutboundLog;
+
 /// 点击穿透的逃生快捷键。**穿透一旦开启，鼠标就没法再操作那个窗口**，
 /// 所以这是唯一的键盘出路（另一条是托盘菜单）。
 #[cfg(target_os = "macos")]
@@ -399,6 +403,105 @@ pub(crate) fn set_group_muted(
     persist_settings(app, Settings { muted_groups, ..settings })
 }
 
+/// 最近上报过的消息，从旧到新。前端要倒序显示就自己 reverse。
+#[tauri::command]
+fn get_messages(store: tauri::State<'_, SharedStore>) -> Vec<state::MessageEntry> {
+    store.lock().expect("state store poisoned").messages()
+}
+
+/// 最近几次出站钩子的执行结果，从旧到新。
+///
+/// 界面按**目标**（网址或命令）去对应钩子，不按下标 —— 钩子列表可以增删排序，
+/// 下标会错位，于是会显示成「另一条钩子的结果」，比不显示更糟。
+#[tauri::command]
+fn get_outbound_log(log: tauri::State<'_, SharedOutbound>) -> Vec<outbound::Attempt> {
+    log.lock()
+        .expect("outbound log poisoned")
+        .iter()
+        .cloned()
+        .collect()
+}
+
+/// 一个智能体在这台机器上的状态。
+#[derive(serde::Serialize)]
+struct AgentStatus {
+    /// CLI 里用的名字（`claude-code`）
+    id: &'static str,
+    /// 显示名（`Claude Code`）
+    name: &'static str,
+    /// 这台机器上有没有它
+    detected: bool,
+    /// 我们有没有给它装过 hook
+    installed: bool,
+    /// 配置文件路径，界面上显示用
+    config: String,
+}
+
+/// 扫一遍机器上有哪些智能体、我们接入了哪些。
+///
+/// 检测只是给界面排个序，**不决定能不能装** —— 没检测到的也照样能一键接入，
+/// 因为「检测」看的是痕迹（配置目录、PATH 上的命令），而痕迹可能因为路径变化、
+/// 便携安装等原因对不上。宁可让用户看到一个「没检测到」但其实装得了的条目，
+/// 也不要因为判错而把路堵死。
+#[tauri::command]
+fn detect_agents() -> Vec<AgentStatus> {
+    hooks::ALL_NAMES
+        .iter()
+        .filter_map(|id| hooks::Agent::parse(id).ok().map(|agent| (*id, agent)))
+        .map(|(id, agent)| AgentStatus {
+            id,
+            name: agent.name(),
+            detected: hooks::detect(agent),
+            installed: hooks::is_installed(agent),
+            config: hooks::config_path(agent)
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        })
+        .collect()
+}
+
+/// 一次接入 / 卸载改了什么。
+///
+/// **返回结构而不是一句拼好的话**：文案要分语言，而 Rust 只负责干活（见 lang.rs）。
+#[derive(serde::Serialize)]
+struct HookChange {
+    added: Vec<String>,
+    updated: Vec<String>,
+    already: Vec<String>,
+    removed_handlers: usize,
+    config: String,
+    backup: Option<String>,
+}
+
+impl From<hooks::Report> for HookChange {
+    fn from(report: hooks::Report) -> Self {
+        Self {
+            added: report.added,
+            updated: report.updated,
+            already: report.already,
+            removed_handlers: report.removed_handlers,
+            config: report.path.to_string_lossy().into_owned(),
+            backup: report
+                .backup
+                .map(|path| path.to_string_lossy().into_owned()),
+        }
+    }
+}
+
+/// 给一个智能体装 hook。
+///
+/// 与 CLI 的 `install hooks <agent>` **走同一段逻辑**（`hooks::install`）——
+/// 界面和命令行两条入口共用实现，行为不会分叉。
+#[tauri::command]
+fn install_agent_hooks(agent: String) -> Result<HookChange, String> {
+    hooks::install(hooks::Agent::parse(&agent)?, false).map(HookChange::from)
+}
+
+#[tauri::command]
+fn uninstall_agent_hooks(agent: String) -> Result<HookChange, String> {
+    hooks::uninstall(hooks::Agent::parse(&agent)?, false).map(HookChange::from)
+}
+
 /// 时间线的窗口长度。近半小时够看出「刚才卡了多久」，又不至于挤成一条线。
 const TIMELINE_WINDOW: Duration = Duration::from_secs(30 * 60);
 
@@ -729,6 +832,7 @@ pub fn run() {
         .manage(SharedStore::new(Mutex::new(Store::default())))
         .manage(SharedUi::default())
         .manage(SharedStats::default())
+        .manage(SharedOutbound::default())
         .manage(SharedPalette::default())
         .manage(alerts::LocalHour::default())
         .manage(lang::LocalLang::default())
@@ -751,6 +855,11 @@ pub fn run() {
             set_pass_through,
             get_stats,
             get_timeline,
+            get_messages,
+            get_outbound_log,
+            detect_agents,
+            install_agent_hooks,
+            uninstall_agent_hooks,
             toggle_collapsed,
             open_group_menu,
             set_palette_colors,

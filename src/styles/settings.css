@@ -71,16 +71,16 @@ html[data-window="settings"] #root {
 
 .tabs {
   display: flex;
-  /* 不留间距：**英文标签比中文宽得多**（七个加起来 427px，而面板只有 380px），
-     靠 padding 收紧才放得下。不留 gap 时相邻标签仍有 16px 的空白（各 8px），
-     足够分辨；再多一个像素的 gap 就会把最后一个页签挤出去。 */
+  /* 不留间距：**英文标签比中文宽得多**（七个加起来就贴到 380px 的边），靠
+     padding 收紧才放得下。不留 gap 时相邻标签仍有 10px 的空白（各 5px），足够
+     分辨；再多一个像素的 gap 就会把最后一个页签挤出去。 */
   gap: 0;
   margin-top: 14px;
   border-bottom: 1px solid var(--line);
 }
 
 .tab {
-  padding: 6px 8px 7px;
+  padding: 5px 5px 6px;
   border: 0;
   /* 2px 下划线当作选中指示；负 margin 让它压在边框上 */
   border-bottom: 2px solid transparent;
@@ -88,7 +88,7 @@ html[data-window="settings"] #root {
   background: transparent;
   color: var(--muted);
   font: inherit;
-  font-size: 12px;
+  font-size: 11.5px;
   cursor: pointer;
 }
 
@@ -489,6 +489,35 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   font-weight: 400;
 }
 
+/* 组过滤。单独一行带个小标题 —— 它和上面的状态过滤是两回事，
+   不分开的话两排 chip 看起来像同一组条件。不选 = 看全局聚合。 */
+.hook-groups {
+  margin-bottom: 8px;
+}
+
+.hook-groups-label {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* 里面的 .chips 不带下边距 —— 外层 .hook-groups 已经留了 */
+.hook-groups .chips {
+  margin-bottom: 0;
+}
+
+/* 最近一次出站结果：`✓ 200 · 2m前`。小、灰、等宽（字体来自 .mono）。
+   等宽数字免得时间那一截在重取时左右抖。 */
+.hook-result {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
 .btn-tiny {
   padding: 2px 8px;
   font-size: 11px;
@@ -814,5 +843,105 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   margin-top: 12px;
   color: var(--danger);
   font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+/* ---- 接入页：智能体接入 ---- */
+
+.agent {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+}
+
+.agent:first-of-type {
+  border-top: 0;
+  padding-top: 2px;
+}
+
+.agent-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  /* min-width: 0 是让里面那行配置路径能断开的关键：flex 子项默认不肯收缩 */
+  min-width: 0;
+}
+
+/* 英文状态下名字 + 状态标记可能超出 380px，允许折行而不是撑宽面板 */
+.agent-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.agent-name {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* 已接入的标记给一点强调色，和「检测到但没接」区分开 */
+.badge[data-on="true"] {
+  border-color: var(--accent);
+  color: var(--fg);
+}
+
+.agent-config {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.agent-result {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+/* ---- 状态页：最近消息 ---- */
+
+.feed {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.feed-item {
+  display: flex;
+  gap: 8px;
+  padding: 5px 0;
+  min-width: 0;
+}
+
+.feed-item .state-dot {
+  margin-top: 5px;
+}
+
+.feed-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.feed-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 会话 id 可能很长：占满剩余宽度并省略，别把上面的组名挤没 */
+.feed-session {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 消息本身要能读，所以换行、**不**截断 */
+.feed-message {
+  color: var(--muted);
+  font-size: 11.5px;
   overflow-wrap: anywhere;
 }

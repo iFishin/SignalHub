@@ -14,10 +14,9 @@
 //! 另外 `hook` 模式隐含 `--never-fail`：上报客户端不该有能力弄坏它监控的对象。
 
 use serde_json::{json, Value};
-use std::fs;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::process::ExitCode;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 // 直接包含源码，而不是 `use signalhub_lib::config`：lib.rs 是 Tauri 应用，
 // 链接它会把整个 Tauri 拖进这个本该只有几 MB 的 CLI 二进制。
@@ -721,34 +720,14 @@ fn hook(agent: &str, flags: &Flags) -> Result<(), Failure> {
 ///
 /// **只写日志文件，绝不碰 stdout**（约束 1）。任何失败都忽略：为了记日志而
 /// 弄坏智能体的 hook 是本末倒置。
+///
+/// 真正落盘那一步在 `config::append_hook_log` —— 出站钩子（app 那边发的）写的是
+/// 同一个文件，轮转逻辑只能有一份，否则迟早有一处忘了加、那个文件就无界增长。
 fn log_hook(agent: &str, event: &str, session: &str, outcome: &str) {
-    let Ok(path) = config::hook_log_path() else {
-        return;
-    };
-
-    // 单代轮转。每次工具调用一行，不设上限的话会无界增长。
-    const MAX_BYTES: u64 = 512 * 1024;
-    if fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0) > MAX_BYTES {
-        let _ = fs::rename(&path, path.with_extension("log.1"));
-    }
-
-    let line = format!(
+    config::append_hook_log(&format!(
         "{}  {agent:<12} {event:<20} session={session:<38} {outcome}\n",
-        utc_hms()
-    );
-    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(&path) {
-        let _ = file.write_all(line.as_bytes());
-    }
-}
-
-/// 日志时间戳。用 UTC 并在值上标 `Z`：不引入时区数据依赖，且不会含糊。
-fn utc_hms() -> String {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-        % 86_400;
-    format!("{:02}:{:02}:{:02}Z", secs / 3600, (secs % 3600) / 60, secs % 60)
+        config::utc_hms()
+    ));
 }
 
 enum Action {
