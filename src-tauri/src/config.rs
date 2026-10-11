@@ -16,6 +16,14 @@ pub const LAMP_MARGIN: u16 = 20;
 /// 排的，所以截断后剩下的恰好是最紧急的那几个。
 pub const MAX_DOTS: u16 = 3;
 
+/// 展开面板的宽度。固定值：面板内容是一列短文本，宽度不必随会话数变。
+pub const PANEL_WIDTH: u16 = 260;
+/// 面板的固定开销：上下内边距 + 头部那一行。
+pub const PANEL_CHROME: u16 = 56;
+/// 面板里每一行的高度。**CSS 里的 `.lamp-row` 必须正好也是这个高度**，
+/// 否则窗口会裁掉最后一行、或者底下留一条缝。
+pub const PANEL_ROW: u16 = 38;
+
 /// `~/.signalhub`
 ///
 /// 这里不用 Tauri 的 `PathResolver`：CLI 是独立二进制、不链接 Tauri，
@@ -109,7 +117,11 @@ pub fn hook_log_path() -> io::Result<PathBuf> {
 
 // ---- 用户设置 --------------------------------------------------------------
 
+/// 加 `serde(default)` 是为了向前兼容：这是用户可手改、也会跨版本留存的文件，
+/// 缺字段时应退回该字段的默认值，而不是整份解析失败 —— 否则每次新增设置项
+/// 都会把用户已经调好的其他设置一起重置。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Settings {
     /// 圆点直径（px）
     pub size: u16,
@@ -117,11 +129,13 @@ pub struct Settings {
     /// 「有事才显形」：空闲 / 沉默 / 离线时把圆点压到几乎透明，
     /// 只有真正有活动或需要你注意时才完全显形。
     pub quiet: bool,
+    /// 需要你注意（授权 / 关注 / 出错）时弹系统通知。
+    pub notify: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { size: DEFAULT_SIZE, always_on_top: true, quiet: true }
+        Self { size: DEFAULT_SIZE, always_on_top: true, quiet: true, notify: true }
     }
 }
 
@@ -144,6 +158,12 @@ impl Settings {
         let width = dots * self.size + (dots - 1) * gap + LAMP_MARGIN;
         let height = self.size + LAMP_MARGIN;
         (width, height)
+    }
+
+    /// 展开面板的尺寸。行数取会话数，至少一行（避免出现一个空面板）。
+    pub fn panel_size(self, rows: u16) -> (u16, u16) {
+        let rows = rows.max(1);
+        (PANEL_WIDTH, PANEL_CHROME + rows * PANEL_ROW)
     }
 }
 
@@ -205,4 +225,73 @@ fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
 #[cfg(not(unix))]
 fn set_mode(_path: &Path, _mode: u32) -> io::Result<()> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 真实踩到的坑：加了 `notify` 字段之后，旧版本写的 config.json 里没有它。
+    /// 若不加 `serde(default)`，整份解析会失败、退回全默认 —— 用户已经调好的
+    /// 圆点尺寸会被静默重置。这条测试锁住「缺字段只退回该字段的默认值」。
+    #[test]
+    fn settings_tolerate_missing_fields_from_older_versions() {
+        let old = r#"{"size": 32, "always_on_top": false, "quiet": false}"#;
+        let settings: Settings = serde_json::from_str(old).unwrap();
+
+        assert_eq!(settings.size, 32, "用户调过的值必须保留");
+        assert!(!settings.always_on_top);
+        assert!(!settings.quiet);
+        assert!(settings.notify, "缺的字段退回该字段的默认值");
+    }
+
+    #[test]
+    fn an_empty_object_yields_all_defaults() {
+        assert_eq!(
+            serde_json::from_str::<Settings>("{}").unwrap(),
+            Settings::default()
+        );
+    }
+
+    #[test]
+    fn clamped_pulls_out_of_range_sizes_back() {
+        let wild = Settings { size: 9999, ..Settings::default() };
+        assert_eq!(wild.clamped().size, MAX_SIZE);
+        let tiny = Settings { size: 1, ..Settings::default() };
+        assert_eq!(tiny.clamped().size, MIN_SIZE);
+    }
+
+    #[test]
+    fn window_size_only_grows_when_there_are_multiple_dots() {
+        let settings = Settings::default();
+        let size = settings.size;
+
+        // 一个圆点：方形，和加多点之前一样
+        let (w1, h1) = settings.window_size(1);
+        assert_eq!(w1, size + LAMP_MARGIN);
+        assert_eq!(h1, size + LAMP_MARGIN);
+
+        // 两个圆点起才开始变宽，高度不变
+        let (w2, _) = settings.window_size(2);
+        assert!(w2 > w1, "多一个圆点就该多占一份宽度");
+        let (_, h3) = settings.window_size(3);
+        assert_eq!(h3, h1, "高度只和圆点直径有关");
+
+        // 超出上限按上限算，不会无限变宽
+        assert_eq!(settings.window_size(99), settings.window_size(MAX_DOTS));
+    }
+
+    #[test]
+    fn panel_grows_one_row_per_session_and_never_collapses_to_nothing() {
+        let settings = Settings::default();
+        let (w, h1) = settings.panel_size(1);
+        assert_eq!(w, PANEL_WIDTH, "面板宽度固定");
+        assert_eq!(h1, PANEL_CHROME + PANEL_ROW);
+
+        let (_, h3) = settings.panel_size(3);
+        assert_eq!(h3, PANEL_CHROME + 3 * PANEL_ROW, "每个会话一行");
+
+        // 没有会话时也要留一行，否则展开会得到一个空壳
+        assert_eq!(settings.panel_size(0), settings.panel_size(1));
+    }
 }

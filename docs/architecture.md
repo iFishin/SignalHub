@@ -200,6 +200,49 @@ width = dots * size + (dots - 1) * (size / 3) + LAMP_MARGIN
 
 几何在 Rust（`Settings::window_size`）和 CSS（`gap: calc(var(--size) / 3)`）各写了一份。浏览器算出的是小数、Rust 是整数除法，最多差 0.67px；一侧留白有 10px，这点误差看不出来，所以不值得把几何再往上传一遍。
 
+### 3.8 通知：把「被动」补成「主动」
+
+灯是**被动**的：你不盯着屏幕它就白搭，而「不用看终端」恰恰意味着你可能根本没在看灯。所以聚合**新变成** `permission` / `attention` / `error` 时弹一条系统通知。
+
+两个不显然的设计点：
+
+1. **只在跃迁时弹一次，不是每次状态变化都弹。** 一轮工具调用会触发几十次状态推送，每次都弹就成了骚扰。核心判断就是 `previous != Some(current)`。
+2. **权限在启动时申请，不在第一次要发通知时申请。** 弹权限框和发通知没法同时发生——放在第一次要发通知时，那条通知必然丢掉，而它往往正是最要紧的一条。
+
+通知正文取「胜出会话的项目名 + 智能体自己写的说明」，例如 `proj · 需要批准: rm -rf build`。`Signal::label()` 在 Rust 侧也有一份中文名（界面上的文案在前端的 `signals.ts`）——重复一份是因为通知由 Rust 发，比前端可靠（webview 出问题也照发）；那个 `match` 是穷尽的，所以新增状态时编译器会强制补上标签。
+
+> **dev 模式的限制**：`tauri dev` 跑的是未打包的裸二进制，而 macOS 的 `UNUserNotificationCenter` 需要 bundle identifier。所以通知在 dev 下可能**不显示**（调用本身会成功、不报错）。要确认真的能弹，得 `npm run tauri build` 出真正的 .app。这一点没在 dev 下验证过，不要当成已验证。
+
+### 3.9 窗口位置记忆
+
+用 `tauri-plugin-window-state`，但**只让它记位置，不记尺寸**：
+
+```rust
+.with_state_flags(StateFlags::POSITION)   // 默认是 all()，会把尺寸也一起恢复
+```
+
+尺寸由设置和会话数决定、是程序自己管的（`apply_window_size`），让插件跟着恢复会和它打架。这是这个插件最容易被误用的地方——默认值 `all()` 会连尺寸、最大化、可见性一起恢复。
+
+插件的默认存储位置是 app 配置目录下的 `.window-state.json`（macOS 上是 `~/Library/Application Support/<identifier>/`）。它在**正常退出**时写入，所以 dev 下反复重建期间看不到这个文件是正常的。
+
+### 3.10 设置文件的向前兼容
+
+`Settings` 带 `#[serde(default)]`。这是用户可手改、也会跨版本留存的文件，缺字段时应该退回**该字段**的默认值，而不是整份解析失败——否则每新增一个设置项，都会把用户已经调好的其他设置一起重置。
+
+这个坑是真实踩到的：加 `notify` 字段之后，已有的 `config.json`（里面存着用户调过的 `size: 32`）直接解析失败，圆点尺寸会被静默重置回 22。日志里那行 `config.json 无法解析（missing field notify），使用默认设置` 就是它。
+
+### 3.11 展开面板，以及拖拽与点击的冲突
+
+点击圆点把窗口就地放大成一张会话列表（再点一次收起）。窗口尺寸仍由 Rust 算：`Settings::panel_size(行数)`，几何常量（`PANEL_CHROME` / `PANEL_ROW`）在 `config.rs`，**CSS 里的高度必须与之严格对齐**，否则会裁掉最后一行或留一条缝。这是与 §3.7 的 gap 同一类的耦合，只是这里更严——差了 1px 就会被 `overflow: hidden` 切掉。
+
+**这里踩到一个真实的冲突：同一个元素不能既用 `data-tauri-drag-region` 又响应点击。**
+
+`data-tauri-drag-region` 让系统在 `mousedown` 时接管鼠标、进入原生拖拽循环，之后的 `click` 就不再可靠地送到 webview —— 表现是「点一下展开」时灵时不灵。而把拖拽区域去掉又会丢掉拖窗口的能力，那是这个工具的基本操作。
+
+解法是自己在 JS 里区分：按下时记下坐标，移动超过 4px 才认为用户在拖窗口（此时才调 `getCurrentWindow().startDragging()` 交给系统），否则在 `mouseup` 时当作点击。于是折叠态**没有 `onClick`**，点击是从 `mouseup` 里判出来的。
+
+推论：**展开态不能再可拖拽**（否则点击收不起来），所以展开时整块都是可点的「点击收起」区域。
+
 ---
 
 ## 4. 悬浮窗实现
@@ -236,7 +279,7 @@ Tauri 2 的配置键是 lowerCamelCase，注意 `skipTaskbar` 的 `b` 是小写�
 {
   "label": "settings",
   "url": "index.html?window=settings",
-  "width": 420, "height": 760,
+  "width": 420, "height": 820,
   "resizable": false,
   "center": true,
   "visible": false,
@@ -246,7 +289,7 @@ Tauri 2 的配置键是 lowerCamelCase，注意 `skipTaskbar` 的 `b` 是小写�
 
 三个非显然的点：
 
-1. **高度是量出来的，不是猜的。** 用 3 个会话的样本数据实测内容需要 752px（加「安静模式」那一行和说明之前是 631px）。改布局后应该在浏览器里读一次 `scrollHeight - clientHeight` 再定值——把面板宽度固定成 420px 再量，才能避开移动端视口模拟的干扰。
+1. **高度是量出来的，不是猜的。** 用 3 个会话的样本实测内容需要 815px。改布局后应该在浏览器里量一次再定值——把面板宽度固定成 420px 再量，才能避开移动端视口模拟的干扰。会话行高 45px，空面板 680px，所以 `高度 ≈ 680 + 3 × 45`。这个值每加一行设置都会变，是个反复要动的细节。
 2. **关闭时只隐藏、不销毁**（`WindowEvent::CloseRequested` + `api.prevent_close()`），这样重开是瞬时的。
 3. **Accessory 策略下窗口不会主动到前台**，所以打开设置时临时切回 `ActivationPolicy::Regular`，关闭时切回 `Accessory`。副作用是设置打开期间应用会出现在 Dock 里——这反而是对的，用户正在和它交互。
 4. **两个窗口都不是透明的**，但 `lamp.css` 里有一份全局的 `html, body { background: transparent }`（灯球窗口需要）。设置面板靠 `html[data-window="settings"]` 属性选择器压过它，这样覆盖关系是确定性的、不依赖两个 CSS 文件的打包顺序。`main.tsx` 负责把 `data-window` 写到 `<html>` 上。
@@ -346,6 +389,7 @@ SignalHub/
       ├─ state.rs                Signal / Session / Store ← 核心，含单测
       ├─ sweep.rs                TTL 清扫 + 聚合重算
       ├─ notify.rs               通知出口（Notifier）— 让 HTTP 层能脱离 AppHandle 单测
+      ├─ alerts.rs               需要你注意时弹系统通知
       ├─ config.rs               ~/.signalhub 路径、token、端口文件、用户设置
       ├─ hooks.rs                智能体 hook 的安装/卸载（app 与 CLI 共用）
       ├─ server.rs               axum 路由 + 鉴权 + 端口发现，含 12 个 HTTP 层单测
@@ -406,8 +450,10 @@ SignalHub/
 | 6 | 设置面板（圆点大小、置顶、暂停、会话列表） | ✅ 已完成 |
 | 6b | 状态模型补全：`stale` / `offline`、每状态 TTL、hook 调用日志 | ✅ 已完成 |
 | 6c | 灯球渲染：多会话多点、色盲形状、沉默细环、安静模式 | ✅ 已完成 |
-| 6d | 需要时弹系统通知、窗口位置记忆、点击展开会话列表 | ⏳ 待做 |
-| 6e | 打磨：开机自启、单实例、全局快捷键、点击穿透 | ⏳ 待做 |
+| 6d | 需要你注意时弹系统通知 | ✅ 已完成（dev 下无法验证真的弹出，见 §3.8） |
+| 6e | 窗口位置记忆 | ✅ 已完成 |
+| 6f | 点击灯球就地展开会话列表 | ✅ 已完成 |
+| 6g | 打磨：开机自启、单实例、全局快捷键、点击穿透 | ⏳ 待做 |
 | 7 | 后续：出站 webhook、`watch` 跟随、今日统计 | ⏳ 待做 |
 
 三处偏离原计划的地方，都记在这里以免以后当成疏漏：
@@ -432,10 +478,11 @@ serde_json = "1"
 tokio = { version = "1", features = ["time", "net", "io-util", "macros", "rt-multi-thread"] }
 getrandom = "0.3"             # 已在 Tauri 依赖树里，复用版本即免一次编译；用于生成 token
 ureq = { version = "3", default-features = false }   # CLI 的 HTTP 客户端，关掉默认 TLS
+tauri-plugin-window-state = "2"   # 只用来记窗口位置，见 §3.9
+tauri-plugin-notification = "2"   # 需要你注意时弹通知，见 §3.8
 
-# 计划中（Phase 5–6b）
+# 计划中（6g）
 tauri-plugin-single-instance = "2"
-tauri-plugin-window-state = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-store = "2"

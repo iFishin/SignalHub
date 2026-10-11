@@ -112,10 +112,7 @@ export function SettingsPanel({ snapshot }: Props) {
         <Row label="安静模式">
           <Switch on={settings.quiet} onChange={(on) => patch({ quiet: on })} />
         </Row>
-        <p className="hint">
-          安静模式下，空闲或沉默时圆点几乎透明，只有真正有活动或需要你注意时才显形；
-          鼠标移到它上面会恢复。关掉则始终完全可见。
-        </p>
+        <p className="hint">空闲或沉默时圆点几乎透明，悬停恢复。</p>
       </div>
 
       <div className="section">
@@ -123,6 +120,10 @@ export function SettingsPanel({ snapshot }: Props) {
         <Row label="暂停监控">
           <Switch on={snapshot.paused} onChange={setPaused} />
         </Row>
+        <Row label="需要时弹通知">
+          <Switch on={settings.notify} onChange={(on) => patch({ notify: on })} />
+        </Row>
+        <p className="hint">需要授权、需要关注或出错时弹一条系统通知。</p>
       </div>
 
       <div className="section">

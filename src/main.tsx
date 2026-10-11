@@ -7,7 +7,8 @@ import { windowKind } from "./lib/env";
 // 这样 CSS 的覆盖关系不依赖打包顺序。
 document.documentElement.dataset.window = windowKind();
 
-// 顺序有意为之：配色 tokens 先于用到它们的样式表
+// 顺序有意为之：主题与配色 tokens 先于用到它们的样式表
+import "./styles/theme.css";
 import "./styles/state.css";
 import "./styles/lamp.css";
 import "./styles/settings.css";

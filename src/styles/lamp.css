@@ -156,6 +156,121 @@ body,
   opacity: 1;
 }
 
+/* ---- 展开面板（点击圆点展开的会话列表）-------------------------------- */
+
+/* 几何必须和 Rust 的 config.rs 严格对齐：
+     高度 = PANEL_CHROME(56) + 行数 × PANEL_ROW(38)
+   56 = 上下内边距 10+10 + 头部 26 + 头部下间距 10。
+   任何一处改了都要同步改那边，否则窗口会裁掉最后一行、或者底下留一条缝。 */
+
+.lamp-panel-root {
+  padding: 0;
+  cursor: default;
+}
+
+.lamp-panel-root:active {
+  cursor: default;
+}
+
+.lamp-panel {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  padding: 10px 12px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.lamp-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+  margin-bottom: 10px;
+}
+
+.lamp-panel-title {
+  font-weight: 600;
+}
+
+.lamp-panel-count {
+  margin-left: auto;
+  flex: none;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.lamp-head-dot,
+.lamp-row-dot {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--state);
+}
+
+/* 与灯球上一致：需要你注意的两个状态用方角，不依赖颜色也能区分 */
+.lamp-panel-head[data-state="permission"] .lamp-head-dot,
+.lamp-panel-head[data-state="error"] .lamp-head-dot,
+.lamp-row[data-state="permission"] .lamp-row-dot,
+.lamp-row[data-state="error"] .lamp-row-dot {
+  border-radius: 28%;
+}
+
+.lamp-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.lamp-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  height: 38px;
+  overflow: hidden;
+}
+
+.lamp-row-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.lamp-row-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.lamp-row-id {
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lamp-row-meta {
+  margin-left: auto;
+  flex: none;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.lamp-row-message {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @keyframes pulse {
   0%,
   100% {

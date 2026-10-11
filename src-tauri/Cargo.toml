@@ -29,6 +29,11 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
+# 记住悬浮窗位置；尺寸由程序自己管（见 lib.rs 的 apply_window_size），
+# 所以只用它存位置，不用它存尺寸。
+tauri-plugin-window-state = "2"
+# 需要你注意时弹原生通知 —— 灯是被动的，你不盯着屏幕它就白搭。
+tauri-plugin-notification = "2"
 axum = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

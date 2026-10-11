@@ -3,33 +3,9 @@
  *
  * 同样走朴素简约路线：没有阴影、没有渐变、控件扁平。
  * 分隔靠 1px 细线，视觉层次靠字号与灰度，不靠立体感。
+ *
+ * 调色板变量在 theme.css（灯球的展开面板也用同一份）。
  */
-
-:root {
-  --bg: #ffffff;
-  --fg: #1f2328;
-  --muted: #6b7280;
-  --line: #e5e7eb;
-  --hover: #f4f5f7;
-  --accent: #1f6feb;
-  --danger: #c0392b;
-  --danger-line: #e8c4c0;
-  color-scheme: light;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #1c1c1e;
-    --fg: #e8e8ea;
-    --muted: #9aa0a6;
-    --line: #333336;
-    --hover: #2a2a2d;
-    --accent: #4c8dff;
-    --danger: #ff7b72;
-    --danger-line: #5a2f2c;
-    color-scheme: dark;
-  }
-}
 
 /* 设置窗不是透明窗口，得自己铺底色。
    用属性选择器而不是直接写 html/body，是为了稳定地压过 lamp.css 里的

@@ -1,3 +1,4 @@
+mod alerts;
 mod notify;
 mod server;
 mod state;
@@ -18,6 +19,9 @@ use tauri::{Emitter, LogicalSize, Manager};
 
 type SharedStore = Arc<Mutex<Store>>;
 type SharedSettings = Mutex<Settings>;
+/// 灯球是否处于「展开成会话列表面板」状态。
+/// 它是个瞬态 UI 开关，不是设置，所以不落盘、也不进 Settings。
+type SharedExpanded = Mutex<bool>;
 
 #[tauri::command]
 fn get_state(store: tauri::State<'_, SharedStore>) -> Snapshot {
@@ -100,6 +104,32 @@ fn open_settings(app: tauri::AppHandle) {
     reveal_settings(&app);
 }
 
+/// 展开 / 收起会话列表面板。
+///
+/// 由前端点击触发，但**尺寸仍由 Rust 算** —— 它取决于会话数和设置，而这两样
+/// 都在 Rust 这边。前端只负责「点了一下」。
+#[tauri::command]
+fn set_lamp_expanded(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SharedExpanded>,
+    expanded: bool,
+) -> bool {
+    // 先释放这把锁再调 apply_window_size，后者也会取它（std 的 Mutex 不可重入）
+    *state.lock().expect("expanded poisoned") = expanded;
+
+    let settings = *app
+        .state::<SharedSettings>()
+        .lock()
+        .expect("settings poisoned");
+    let snapshot = app
+        .state::<SharedStore>()
+        .lock()
+        .expect("state store poisoned")
+        .snapshot();
+    apply_window_size(&app, settings, &snapshot);
+    expanded
+}
+
 /// 窗口无边框、不可关闭、不在任务栏显示，所以必须留一个显式的退出命令，
 /// 供前端的 Cmd/Ctrl+Q 兜底（主入口是托盘菜单）。
 #[tauri::command]
@@ -121,7 +151,7 @@ fn visible_dots(snapshot: &Snapshot) -> u16 {
     (snapshot.sessions.len() as u16).clamp(1, config::MAX_DOTS)
 }
 
-/// 按圆点个数调整窗口尺寸。
+/// 按可见圆点个数（或展开后的行数）调整窗口尺寸。
 ///
 /// 只在尺寸真的变了才 `set_size`：状态变化一秒可能好几次，每次都 resize
 /// 是没必要的系统调用。
@@ -129,7 +159,13 @@ fn apply_window_size(app: &tauri::AppHandle, settings: Settings, snapshot: &Snap
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
-    let (width, height) = settings.window_size(visible_dots(snapshot));
+
+    let expanded = *app.state::<SharedExpanded>().lock().expect("expanded poisoned");
+    let (width, height) = if expanded {
+        settings.panel_size(snapshot.sessions.len() as u16)
+    } else {
+        settings.window_size(visible_dots(snapshot))
+    };
 
     // inner_size 给的是物理像素，要除掉缩放比才能和逻辑尺寸比较
     let scale = window.scale_factor().unwrap_or(1.0);
@@ -200,7 +236,16 @@ fn wire_settings_window(app: &tauri::App) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // 只记位置、不记尺寸：尺寸由设置和会话数决定，是程序自己管的，
+        // 让插件跟着恢复会和 apply_window_size 打架。
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(tauri_plugin_window_state::StateFlags::POSITION)
+                .build(),
+        )
+        .plugin(tauri_plugin_notification::init())
         .manage(SharedStore::new(Mutex::new(Store::default())))
+        .manage(SharedExpanded::new(false))
         .invoke_handler(tauri::generate_handler![
             get_state,
             set_state,
@@ -209,6 +254,7 @@ pub fn run() {
             set_settings,
             get_endpoint,
             open_settings,
+            set_lamp_expanded,
             quit
         ])
         .setup(|app| {
@@ -236,22 +282,36 @@ pub fn run() {
             // 让启动直接失败并打出来，好过一个「能启动但上报接口静默不工作」的 app。
             let token = config::load_or_create_token()?;
 
-            // 通知出口多包一层：每次状态变化都要先按圆点个数核对窗口尺寸，
-            // 再推给前端。放在这里而不是 sweep 里，是因为尺寸取决于快照内容。
+            // 通知出口多包一层：每次状态变化都要先按圆点个数核对窗口尺寸、
+            // 判断该不该弹系统通知，再推给前端。放在这里而不是 sweep 里，
+            // 是因为这两件事都取决于快照内容。
             let emit = notify::to_lamp_window(app.handle().clone());
+            let last_alerted: Arc<Mutex<Option<Signal>>> = Arc::new(Mutex::new(None));
             let notify: Notifier = {
                 let app_handle = app.handle().clone();
+                let last_alerted = last_alerted.clone();
                 Arc::new(move |snapshot: &Snapshot| {
                     let settings = *app_handle
                         .state::<SharedSettings>()
                         .lock()
                         .expect("settings poisoned");
                     apply_window_size(&app_handle, settings, snapshot);
+
+                    // 通知只在「新变成需要注意」时发一次，所以要记住上一次的聚合。
+                    // previous 无论是否真的发通知都要更新 —— 否则用户重新打开通知
+                    // 开关时会立刻收到一条关于「早就发生过的」状态的通知。
+                    let mut previous = last_alerted.lock().expect("alert state poisoned");
+                    if settings.notify && alerts::should_alert(*previous, snapshot.aggregate) {
+                        alerts::send(&app_handle, snapshot);
+                    }
+                    *previous = Some(snapshot.aggregate);
+
                     emit(snapshot);
                 })
             };
             app.manage(notify.clone());
 
+            alerts::ensure_permission(app.handle(), settings);
             wire_settings_window(app);
             tray::init(app.handle().clone())?;
             sweep::spawn(notify, app.state::<SharedStore>().inner().clone());
