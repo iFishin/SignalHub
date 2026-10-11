@@ -185,6 +185,8 @@ curl -s -X POST ... -d '{"state":"error","session":"b","group":"ci"}'
 
 于是灯球上出现两块牌（`ci` 在上，因为它更紧急），全局 `aggregate` 取两者里最高的 `error`。
 
+命令行等价于 `signalhub working --session a --group work`。`--group` 只影响这一条上报；CLI 不认识组名，也不做任何校验 —— 和状态名一样，组名是上报方自己定的字符串。
+
 - 不传 `group` 归 `default`，行为与不分组的版本完全一样。
 - 组名由上报方自己定。**同一组的会话会一起聚合**，所以别把不同项目的会话塞进同一个组。
 - 同一个会话换个组上报会把它挪过去（和状态一样是后写覆盖）。
@@ -245,6 +247,7 @@ signalhub working --session build-1 --agent ci --message "compiling"
 signalhub permission --session abc123 --message "需要批准: rm -rf"
 signalhub done --session build-1
 signalhub error --session ci --ttl 60s
+signalhub working --session b --group ci          # 报进 ci 组，灯上单独一块牌
 signalhub status
 ```
 
@@ -255,6 +258,7 @@ signalhub status
 | `--session <id>` | 会话标识，默认 `default` |
 | `--agent <name>` | 上报方名字 |
 | `--cwd <path>` | 项目路径 |
+| `--group <name>` | 归属的组，默认 `default`。见 §2.7 |
 | `--message <text>` | 悬停提示文本 |
 | `--ttl <dur>` | 覆盖默认 TTL，如 `30s` `5m` `1h` |
 | `--json` | `status` / `watch` 输出原始 JSON |

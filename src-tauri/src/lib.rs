@@ -127,18 +127,22 @@ fn get_state(store: tauri::State<'_, SharedStore>) -> Snapshot {
 
 /// dev 调试入口：等价于一次 HTTP 上报，走完全相同的 Store 路径，
 /// 因此能顺带验证聚合、TTL、事件推送三条链路。
+///
+/// `group` 可选是为了能在 dev 里凑出多分组 —— 灯球是一组一块牌，只报
+/// `default` 的话那条渲染路径根本走不到。
 #[tauri::command]
 fn set_state(
     app: tauri::AppHandle,
     store: tauri::State<'_, SharedStore>,
     state: String,
     session: Option<String>,
+    group: Option<String>,
     message: Option<String>,
 ) -> Result<Snapshot, String> {
     let req = Report {
         state: Signal::parse(&state)?,
         session,
-        group: None,
+        group,
         agent: Some("debug".into()),
         cwd: None,
         message,

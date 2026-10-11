@@ -27,16 +27,19 @@ Priority is **red > amber > green**: while one group is waiting for approval, an
 
 **Each sign** is a dark rounded pill (the same visual language as the app icon): a coloured dot, the group name, the state, and how long it has been that way — plus a second line when there is a message.
 
-**Grouping** is decided by the reporter — pass an optional `group`:
+**Grouping** is decided by the reporter — pass an optional `group` (the `group` field in the HTTP body, or `--group` on the command line):
 
 ```bash
 curl -s -X POST ... -d '{"state":"working","session":"a","group":"work"}'
 curl -s -X POST ... -d '{"state":"error","session":"b","group":"ci"}'
+
+signalhub working --session a --group work
+signalhub error --session b --group ci
 ```
 
-You then get two signs on the lamp (the most urgent one first), and the global state is the highest of the two. Omit `group` and it goes to `default`, which behaves exactly like a single-group setup.
+You then get two signs on the lamp (the most urgent one first), and the global state is the highest of the two. Omit `group` and it goes to `default`, which behaves exactly like a single-group setup. The hook commands we install carry no `--group`, so every agent you connect today still lands in `default` — grouping is for when you explicitly want more than one.
 
-**Each group's label and position are yours to set** (Settings → Status): a group name is an identifier the reporter chose (`build-1`), and you can rename it to something readable, or **pin** it so it always sits first on the lamp. Unpinned groups still sort by urgency, so a red one can never be pushed below a green one. Both are display-only: the group names in the API, and hide/mute matching, are unaffected.
+**Each group's label and position are yours to set** (Settings → Appearance → Per-group display): a group name is an identifier the reporter chose (`build-1`), and you can rename it to something readable, or **pin** it so it always sits first on the lamp. Unpinned groups still sort by urgency, so a red one can never be pushed below a green one. Both are display-only: the group names in the API, and hide/mute matching, are unaffected.
 
 Three channels that do not rely on colour:
 

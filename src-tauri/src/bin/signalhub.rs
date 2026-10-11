@@ -94,6 +94,8 @@ struct Flags {
     session: Option<String>,
     agent: Option<String>,
     cwd: Option<String>,
+    /// 归属的组。不传就是 `default` —— 单组用户完全不用管这个字段。
+    group: Option<String>,
     message: Option<String>,
     ttl_ms: Option<u64>,
     json: bool,
@@ -125,6 +127,7 @@ impl Flags {
                 "--session" => flags.session = Some(take_value(args, &mut index, "--session")?),
                 "--agent" => flags.agent = Some(take_value(args, &mut index, "--agent")?),
                 "--cwd" => flags.cwd = Some(take_value(args, &mut index, "--cwd")?),
+                "--group" => flags.group = Some(take_value(args, &mut index, "--group")?),
                 "--message" => flags.message = Some(take_value(args, &mut index, "--message")?),
                 "--ttl" => {
                     let raw = take_value(args, &mut index, "--ttl")?;
@@ -347,10 +350,14 @@ fn expect_success(status: u16, body: &str) -> Result<Value, Failure> {
 
 // ---- 子命令 ----------------------------------------------------------------
 
-fn report(state: &str, flags: &Flags) -> Result<(), Failure> {
-    let endpoint = Endpoint::discover(flags)?;
-
-    let mut body = json!({ "state": state });
+/// 把命令行上**真的给了值**的选项补进上报体。`report` 和 `hook` 共用。
+///
+/// 键名必须与 `state.rs` 的 `Report` 字段逐字一致：服务端**没有**
+/// `deny_unknown_fields`，拼错一个键不会报错、只会被静默丢掉。多分组此前正是
+/// 栽在这上面 —— `Report.group` 一直在、服务端也一直认，CLI 侧却从来没填过
+/// 这个字段，于是所有 hook 和 CLI 用户报的状态全落进 `default`，
+/// README 当招牌的多分组只剩手写 curl 能用。
+fn apply_flag_extras(body: &mut Value, flags: &Flags) {
     if let Some(value) = &flags.session {
         body["session"] = json!(value);
     }
@@ -360,12 +367,22 @@ fn report(state: &str, flags: &Flags) -> Result<(), Failure> {
     if let Some(value) = &flags.cwd {
         body["cwd"] = json!(value);
     }
+    if let Some(value) = &flags.group {
+        body["group"] = json!(value);
+    }
     if let Some(value) = &flags.message {
         body["message"] = json!(value);
     }
     if let Some(value) = flags.ttl_ms {
         body["ttl_ms"] = json!(value);
     }
+}
+
+fn report(state: &str, flags: &Flags) -> Result<(), Failure> {
+    let endpoint = Endpoint::discover(flags)?;
+
+    let mut body = json!({ "state": state });
+    apply_flag_extras(&mut body, flags);
 
     let (status, text) = read_response!(client()
         .post(&endpoint.url("/state"))
@@ -692,6 +709,10 @@ fn hook(agent: &str, flags: &Flags) -> Result<(), Failure> {
                 if let Some(cwd) = cwd_of(&payload) {
                     body["cwd"] = json!(cwd);
                 }
+                // payload 里的 cwd / session 是准的；但用户在命令行上显式写的
+                // 选项优先 —— 装出来的 hook 命令本来一个选项都不带，所以这条
+                // 只在手改过命令时才会生效。
+                apply_flag_extras(&mut body, flags);
                 let (status, text) = read_response!(client()
                     .post(&endpoint.url("/state"))
                     .header("Authorization", &endpoint.auth())
@@ -908,6 +929,7 @@ signalhub {version} —— 桌面悬浮状态灯的上报客户端
   --session <id>    会话标识，默认 default
   --agent <name>    上报方名字，用于 UI 归因
   --cwd <path>      项目路径
+  --group <name>    归属的组，默认 default。多分组时灯上每组一块牌
   --message <text>  悬停提示文本
   --ttl <时长>      覆盖默认过期时间，如 30s / 5m / 1h / 90（裸数字按秒）
   --json            status 输出原始 JSON
@@ -1258,6 +1280,51 @@ mod tests {
         assert!(parse(&["--session"]).is_err());
     }
 
+    /// P2-1 的核心回归测试：CLI 写进上报体的键名，服务端**必须认**。
+    ///
+    /// 断言不能是「CLI 侧再写一遍同样的 `json!`」—— 那只是把同一个拼写错误
+    /// 抄两遍。这里把 `apply_flag_extras` 的输出**反序列化进服务端那个
+    /// `Report`**（`state.rs` 通过 `#[path]` 被两边一起编，是同一个类型），
+    /// 于是键名一旦对不上，这条测试就红。
+    #[test]
+    fn flag_extras_land_in_the_servers_own_report_struct() {
+        let (flags, _) = parse(&[
+            "--session", "s-1",
+            "--agent", "ci",
+            "--cwd", "/proj",
+            "--group", "builds",
+            "--message", "compiling",
+            "--ttl", "30s",
+        ])
+        .unwrap();
+
+        let mut body = json!({ "state": "working" });
+        apply_flag_extras(&mut body, &flags);
+
+        let report: state::Report =
+            serde_json::from_value(body).expect("服务端应能解析 CLI 构造的请求体");
+        assert_eq!(report.group_id(), "builds");
+        assert_eq!(report.session_id(), "s-1");
+        assert_eq!(report.agent.as_deref(), Some("ci"));
+        assert_eq!(report.cwd.as_deref(), Some("/proj"));
+        assert_eq!(report.message.as_deref(), Some("compiling"));
+        assert_eq!(report.ttl_ms, Some(30_000));
+    }
+
+    /// 不传 `--group` 时这个键**根本不出现**，而不是发一个空串。
+    /// `docs/api.md` 里「不传就是 default」说的是「键缺席」；空串虽然也会被
+    /// `group_id()` 归到 default，但在线上多一个没意义的字段，也让抓包时
+    /// 分不清「没给」和「给空了」。
+    #[test]
+    fn an_absent_group_is_left_out_of_the_body_entirely() {
+        let (flags, _) = parse(&["working"]).unwrap();
+        let mut body = json!({ "state": "working" });
+        apply_flag_extras(&mut body, &flags);
+
+        assert!(body.get("group").is_none(), "{body}");
+        assert_eq!(body.as_object().unwrap().len(), 1, "只该有 state：{body}");
+    }
+
     #[test]
     fn an_unknown_flag_is_an_error() {
         let err = parse(&["--nope"]).unwrap_err();
@@ -1357,7 +1424,7 @@ mod tests {
         for expected in [
             "hook", "status", "watch", "clear", "monitor", "install", "uninstall",
             "claude-code", "codex", "cursor", "--never-fail", "--ttl", "--dry-run",
-            "--until", "--timeout", "--interval", "退出码",
+            "--until", "--timeout", "--interval", "--group", "退出码",
         ] {
             assert!(text.contains(expected), "帮助文本缺少 {expected}");
         }
