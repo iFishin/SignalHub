@@ -779,6 +779,7 @@ SignalHub/
 | Windows 上 `set_visible_on_all_workspaces` 是**静默 no-op** | `tao` 里那个方法只在 macOS / Linux 上实现，Windows 上返回 `Ok` 但什么都不做。所以 `setup` 里那个 `?` 不会让启动失败 —— 但它也不提供任何效果。 |
 | **Windows 不给托盘图标反色** | 模板图（RGB 全 0、只有 alpha）在 macOS 上由系统按菜单栏明暗着色；非 macOS 上 `is_template` 参数是被直接丢掉的（`tray-icon` 里那个方法连图都不收），托盘实现把原始位图交给系统、没有任何主题逻辑。所以那张图在 Windows 上就是**纯黑**，深色任务栏上等于看不见。`tray::monochrome_glyph()` 因此在非 macOS 上把三点图涂成中性灰。 |
 | Windows 上 PATH 里的可执行文件带 `.exe` | `Path::is_file()` **不做 PATHEXT 展开**，只找 `signalhub` 会永远找不到 `signalhub.exe`。所以查命令时要把 `.exe` 也试一遍（见 `hooks::candidates`）。 |
+| **Windows 只出 NSIS（`-setup.exe`），不出 MSI** | `bundle.targets` 原本是 `"all"`，会同时出 WiX 的 `.msi` 和 NSIS 的 `-setup.exe`。但 `light.exe` 生成 msi 那一步在这套配置上失败了：`failed to bundle project: failed to run light.exe`，而 Tauri **把 light.exe 自己的 stderr 吞了**，看不出原因（candle 那一步是过的，所以不是 `.wxs` 本身解析不了）。`tauri.windows.conf.json` 因此把 targets 收成 `["nsis"]` —— 那份本来就是 Tauri 推荐的 Windows 安装器。**这是绕开，不是修好**：根因没查出来，只是把出问题的那条路关掉了；想要 msi 的话得另做一轮诊断（用 `--verbose` 重跑，或者把生成的 `main.wxs` 打出来手动跑 light）。 |
 | Linux/Wayland | 透明窗口与 `shadow` 官方标注不支持。Linux 是硬需求时优先 X11。 |
 | `set_shadow` | Linux 不支持；Windows 上对无边框窗口加的是 1px 白边（Win11 上是圆角）。 |
 | `set_skip_taskbar` | macOS 不支持（用 Accessory 策略替代）；Windows 上有效。 |

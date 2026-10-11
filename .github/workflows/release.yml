@@ -92,6 +92,9 @@ jobs:
             target: aarch64-apple-darwin
           - os: macos-latest
             target: x86_64-apple-darwin
+          # Windows 只出 NSIS（`-setup.exe`），不出 WiX 的 `.msi` —— 见
+          # `tauri.windows.conf.json` 里的说明：WiX 的 light.exe 在这一版配置上会
+          # 失败，而 NSIS 那份本来就是 Tauri 推荐的 Windows 安装器。
           - os: windows-latest
             target: x86_64-pc-windows-msvc
 
