@@ -1258,6 +1258,21 @@ export function SettingsPanel({ snapshot }: Props) {
               })}
             </div>
 
+            {/* ---- 分组 ----
+                放在「接入」页而不是「外观」：它管的是**上报进来之后怎么解读**，
+                和「谁在往这儿报」是同一件事的两半。外观页管的是已经分好组之后
+                怎么称呼、怎么排。 */}
+            <div className="section">
+              <div className="row">
+                <span>{m.groupByCwd}</span>
+                <Switch
+                  on={settings.group_by === "cwd"}
+                  onChange={(on) => patch({ group_by: on ? "cwd" : "none" })}
+                />
+              </div>
+              <p className="hint">{m.groupByCwdHint}</p>
+            </div>
+
             {/* ---- 通知转发入口 ----
                 放在「接入」页靠上的位置、接口速查之前：想「完成后 POST 到我的
                 服务器」的人不会去翻「钩子」，得在接入流程里就看见它。 */}

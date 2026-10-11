@@ -29,7 +29,10 @@ use tauri_plugin_global_shortcut::{
 };
 
 type SharedStore = Arc<Mutex<Store>>;
-type SharedSettings = Mutex<Settings>;
+/// 共享的设置。**和 `SharedStore` 一样是 `Arc`，不是裸 `Mutex`** ——
+/// HTTP 上报那条路径也要读设置（`group_by` 兜底分组），而 `server::spawn`
+/// 拿到的是在那之前就构造好的 ctx，只能靠 Arc 共享同一份，不能再 manage 一个。
+type SharedSettings = Arc<Mutex<Settings>>;
 
 /// 瞬态的界面开关。**不是设置，所以不落盘** —— 尤其是 `pass_through`：
 /// 重启后必须回到可点击状态，否则用户一开机就面对一个点不动、拖不动的圆点。
@@ -962,7 +965,7 @@ pub fn run() {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             let settings = config::load_settings();
-            app.manage(SharedSettings::new(settings.clone()));
+            app.manage(Arc::new(Mutex::new(settings.clone())));
 
             // 先套用尺寸和置顶，再显示：否则会先按配置里的默认尺寸闪一下
             let initial = app
@@ -1031,6 +1034,9 @@ pub fn run() {
             server::spawn(
                 notify,
                 app.state::<SharedStore>().inner().clone(),
+                // 上报路径要读 `group_by`，所以设置也共享给它，而不是让它自己
+                // 从盘上再读一份 —— 两份真值迟早会漂移。
+                app.state::<SharedSettings>().inner().clone(),
                 token,
             );
 

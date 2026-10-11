@@ -531,6 +531,25 @@ pub struct Settings {
     pub alert_after_secs: u16,
     /// 托盘图标是否跟随当前聚合状态变色。关掉就回到单色模板图（跟着菜单栏明暗反色）。
     pub tray_follows_state: bool,
+    /// 上报没带 `group` 时，怎么给它兜一个。
+    ///
+    /// **默认 `None`，也就是不分组**，这条比看着重要：一旦默认按目录分组，
+    /// 所有现有用户的灯会从一块牌变成若干块、窗口尺寸跟着变，而他们没配过的
+    /// 每一组的显示名都是原始路径 —— 属于无声改变既有行为。
+    pub group_by: GroupBy,
+}
+
+/// 兜底分组的依据。
+///
+/// 只有两个取值，而且**默认那个必须是不分组**（理由见 `Settings::group_by`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum GroupBy {
+    /// 不分组：所有不带 `group` 的上报归 `default`，和没有这个开关时完全一样。
+    #[default]
+    None,
+    /// 用上报里的 `cwd` 当组名。一个工作目录一块牌。
+    Cwd,
 }
 
 /// 牌面背景的默认不透明度。够看清内容，又能透出一点桌面。
@@ -567,6 +586,19 @@ fn normalize_groups(names: Vec<String>) -> Vec<String> {
     names.sort();
     names.dedup();
     names
+}
+
+/// 由工作目录得出的组名：**完整路径**，去掉末尾的分隔符。
+///
+/// 用完整路径而不是最后一段目录名：同名目录（`~/a/api` 和 `~/b/api`）太常见，
+/// 撞名会把两个项目的会话混进同一块牌 —— 那正是这个开关最不该出的错。代价是
+/// 组名很长，所以灯上会自动截断（见 `settings.css` 的 `.group-name`），
+/// 设置里也能逐组改名。
+fn group_from_cwd(cwd: &str) -> Option<String> {
+    let name = cwd.trim().trim_end_matches(['/', '\\']);
+    // 根目录 `/` 去掉分隔符就成了空串 —— 那不是个能用的组名，退回 `default`。
+    // 一个会话的工作目录就是根目录，本来也少见。
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 /// `#rrggbb` 或 `#rgb`。只做形状检查，不判断这个色值好不好看。
@@ -629,6 +661,7 @@ impl Default for Settings {
             muted_groups: Vec::new(),
             alert_after_secs: DEFAULT_ALERT_DELAY_SECS,
             tray_follows_state: true,
+            group_by: GroupBy::default(),
         }
     }
 }
@@ -693,6 +726,23 @@ impl Settings {
     /// 两边算出不同的组，窗口就会裁掉最后一块牌，或者底下空一条。
     pub fn shows_group(&self, name: &str) -> bool {
         !self.hidden_groups.iter().any(|hidden| hidden == name)
+    }
+
+    /// 这次上报最终归哪个组。
+    ///
+    /// 上报**自己带的 `group` 优先**，`group_by` 只是兜底，不是覆盖。这条顺序
+    /// 不能反：反了就等于「开了按目录分组之后，手写 `group` 的用法全失效」——
+    /// 而多分组最早、也最稳的用法就是手写 `group`（见 docs/api.md §2.7）。
+    /// 想只给某一路单独分组的人也不必关掉全局开关。
+    pub fn resolve_group(&self, group: Option<&str>, cwd: Option<&str>) -> Option<String> {
+        let explicit = group.map(str::trim).filter(|name| !name.is_empty());
+        if let Some(name) = explicit {
+            return Some(name.to_string());
+        }
+        match self.group_by {
+            GroupBy::None => None,
+            GroupBy::Cwd => cwd.and_then(group_from_cwd),
+        }
     }
 
     /// 这一组在灯上叫什么。没设显示名就用上报方给的原始组名。
@@ -1213,6 +1263,64 @@ mod tests {
         assert_eq!(wild.clamped().size, MAX_SIZE);
         let tiny = Settings { size: 1, ..Settings::default() };
         assert_eq!(tiny.clamped().size, MIN_SIZE);
+    }
+
+    // ---- 兜底分组 ----
+
+    /// 默认必须是**不分组**。这条比看着重要：一旦默认按目录分组，所有现有
+    /// 用户的灯会从一块牌变成若干块、窗口尺寸跟着变，属于无声改变既有行为。
+    #[test]
+    fn grouping_is_off_by_default() {
+        let settings = Settings::default();
+        assert_eq!(settings.group_by, GroupBy::None);
+        assert_eq!(settings.resolve_group(None, Some("/proj/api")), None);
+    }
+
+    /// 上报自己带的 `group` **优先**，`group_by` 只是兜底而不是覆盖。
+    /// 顺序反了就等于「开了按目录分组之后手写 group 全失效」。
+    #[test]
+    fn an_explicit_group_beats_the_cwd_fallback() {
+        let settings = Settings { group_by: GroupBy::Cwd, ..Settings::default() };
+        assert_eq!(
+            settings.resolve_group(Some("work"), Some("/proj/api")).as_deref(),
+            Some("work")
+        );
+    }
+
+    #[test]
+    fn cwd_mode_falls_back_to_the_full_path() {
+        let settings = Settings { group_by: GroupBy::Cwd, ..Settings::default() };
+
+        // **完整路径**，不是最后一段目录名：`~/a/api` 和 `~/b/api` 撞名会让
+        // 两个项目的会话混进同一块牌。
+        assert_eq!(
+            settings.resolve_group(None, Some("/Users/me/code/api")).as_deref(),
+            Some("/Users/me/code/api")
+        );
+        // 末尾分隔符要去掉，否则 `/proj` 和 `/proj/` 会变成两个组
+        assert_eq!(
+            settings.resolve_group(None, Some("/Users/me/code/api/")).as_deref(),
+            Some("/Users/me/code/api")
+        );
+        assert_eq!(settings.resolve_group(None, Some("  /proj  ")).as_deref(), Some("/proj"));
+
+        // 没给 cwd 就退回 default，而不是造一个空名字的组
+        assert_eq!(settings.resolve_group(None, None), None);
+        // 空串和空白串都不算「给了一个组」
+        assert_eq!(settings.resolve_group(Some("   "), Some("/proj")).as_deref(), Some("/proj"));
+        // 根目录去掉分隔符只剩空串 —— 那不是个能用的组名
+        assert_eq!(settings.resolve_group(None, Some("/")), None);
+    }
+
+    /// `group_by` 是设置里的一个值，所以旧配置（没有这个键）必须能读成 `None`。
+    #[test]
+    fn settings_without_group_by_read_as_none() {
+        let json = serde_json::to_string(&Settings::default()).unwrap();
+        assert!(json.contains(r#""group_by":"none""#), "{json}");
+
+        let legacy = json.replace(r#""group_by":"none","#, "");
+        let parsed: Settings = serde_json::from_str(&legacy).unwrap();
+        assert_eq!(parsed.group_by, GroupBy::None);
     }
 
     #[test]

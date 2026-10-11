@@ -21,6 +21,9 @@ const PREFERRED_PORT: u16 = 41320;
 struct Ctx {
     store: Arc<Mutex<Store>>,
     notify: Notifier,
+    /// 上报路径要读 `group_by`（兜底分组）。和 `store` 一样是**共享的同一份**，
+    /// 不是启动时的快照 —— 用户在设置面板里一改开关，下一次上报就得生效。
+    settings: crate::SharedSettings,
     token: String,
     started: Instant,
 }
@@ -31,8 +34,13 @@ struct Ctx {
 /// 通知器**，它除了推事件给前端，还要核对窗口尺寸、记统计、发通知和转发。
 /// 这里若自己构造一个（早先就是这么写的），HTTP 上报这条路径就会绕过
 /// 那一整套逻辑 —— 而智能体的 hook 恰好全部走这条路。
-pub fn spawn(notify: Notifier, store: Arc<Mutex<Store>>, token: String) {
-    let ctx = Ctx { store, notify, token, started: Instant::now() };
+pub fn spawn(
+    notify: Notifier,
+    store: Arc<Mutex<Store>>,
+    settings: crate::SharedSettings,
+    token: String,
+) {
+    let ctx = Ctx { store, notify, settings, token, started: Instant::now() };
 
     tauri::async_runtime::spawn(async move {
         let listener = match tokio::net::TcpListener::bind(("127.0.0.1", PREFERRED_PORT)).await {
@@ -195,6 +203,19 @@ fn apply(ctx: &Ctx, path_session: Option<String>, mut report: Report) -> Result<
         report.session = Some(session);
     }
 
+    // 兜底分组。**放在这里，因为这是唯一的上报入口** —— `/v1/state` 和
+    // `/v1/sessions/{id}/state` 都走它，所以下面那两个 handler 不可能漏掉一个。
+    //
+    // 做在服务端而不是「改钩子命令」有两个理由：钩子命令是**写死的字符串**，
+    // 而按目录分组要的是每次调用各自的 cwd，写进命令行就成了一个固定值，根本
+    // 表达不了；而且改服务端就顺带覆盖了 curl / CI / 手写脚本，还不用去动用户
+    // 自己的智能体配置文件。
+    let resolved = {
+        let settings = ctx.settings.lock().expect("settings poisoned");
+        settings.resolve_group(report.group.as_deref(), report.cwd.as_deref())
+    };
+    report.group = resolved;
+
     let (changed, snapshot) = {
         let mut guard = ctx.store.lock().expect("state store poisoned");
         let changed = guard.apply(Instant::now(), report);
@@ -254,17 +275,23 @@ mod tests {
         port: u16,
         token: String,
         notifications: Arc<AtomicUsize>,
+        /// 服务器手里**那一份**设置。测试直接改它，就是在模拟用户在设置面板里
+        /// 拨开关 —— 走的是同一条共享路径，不是另造一个快照。
+        settings: crate::SharedSettings,
     }
 
     async fn start() -> TestServer {
         let notifications = Arc::new(AtomicUsize::new(0));
         let counter = notifications.clone();
+        let settings: crate::SharedSettings =
+            Arc::new(Mutex::new(crate::config::Settings::default()));
 
         let ctx = Ctx {
             store: Arc::new(Mutex::new(Store::default())),
             notify: Arc::new(move |_header: &Snapshot| {
                 counter.fetch_add(1, Ordering::SeqCst);
             }),
+            settings: settings.clone(),
             token: "s3cret".to_string(),
             started: Instant::now(),
         };
@@ -275,7 +302,7 @@ mod tests {
             axum::serve(listener, router(ctx)).await.unwrap();
         });
 
-        TestServer { port, token: "s3cret".to_string(), notifications }
+        TestServer { port, token: "s3cret".to_string(), notifications, settings }
     }
 
     /// 手写一个 HTTP/1.1 请求，就为了几个测试引入一个 HTTP 客户端依赖不划算。
@@ -431,6 +458,69 @@ mod tests {
         let (_, body) = call(&server, "GET", "/v1/state", Some(&server.token), false, None).await;
         assert!(body.contains("from-path"), "body: {body}");
         assert!(!body.contains("from-body"), "body: {body}");
+    }
+
+    // ---- 兜底分组（group_by = cwd）----
+
+    /// 开关**关着**时（默认），带 cwd 的上报仍然全归 `default` ——
+    /// 现有用户打开新版本看到的东西必须一模一样。
+    #[tokio::test]
+    async fn without_the_switch_a_cwd_report_still_lands_in_default() {
+        let server = start().await;
+        post_state(&server, r#"{"state":"working","session":"a","cwd":"/proj/api"}"#).await;
+
+        let (_, body) = call(&server, "GET", "/v1/state", Some(&server.token), false, None).await;
+        assert!(body.contains(r#""name":"default""#), "body: {body}");
+        // 会话视图里**照旧**带着 cwd（那是它自己的字段），这里要否掉的是
+        // 「路径被拿来当组名了」这件事本身，所以匹配的是组名的位置。
+        assert!(!body.contains(r#""name":"/proj/api""#), "body: {body}");
+    }
+
+    /// 开关打开后，两个不同目录的上报要变成**两块牌**。
+    #[tokio::test]
+    async fn cwd_mode_makes_one_sign_per_directory() {
+        let server = start().await;
+        server.settings.lock().unwrap().group_by = crate::config::GroupBy::Cwd;
+
+        post_state(&server, r#"{"state":"working","session":"a","cwd":"/proj/api"}"#).await;
+        let (status, body) =
+            post_state(&server, r#"{"state":"error","session":"b","cwd":"/proj/web"}"#).await;
+        assert_eq!(status, 200);
+        // 回给调用方的是**派生之后**的组数 —— 一次 curl 就能看出开关生效没有
+        assert!(body.contains(r#""groups":2"#), "body: {body}");
+
+        let (_, body) = call(&server, "GET", "/v1/state", Some(&server.token), false, None).await;
+        assert!(body.contains(r#""name":"/proj/api""#), "body: {body}");
+        assert!(body.contains(r#""name":"/proj/web""#), "body: {body}");
+    }
+
+    /// 上报自己带的 `group` 仍然优先 —— 开关是兜底，不是覆盖。
+    #[tokio::test]
+    async fn cwd_mode_does_not_override_an_explicit_group() {
+        let server = start().await;
+        server.settings.lock().unwrap().group_by = crate::config::GroupBy::Cwd;
+
+        post_state(
+            &server,
+            r#"{"state":"working","session":"a","group":"work","cwd":"/proj/api"}"#,
+        )
+        .await;
+
+        let (_, body) = call(&server, "GET", "/v1/state", Some(&server.token), false, None).await;
+        assert!(body.contains(r#""name":"work""#), "body: {body}");
+        assert!(!body.contains(r#""name":"/proj/api""#), "body: {body}");
+    }
+
+    /// 没带 cwd 的上报在 cwd 模式下也只该退回 `default` —— 不能造出空名字的组。
+    #[tokio::test]
+    async fn cwd_mode_still_falls_back_to_default_without_a_cwd() {
+        let server = start().await;
+        server.settings.lock().unwrap().group_by = crate::config::GroupBy::Cwd;
+
+        post_state(&server, r#"{"state":"idle","session":"a"}"#).await;
+
+        let (_, body) = call(&server, "GET", "/v1/state", Some(&server.token), false, None).await;
+        assert!(body.contains(r#""name":"default""#), "body: {body}");
     }
 
     #[tokio::test]

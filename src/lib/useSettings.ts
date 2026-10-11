@@ -131,6 +131,14 @@ export interface Settings {
   locale: "auto" | "zh" | "en";
   /** 逐组的显示偏好（显示名 / 置顶）。键是**上报方给的原始组名**。 */
   group_meta: Record<string, GroupMeta>;
+  /**
+   * 上报没带 `group` 时怎么兜底分组。
+   *
+   * `"none"` = 不分组（所有上报归 `default`）；`"cwd"` = 按上报里的
+   * `cwd` 分组，一个工作目录一块牌。**改这个会立刻改变灯上的牌数**，
+   * 所以默认是 `"none"`。
+   */
+  group_by: "none" | "cwd";
 }
 
 /** 与 Rust 侧 `config::Settings::default()` 一致。 */
@@ -155,6 +163,7 @@ const DEFAULTS: Settings = {
   tray_follows_state: true,
   locale: "auto",
   group_meta: {},
+  group_by: "none",
 };
 
 const SETTINGS_EVENT = "signalhub://settings";
