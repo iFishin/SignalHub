@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use std::fs;
 use std::io::{Read, Write};
 use std::process::ExitCode;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 // 直接包含源码，而不是 `use signalhub_lib::config`：lib.rs 是 Tauri 应用，
 // 链接它会把整个 Tauri 拖进这个本该只有几 MB 的 CLI 二进制。
@@ -93,6 +93,10 @@ struct Flags {
     json: bool,
     dry_run: bool,
     port: Option<u16>,
+    /// watch 专用
+    interval_ms: Option<u64>,
+    until: Option<String>,
+    timeout_ms: Option<u64>,
 }
 
 fn take_value(args: &[String], index: &mut usize, name: &str) -> Result<String, Failure> {
@@ -128,6 +132,15 @@ impl Flags {
                 }
                 "--json" => flags.json = true,
                 "--dry-run" => flags.dry_run = true,
+                "--interval" => {
+                    let raw = take_value(args, &mut index, "--interval")?;
+                    flags.interval_ms = Some(parse_ttl(&raw)?);
+                }
+                "--timeout" => {
+                    let raw = take_value(args, &mut index, "--timeout")?;
+                    flags.timeout_ms = Some(parse_ttl(&raw)?);
+                }
+                "--until" => flags.until = Some(take_value(args, &mut index, "--until")?),
                 "--never-fail" => {} // main 已经从原始参数里处理过了
                 other if other.starts_with("--") => {
                     return Err(Failure::other(format!("未知选项 {other}，用 --help 看用法")));
@@ -200,6 +213,7 @@ fn run(args: &[String]) -> Result<(), Failure> {
             hook(agent, &flags)
         }
         "status" => status(&flags),
+        "watch" => watch(&flags),
         "clear" => clear(&flags),
         "monitor" => match rest.first().map(String::as_str) {
             Some("on") => monitor(true, &flags),
@@ -398,6 +412,83 @@ fn monitor(on: bool, flags: &Flags) -> Result<(), Failure> {
         if parsed["paused"].as_bool().unwrap_or(false) { "off" } else { "正常" }
     );
     Ok(())
+}
+
+/// `watch` 能等的状态。这是 CLI 里**唯一**硬编码状态名的地方。
+///
+/// 别处都刻意不校验状态名（权威定义在服务端）。这里破例是因为 `--until` 写错
+/// 一个字母就会永远等下去，而没有任何端点可以问「有哪些状态」—— 用一个明确的
+/// 报错换掉一个静默的无限等待，值得。注意这里只列名字、不含别名，
+/// 因为要和 `GET /v1/state` 返回的 `aggregate` 做字面比较。
+const WATCHABLE_STATES: [&str; 10] = [
+    "idle", "thinking", "working", "done", "attention", "permission", "error", "off",
+    "stale", "offline",
+];
+
+/// 跟随状态：状态变化时打印一行。
+///
+/// 两种用法：终端里开一个窗口盯着（Ctrl-C 退出），以及在 CI 里等某个状态
+/// （`signalhub watch --until done --timeout 10m`）。
+fn watch(flags: &Flags) -> Result<(), Failure> {
+    let until = match &flags.until {
+        Some(until) if WATCHABLE_STATES.contains(&until.as_str()) => Some(until.clone()),
+        Some(until) => {
+            return Err(Failure::other(format!(
+                "--until {until:?} 不是已知状态；可用: {}",
+                WATCHABLE_STATES.join(" ")
+            )));
+        }
+        None => None,
+    };
+
+    let endpoint = Endpoint::discover(flags)?;
+    let interval = Duration::from_millis(flags.interval_ms.unwrap_or(500));
+    let deadline = flags
+        .timeout_ms
+        .map(|ms| Instant::now() + Duration::from_millis(ms));
+
+    // 提示走 stderr，这样 `signalhub watch > 日志` 得到的是干净的状态时间线
+    match &until {
+        Some(until) => eprintln!("等待聚合变为 {until}…（Ctrl-C 取消）"),
+        None => eprintln!("跟随状态变化（Ctrl-C 退出）"),
+    }
+
+    let mut last: Option<String> = None;
+    loop {
+        let (status, text) = read_response!(client()
+            .get(&endpoint.url("/state"))
+            .header("Authorization", &endpoint.auth())
+            .call());
+        let parsed = expect_success(status, &text)?;
+
+        let aggregate = parsed["aggregate"].as_str().unwrap_or("?").to_string();
+        let sessions = parsed["sessions"].as_array().map_or(0, Vec::len);
+
+        if until.as_deref() == Some(aggregate.as_str()) {
+            // 目标状态这一行也要打出来，否则 CI 日志里看不到到达了
+            println!("{aggregate}  {sessions} 个会话");
+            return Ok(());
+        }
+
+        // 只在变化时输出：每 500ms 刷一行会把日志淹掉
+        if last.as_deref() != Some(aggregate.as_str()) {
+            if flags.json {
+                println!("{}", serde_json::to_string(&parsed).unwrap_or_default());
+            } else {
+                println!("{aggregate}  {sessions} 个会话");
+            }
+            last = Some(aggregate.clone());
+        }
+
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(Failure::other(format!(
+                "等待超时：仍是 {aggregate}，未变成 {}",
+                until.as_deref().unwrap_or("?")
+            )));
+        }
+
+        std::thread::sleep(interval);
+    }
 }
 
 fn status(flags: &Flags) -> Result<(), Failure> {
@@ -750,6 +841,7 @@ signalhub {version} —— 桌面悬浮状态灯的上报客户端
   signalhub <状态> [选项]            上报状态
   signalhub hook <智能体>            从 stdin 读智能体 hook 的 JSON 并上报
   signalhub status [--json]          查询当前聚合状态
+  signalhub watch [选项]             跟随状态变化（终端里盯着，或 CI 里等状态）
   signalhub clear --session <id>     清除某个会话
   signalhub monitor on|off           全局暂停 / 恢复监控
   signalhub on | off                 monitor 的简写
@@ -769,6 +861,9 @@ signalhub {version} —— 桌面悬浮状态灯的上报客户端
   --ttl <时长>      覆盖默认过期时间，如 30s / 5m / 1h / 90（裸数字按秒）
   --json            status 输出原始 JSON
   --dry-run         install / uninstall 只打印将要做的改动，不写文件
+  --interval <时长>  watch 的轮询间隔，默认 500ms
+  --until <状态>     watch 等到聚合变成该状态就退出 0（如 --until done）
+  --timeout <时长>   watch 的等待上限，超时退出 1
   --port <n>        覆盖端口自动发现
   --never-fail      任何错误都以退出码 0 结束（hook 模式隐含此行为）
   -h, --help        显示本帮助
@@ -1052,6 +1147,42 @@ mod tests {
     }
 
     #[test]
+    fn watch_flags_are_parsed() {
+        let (flags, _) = parse(&["--until", "done", "--timeout", "5m", "--interval", "250ms"])
+            .unwrap();
+        assert_eq!(flags.until.as_deref(), Some("done"));
+        assert_eq!(flags.timeout_ms, Some(300_000));
+        assert_eq!(flags.interval_ms, Some(250));
+    }
+
+    /// 写错一个字母就会永远等下去，所以这里必须报错而不是静默等待。
+    /// 校验发生在连接服务之前，所以不需要有 app 在跑。
+    #[test]
+    fn watch_rejects_an_unknown_until_state() {
+        let (flags, _) = parse(&["--until", "workng"]).unwrap();
+        let err = watch(&flags).unwrap_err();
+        assert!(err.message.contains("不是已知状态"), "{}", err.message);
+        assert!(
+            err.message.contains("working"),
+            "错误里该列出可用状态: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn watch_accepts_every_aggregate_state_including_derived_ones() {
+        // 派生状态（stale / offline）也能等 —— 它们只不能「上报」
+        for state in WATCHABLE_STATES {
+            assert!(
+                WATCHABLE_STATES.contains(&state),
+                "{state} 应在可等列表里"
+            );
+        }
+        assert!(WATCHABLE_STATES.contains(&"stale"));
+        assert!(WATCHABLE_STATES.contains(&"offline"));
+    }
+
+    #[test]
     fn ttl_accepts_suffixes_and_bare_seconds() {
         assert_eq!(parse_ttl("250ms").unwrap(), 250);
         assert_eq!(parse_ttl("30s").unwrap(), 30_000);
@@ -1101,9 +1232,9 @@ mod tests {
     fn help_documents_every_exit_code_and_command() {
         let text = help();
         for expected in [
-            "hook", "status", "clear", "monitor", "install", "uninstall",
+            "hook", "status", "watch", "clear", "monitor", "install", "uninstall",
             "claude-code", "codex", "cursor", "--never-fail", "--ttl", "--dry-run",
-            "退出码",
+            "--until", "--timeout", "--interval", "退出码",
         ] {
             assert!(text.contains(expected), "帮助文本缺少 {expected}");
         }

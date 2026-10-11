@@ -194,6 +194,7 @@ curl -s "http://127.0.0.1:$(cat ~/.signalhub/port)/v1/health"
 signalhub <state> [flags]                    上报状态
 signalhub hook <agent>                       从 stdin 读智能体 hook JSON 并上报
 signalhub status [--json]                    查询当前聚合状态
+signalhub watch [选项]                       跟随状态变化，或等某个状态出现
 signalhub clear --session <id>               清除会话
 signalhub monitor on|off                     全局暂停 / 恢复
 signalhub on | off                           monitor 的简写
@@ -222,9 +223,13 @@ signalhub status
 | `--cwd <path>` | 项目路径 |
 | `--message <text>` | 悬停提示文本 |
 | `--ttl <dur>` | 覆盖默认 TTL，如 `30s` `5m` `1h` |
-| `--json` | `status` 输出原始 JSON |
+| `--json` | `status` / `watch` 输出原始 JSON |
 | `--never-fail` | 任何错误都以 0 退出（供 hook 使用） |
 | `--port <n>` | 覆盖端口自动发现 |
+| `--dry-run` | `install` / `uninstall` 只打印将要做的改动，不写文件 |
+| `--interval <dur>` | `watch` 的轮询间隔，默认 500ms |
+| `--until <状态>` | `watch` 等到聚合变成该状态就退出 0 |
+| `--timeout <dur>` | `watch` 的等待上限，超时退出 1 |
 
 ### 3.2 退出码
 
@@ -238,7 +243,21 @@ signalhub status
 
 CLI 自己不校验状态名，而是原样转发给服务端：别名表只有一份（`state::Signal::parse`），因此不可能出现 CLI 与服务端理解不一致的情况。写错状态名会拿到服务端的 400 和它的错误文本。
 
-### 3.3 `off` 的两个含义（容易混淆，特此明确）
+### 3.3 `signalhub watch`
+
+两种用法：终端里开一个窗口盯着，以及在 CI 里等某个状态。
+
+```bash
+signalhub watch                                   # 状态变化时打印一行
+signalhub watch --until done --timeout 10m        # 等到 done，超时退出 1
+signalhub watch --json > states.jsonl             # 每次变化一行 JSON，可回放
+```
+
+只在状态**变化**时输出（每 500ms 刷一行会把日志淹掉），提示信息走 stderr，所以 `signalhub watch > 日志` 拿到的是干净的状态时间线。
+
+`--until` 只接受规范状态名（`GET /v1/state` 返回的那一套，含派生的 `stale` / `offline`），不接受别名——它要和 `aggregate` 做字面比较。写错会立刻报错并列出可用值，**不会静默地永远等下去**。这是 CLI 里唯一硬编码状态名的地方，理由就是这个：一个静默的无限等待比一个明确的报错糟糕得多。
+
+### 3.4 `off` 的两个含义（容易混淆，特此明确）
 
 `off` 既是会话状态也是全局开关，两者不是一回事：
 

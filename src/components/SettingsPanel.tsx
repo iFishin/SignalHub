@@ -1,8 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { inTauri } from "../lib/env";
 import { SIGNAL_LABEL } from "../lib/signals";
 import { useSettings, updateSettings, type Settings } from "../lib/useSettings";
+import {
+  useToggles,
+  setAutostart,
+  setPassThrough,
+} from "../lib/useToggles";
 import type { Snapshot } from "../lib/types";
 
 /** 与 Rust 侧 config.rs 的 MIN_SIZE / MAX_SIZE / DEFAULT_SIZE 保持一致。 */
@@ -47,8 +52,23 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 
 export function SettingsPanel({ snapshot }: Props) {
   const settings = useSettings();
+  const toggles = useToggles();
   const [endpoint, setEndpoint] = useState<Endpoint | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  const sentHeight = useRef(0);
+
+  // 让窗口跟着内容长。`.settings` 是 height:100vh + overflow-y:auto，
+  // 所以它的 scrollHeight 就是内容高度、与窗口高度无关 —— 不会来回振荡。
+  // 只在高度真的变了才调 IPC：状态推送一秒可能好几次，每次都调太浪费。
+  useLayoutEffect(() => {
+    if (!inTauri) return;
+    const height = panel.current?.scrollHeight;
+    if (height && height !== sentHeight.current) {
+      sentHeight.current = height;
+      invoke("fit_settings_window", { height }).catch(console.error);
+    }
+  });
 
   useEffect(() => {
     if (!inTauri) return;
@@ -76,7 +96,7 @@ export function SettingsPanel({ snapshot }: Props) {
     : null;
 
   return (
-    <div className="settings">
+    <div className="settings" ref={panel}>
       <h1 data-state={snapshot.aggregate}>
         <span className="state-dot" />
         {SIGNAL_LABEL[snapshot.aggregate]}
@@ -172,6 +192,32 @@ export function SettingsPanel({ snapshot }: Props) {
       </div>
 
       {error && <p className="error">{error}</p>}
+
+      <div className="section">
+        <div className="section-title">系统</div>
+        <Row label="开机自启">
+          <Switch
+            on={toggles.autostart}
+            onChange={(on) => {
+              setError(null);
+              setAutostart(on).catch(reported);
+            }}
+          />
+        </Row>
+        <Row label="点击穿透">
+          <Switch
+            on={toggles.pass_through}
+            onChange={(on) => {
+              setError(null);
+              setPassThrough(on).catch(reported);
+            }}
+          />
+        </Row>
+        <p className="hint">
+          穿透后圆点不再响应鼠标，按 {toggles.pass_through_shortcut || "快捷键"}
+          或从托盘菜单退出。该模式不会保留到下次启动。
+        </p>
+      </div>
 
       <div className="section">
         <button

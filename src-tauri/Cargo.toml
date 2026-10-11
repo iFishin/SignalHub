@@ -34,6 +34,11 @@ tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-window-state = "2"
 # 需要你注意时弹原生通知 —— 灯是被动的，你不盯着屏幕它就白搭。
 tauri-plugin-notification = "2"
+# 多开会让端口和状态文件互相打架，所以只允许一个实例。
+tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
+# 全局快捷键是「点击穿透」模式唯一的可靠逃生通道。
+tauri-plugin-global-shortcut = "2"
 axum = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

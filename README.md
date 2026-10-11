@@ -60,6 +60,8 @@ curl -s -X POST "http://127.0.0.1:$(cat ~/.signalhub/port)/v1/state" \
 ```bash
 signalhub working --session build-1 --agent ci --message "compiling"
 signalhub status
+signalhub watch                                   # 终端里跟随状态变化
+signalhub watch --until done --timeout 10m        # CI 里等某个状态
 ```
 
 完整接口规范见 [docs/api.md](docs/api.md)。架构与设计取舍见 [docs/architecture.md](docs/architecture.md)。
@@ -88,6 +90,6 @@ signalhub install hooks claude-code
 
 ## 进度
 
-已完成：悬浮灯球、状态聚合与 TTL、HTTP 上报接口、CLI、设置面板、hook 自动接线（Claude Code / Codex / Cursor）。
+已完成：悬浮灯球、状态聚合与 TTL、HTTP 上报接口、CLI（含 `watch`）、设置面板、hook 自动接线（Claude Code / Codex / Cursor）、系统通知、窗口位置记忆、点击展开会话列表、单实例、开机自启、全局快捷键、点击穿透。
 
-待做：开机自启、全局快捷键、窗口位置记忆、点击穿透模式。
+待做：出站 webhook / ntfy 转发、今日状态时长统计、把 CLI 作为 sidecar 打进 app bundle（分发才需要）。

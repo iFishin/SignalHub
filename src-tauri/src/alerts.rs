@@ -46,11 +46,15 @@ fn project_name(cwd: &str) -> String {
 
 /// 发一条通知。任何失败只记 stderr —— 通知发不出去不该影响状态机。
 pub fn send(app: &tauri::AppHandle, snapshot: &Snapshot) {
-    let body = body(snapshot);
+    send_message(app, snapshot.aggregate.label(), &body(snapshot));
+}
+
+/// 发一条自定义文案的通知。状态通知之外的通告用它（例如「已进入穿透模式」）。
+pub fn send_message(app: &tauri::AppHandle, title: &str, body: &str) {
     let result = app
         .notification()
         .builder()
-        .title(snapshot.aggregate.label())
+        .title(title)
         .body(body)
         .show();
 

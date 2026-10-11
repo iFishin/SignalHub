@@ -16,12 +16,37 @@ use state::{Report, Signal, Snapshot, Store};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tauri::{Emitter, LogicalSize, Manager};
+use tauri_plugin_autostart::ManagerExt;
+use tauri_plugin_global_shortcut::{
+    Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState,
+};
 
 type SharedStore = Arc<Mutex<Store>>;
 type SharedSettings = Mutex<Settings>;
-/// 灯球是否处于「展开成会话列表面板」状态。
-/// 它是个瞬态 UI 开关，不是设置，所以不落盘、也不进 Settings。
-type SharedExpanded = Mutex<bool>;
+
+/// 瞬态的界面开关。**不是设置，所以不落盘** —— 尤其是 `pass_through`：
+/// 重启后必须回到可点击状态，否则用户一开机就面对一个点不动、拖不动的圆点。
+#[derive(Debug, Default, Clone, Copy)]
+struct UiFlags {
+    /// 灯球是否展开成会话列表面板
+    expanded: bool,
+    /// 点击穿透：整个窗口忽略指针事件
+    pass_through: bool,
+}
+
+type SharedUi = Mutex<UiFlags>;
+
+/// 点击穿透的逃生快捷键。**穿透一旦开启，鼠标就没法再操作那个窗口**，
+/// 所以这是唯一的键盘出路（另一条是托盘菜单）。
+#[cfg(target_os = "macos")]
+const PASS_THROUGH_SHORTCUT: (Modifiers, Code) = (Modifiers::SUPER, Code::KeyS);
+#[cfg(not(target_os = "macos"))]
+const PASS_THROUGH_SHORTCUT: (Modifiers, Code) = (Modifiers::CONTROL, Code::KeyS);
+
+#[cfg(target_os = "macos")]
+const PASS_THROUGH_SHORTCUT_LABEL: &str = "⌘⌥S";
+#[cfg(not(target_os = "macos"))]
+const PASS_THROUGH_SHORTCUT_LABEL: &str = "Ctrl+Alt+S";
 
 #[tauri::command]
 fn get_state(store: tauri::State<'_, SharedStore>) -> Snapshot {
@@ -104,6 +129,37 @@ fn open_settings(app: tauri::AppHandle) {
     reveal_settings(&app);
 }
 
+/// 把设置窗调整到内容需要的高度。
+///
+/// 高度由**前端量出来**传进来：内容高度是 CSS 的事，Rust 这边算不出来。
+/// 上限取屏幕可用高度（留出菜单栏和边距），超出就让面板内部滚动 —— 否则
+/// 在 13 寸笔记本上窗口会顶到屏幕外。
+///
+/// 这么做是为了去掉「每加一行设置都要手工量一次高度」的反复劳动：之前
+/// 620 → 640 → 760 → 820 就是这么一路量上来的，而且每次都可能量漏。
+#[tauri::command]
+fn fit_settings_window(app: tauri::AppHandle, height: u32) -> Result<(), String> {
+    let Some(window) = app.get_webview_window("settings") else {
+        return Ok(());
+    };
+
+    let available = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .map(|monitor| {
+            // monitor.size() 是物理像素，除以缩放比才是逻辑像素
+            let logical = monitor.size().height as f64 / monitor.scale_factor();
+            (logical as u32).saturating_sub(120)
+        })
+        .unwrap_or(800);
+
+    let height = height.clamp(240, available.max(240));
+    window
+        .set_size(LogicalSize::new(420, height))
+        .map_err(|err| format!("调整设置窗高度失败: {err}"))
+}
+
 /// 展开 / 收起会话列表面板。
 ///
 /// 由前端点击触发，但**尺寸仍由 Rust 算** —— 它取决于会话数和设置，而这两样
@@ -111,11 +167,11 @@ fn open_settings(app: tauri::AppHandle) {
 #[tauri::command]
 fn set_lamp_expanded(
     app: tauri::AppHandle,
-    state: tauri::State<'_, SharedExpanded>,
+    ui: tauri::State<'_, SharedUi>,
     expanded: bool,
 ) -> bool {
     // 先释放这把锁再调 apply_window_size，后者也会取它（std 的 Mutex 不可重入）
-    *state.lock().expect("expanded poisoned") = expanded;
+    ui.lock().expect("ui poisoned").expanded = expanded;
 
     let settings = *app
         .state::<SharedSettings>()
@@ -128,6 +184,103 @@ fn set_lamp_expanded(
         .snapshot();
     apply_window_size(&app, settings, &snapshot);
     expanded
+}
+
+/// 三个开关类功能的当前状态。做成一个命令是为了让前端**不必知道**
+/// 快捷键的文案 —— 那个字符串由 Rust 定义一次，两边不会漂移。
+#[derive(serde::Serialize, Clone)]
+struct Toggles {
+    autostart: bool,
+    pass_through: bool,
+    pass_through_shortcut: &'static str,
+}
+
+/// 设置面板要跟着变的事件名。**必须发**：穿透和自启也能从托盘菜单和全局
+/// 快捷键改，不发的话设置面板里的开关会显示过时的状态。
+const TOGGLES_EVENT: &str = "signalhub://toggles";
+
+fn toggles(app: &tauri::AppHandle) -> Toggles {
+    Toggles {
+        // 开机自启的真值在插件那边（它管着 LaunchAgent plist），不复制进 Settings
+        autostart: app.autolaunch().is_enabled().unwrap_or(false),
+        pass_through: app
+            .state::<SharedUi>()
+            .lock()
+            .expect("ui poisoned")
+            .pass_through,
+        pass_through_shortcut: PASS_THROUGH_SHORTCUT_LABEL,
+    }
+}
+
+#[tauri::command]
+fn get_toggles(app: tauri::AppHandle) -> Toggles {
+    toggles(&app)
+}
+
+#[tauri::command]
+fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+    let manager = app.autolaunch();
+    let result = if enabled { manager.enable() } else { manager.disable() };
+    result.map_err(|err| format!("设置开机自启失败: {err}"))?;
+
+    let _ = app.emit(TOGGLES_EVENT, toggles(&app));
+    Ok(enabled)
+}
+
+/// 切换点击穿透的核心逻辑。
+///
+/// 命令和全局快捷键都走它 —— 两处各写一遍的话，行为迟早会分叉。
+fn set_pass_through_impl(app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    if enabled {
+        app.state::<SharedUi>().lock().expect("ui poisoned").expanded = false;
+    }
+    app.state::<SharedUi>()
+        .lock()
+        .expect("ui poisoned")
+        .pass_through = enabled;
+
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "找不到灯球窗口".to_string())?;
+    window
+        .set_ignore_cursor_events(enabled)
+        .map_err(|err| format!("切换点击穿透失败: {err}"))?;
+
+    // 开启时把面板收回去，否则会留下一个点不动的大窗口
+    if enabled {
+        let settings = *app
+            .state::<SharedSettings>()
+            .lock()
+            .expect("settings poisoned");
+        let snapshot = app
+            .state::<SharedStore>()
+            .lock()
+            .expect("state store poisoned")
+            .snapshot();
+        apply_window_size(app, settings, &snapshot);
+
+        alerts::send_message(
+            app,
+            "已进入点击穿透模式",
+            &format!(
+                "圆点不再响应鼠标。按 {PASS_THROUGH_SHORTCUT_LABEL} 或从托盘菜单退出。"
+            ),
+        );
+    }
+
+    let _ = app.emit(TOGGLES_EVENT, toggles(app));
+    Ok(())
+}
+
+/// 切换点击穿透。
+///
+/// 开启后**整个窗口忽略指针事件** —— 鼠标再也点不到、拖不动它，只能靠托盘
+/// 菜单或全局快捷键退出。所以开启时会发一条通知告诉用户怎么退出：
+/// 一个没有逃生通道的穿透模式就是个陷阱。
+#[tauri::command]
+fn set_pass_through(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+    set_pass_through_impl(&app, enabled)?;
+    Ok(enabled)
 }
 
 /// 窗口无边框、不可关闭、不在任务栏显示，所以必须留一个显式的退出命令，
@@ -160,7 +313,11 @@ fn apply_window_size(app: &tauri::AppHandle, settings: Settings, snapshot: &Snap
         return;
     };
 
-    let expanded = *app.state::<SharedExpanded>().lock().expect("expanded poisoned");
+    let expanded = app
+        .state::<SharedUi>()
+        .lock()
+        .expect("ui poisoned")
+        .expanded;
     let (width, height) = if expanded {
         settings.panel_size(snapshot.sessions.len() as u16)
     } else {
@@ -236,6 +393,15 @@ fn wire_settings_window(app: &tauri::App) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // 单实例要最先注册：多开会让端口文件和状态互相打架，表现为「灯球
+        // 偶尔不动」这种极难排查的现象。
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            // 第二个实例起来时把灯球亮出来 —— 用户多半是没找到它才又点了一次图标
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         // 只记位置、不记尺寸：尺寸由设置和会话数决定，是程序自己管的，
         // 让插件跟着恢复会和 apply_window_size 打架。
         .plugin(
@@ -244,8 +410,13 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(SharedStore::new(Mutex::new(Store::default())))
-        .manage(SharedExpanded::new(false))
+        .manage(SharedUi::default())
         .invoke_handler(tauri::generate_handler![
             get_state,
             set_state,
@@ -254,7 +425,11 @@ pub fn run() {
             set_settings,
             get_endpoint,
             open_settings,
+            fit_settings_window,
             set_lamp_expanded,
+            get_toggles,
+            set_autostart,
+            set_pass_through,
             quit
         ])
         .setup(|app| {
@@ -312,6 +487,36 @@ pub fn run() {
             app.manage(notify.clone());
 
             alerts::ensure_permission(app.handle(), settings);
+
+            // 全局快捷键是点击穿透唯一的键盘出路，所以先把它注册成功 ——
+            // 注册失败只记日志（不阻断启动），但用户从托盘菜单仍能退出穿透。
+            let shortcut = Shortcut::new(
+                Some(PASS_THROUGH_SHORTCUT.0),
+                PASS_THROUGH_SHORTCUT.1,
+            );
+            if let Err(err) = app.global_shortcut().on_shortcut(
+                shortcut,
+                |app, _shortcut, event| {
+                    // 只认按下，否则一次按键会来回切换两次
+                    if event.state != ShortcutState::Pressed {
+                        return;
+                    }
+                    let enabled = app
+                        .state::<SharedUi>()
+                        .lock()
+                        .expect("ui poisoned")
+                        .pass_through;
+                    if let Err(err) = set_pass_through_impl(app, !enabled) {
+                        eprintln!("[signalhub] 快捷键切换点击穿透失败: {err}");
+                    }
+                },
+            ) {
+                eprintln!(
+                    "[signalhub] 注册全局快捷键 {PASS_THROUGH_SHORTCUT_LABEL} 失败（{err}）；\
+                     点击穿透仍可从托盘菜单退出"
+                );
+            }
+
             wire_settings_window(app);
             tray::init(app.handle().clone())?;
             sweep::spawn(notify, app.state::<SharedStore>().inner().clone());

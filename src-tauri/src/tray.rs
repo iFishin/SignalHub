@@ -14,8 +14,14 @@ pub fn init(app: AppHandle) -> tauri::Result<()> {
     let toggle = MenuItem::with_id(&app, "toggle", "显示 / 隐藏灯球", true, None::<&str>)?;
     let settings = MenuItem::with_id(&app, "settings", "设置…", true, None::<&str>)?;
     let pause = MenuItem::with_id(&app, "pause", "暂停 / 恢复监控", true, None::<&str>)?;
+    // 故意不显示「开 / 关」状态：快捷键也能切换它，菜单里的状态会漂移。
+    // 准确状态在设置面板里（get_toggles）。
+    let pass_through = MenuItem::with_id(&app, "pass_through", "切换点击穿透", true, None::<&str>)?;
     let quit = MenuItem::with_id(&app, "quit", "退出 SignalHub", true, None::<&str>)?;
-    let menu = Menu::with_items(&app, &[&toggle, &settings, &pause, &quit])?;
+    let menu = Menu::with_items(
+        &app,
+        &[&toggle, &settings, &pause, &pass_through, &quit],
+    )?;
 
     TrayIconBuilder::with_id("signalhub")
         .icon(app.default_window_icon().expect("缺少应用图标").clone())
@@ -27,6 +33,16 @@ pub fn init(app: AppHandle) -> tauri::Result<()> {
             "toggle" => toggle_lamp(app),
             "settings" => crate::reveal_settings(app),
             "pause" => toggle_monitor(app),
+            "pass_through" => {
+                let enabled = app
+                    .state::<crate::SharedUi>()
+                    .lock()
+                    .expect("ui poisoned")
+                    .pass_through;
+                if let Err(err) = crate::set_pass_through_impl(app, !enabled) {
+                    eprintln!("[signalhub] 托盘切换点击穿透失败: {err}");
+                }
+            }
             _ => {}
         })
         .build(&app)?;
