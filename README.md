@@ -160,4 +160,8 @@ $user = [Environment]::GetEnvironmentVariable('Path', 'User')
 
 已完成：悬浮灯球、状态聚合与 TTL、HTTP 上报接口、CLI（含 `watch`）、设置面板、hook 自动接线（Claude Code / Codex / Cursor / Gemini CLI / Goose）、系统通知与提示音、通知动作按钮、窗口位置记忆、展开 / 折叠两种形态、每组右键菜单、今日时长统计与近 30 分钟时间线、出站钩子转发、每个状态的颜色 / 形状 / 节奏可单独调、按组静音、勿扰时段、持续多久才提醒、托盘图标跟随状态、单实例、开机自启、全局快捷键、点击穿透。
 
-待做：把 CLI 作为 sidecar 打进 app bundle（分发才需要）。
+待做：签名与公证（步骤位置留在 [.github/workflows/release.yml](.github/workflows/release.yml) 里，拿到证书就能填）；CLI 的 `--help` 和报错还是中文，没跟着界面语言走。
+
+## 许可证
+
+MIT，见 [LICENSE](LICENSE)。

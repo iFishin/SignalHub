@@ -6,7 +6,8 @@
 name = "signalhub-desktop"
 version = "0.1.0"
 description = "Desktop floating status light for AI agents and any other program"
-authors = ["you"]
+authors = ["iFishin"]
+license = "MIT"
 edition = "2024"
 # 这个包里有两个二进制：app 和 CLI。两个都叫 signalhub 会冲突，而 app 的名字
 # 用户看不到（通过 .app 启动），CLI 的名字却要写进智能体的 hook 配置里，所以
