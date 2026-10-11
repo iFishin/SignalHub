@@ -92,13 +92,23 @@ fn get_settings(settings: tauri::State<'_, SharedSettings>) -> Settings {
     settings.lock().expect("settings poisoned").clone()
 }
 
-#[tauri::command]
-fn set_settings(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, SharedSettings>,
-    settings: Settings,
-) -> Result<Settings, String> {
-    let settings = settings.clamped();
+/// 校验前端传来的设置。
+///
+/// **必须在 `clamped()` 之前调**：`clamped()` 会静默丢掉不合法的项（那是给
+/// 手改配置文件用的兜底），如果先 clamp 再校验，用户就永远收不到「你写的
+/// 颜色不合法」这条反馈。
+fn validate_settings(settings: &Settings) -> Result<(), String> {
+    for (name, color) in &settings.colors {
+        if !Signal::is_known_name(name) {
+            return Err(format!(
+                "未知的状态名 {name:?}；可用: {}",
+                Signal::ALL_NAMES.join(" ")
+            ));
+        }
+        if !config::is_hex_color(color) {
+            return Err(format!("{name} 的颜色 {color:?} 不是 #rrggbb 形式"));
+        }
+    }
 
     // webhook 地址是用户输入，在系统边界上校验一次。存进去的必须是可用的，
     // 否则会变成「每次转发都静默失败一次」，而失败只写 stderr，很难发现。
@@ -109,6 +119,18 @@ fn set_settings(
             ));
         }
     }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn set_settings(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SharedSettings>,
+    settings: Settings,
+) -> Result<Settings, String> {
+    validate_settings(&settings)?;
+    let settings = settings.clamped();
 
     // 先落盘再改内存和界面：保存失败时不该出现「界面变了但重启就没了」
     config::save_settings(&settings).map_err(|err| format!("保存设置失败: {err}"))?;

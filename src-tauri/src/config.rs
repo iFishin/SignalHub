@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -184,8 +185,20 @@ pub struct Settings {
     /// 解决的是「一个纯色点很容易和桌面上别的 UI 元素混在一起」—— 加了外壳
     /// 之后它读起来像「灰壳里的一颗灯」，也就是实体指示灯的样子。默认开。
     pub bezel: bool,
-    /// 配色方案
+    /// 配色方案（用户没单独指定颜色时的默认值）
     pub palette: Palette,
+    /// 每个状态的自定义颜色，`#rrggbb`。没写的用配色的默认值。
+    ///
+    /// 键是状态名，**含 `stale` / `offline` 这类派生状态** —— `Signal::parse`
+    /// 刻意不接受派生状态（它们不能上报），但用户要能改它们显示成什么颜色。
+    /// 所以这里存字符串键、单独校验。
+    pub colors: BTreeMap<String, String>,
+}
+
+/// `#rrggbb` 或 `#rgb`。只做形状检查，不判断这个色值好不好看。
+pub fn is_hex_color(value: &str) -> bool {
+    let hex = value.strip_prefix('#').unwrap_or("");
+    matches!(hex.len(), 3 | 6) && hex.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 impl Default for Settings {
@@ -199,6 +212,7 @@ impl Default for Settings {
             shape: Shape::default(),
             bezel: true,
             palette: Palette::default(),
+            colors: BTreeMap::new(),
         }
     }
 }
@@ -215,6 +229,11 @@ impl Settings {
             .map(str::trim)
             .filter(|url| !url.is_empty())
             .map(str::to_string);
+        // 丢掉形状不对的颜色，并把十六进制统一成小写（便于前端比较）
+        self.colors.retain(|_, color| is_hex_color(color));
+        for color in self.colors.values_mut() {
+            *color = color.to_ascii_lowercase();
+        }
         self
     }
 
@@ -314,6 +333,35 @@ mod tests {
         assert!(!settings.always_on_top);
         assert!(!settings.quiet);
         assert!(settings.notify, "缺的字段退回该字段的默认值");
+        assert!(settings.colors.is_empty(), "缺的颜色表是空的，不是解析失败");
+    }
+
+    #[test]
+    fn hex_colors_are_checked_by_shape_only() {
+        for good in ["#fff", "#FFFFFF", "#16a34a", "#000000"] {
+            assert!(is_hex_color(good), "{good} 应被接受");
+        }
+        for bad in ["16a34a", "#12345", "#gggggg", "", "#", "red"] {
+            assert!(!is_hex_color(bad), "{bad:?} 应被拒绝");
+        }
+    }
+
+    /// 手改的配置文件里颜色写坏了不该让整份设置失效 —— 只丢掉那一条
+    #[test]
+    fn clamping_drops_bad_colors_but_keeps_the_rest() {
+        // 用 r##"..."## ：内容里有 "# ，单个 # 会提前结束原始字符串
+        let raw = r##"{"size": 26, "colors": {"error": "#FF0000", "idle": "not-a-color", "nope": "#fff"}}"##;
+        let settings = serde_json::from_str::<Settings>(raw).unwrap().clamped();
+
+        assert_eq!(settings.size, 26, "其余设置不受影响");
+        assert_eq!(
+            settings.colors.get("error").map(String::as_str),
+            Some("#ff0000"),
+            "合法的颜色要保留，并统一成小写"
+        );
+        assert!(!settings.colors.contains_key("idle"), "坏色值应被丢掉");
+        // 键名合法性由 set_settings 校验（会报错），clamped 只保证色值可用
+        assert!(settings.colors.contains_key("nope"));
     }
 
     #[test]

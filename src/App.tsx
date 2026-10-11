@@ -63,11 +63,7 @@ export default function App() {
     <SignalLamp
       aggregate={snapshot.aggregate}
       sessions={snapshot.sessions}
-      size={settings.size}
-      quiet={settings.quiet}
-      shape={settings.shape}
-      bezel={settings.bezel}
-      palette={settings.palette}
+      settings={settings}
     />
   );
 }

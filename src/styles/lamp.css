@@ -50,7 +50,9 @@ body,
   box-sizing: border-box;
   width: var(--size);
   height: var(--size);
-  border: 1px solid var(--edge);
+  /* 兜底用 --state：万一 color-mix 不被支持（很老的 WebKitGTK），--edge 会
+     退化成「保证无效」，于是描边变成和填充同色（看不见），布局不受影响。 */
+  border: 1px solid var(--edge, var(--state));
   border-radius: 50%;
   background: var(--state);
   transition:

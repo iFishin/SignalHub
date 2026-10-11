@@ -9,7 +9,8 @@ import {
   setPassThrough,
 } from "../lib/useToggles";
 import { useStats } from "../lib/useStats";
-import type { Snapshot } from "../lib/types";
+import { colorVars, resolveColors } from "../lib/palettes";
+import { SIGNALS, type Snapshot } from "../lib/types";
 
 /** 与 Rust 侧 config.rs 的 MIN_SIZE / MAX_SIZE / DEFAULT_SIZE 保持一致。 */
 const SIZES = [
@@ -32,11 +33,12 @@ const PALETTES: { label: string; value: Palette }[] = [
   { label: "高饱和", value: "vivid" },
 ];
 
-type Tab = "status" | "look" | "connect" | "system";
+type Tab = "status" | "look" | "colors" | "connect" | "system";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "status", label: "状态" },
   { id: "look", label: "外观" },
+  { id: "colors", label: "颜色" },
   { id: "connect", label: "接入" },
   { id: "system", label: "系统" },
 ];
@@ -224,6 +226,52 @@ export function SettingsPanel({ snapshot }: Props) {
           </>
         );
 
+      case "colors": {
+        const resolved = resolveColors(settings);
+        const overridden = Object.keys(settings.colors).length;
+        return (
+          <>
+            <div className="colors">
+              {SIGNALS.map((state) => (
+                <label key={state} className="color-row" data-state={state}>
+                  <span className="state-dot" />
+                  <span className="color-name">{SIGNAL_LABEL[state]}</span>
+                  {/* 原生取色器。onChange 在拖动时连续触发，也就连续保存 ——
+                      这是刻意的：改颜色必须能实时看到效果，而 set_settings
+                      只是一次很小的 IPC + 写文件。 */}
+                  <input
+                    type="color"
+                    value={resolved[state]}
+                    onChange={(event) =>
+                      patch({
+                        colors: { ...settings.colors, [state]: event.target.value },
+                      })
+                    }
+                  />
+                </label>
+              ))}
+            </div>
+            <div className="row" style={{ marginTop: 10 }}>
+              <span className="muted-text">
+                {overridden > 0 ? `已自定义 ${overridden} 项` : "全部使用配色预设"}
+              </span>
+              <button
+                type="button"
+                className="btn"
+                disabled={overridden === 0}
+                onClick={() => patch({ colors: {} })}
+              >
+                恢复默认
+              </button>
+            </div>
+            <p className="hint">
+              只覆盖你改过的状态，其余仍用「外观」页选的配色。描边和细环会跟着
+              填充色自动派生，不用单独调。
+            </p>
+          </>
+        );
+      }
+
       case "connect":
         return (
           <>
@@ -306,8 +354,8 @@ export function SettingsPanel({ snapshot }: Props) {
   };
 
   return (
-    // 会话列表里的状态点也跟着配色走，否则面板和灯球会对不上
-    <div className="settings" data-palette={settings.palette}>
+    // 颜色变量挂在根上，会话列表里的状态点因此和灯球一致
+    <div className="settings" style={colorVars(settings)}>
       <h1 data-state={snapshot.aggregate}>
         <span className="state-dot" />
         {SIGNAL_LABEL[snapshot.aggregate]}

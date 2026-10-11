@@ -1,124 +1,60 @@
 /*
- * 状态配色。灯球上的圆点和设置面板里的会话小圆点共用这一份定义，
- * 所以颜色只在这里写一次。
+ * 状态配色的 CSS 落点。
  *
- * 每个状态给三样东西：
- *   --state  填充色
- *   --edge   1px 描边色（同色系深一档）
- *   --ring   仅 stale 用：细环的颜色
+ * 颜色**不在**这里定义 —— 预设和用户自定义都在 TS 里解析（见 lib/palettes.ts），
+ * 由根元素的 `--c-<状态名>` 变量传进来。放 TS 里是因为「预设 + 用户逐个覆盖」
+ * 需要一层解析逻辑；写在 CSS 里会变成 10 状态 × 3 套配色的规则矩阵。
  *
- * 描边的存在理由很实际：扁平色块没有阴影（用户明确不要），在浅色桌面上
- * 边缘会糊掉。1px 同色系描边是唯一能保住边界又不显装饰的手段。
- *
- * 填充色比常规的 500 号色深一档，同样是为了在浅色背景上站得住。
+ * 这里的 `var(--c-x, 兜底)` 兜底值就是默认配色，让 CSS 单独也能用。
  */
 
-[data-state="idle"],
-[data-state="thinking"],
-[data-state="working"],
+[data-state="idle"] {
+  --state: var(--c-idle, #16a34a);
+}
+
+[data-state="thinking"] {
+  --state: var(--c-thinking, #16a34a);
+}
+
+[data-state="working"] {
+  --state: var(--c-working, #16a34a);
+}
+
 [data-state="done"] {
-  --state: #16a34a;
-  --edge: #0e7a37;
+  --state: var(--c-done, #16a34a);
 }
 
 [data-state="attention"] {
-  --state: #d99a06;
-  --edge: #a87704;
+  --state: var(--c-attention, #d99a06);
 }
 
-[data-state="permission"],
+[data-state="permission"] {
+  --state: var(--c-permission, #d0342c);
+}
+
 [data-state="error"] {
-  --state: #d0342c;
-  --edge: #9d2620;
+  --state: var(--c-error, #d0342c);
 }
 
-/* 灰色这一族：stale 与 offline/off 颜色相同，靠 lamp.css 里的不透明度区分。
-   offline 与 off 视觉一致是刻意的 —— 它们都表示「没有在追踪任何东西」，
-   差别只在语义，由 tooltip 和设置面板说明。 */
 [data-state="stale"] {
-  --state: #9ca3af;
-  --edge: #7d838d;
-  /* 细环要比填充深得多才看得见，所以单独给一个值 */
-  --ring: #4b5563;
+  --state: var(--c-stale, #9ca3af);
 }
 
-[data-state="offline"],
+[data-state="offline"] {
+  --state: var(--c-offline, #9ca3af);
+}
+
 [data-state="off"] {
-  --state: #9ca3af;
-  --edge: #7d838d;
+  --state: var(--c-off, #9ca3af);
 }
 
-/* ---- 配色方案 ------------------------------------------------------------
+/* 描边和细环都由填充色派生 —— 用户只需挑一个颜色，不用分别调描边。
  *
- * 上面是默认配色。下面两套是覆盖，靠后代选择器提高特异性（根元素带
- * data-palette，圆点/状态点是它的后代）。
- *
- * 给的是预设而不是任意取色：红 = 危险、黄 = 注意是有语义的，让用户随便改
- * 会把这层含义弄没。
- */
-
-/* 色盲友好：Okabe-Ito 的三个色相。
-   红绿是红绿色盲最难分的一对，所以「正常」用蓝、「需你注意」用橙/朱红。
-   注意与需授权之间的区分同时还有形状（permission/error 是圆角方）。 */
-[data-palette="colorblind"] [data-state="idle"],
-[data-palette="colorblind"] [data-state="thinking"],
-[data-palette="colorblind"] [data-state="working"],
-[data-palette="colorblind"] [data-state="done"] {
-  --state: #0072b2;
-  --edge: #005a8c;
-}
-
-[data-palette="colorblind"] [data-state="attention"] {
-  --state: #e69f00;
-  --edge: #b87d00;
-}
-
-[data-palette="colorblind"] [data-state="permission"],
-[data-palette="colorblind"] [data-state="error"] {
-  --state: #d55e00;
-  --edge: #a84400;
-}
-
-[data-palette="colorblind"] [data-state="stale"] {
-  --state: #8b8f96;
-  --edge: #6f7378;
-  --ring: #3f4246;
-}
-
-[data-palette="colorblind"] [data-state="offline"],
-[data-palette="colorblind"] [data-state="off"] {
-  --state: #8b8f96;
-  --edge: #6f7378;
-}
-
-/* 高饱和：在花哨或深色的桌面上更容易看清。代价是在白底上略扎眼。 */
-[data-palette="vivid"] [data-state="idle"],
-[data-palette="vivid"] [data-state="thinking"],
-[data-palette="vivid"] [data-state="working"],
-[data-palette="vivid"] [data-state="done"] {
-  --state: #00b34a;
-  --edge: #00802f;
-}
-
-[data-palette="vivid"] [data-state="attention"] {
-  --state: #ffab00;
-  --edge: #c07f00;
-}
-
-[data-palette="vivid"] [data-state="permission"],
-[data-palette="vivid"] [data-state="error"] {
-  --state: #ff2d2d;
-  --edge: #c00000;
-}
-
-[data-palette="vivid"] [data-state="stale"] {
-  --state: #9aa1ab;
-  --edge: #767c85;
-  --ring: #454a52;
-}
-
-[data-palette="vivid"] [data-state="offline"],
-[data-palette="vivid"] [data-state="off"] {
-  --state: #9aa1ab;
-  --edge: #767c85;
+ * 用 color-mix 而不是写死一组深色：那样每加一个自定义颜色都得再算一遍描边。
+ * 万一 color-mix 不可用（很老的 WebKitGTK），自定义属性会退化成「保证无效」，
+ * 于是 var(--edge, var(--state)) 取兜底值 —— 描边变成和填充同色（看不见），
+ * 布局不受影响。 */
+[data-state] {
+  --edge: color-mix(in srgb, var(--state) 74%, #000);
+  --ring: color-mix(in srgb, var(--state) 40%, #000);
 }

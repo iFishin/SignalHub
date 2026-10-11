@@ -314,6 +314,66 @@ html[data-window="settings"] #root {
   outline: none;
 }
 
+/* ---- 颜色页：每个状态一个取色器 ---- */
+
+.colors {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px 14px;
+}
+
+.color-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  cursor: pointer;
+}
+
+.color-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 原生取色器：去掉默认的内边距和色块描边，让它看起来就是一个色块 */
+.color-row input[type="color"] {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.color-row input[type="color"]::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.color-row input[type="color"]::-webkit-color-swatch {
+  border: none;
+  border-radius: 3px;
+}
+
+.muted-text {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.btn:disabled:hover {
+  background: transparent;
+}
+
 /* ---- 会话列表 ---- */
 
 .sessions {

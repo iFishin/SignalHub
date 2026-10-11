@@ -17,10 +17,15 @@ export const REPORTABLE_SIGNALS = [
 
 export type ReportableSignal = (typeof REPORTABLE_SIGNALS)[number];
 
-/** 聚合可能出现的全部状态，含派生状态。灯球按这个取色。顺序大致按优先级。 */
+/**
+ * 聚合可能出现的全部状态，含派生状态。灯球按这个取色。
+ *
+ * 注意 `off` 只出现一次 —— 它既是一个可上报的状态（上报它等于清除该会话），
+ * 也是暂停时的聚合值。早先这里把它在派生前缀和可上报列表里各写了一遍，
+ * 于是颜色页多出一行重复的取色器。
+ */
 export const SIGNALS = [
   "offline",
-  "off",
   "stale",
   ...REPORTABLE_SIGNALS,
 ] as const;

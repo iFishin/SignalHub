@@ -3,7 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { inTauri } from "../lib/env";
 import { SIGNAL_LABEL } from "../lib/signals";
-import type { Palette, Shape } from "../lib/useSettings";
+import { colorVars } from "../lib/palettes";
+import type { Settings } from "../lib/useSettings";
 import type { SessionView, SignalState } from "../lib/types";
 
 /** 与 Rust 侧 `config::MAX_DOTS` 一致。 */
@@ -14,14 +15,11 @@ const DRAG_THRESHOLD_PX = 4;
 interface Props {
   aggregate: SignalState;
   sessions: SessionView[];
-  /** 圆点直径（px）。由设置决定，Rust 侧据此同步调整窗口尺寸。 */
-  size: number;
-  /** 安静模式：没事时压到几乎看不见，悬停恢复。 */
-  quiet: boolean;
-  /** 形状 / 外壳 / 配色 —— 都通过根元素的 data 属性交给 CSS 处理。 */
-  shape: Shape;
-  bezel: boolean;
-  palette: Palette;
+  /**
+   * 整份设置都传进来，而不是拆成一堆 prop。
+   * 外观（大小 / 形状 / 外壳 / 安静）和配色都要用，拆开传只会越来越长。
+   */
+  settings: Settings;
 }
 
 /** 取路径最后一段作为项目名，比整条路径更适合做提示。 */
@@ -85,7 +83,8 @@ function useDragOrClick(onClick: () => void) {
   };
 }
 
-export function SignalLamp({ aggregate, sessions, size, quiet, shape, bezel, palette }: Props) {
+export function SignalLamp({ aggregate, sessions, settings }: Props) {
+  const { size, quiet, shape, bezel } = settings;
   const [expanded, setExpanded] = useState(false);
 
   const toggle = () => {
@@ -130,11 +129,11 @@ export function SignalLamp({ aggregate, sessions, size, quiet, shape, bezel, pal
     return (
       <div
         className="lamp-root lamp-panel-root"
+        style={colorVars(settings)}
         data-aggregate={aggregate}
         data-quiet="false"
         data-shape={shape}
         data-bezel={bezel}
-        data-palette={palette}
         title="点击收起"
         onClick={toggle}
       >
@@ -173,12 +172,13 @@ export function SignalLamp({ aggregate, sessions, size, quiet, shape, bezel, pal
   return (
     <div
       className="lamp-root"
-      style={{ "--size": `${size}px` } as React.CSSProperties}
+      style={
+        { "--size": `${size}px`, ...colorVars(settings) } as React.CSSProperties
+      }
       data-aggregate={aggregate}
       data-quiet={quiet}
       data-shape={shape}
       data-bezel={bezel}
-      data-palette={palette}
       title={tooltip(aggregate, sessions)}
       {...drag}
     >

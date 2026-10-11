@@ -97,6 +97,19 @@ impl Signal {
         }
     }
 
+    /// 全部状态名，含派生状态。
+    ///
+    /// `parse` 刻意**不接受** `stale` / `offline`（它们是聚合产物，不能被上报），
+    /// 但用户配置颜色时需要能指定它们。所以校验配置用这个，不用 `parse`。
+    pub const ALL_NAMES: [&'static str; 10] = [
+        "offline", "off", "stale", "idle", "done", "thinking", "working",
+        "attention", "permission", "error",
+    ];
+
+    pub fn is_known_name(name: &str) -> bool {
+        Self::ALL_NAMES.contains(&name)
+    }
+
     /// 静默多久后该状态视为过期。
     ///
     /// 现在**每个状态都有 TTL**（早先 `idle` 没有，导致一个忘关的会话能一直
