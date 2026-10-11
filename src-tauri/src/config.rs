@@ -257,6 +257,80 @@ impl Default for SignFields {
     }
 }
 
+/// 某一个状态的个性化外观。三样都可以单独覆盖，**没写的用全局默认**。
+///
+/// 为什么是「可选的字段」而不是「填满的表格」：默认值会随版本演进（新增状态、
+/// 调整默认节奏、改配色），如果用户配置文件里存着一份填满的表，那些改进就永远
+/// 到不了他那儿。空着 = 跟随，是唯一能让默认值继续演进的表达。
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StateStyle {
+    /// 颜色 `#rrggbb`。没写 = 用配色方案里那个状态的默认色。
+    pub color: Option<String>,
+    /// 灯珠形状。没写 = 用全局形状（全局是「圆」时 permission / error 仍会
+    /// 画成圆角方，那是给色盲用的形状区分）。
+    pub shape: Option<Shape>,
+    /// 闪烁周期（毫秒）。**0 = 常亮**。没写 = 按全局节奏倍率算默认周期。
+    pub blink_ms: Option<u16>,
+}
+
+impl StateStyle {
+    /// 三样都没写。这种条目没有任何作用，`clamped()` 会把它们丢掉 ——
+    /// 留着会让「预设是否还生效」的判断无谓地失败。
+    pub fn is_empty(&self) -> bool {
+        self.color.is_none() && self.shape.is_none() && self.blink_ms.is_none()
+    }
+}
+
+/// 勿扰时段。这段时间里**不弹通知、不出声**，但灯照常显示 —— 勿扰是「别吵我」，
+/// 不是「别告诉我」。
+///
+/// **只有小时，没有分钟**：分钟级精度只会让配置变麻烦，而「晚上十点到早上八点
+/// 别吵我」这种需求本来就不需要分钟。
+///
+/// 起止都按**用户本地时间**。本地时区只有前端知道（Rust 这边没有时区数据，
+/// `SystemTime` 只给 UTC），所以前端每分钟把当前小时推给 Rust，**由 Rust 判断在
+/// 不在窗口内** —— 策略留在 Rust 是为了能单测，前端只提供「现在是几点」这个事实。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct QuietHours {
+    pub enabled: bool,
+    /// 起始小时（0–23）
+    pub start: u8,
+    /// 结束小时（0–23），**不含**这一小时
+    pub end: u8,
+}
+
+impl Default for QuietHours {
+    fn default() -> Self {
+        // 22:00–08:00。enabled 默认 false，但这个窗口是最常见的那个 ——
+        // 用户一打开开关就是个合理的值，不用先调时间。
+        Self { enabled: false, start: 22, end: 8 }
+    }
+}
+
+impl QuietHours {
+    /// 这个小时算不算「勿扰」。
+    ///
+    /// 跨午夜（`start > end`）是常态而不是特例，所以必须分两段判断：
+    /// 22–8 表示 `[22, 24) ∪ [0, 8)`。
+    pub fn covers(&self, hour: u8) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        // start == end 读作「空窗口」而不是「全天」：一个手滑把两个值调成一样，
+        // 后果应该是「没生效」，而不是「从此再也不提醒」。
+        if self.start == self.end {
+            return false;
+        }
+        if self.start < self.end {
+            hour >= self.start && hour < self.end
+        } else {
+            hour >= self.start || hour < self.end
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -279,11 +353,16 @@ pub struct Settings {
     pub shape: Shape,
     /// 配色方案（用户没单独指定颜色时的默认值）
     pub palette: Palette,
-    /// 每个状态的自定义颜色，`#rrggbb`。没写的用配色的默认值。
+    /// 逐个状态的外观覆盖（颜色 / 形状 / 节奏）。没写的项跟随全局。
     ///
     /// 键是状态名，**含 `stale` / `offline` 这类派生状态** —— `Signal::parse`
-    /// 刻意不接受派生状态（它们不能上报），但用户要能改它们显示成什么颜色。
+    /// 刻意不接受派生状态（它们不能上报），但用户要能改它们长什么样。
     /// 所以这里存字符串键、单独校验。
+    pub styles: BTreeMap<String, StateStyle>,
+    /// **已废弃**，只为读得懂旧配置。启动时会搬进 `styles` 的 `color` 字段
+    /// （见 `migrate_legacy_colors`），并且**永不写回** —— 一个状态的外观只有
+    /// 一处表达，不让「单独的颜色表」和「外观表」并存。
+    #[serde(skip_serializing)]
     pub colors: BTreeMap<String, String>,
 
     /// 折叠成一个单纯的灯（只剩灯，没有牌面）。**默认 false：展开成牌。**
@@ -308,6 +387,22 @@ pub struct Settings {
     /// 声音挂在系统通知上（`NotificationBuilder::sound`），所以关掉通知就没有
     /// 声音 —— 这是刻意的：不为一个提示音再加一条独立的音频通路和它的跨平台麻烦。
     pub sound: bool,
+    /// 勿扰时段：这段时间里不弹通知、不出声，灯照常显示。
+    pub quiet_hours: QuietHours,
+    /// 被静音的组：**只影响通知和提示音**。
+    ///
+    /// 与 `hidden_groups` 是两件事，别混：那个管「灯上显不显示」，这个管
+    /// 「要不要吵我」。一个组可以只隐藏不静音（看得见但不打扰），也可以只静音
+    /// 不隐藏（灯上照常红着，只是不弹通知）。
+    pub muted_groups: Vec<String>,
+    /// 「需要你注意」的状态要**持续**这么多秒才弹通知。0 = 立刻弹。
+    ///
+    /// 存在的理由：智能体经常在一秒内进出 permission（先问再自己答，或者
+    /// 弹一下就被自动批准）。立刻弹的话，用户被叫过去看到的是一个已经解决的
+    /// 问题。等一会儿能过滤掉这类「一闪而过」。
+    pub alert_after_secs: u16,
+    /// 托盘图标是否跟随当前聚合状态变色。关掉就回到单色模板图（跟着菜单栏明暗反色）。
+    pub tray_follows_state: bool,
 }
 
 /// 牌面背景的默认不透明度。够看清内容，又能透出一点桌面。
@@ -316,6 +411,35 @@ pub const DEFAULT_SIGN_OPACITY: u8 = 86;
 /// 闪烁节奏的可调范围。上下界都留得住意义：再慢看不出在动，再快只剩烦。
 pub const MIN_BLINK_SPEED: u16 = 50;
 pub const MAX_BLINK_SPEED: u16 = 200;
+
+/// 单个状态的闪烁周期范围（毫秒）。**0 单独表示常亮**，不落在这个区间里。
+///
+/// 下限取 120ms：比这更快就只剩一片模糊，读不出「在动」。上限取 4 秒：
+/// 再慢用户会以为它卡住了。
+pub const MIN_BLINK_MS: u16 = 120;
+pub const MAX_BLINK_MS: u16 = 4000;
+
+/// 「持续多久才弹通知」的上限（秒）。一小时已经远超任何有意义的等待。
+pub const MAX_ALERT_DELAY_SECS: u16 = 3600;
+
+/// 默认的「持续多久才弹通知」。5 秒足够滤掉「问一下又自己答了」这类一闪而过，
+/// 又不至于让真正的等待等太久。
+pub const DEFAULT_ALERT_DELAY_SECS: u16 = 5;
+
+/// 组名列表的规整：去空白、去空串、去重、排序。
+///
+/// 隐藏和静音两个列表都要它。脏数据（`" ci"` 和 `"ci"`）会让「这一组藏了吗」
+/// 时灵时不灵，而那是最难查的一类问题。
+fn normalize_groups(names: Vec<String>) -> Vec<String> {
+    let mut names: Vec<String> = names
+        .into_iter()
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
 
 /// `#rrggbb` 或 `#rgb`。只做形状检查，不判断这个色值好不好看。
 pub fn is_hex_color(value: &str) -> bool {
@@ -363,6 +487,7 @@ impl Default for Settings {
             hooks: Vec::new(),
             shape: Shape::default(),
             palette: Palette::default(),
+            styles: BTreeMap::new(),
             colors: BTreeMap::new(),
             collapsed: false,
             show: SignFields::default(),
@@ -370,6 +495,10 @@ impl Default for Settings {
             blink_speed: 100,
             hidden_groups: Vec::new(),
             sound: true,
+            quiet_hours: QuietHours::default(),
+            muted_groups: Vec::new(),
+            alert_after_secs: DEFAULT_ALERT_DELAY_SECS,
+            tray_follows_state: true,
         }
     }
 }
@@ -381,16 +510,13 @@ impl Settings {
         self.size = self.size.clamp(MIN_SIZE, MAX_SIZE);
         self.sign_opacity = self.sign_opacity.min(100);
         self.blink_speed = self.blink_speed.clamp(MIN_BLINK_SPEED, MAX_BLINK_SPEED);
-        // 组名去空白、去空串、去重并排序。这个列表会被反复比较（每块牌都要问
-        // 一次「我该不该显示」），脏数据留在里面就每次都要重新规整。
-        self.hidden_groups = self
-            .hidden_groups
-            .iter()
-            .map(|name| name.trim().to_string())
-            .filter(|name| !name.is_empty())
-            .collect();
-        self.hidden_groups.sort();
-        self.hidden_groups.dedup();
+        self.alert_after_secs = self.alert_after_secs.min(MAX_ALERT_DELAY_SECS);
+        self.quiet_hours.start = self.quiet_hours.start.min(23);
+        self.quiet_hours.end = self.quiet_hours.end.min(23);
+        // 组名去空白、去空串、去重并排序。这两个列表都会被反复比较（每块牌都要问
+        // 一次「我该不该显示 / 我该不该吵」），脏数据留在里面就每次都要重新规整。
+        self.hidden_groups = normalize_groups(self.hidden_groups);
+        self.muted_groups = normalize_groups(self.muted_groups);
         // 空白串等于「不转发」，归一成 None，免得每次转发都白试一次
         self.webhook_url = self
             .webhook_url
@@ -398,11 +524,24 @@ impl Settings {
             .map(str::trim)
             .filter(|url| !url.is_empty())
             .map(str::to_string);
-        // 丢掉形状不对的颜色，并把十六进制统一成小写（便于前端比较）
-        self.colors.retain(|_, color| is_hex_color(color));
-        for color in self.colors.values_mut() {
-            *color = color.to_ascii_lowercase();
+        // 丢掉形状不对的颜色，并把十六进制统一成小写（便于前端比较）。
+        // **不认识的键名刻意留着**：clamped 是手改配置文件的兜底，静默删掉用户
+        // 写的东西是数据丢失；键名合法性由 set_settings 校验（会明确报错），
+        // 这里只保证值本身可用。
+        for style in self.styles.values_mut() {
+            if let Some(color) = style.color.take() {
+                let color = color.trim().to_ascii_lowercase();
+                if is_hex_color(&color) {
+                    style.color = Some(color);
+                }
+            }
+            // 0 是「常亮」，单独放行；其余夹回有意义的区间
+            if let Some(ms) = style.blink_ms {
+                style.blink_ms = Some(if ms == 0 { 0 } else { ms.clamp(MIN_BLINK_MS, MAX_BLINK_MS) });
+            }
         }
+        // 三样都没写的条目没有任何作用，留着只会让「预设是否还生效」的判断无谓失败
+        self.styles.retain(|_, style| !style.is_empty());
         // 同样地，写坏的钩子只丢掉那一条，不让整份设置失效
         self.hooks.retain(|hook| hook_problem(hook).is_none());
         self
@@ -440,12 +579,39 @@ pub fn load_settings() -> Settings {
         return Settings::default();
     };
     match serde_json::from_str::<Settings>(&raw) {
-        Ok(settings) => migrate_legacy_webhook(settings).clamped(),
+        Ok(settings) => migrate_legacy_colors(migrate_legacy_webhook(settings)).clamped(),
         Err(err) => {
             eprintln!("[signalhub] {} 无法解析（{err}），使用默认设置", path.display());
             Settings::default()
         }
     }
+}
+
+/// 把旧版的逐状态颜色表搬进 `styles`。
+///
+/// 旧版本用一张扁平的 `colors` 表存颜色；现在一个状态的外观是「颜色 + 形状 +
+/// 节奏」三样，所以改成了 `styles`。不搬的话，用户调过的颜色会在升级后静默
+/// 变回默认 —— 而那正是最难发现的一类回归。
+///
+/// 如果某个状态在 `styles` 里已经有颜色（用户同时写了两处），以 `styles` 为准。
+fn migrate_legacy_colors(mut settings: Settings) -> Settings {
+    let legacy = std::mem::take(&mut settings.colors);
+    if legacy.is_empty() {
+        return settings;
+    }
+
+    let mut moved = 0usize;
+    for (state, color) in legacy {
+        let style = settings.styles.entry(state).or_default();
+        if style.color.is_none() {
+            style.color = Some(color);
+            moved += 1;
+        }
+    }
+    if moved > 0 {
+        eprintln!("[signalhub] 把旧的逐状态颜色表搬进了 styles（{moved} 项）");
+    }
+    settings
 }
 
 /// 把旧版的单条 `webhook_url` 搬成一条钩子。
@@ -643,20 +809,150 @@ mod tests {
 
     /// 手改的配置文件里颜色写坏了不该让整份设置失效 —— 只丢掉那一条
     #[test]
-    fn clamping_drops_bad_colors_but_keeps_the_rest() {
+    fn clamping_drops_bad_styles_but_keeps_the_rest() {
         // 用 r##"..."## ：内容里有 "# ，单个 # 会提前结束原始字符串
-        let raw = r##"{"size": 26, "colors": {"error": "#FF0000", "idle": "not-a-color", "nope": "#fff"}}"##;
+        let raw = r##"{"size": 26, "styles": {
+            "error": {"color": "#FF0000"},
+            "idle":  {"color": "not-a-color", "blink_ms": 900},
+            "nope":  {"color": "#fff"}
+        }}"##;
         let settings = serde_json::from_str::<Settings>(raw).unwrap().clamped();
 
         assert_eq!(settings.size, 26, "其余设置不受影响");
         assert_eq!(
-            settings.colors.get("error").map(String::as_str),
+            settings.styles["error"].color.as_deref(),
             Some("#ff0000"),
             "合法的颜色要保留，并统一成小写"
         );
-        assert!(!settings.colors.contains_key("idle"), "坏色值应被丢掉");
-        // 键名合法性由 set_settings 校验（会报错），clamped 只保证色值可用
-        assert!(settings.colors.contains_key("nope"));
+        assert_eq!(
+            settings.styles["idle"].blink_ms,
+            Some(900),
+            "颜色写坏了只丢颜色，同一状态上别的覆盖要留着"
+        );
+        assert_eq!(settings.styles["idle"].color, None, "坏色值应被丢掉");
+        // 键名合法性由 set_settings 校验（会报错），clamped 只保证值可用
+        assert!(settings.styles.contains_key("nope"));
+    }
+
+    /// 旧版本用一张扁平的 `colors` 表存颜色，升级后不能让它静默失效
+    #[test]
+    fn a_legacy_color_table_moves_into_styles() {
+        let raw = r##"{"colors": {"error": "#ff0000", "idle": "#00ff00"}}"##;
+        let settings =
+            migrate_legacy_colors(serde_json::from_str::<Settings>(raw).unwrap()).clamped();
+
+        assert_eq!(settings.styles["error"].color.as_deref(), Some("#ff0000"));
+        assert_eq!(settings.styles["idle"].color.as_deref(), Some("#00ff00"));
+        assert!(settings.colors.is_empty(), "搬完就该空了");
+
+        // 两处都写了同一个状态时，新的 styles 说了算
+        let both = r##"{"colors": {"error": "#111111"}, "styles": {"error": {"color": "#222222"}}}"##;
+        let settings =
+            migrate_legacy_colors(serde_json::from_str::<Settings>(both).unwrap()).clamped();
+        assert_eq!(settings.styles["error"].color.as_deref(), Some("#222222"));
+    }
+
+    /// 废弃字段永不写回 —— 一个状态的外观只有一处表达
+    #[test]
+    fn the_legacy_color_field_is_never_written_back() {
+        let mut settings = Settings::default();
+        settings.colors.insert("error".into(), "#ff0000".into());
+        settings.styles.insert("idle".into(), StateStyle::default());
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(!json.contains("\"colors\""), "不该写回废弃字段: {json}");
+    }
+
+    /// 三样都没写的条目没有作用，留着会让「预设是否还生效」的判断无谓地失败
+    #[test]
+    fn empty_style_entries_are_dropped() {
+        let raw = r##"{"styles": {"idle": {}, "error": {"shape": "ring"}}}"##;
+        let settings = serde_json::from_str::<Settings>(raw).unwrap().clamped();
+
+        assert!(!settings.styles.contains_key("idle"), "空条目应被丢掉");
+        assert_eq!(settings.styles["error"].shape, Some(Shape::Ring));
+    }
+
+    /// 0 是「常亮」，是合法值；其余夹回有意义的区间 —— 太快只剩模糊，太慢像卡住
+    #[test]
+    fn per_state_blink_allows_zero_but_clamps_everything_else() {
+        let raw = r##"{"styles": {
+            "idle": {"blink_ms": 0},
+            "thinking": {"blink_ms": 1},
+            "working": {"blink_ms": 60000},
+            "done": {"blink_ms": 700}
+        }}"##;
+        let settings = serde_json::from_str::<Settings>(raw).unwrap().clamped();
+
+        assert_eq!(settings.styles["idle"].blink_ms, Some(0), "0 表示常亮，要放行");
+        assert_eq!(settings.styles["thinking"].blink_ms, Some(MIN_BLINK_MS));
+        assert_eq!(settings.styles["working"].blink_ms, Some(MAX_BLINK_MS));
+        assert_eq!(settings.styles["done"].blink_ms, Some(700), "区间内原样保留");
+    }
+
+    /// 勿扰时段跨午夜是常态，不是特例
+    #[test]
+    fn quiet_hours_cover_the_midnight_wrap() {
+        // 22:00 – 08:00
+        let night = QuietHours { enabled: true, start: 22, end: 8 };
+        for hour in [22, 23, 0, 1, 7] {
+            assert!(night.covers(hour), "{hour} 点应在勿扰时段内");
+        }
+        for hour in [8, 12, 21] {
+            assert!(!night.covers(hour), "{hour} 点不该在勿扰时段内");
+        }
+
+        // 不跨午夜的窗口（比如午休 12:00–14:00）
+        let noon = QuietHours { enabled: true, start: 12, end: 14 };
+        assert!(noon.covers(12));
+        assert!(noon.covers(13));
+        assert!(!noon.covers(14), "结束那一小时不含在内");
+        assert!(!noon.covers(11));
+    }
+
+    /// 关掉开关就完全不管时间；起止相同读作「空窗口」而不是「全天」
+    #[test]
+    fn quiet_hours_degrade_safely() {
+        let off = QuietHours { enabled: false, start: 0, end: 23 };
+        for hour in 0..24 {
+            assert!(!off.covers(hour), "没启用就不该有任何小时被算进去");
+        }
+
+        let equal = QuietHours { enabled: true, start: 9, end: 9 };
+        for hour in 0..24 {
+            assert!(
+                !equal.covers(hour),
+                "起止相同应读作空窗口 —— 手滑调成一样不该变成全天静音"
+            );
+        }
+
+        assert!(!QuietHours::default().enabled, "默认不启用");
+    }
+
+    /// 手改的配置里小时可以是 200，夹回 0–23
+    #[test]
+    fn quiet_hours_are_clamped_to_real_hours() {
+        let raw = r#"{"quiet_hours": {"enabled": true, "start": 200, "end": 250}}"#;
+        let settings = serde_json::from_str::<Settings>(raw).unwrap().clamped();
+        assert_eq!(settings.quiet_hours.start, 23);
+        assert_eq!(settings.quiet_hours.end, 23);
+    }
+
+    /// 静音列表和隐藏列表用同一套规整规则 —— 两处各写一遍迟早分叉
+    #[test]
+    fn muted_groups_are_normalized_like_hidden_ones() {
+        let raw = r#"{"hidden_groups": [" ci ", "ci", ""], "muted_groups": ["work", " work ", "zeta", "alpha"]}"#;
+        let settings = serde_json::from_str::<Settings>(raw).unwrap().clamped();
+
+        assert_eq!(settings.hidden_groups, vec!["ci"]);
+        assert_eq!(settings.muted_groups, vec!["alpha", "work", "zeta"]);
+    }
+
+    /// 阈值告警的秒数也要夹紧：手改成一个巨大的值等于永久不提醒
+    #[test]
+    fn the_alert_delay_is_clamped() {
+        let raw = r#"{"alert_after_secs": 60000}"#;
+        let settings = serde_json::from_str::<Settings>(raw).unwrap().clamped();
+        assert_eq!(settings.alert_after_secs, MAX_ALERT_DELAY_SECS);
     }
 
     #[test]

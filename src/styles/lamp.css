@@ -166,20 +166,16 @@ body,
   --dot: var(--size);
 }
 
-/* 形状：全局设置。默认 circle 时 permission / error 会额外画成圆角方 ——
-   那是给色盲用的形状区分（红绿是红绿色盲最难分的一对）。 */
-[data-shape="rounded"] .dot {
-  border-radius: 28%;
-}
-
-[data-shape="circle"] .dot[data-state="permission"],
-[data-shape="circle"] .dot[data-state="error"] {
+/* 形状：现在是**逐元素**的，所以选择器落在 .dot 自己身上，不再是窗口根。
+   解析（含「全局是圆时 permission / error 画圆角方」的色盲特判）在 TS 里做，
+   见 lib/lampStyle.ts —— 一个窗口里多块牌可以各自不同形状，根上挂一个值不够用。 */
+.dot[data-shape="rounded"] {
   border-radius: 28%;
 }
 
 /* 空心圆环：用 mask 把圆环切出来。弧长同时承载「沉默进度」—— 沉默时环
    逐渐缩短，所以这一种形状不需要额外的细环。 */
-[data-shape="ring"] .dot {
+.dot[data-shape="ring"] {
   --thickness: max(3px, calc(var(--dot) / 3.4));
 
   border: none;
@@ -199,54 +195,66 @@ body,
   );
 }
 
-[data-shape="ring"] .dot[data-state="stale"]::after {
+.dot[data-shape="ring"][data-state="stale"]::after {
   display: none;
 }
 
 /* ---- 节奏 ---------------------------------------------------------------- */
 
-/* 时长都除以 --blink-speed（用户在外观页调的倍率，100 = 1）。用户调的是「节奏」，
-   倍率越大应该闪得越快 —— 所以是除而不是乘。
-   倍率由 Rust 夹在 0.5–2.0，除零不可能发生。 */
+/* 每个状态的 animation 由 `--anim-<状态名>` 变量驱动，值在 TS 里算好（见
+   lib/lampStyle.ts）。全局倍率、逐状态的 blink_ms 都在那边解析 —— 放在 JS
+   是因为倍率要跟「用户是否单独设了节奏」交互，CSS 表达不了。
+   括号里是同值的兜底，让这张样式表单独也能用（和 state.css 的 `var(--c-x, 兜底)`
+   是同一个思路）。 */
 
 /* 推理：快闪，读起来像「在转」 */
 .dot[data-state="thinking"] {
-  animation: pulse calc(640ms / var(--blink-speed, 1)) ease-in-out infinite;
+  animation: var(--anim-thinking, pulse 640ms ease-in-out infinite);
 }
 
 /* 执行：慢闪 */
 .dot[data-state="working"] {
-  animation: pulse calc(1600ms / var(--blink-speed, 1)) ease-in-out infinite;
+  animation: var(--anim-working, pulse 1600ms ease-in-out infinite);
 }
 
-/* 完成：常亮 + 一次入场脉冲。这一下**不跟着节奏走** —— 它是一次性的「收到」，
-   调快调慢只会削弱它。 */
+/* 完成：常亮 + 一次入场脉冲。这一下**默认不跟着节奏走** —— 它是一次性的
+   「收到」。用户显式给它设了节奏，才会变成真的闪烁。 */
 .dot[data-state="done"] {
-  animation: pop 380ms ease-out 1;
+  animation: var(--anim-done, pop 380ms ease-out 1);
 }
 
 .dot[data-state="attention"] {
-  animation: pulse calc(1000ms / var(--blink-speed, 1)) ease-in-out infinite;
+  animation: var(--anim-attention, pulse 1000ms ease-in-out infinite);
 }
 
 /* 需授权：红，平滑闪烁 */
 .dot[data-state="permission"] {
-  animation: pulse calc(900ms / var(--blink-speed, 1)) ease-in-out infinite;
+  animation: var(--anim-permission, pulse 900ms ease-in-out infinite);
 }
 
 /* 出错：红 + steps() 硬切做频闪，一眼与 permission 的平滑闪烁区分开 */
 .dot[data-state="error"] {
-  animation: pulse calc(340ms / var(--blink-speed, 1)) steps(2, end) infinite;
+  animation: var(--anim-error, pulse 340ms steps(2, end) infinite);
 }
 
 /* 三档「不在工作」都不闪，靠不透明度区分：
    stale 常亮（有会话，只是不说话了），offline / off 更淡。 */
+.dot[data-state="idle"] {
+  animation: var(--anim-idle, none);
+}
+
 .dot[data-state="stale"] {
+  animation: var(--anim-stale, none);
   opacity: 1;
 }
 
-.dot[data-state="offline"],
+.dot[data-state="offline"] {
+  animation: var(--anim-offline, none);
+  opacity: 0.45;
+}
+
 .dot[data-state="off"] {
+  animation: var(--anim-off, none);
   opacity: 0.45;
 }
 
@@ -295,7 +303,11 @@ body,
   }
 }
 
-/* 无障碍：系统开了「减少动态效果」时，闪烁一律降级为常亮，由颜色承载语义 */
+/* 无障碍：系统开了「减少动态效果」时，闪烁一律降级为常亮，由颜色承载语义。
+   这里必须赢过按状态写的那条 `animation: var(--anim-x, ...)`。用 !important：
+   作者样式表里的 !important 会盖过普通声明（连内联 style 也盖），而且动画变量
+   只是挂在根上的自定义属性，真正的 animation 声明仍在这张表里 —— 所以这条
+   一定生效，用户设的节奏也压不过它。 */
 @media (prefers-reduced-motion: reduce) {
   .dot {
     animation: none !important;

@@ -1,5 +1,6 @@
 use crate::notify;
-use crate::state::Store;
+use crate::state::{Signal, Store};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use tauri::{
     menu::{Menu, MenuItem},
@@ -14,8 +15,17 @@ use tauri::{
 /// 所以这里给高分辨率位图换清晰度，而宽高比决定它在菜单栏里占多宽 ——
 /// 2.16:1 渲染出来约 38.9 × 18pt。三颗点排成一行本来约 3.7:1，那样会有 66pt 宽，
 /// 菜单栏放不下，所以刻意压扁：点距收紧，点本身就小了。
+///
+/// **这个压扁的比例只属于三点字形**。跟随状态的单点在 `TRAY_DOT_SIZE` 里另取
+/// 方形边长 —— 单点没有「排成一行」的问题，套用 2.16:1 会被拉成一个椭圆。
 const TRAY_GLYPH_W: u32 = 432;
 const TRAY_GLYPH_H: u32 = 200;
+
+/// 跟随状态的单点位图边长。
+///
+/// 高仍取 `TRAY_GLYPH_H`，菜单栏里就还是 18pt 高；宽**等于高**，因为单点要的是
+/// 一个正圆 —— 三点的 2.16:1 是为塞下三个点而刻意压扁的，跟单点无关。
+const TRAY_DOT_SIZE: u32 = TRAY_GLYPH_H;
 
 /// 画三颗圆点，返回 RGBA 位图。
 ///
@@ -56,6 +66,113 @@ fn tray_glyph_rgba() -> Vec<u8> {
         }
     }
     rgba
+}
+
+/// 解析 `#rrggbb`（也容忍 `#rgb`）成 RGB。
+///
+/// 颜色表由前端算好跨 IPC 传过来，属于系统边界 —— 这里的判断不能 panic。
+/// 先逐字节确认全是 ASCII 十六进制字符再切片，否则一个 `#你好` 会在按字节
+/// 切分时踩到非字符边界而崩。
+///
+/// 解析失败一律返回 `None`，由调用方退回单色模板图。**绝不拿一个猜出来的颜色
+/// 去画**：那样用户看到的是「颜色不对但说不清哪里不对」的托盘，比干脆不变色难查得多。
+fn parse_hex_color(value: &str) -> Option<[u8; 3]> {
+    let hex = value.trim().strip_prefix('#')?;
+    if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let nibble = |i: usize| -> u8 {
+        // 上面已确认全是十六进制字符，所以 to_digit 必定成功
+        (hex.as_bytes()[i] as char).to_digit(16).expect("已校验为十六进制") as u8
+    };
+    match hex.len() {
+        // #f00 展开成 #ff0000：每位乘 17（0xF → 0xFF）
+        3 => Some([nibble(0) * 17, nibble(1) * 17, nibble(2) * 17]),
+        6 => Some([
+            nibble(0) * 16 + nibble(1),
+            nibble(2) * 16 + nibble(3),
+            nibble(4) * 16 + nibble(5),
+        ]),
+        _ => None,
+    }
+}
+
+/// 画一颗实心圆点，返回 RGBA 位图。
+///
+/// 和三点的模板图同一套做法：按到圆心的距离算覆盖率，边缘自然过渡 1px；
+/// 四周留一圈余量，免得圆点顶到画布边缘、在菜单栏里看着是贴边的。
+///
+/// 与模板图相反，这里是**彩色**图：RGB 填请求的颜色，由调用方同时把模板标志
+/// 关掉 —— 模板图会被系统按菜单栏明暗整个反色，颜色会被抹得一点不剩。
+fn dot_rgba(color: [u8; 3], size: u32) -> Vec<u8> {
+    let side = size as f32;
+    // 每边留 16% 余量：`tray-icon` 把像素高当成 18pt（见上面模板图的说明），
+    // 所以画布 200px 会被压成 18pt，圆点占 68% ≈ 12pt —— 和原来三点图里
+    // 单颗点的大小（约 9.7pt）是一个量级。留 10% 的话点是 14.4pt，在菜单栏里
+    // 会明显比周围的图标重，看着像一坨。
+    //
+    // 小尺寸下 round 可能把余量抹成 0，那也是对的：宁可圆点顶到边，也不能让
+    // 余量把整颗点吃掉（小图标会因此整颗消失）。
+    let margin = (side * 0.16).round();
+    let radius = (side - 2.0 * margin) / 2.0;
+    let center = side / 2.0;
+
+    let mut rgba = vec![0u8; (size * size * 4) as usize];
+    for y in 0..size {
+        for x in 0..size {
+            let dx = x as f32 + 0.5 - center;
+            let dy = y as f32 + 0.5 - center;
+            let distance = (dx * dx + dy * dy).sqrt();
+            let coverage = (radius + 0.5 - distance).clamp(0.0, 1.0);
+
+            let index = ((y * size + x) * 4) as usize;
+            rgba[index] = color[0];
+            rgba[index + 1] = color[1];
+            rgba[index + 2] = color[2];
+            rgba[index + 3] = (coverage * 255.0).round() as u8;
+        }
+    }
+    rgba
+}
+
+/// 让托盘图标跟上当前状态。
+///
+/// `colors` 是前端算好的「状态名 → `#rrggbb`」。**颜色表不在 Rust 里复制一份**：
+/// 它是「配色方案 + 用户逐个覆盖」解析出来的，只存在于前端的 `lib/palettes.ts`。
+/// 复制一份到这里就意味着两处会漂移，而用户改了颜色托盘不变是最难注意到的那种 bug。
+pub fn sync(app: &AppHandle, state: Signal, follows: bool, colors: &BTreeMap<String, String>) {
+    // 托盘一定存在（init 里建的），但真拿不到就静默跳过 —— 一个图标画不出来，
+    // 不该让状态上报整条链路跟着崩。
+    let Some(tray) = app.tray_by_id("signalhub") else {
+        return;
+    };
+
+    // 关掉跟随、或这个状态没有可用颜色时，rgb 为 None，退回单色模板图（今天的行为）。
+    let rgb = if follows {
+        colors.get(state.name()).and_then(|hex| parse_hex_color(hex))
+    } else {
+        None
+    };
+
+    let (rgba, width, height, is_template) = match rgb {
+        Some(color) => (
+            dot_rgba(color, TRAY_DOT_SIZE),
+            TRAY_DOT_SIZE,
+            TRAY_DOT_SIZE,
+            false,
+        ),
+        None => (tray_glyph_rgba(), TRAY_GLYPH_W, TRAY_GLYPH_H, true),
+    };
+
+    // 用 set_icon_with_as_template 而不是先 set_icon 再 set_icon_as_template：
+    // macOS 上分两步会让图标渲染两次、肉眼可见地闪一下（见 tauri 源码注释）。
+    // 非 macOS 平台它会退化成 set_icon，模板标志本来也只有 macOS 认。
+    if let Err(err) = tray.set_icon_with_as_template(
+        Some(tauri::image::Image::new_owned(rgba, width, height)),
+        is_template,
+    ) {
+        eprintln!("[signalhub] 更新托盘图标失败: {err}");
+    }
 }
 
 /// 托盘是这台没有 Dock 图标、窗口又不可关闭的应用**唯一**的退出入口，
@@ -222,5 +339,74 @@ mod tests {
         // 首尾点不能顶到画布边缘，否则菜单栏里看着是贴边的
         assert!(runs[0].0 > 4, "左边应留白: {runs:?}");
         assert!(TRAY_GLYPH_W - 1 - runs[2].1 > 4, "右边应留白: {runs:?}");
+    }
+
+    /// 取 `size × size` 位图里某个像素的 RGBA。与 `alpha_at` 不同，这里的边长
+    /// 是参数 —— 单点的用例要拿小尺寸去逼「余量吃光整颗点」的退化。
+    fn dot_pixel(rgba: &[u8], size: u32, x: u32, y: u32) -> [u8; 4] {
+        let i = ((y * size + x) * 4) as usize;
+        rgba[i..i + 4].try_into().unwrap()
+    }
+
+    #[test]
+    fn the_dot_buffer_is_square_and_has_the_right_length() {
+        let rgba = dot_rgba([0x1f, 0x6f, 0xeb], TRAY_DOT_SIZE);
+        assert_eq!(rgba.len(), (TRAY_DOT_SIZE * TRAY_DOT_SIZE * 4) as usize);
+
+        // 单点必须是正圆：宽高比 1:1。三点的 2.16:1 是为塞下三个点而压扁的，
+        // 单点若沿用会被拉成椭圆 —— 这条锁住「宽 = 高」。
+        assert_eq!(TRAY_DOT_SIZE, TRAY_GLYPH_H, "单点应与字形等高，且宽等于高");
+
+        // 换个小尺寸，长度公式仍成立（不是只对某一个值凑出来的）
+        assert_eq!(dot_rgba([0, 0, 0], 5).len(), (5 * 5 * 4) as usize);
+    }
+
+    #[test]
+    fn the_dot_centre_carries_the_requested_colour() {
+        let rgba = dot_rgba([0x1f, 0x6f, 0xeb], TRAY_DOT_SIZE);
+        let c = TRAY_DOT_SIZE / 2;
+        let pixel = dot_pixel(&rgba, TRAY_DOT_SIZE, c, c);
+        assert_eq!(pixel[..3], [0x1f, 0x6f, 0xeb], "中心应是请求的颜色");
+        assert_eq!(pixel[3], 255, "中心应完全不透明");
+    }
+
+    #[test]
+    fn the_dot_corners_are_transparent() {
+        let rgba = dot_rgba([0x1f, 0x6f, 0xeb], TRAY_DOT_SIZE);
+        let last = TRAY_DOT_SIZE - 1;
+        for (x, y) in [(0, 0), (last, 0), (0, last), (last, last)] {
+            assert_eq!(
+                dot_pixel(&rgba, TRAY_DOT_SIZE, x, y)[3],
+                0,
+                "({x},{y}) 应透明"
+            );
+        }
+    }
+
+    /// 小图标上余量四舍五入后可能只剩几个像素，圆心必须还在实心范围内 ——
+    /// 否则一个尺寸没算好，整颗点会被余量吃光、图标变成全透明。
+    #[test]
+    fn a_small_dot_still_has_an_opaque_centre() {
+        for size in [4u32, 5, 8, 16] {
+            let rgba = dot_rgba([0xff, 0x00, 0x00], size);
+            let c = size / 2;
+            assert!(
+                dot_pixel(&rgba, size, c, c)[3] > 200,
+                "边长 {size} 时圆心应仍是不透明的"
+            );
+        }
+    }
+
+    #[test]
+    fn hex_colours_parse_long_and_short_form() {
+        assert_eq!(parse_hex_color("#1f6feb"), Some([0x1f, 0x6f, 0xeb]));
+        assert_eq!(parse_hex_color("#FFFFFF"), Some([0xff, 0xff, 0xff]));
+        // #rgb 展开成 #rrggbb
+        assert_eq!(parse_hex_color("#f00"), Some([0xff, 0x00, 0x00]));
+        assert_eq!(parse_hex_color("  #1f6feb  "), Some([0x1f, 0x6f, 0xeb]));
+
+        for bad in ["1f6feb", "#gggggg", "", "#", "nonsense", "#12", "#12345", "#你好"] {
+            assert_eq!(parse_hex_color(bad), None, "{bad:?} 应被拒绝");
+        }
     }
 }

@@ -38,6 +38,36 @@ export interface SignFields {
   message: boolean;
 }
 
+/**
+ * 某一个状态的个性化外观。三样都可以单独覆盖，**没写的跟随全局**。
+ *
+ * 用「可选的字段」而不是填满的表格：默认值会随版本演进，存一份填满的表会让
+ * 那些改进永远到不了用户那儿。`null` 和缺字段都读作「跟随」。
+ */
+export interface StateStyle {
+  /** 颜色 `#rrggbb`。没写 = 用配色方案里那个状态的默认色 */
+  color?: string | null;
+  /** 灯珠形状。没写 = 用全局形状（全局是「圆」时 permission / error 仍是圆角方） */
+  shape?: Shape | null;
+  /** 闪烁周期（毫秒）。**0 = 常亮**。没写 = 按全局节奏倍率算默认周期 */
+  blink_ms?: number | null;
+}
+
+/**
+ * 勿扰时段。这段时间里不弹通知、不出声，但灯照常显示。
+ *
+ * 起止都按**本地时间**，只有小时没有分钟。本地时区只有前端知道，所以由前端把
+ * 当前小时推给 Rust，**由 Rust 判断在不在窗口内** —— 跨午夜那种边界逻辑只有
+ * 一处实现才敢信。
+ */
+export interface QuietHours {
+  enabled: boolean;
+  /** 起始小时（0–23） */
+  start: number;
+  /** 结束小时（0–23），**不含**这一小时 */
+  end: number;
+}
+
 /** 与 Rust 侧 `config::Settings` 对应（JSON 字段名保持 snake_case）。 */
 export interface Settings {
   size: number;
@@ -50,25 +80,34 @@ export interface Settings {
   hooks: Hook[];
   shape: Shape;
   palette: Palette;
-  /** 逐个状态覆盖颜色（`#rrggbb`）。空的表示全部用配色预设。 */
-  colors: Record<string, string>;
+  /** 逐个状态的外观覆盖（颜色 / 形状 / 节奏）。没写的项跟随全局。 */
+  styles: Record<string, StateStyle>;
   /** 折叠成一颗单纯的灯（只剩灯，没有牌面）。**默认 false = 展开成牌。** */
   collapsed: boolean;
   /** 展开的牌上显示哪几段内容 */
   show: SignFields;
   /** 牌面背景的不透明度（0–100）。调低能看见桌面。 */
   sign_opacity: number;
-  /** 闪烁节奏倍率（50–200，100 = 原始速度）。数字越大闪得越快。 */
+  /**
+   * 被右键「隐藏」掉的组。**只影响灯上显示哪几块牌。**
+   *
+   * 与 `muted_groups` 是两件事：那个管「要不要吵我」，这个管「灯上显不显示」。
+   */
+  hidden_groups: string[];
+  /**
+   * 被静音的组。**只影响通知和提示音** —— 灯上照常显示，聚合和钩子也不受影响。
+   */
+  muted_groups: string[];
+  /** 闪烁节奏倍率（50–200，100 = 原始速度）。数字越大闪得越快。对没有单独设节奏的状态生效。 */
   blink_speed: number;
   /** 需要你注意时，系统通知是否带提示音。 */
   sound: boolean;
-  /**
-   * 被右键「隐藏」掉的组。
-   *
-   * **只影响灯上显示哪几块牌**，不影响聚合、通知和钩子 —— 聚合是全局的，
-   * 把一块牌藏起来不等于当这一组不存在。
-   */
-  hidden_groups: string[];
+  /** 勿扰时段：这段时间里不弹通知、不出声。 */
+  quiet_hours: QuietHours;
+  /** 「需要你注意」的状态要**持续**这么多秒才弹通知。0 = 立刻弹。 */
+  alert_after_secs: number;
+  /** 托盘图标是否跟随当前聚合状态变色。 */
+  tray_follows_state: boolean;
 }
 
 /** 与 Rust 侧 `config::Settings::default()` 一致。 */
@@ -80,13 +119,17 @@ const DEFAULTS: Settings = {
   hooks: [],
   shape: "circle",
   palette: "default",
-  colors: {},
+  styles: {},
   collapsed: false,
   show: { name: true, state: true, age: true, message: true },
   sign_opacity: 86,
+  hidden_groups: [],
+  muted_groups: [],
   blink_speed: 100,
   sound: true,
-  hidden_groups: [],
+  quiet_hours: { enabled: false, start: 22, end: 8 },
+  alert_after_secs: 5,
+  tray_follows_state: true,
 };
 
 const SETTINGS_EVENT = "signalhub://settings";

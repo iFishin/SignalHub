@@ -16,6 +16,7 @@ pub mod hooks;
 use config::Settings;
 use notify::Notifier;
 use state::{GroupView, Report, Signal, Snapshot, Store};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, LogicalSize, Manager};
@@ -36,6 +37,13 @@ struct UiFlags {
 }
 
 type SharedUi = Mutex<UiFlags>;
+
+/// 前端算好的「状态名 → `#rrggbb`」颜色表，供托盘图标取色。
+///
+/// **不在 Rust 里复制一份配色**：颜色是「配色方案 + 用户逐个覆盖」解析出来的，
+/// 只存在于前端的 `lib/palettes.ts`。复制一份就意味着两处会漂移，而「用户改了
+/// 颜色但托盘不变」是最难注意到的那种 bug。
+type SharedPalette = Mutex<BTreeMap<String, String>>;
 
 /// 状态时长统计。按前端给的本地日期分桶，见 stats.rs。
 type SharedStats = Arc<Mutex<stats::Stats>>;
@@ -99,14 +107,17 @@ fn get_settings(settings: tauri::State<'_, SharedSettings>) -> Settings {
 /// 手改配置文件用的兜底），如果先 clamp 再校验，用户就永远收不到「你写的
 /// 颜色不合法」这条反馈。
 fn validate_settings(settings: &Settings) -> Result<(), String> {
-    for (name, color) in &settings.colors {
+    for (name, style) in &settings.styles {
         if !Signal::is_known_name(name) {
             return Err(format!(
                 "未知的状态名 {name:?}；可用: {}",
                 Signal::ALL_NAMES.join(" ")
             ));
         }
-        if !config::is_hex_color(color) {
+        // 颜色是可选的（没写就是跟随配色方案），所以「写了且不合法」才算错
+        if let Some(color) = &style.color
+            && !config::is_hex_color(color)
+        {
             return Err(format!("{name} 的颜色 {color:?} 不是 #rrggbb 形式"));
         }
     }
@@ -336,11 +347,54 @@ fn open_group_menu(app: tauri::AppHandle, group: String) -> Result<(), String> {
     menu::show(&app, &group)
 }
 
+/// 前端把算好的颜色表推过来 —— 托盘图标用它取色。
+///
+/// 由前端推而不是 Rust 自己算，是因为配色是「配色方案 + 逐个状态覆盖」解析出来的
+/// 结果，只存在于前端（见 `SharedPalette` 的说明）。
+#[tauri::command]
+fn set_palette_colors(app: tauri::AppHandle, colors: BTreeMap<String, String>) {
+    *app.state::<SharedPalette>().lock().expect("palette poisoned") = colors;
+    // 立刻重画一次：否则用户改完颜色要等下一次状态变化才在托盘上看到
+    refresh_tray(&app);
+}
+
+/// 前端推过来的「现在是几点（本地时间）」。
+///
+/// Rust 只有 UTC，没有时区数据，所以这个**事实**只能由前端提供；但「在不在勿扰
+/// 窗口内」的判断留在 Rust（`config::QuietHours::covers`），跨午夜那种边界逻辑
+/// 只有一处实现才敢信，而且那边能单测。
+#[tauri::command]
+fn set_local_hour(app: tauri::AppHandle, hour: u8) {
+    app.state::<alerts::LocalHour>().set(hour.min(23));
+}
+
+/// 按当前状态重画托盘图标。
+///
+/// 三条路径都要走它：状态变了（notify 里）、颜色表变了、`tray_follows_state`
+/// 开关变了。少走一条的表现是「托盘图标偶尔不更新」，很难归因。
+pub(crate) fn refresh_tray(app: &tauri::AppHandle) {
+    let settings = current_settings(app);
+    let state = app
+        .state::<SharedStore>()
+        .lock()
+        .expect("state store poisoned")
+        .snapshot()
+        .aggregate;
+    let colors = app
+        .state::<SharedPalette>()
+        .lock()
+        .expect("palette poisoned")
+        .clone();
+    tray::sync(app, state, settings.tray_follows_state, &colors);
+}
+
 fn apply_settings(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapshot) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.set_always_on_top(settings.always_on_top);
     }
     apply_window_size(app, settings, snapshot);
+    // 开关可能刚被改过，所以尺寸之外还要重画一次托盘
+    refresh_tray(app);
 }
 
 /// 灯上真正会画出来的组：右键隐藏掉的不算，再按优先级截断到 `MAX_SIGNS`。
@@ -494,6 +548,8 @@ pub fn run() {
         .manage(SharedStore::new(Mutex::new(Store::default())))
         .manage(SharedUi::default())
         .manage(SharedStats::default())
+        .manage(SharedPalette::default())
+        .manage(alerts::LocalHour::default())
         // 右键菜单只记「刚点的是哪一组」，见 menu.rs
         .manage(menu::Target::default())
         .invoke_handler(tauri::generate_handler![
@@ -511,6 +567,8 @@ pub fn run() {
             get_timeline,
             toggle_collapsed,
             open_group_menu,
+            set_palette_colors,
+            set_local_hour,
             quit
         ])
         .setup(|app| {
@@ -539,7 +597,7 @@ pub fn run() {
             let token = config::load_or_create_token()?;
 
             // 通知器只有一个构造入口（notify::compose），它把窗口尺寸、统计、
-            // 系统通知、webhook 转发、推事件这几件事一起管起来。
+            // 托盘图标、系统通知、出站钩子、推事件这几件事一起管起来。
             let notify: Notifier = notify::compose(app.handle().clone());
             app.manage(notify.clone());
 

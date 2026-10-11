@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { inTauri } from "../lib/env";
 import { SIGNAL_LABEL } from "../lib/signals";
-import { useSettings, updateSettings, type Settings, type Shape, type Palette, type Hook } from "../lib/useSettings";
+import { useSettings, updateSettings, type Settings, type Shape, type Palette, type Hook, type StateStyle } from "../lib/useSettings";
 import {
   useToggles,
   setAutostart,
@@ -11,7 +11,7 @@ import {
 import { useStats } from "../lib/useStats";
 import { useTimeline, type TimelineSegment } from "../lib/useTimeline";
 import { colorVars, resolveColors } from "../lib/palettes";
-import { PRESETS, isActivePreset } from "../lib/presets";
+import { PRESETS, isActivePreset, STYLE_PRESETS, isActiveStylePreset } from "../lib/presets";
 import { SIGNALS, type Snapshot } from "../lib/types";
 
 /** 与 Rust 侧 config.rs 的 MIN_SIZE / MAX_SIZE / DEFAULT_SIZE 保持一致。 */
@@ -46,12 +46,43 @@ const FIELDS: { key: keyof Settings["show"]; label: string }[] = [
 /** 与 Rust 侧 config.rs 的 MIN_BLINK_SPEED / MAX_BLINK_SPEED 一致。 */
 const BLINK_RANGE = { min: 50, max: 200 };
 
-type Tab = "status" | "look" | "colors" | "connect" | "hooks" | "system";
+/**
+ * 单个状态的闪烁间隔选项。`""` = 跟随全局，`"0"` = 常亮。
+ *
+ * 给一列固定档位而不是让用户敲毫秒：10 个状态各敲一次数字太累，而「快一点 /
+ * 慢一点」本来也就那么几档。配置文件里手写的、不在这张表里的值会临时补一个
+ * 选项进去（见下面的 `extraBlink`），不会显示成空白。
+ */
+const BLINK_OPTIONS: { label: string; value: string }[] = [
+  { label: "跟随", value: "" },
+  { label: "常亮", value: "0" },
+  { label: "2.0s", value: "2000" },
+  { label: "1.2s", value: "1200" },
+  { label: "0.7s", value: "700" },
+  { label: "0.4s", value: "400" },
+  { label: "0.2s", value: "200" },
+];
+
+/** 勿扰时段的起止小时。只有小时没有分钟 —— 见 config::QuietHours 的说明。 */
+const HOURS = Array.from({ length: 24 }, (_, hour) => hour);
+
+/** 「持续多久才提醒」的档位。0 = 立刻。 */
+const ALERT_DELAYS: { label: string; value: number }[] = [
+  { label: "立刻", value: 0 },
+  { label: "3 秒", value: 3 },
+  { label: "5 秒", value: 5 },
+  { label: "10 秒", value: 10 },
+  { label: "30 秒", value: 30 },
+  { label: "1 分钟", value: 60 },
+];
+
+type Tab = "status" | "look" | "style" | "alert" | "connect" | "hooks" | "system";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "status", label: "状态" },
   { id: "look", label: "外观" },
-  { id: "colors", label: "颜色" },
+  { id: "style", label: "灯效" },
+  { id: "alert", label: "提醒" },
   { id: "connect", label: "接入" },
   { id: "hooks", label: "钩子" },
   { id: "system", label: "系统" },
@@ -220,6 +251,19 @@ export function SettingsPanel({ snapshot }: Props) {
       hidden_groups: settings.hidden_groups.filter((name) => name !== group),
     });
 
+  /**
+   * 静音 / 取消静音某一组。
+   *
+   * 与「隐藏」是两件事：静音只让通知和提示音不再因为这一组响起，灯上照常显示；
+   * 隐藏只是让它不占灯上的位置。所以两个状态可以同时成立，也各自独立。
+   */
+  const setMuted = (group: string, muted: boolean) =>
+    patch({
+      muted_groups: muted
+        ? [...settings.muted_groups, group]
+        : settings.muted_groups.filter((name) => name !== group),
+    });
+
   // 钩子的文本输入用「草稿 + 失焦提交」：每敲一个字就存一次会把半截 URL
   // 写进配置（而且会被校验拒掉）。颜色不一样 —— 取色器要的就是即时反馈。
   const [hookDraft, setHookDraft] = useState<{ index: number; value: string } | null>(null);
@@ -271,17 +315,24 @@ export function SettingsPanel({ snapshot }: Props) {
           <>
             <TimelineStrip segments={timeline} />
 
-            {settings.hidden_groups.length > 0 && (
+            {(settings.hidden_groups.length > 0 ||
+              settings.muted_groups.length > 0) && (
               <div className="row hidden-summary">
                 <span className="muted-text">
-                  灯上已隐藏 {settings.hidden_groups.length} 组（不影响通知和钩子）
+                  {settings.hidden_groups.length > 0 &&
+                    `灯上隐藏 ${settings.hidden_groups.length} 组`}
+                  {settings.hidden_groups.length > 0 &&
+                    settings.muted_groups.length > 0 &&
+                    " · "}
+                  {settings.muted_groups.length > 0 &&
+                    `静音 ${settings.muted_groups.length} 组`}
                 </span>
                 <button
                   type="button"
                   className="btn btn-tiny"
-                  onClick={() => patch({ hidden_groups: [] })}
+                  onClick={() => patch({ hidden_groups: [], muted_groups: [] })}
                 >
-                  全部显示
+                  全部恢复
                 </button>
               </div>
             )}
@@ -293,22 +344,46 @@ export function SettingsPanel({ snapshot }: Props) {
             ) : (
               snapshot.groups.map((group) => {
                 const hidden = settings.hidden_groups.includes(group.name);
+                const muted = settings.muted_groups.includes(group.name);
                 return (
                   <div className="group" key={group.name} data-hidden={hidden}>
                     <div className="group-head" data-state={group.aggregate}>
                       <span className="state-dot" />
                       <span className="group-name">{group.name}</span>
-                      {hidden && <span className="group-hidden">已隐藏</span>}
-                      <span className="group-meta">
-                        {SIGNAL_LABEL[group.aggregate]} · {group.sessions.length} 个会话
-                      </span>
+                      {/* 两个标记本身就是开关：点一下恢复。做成按钮而不是纯标签，
+                          是因为恢复这件事必须在这里做得到 —— 灯上右键固然也行，
+                          但那个组可能已经被藏起来、根本右键不到。 */}
                       {hidden && (
                         <button
                           type="button"
-                          className="btn btn-tiny"
+                          className="badge"
+                          title="点一下让它在灯上重新显示"
                           onClick={() => unhide(group.name)}
                         >
-                          显示
+                          已隐藏
+                        </button>
+                      )}
+                      {muted && (
+                        <button
+                          type="button"
+                          className="badge"
+                          title="点一下取消静音"
+                          onClick={() => setMuted(group.name, false)}
+                        >
+                          已静音
+                        </button>
+                      )}
+                      <span className="group-meta">
+                        {SIGNAL_LABEL[group.aggregate]} · {group.sessions.length} 个会话
+                      </span>
+                      {!muted && (
+                        <button
+                          type="button"
+                          className="btn btn-tiny"
+                          title="不再因为这一组弹通知 / 出声"
+                          onClick={() => setMuted(group.name, true)}
+                        >
+                          静音
                         </button>
                       )}
                     </div>
@@ -408,6 +483,22 @@ export function SettingsPanel({ snapshot }: Props) {
                 ))}
               </div>
             </Row>
+            {/* 配色方案和形状、节奏倍率是一类东西：都是「没被逐个状态覆盖时用哪个」。
+                所以放这一页，逐状态的覆盖在「灯效」页。 */}
+            <Row label="配色方案">
+              <div className="seg">
+                {PALETTES.map((palette) => (
+                  <button
+                    key={palette.value}
+                    type="button"
+                    data-active={settings.palette === palette.value}
+                    onClick={() => patch({ palette: palette.value })}
+                  >
+                    {palette.label}
+                  </button>
+                ))}
+              </div>
+            </Row>
             <Row label="背景透明度">
               <Slider
                 value={settings.sign_opacity}
@@ -451,63 +542,231 @@ export function SettingsPanel({ snapshot }: Props) {
           </>
         );
 
-      case "colors": {
+      case "style": {
         const resolved = resolveColors(settings);
-        const overridden = Object.keys(settings.colors).length;
+
+        /**
+         * 改某一个状态的三样里的一样。
+         *
+         * 三样都没设就把整条记录删掉 —— 留一条全 null 的空记录会让「当前是哪套
+         * 预设」判断不出来（预设比的是整份表），而它本身没有任何作用。
+         */
+        const setStyle = (state: string, next: Partial<StateStyle>) => {
+          const merged = { ...(settings.styles[state] ?? {}), ...next };
+          const styles = { ...settings.styles };
+          const empty =
+            merged.color == null && merged.shape == null && merged.blink_ms == null;
+          if (empty) delete styles[state];
+          else styles[state] = merged;
+          patch({ styles });
+        };
+
+        const resetStyle = (state: string) => {
+          const styles = { ...settings.styles };
+          delete styles[state];
+          patch({ styles });
+        };
+
         return (
           <>
-            {/* 配色方案是「一套起点」，逐状态覆盖是「在这套起点上改哪几个」——
-                两件事放在同一页才看得出后者是在覆盖前者 */}
-            <Row label="配色方案">
-              <div className="seg">
-                {PALETTES.map((palette) => (
+            <Row label="预设">
+              <div className="chips chips-tight">
+                {STYLE_PRESETS.map((preset) => (
                   <button
-                    key={palette.value}
+                    key={preset.id}
                     type="button"
-                    data-active={settings.palette === palette.value}
-                    onClick={() => patch({ palette: palette.value })}
+                    className="chip"
+                    title={preset.hint}
+                    data-active={isActiveStylePreset(preset, settings)}
+                    // 预设给的是**完整**一份表，所以是整份替换而不是合并
+                    onClick={() => patch({ styles: preset.styles })}
                   >
-                    {palette.label}
+                    {preset.label}
                   </button>
                 ))}
               </div>
             </Row>
-            <div className="colors">
-              {SIGNALS.map((state) => (
-                <label key={state} className="color-row" data-state={state}>
-                  <span className="state-dot" />
-                  <span className="color-name">{SIGNAL_LABEL[state]}</span>
-                  {/* 原生取色器。onChange 在拖动时连续触发，也就连续保存 ——
-                      这是刻意的：改颜色必须能实时看到效果，而 set_settings
-                      只是一次很小的 IPC + 写文件。 */}
-                  <input
-                    type="color"
-                    value={resolved[state]}
-                    onChange={(event) =>
-                      patch({
-                        colors: { ...settings.colors, [state]: event.target.value },
-                      })
-                    }
-                  />
-                </label>
-              ))}
+
+            <div className="style-head">
+              <span className="style-swatch" />
+              <span className="style-name">状态</span>
+              <span className="style-col">形状</span>
+              <span className="style-col">节奏</span>
+              <span className="style-reset" />
             </div>
-            <div className="row" style={{ marginTop: 10 }}>
-              <span className="muted-text">
-                {overridden > 0 ? `已自定义 ${overridden} 项` : "全部使用配色预设"}
-              </span>
-              <button
-                type="button"
-                className="btn"
-                disabled={overridden === 0}
-                onClick={() => patch({ colors: {} })}
-              >
-                恢复默认
-              </button>
+
+            <div className="styles">
+              {SIGNALS.map((state) => {
+                const style = settings.styles[state] ?? {};
+                const overridden =
+                  style.color != null || style.shape != null || style.blink_ms != null;
+                const blink = style.blink_ms == null ? "" : String(style.blink_ms);
+                // 手改配置文件可能写出选项里没有的毫秒数，临时补一个选项，
+                // 否则 select 会显示成空白 —— 看起来像「没设」，其实设了
+                const extraBlink =
+                  blink !== "" && !BLINK_OPTIONS.some((o) => o.value === blink)
+                    ? blink
+                    : null;
+
+                return (
+                  <div className="style-row" key={state} data-state={state}>
+                    {/* 原生取色器。onChange 在拖动时连续触发，也就连续保存 ——
+                        这是刻意的：改颜色必须能实时看到效果。 */}
+                    <input
+                      type="color"
+                      className="style-swatch"
+                      title="灯珠颜色"
+                      value={resolved[state]}
+                      onChange={(event) =>
+                        setStyle(state, { color: event.target.value })
+                      }
+                    />
+                    <span className="style-name">{SIGNAL_LABEL[state]}</span>
+                    <select
+                      className="select style-col"
+                      title="灯珠形状"
+                      value={style.shape ?? ""}
+                      onChange={(event) =>
+                        setStyle(state, {
+                          shape: (event.target.value || null) as Shape | null,
+                        })
+                      }
+                    >
+                      <option value="">跟随</option>
+                      {SHAPES.map((shape) => (
+                        <option key={shape.value} value={shape.value}>
+                          {shape.label}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      className="select style-col"
+                      title="闪烁间隔"
+                      value={blink}
+                      onChange={(event) =>
+                        setStyle(state, {
+                          blink_ms:
+                            event.target.value === ""
+                              ? null
+                              : Number(event.target.value),
+                        })
+                      }
+                    >
+                      {BLINK_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                      {extraBlink && <option value={extraBlink}>{extraBlink}ms</option>}
+                    </select>
+                    <button
+                      type="button"
+                      className="btn btn-tiny style-reset"
+                      title="恢复成跟随全局"
+                      disabled={!overridden}
+                      onClick={() => resetStyle(state)}
+                    >
+                      ↺
+                    </button>
+                  </div>
+                );
+              })}
             </div>
+
             <p className="hint">
-              只覆盖你改过的状态，其余仍用上面那套配色方案。描边和细环会跟着
-              填充色自动派生，不用单独调。
+              「跟随」= 用「外观」页选的那两项（形状、节奏倍率）。
+            </p>
+          </>
+        );
+      }
+
+      case "alert": {
+        // 阈值给一列固定档位而不是滑块：这是个粗选择（「立刻」还是「等一会儿」），
+        // 秒级的精调没有意义。配置文件里手写的不在表里的值会补一个选项进来。
+        const extraDelay = ALERT_DELAYS.some((d) => d.value === settings.alert_after_secs)
+          ? null
+          : settings.alert_after_secs;
+
+        return (
+          <>
+            <Row label="需要时弹通知">
+              <Switch on={settings.notify} onChange={(on) => patch({ notify: on })} />
+            </Row>
+            <Row label="通知带提示音">
+              <Switch on={settings.sound} onChange={(on) => patch({ sound: on })} />
+            </Row>
+            <Row label="持续多久才提醒">
+              <select
+                className="select"
+                title="状态要持续这么久才弹通知，一闪而过的忽略掉"
+                value={settings.alert_after_secs}
+                onChange={(event) =>
+                  patch({ alert_after_secs: Number(event.target.value) })
+                }
+              >
+                {ALERT_DELAYS.map((delay) => (
+                  <option key={delay.value} value={delay.value}>
+                    {delay.label}
+                  </option>
+                ))}
+                {extraDelay !== null && (
+                  <option value={extraDelay}>{extraDelay} 秒</option>
+                )}
+              </select>
+            </Row>
+            <Row label="勿扰时段">
+              <div className="hours">
+                <Switch
+                  on={settings.quiet_hours.enabled}
+                  onChange={(on) =>
+                    patch({ quiet_hours: { ...settings.quiet_hours, enabled: on } })
+                  }
+                />
+                <select
+                  className="select"
+                  disabled={!settings.quiet_hours.enabled}
+                  value={settings.quiet_hours.start}
+                  onChange={(event) =>
+                    patch({
+                      quiet_hours: {
+                        ...settings.quiet_hours,
+                        start: Number(event.target.value),
+                      },
+                    })
+                  }
+                >
+                  {HOURS.map((hour) => (
+                    <option key={hour} value={hour}>
+                      {String(hour).padStart(2, "0")}:00
+                    </option>
+                  ))}
+                </select>
+                <span className="muted-text">→</span>
+                <select
+                  className="select"
+                  disabled={!settings.quiet_hours.enabled}
+                  value={settings.quiet_hours.end}
+                  onChange={(event) =>
+                    patch({
+                      quiet_hours: {
+                        ...settings.quiet_hours,
+                        end: Number(event.target.value),
+                      },
+                    })
+                  }
+                >
+                  {HOURS.map((hour) => (
+                    <option key={hour} value={hour}>
+                      {String(hour).padStart(2, "0")}:00
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </Row>
+            <p className="hint">
+              需要授权、需要关注或出错时弹一条系统通知。声音挂在通知上，所以关掉
+              通知也就没有声音。勿扰时段里不弹也不出声，灯照常显示 —— 而且不补发：
+              早上醒来收到一堆昨晚的通知，正是勿扰想避免的。
             </p>
           </>
         );
@@ -519,15 +778,9 @@ export function SettingsPanel({ snapshot }: Props) {
             <Row label="暂停监控">
               <Switch on={snapshot.paused} onChange={setPaused} />
             </Row>
-            <Row label="需要时弹通知">
-              <Switch on={settings.notify} onChange={(on) => patch({ notify: on })} />
-            </Row>
-            <Row label="通知带提示音">
-              <Switch on={settings.sound} onChange={(on) => patch({ sound: on })} />
-            </Row>
             <p className="hint">
-              需要授权、需要关注或出错时弹一条系统通知。声音挂在通知上，所以关掉
-              通知也就没有声音。
+              暂停后灯球显示为熄灭，但会话仍在记录 —— 恢复时立刻回到真实状态。
+              弹不弹通知在「提醒」页。
             </p>
 
             {/* 转发搬到了「钩子」页（多条、可过滤、支持命令），这里只留入口 */}
@@ -665,6 +918,12 @@ export function SettingsPanel({ snapshot }: Props) {
                 onChange={(on) => patch({ always_on_top: on })}
               />
             </Row>
+            <Row label="托盘跟随状态">
+              <Switch
+                on={settings.tray_follows_state}
+                onChange={(on) => patch({ tray_follows_state: on })}
+              />
+            </Row>
             <Row label="开机自启">
               <Switch
                 on={toggles.autostart}
@@ -683,6 +942,10 @@ export function SettingsPanel({ snapshot }: Props) {
                 }}
               />
             </Row>
+            <p className="hint">
+              托盘跟随状态时，菜单栏那颗点会变成当前状态的颜色 —— 不看悬浮灯也
+              知道现在什么情况。关掉就回到单色字形，跟着菜单栏明暗自动反色。
+            </p>
             <p className="hint">
               穿透后圆点不再响应鼠标，按{" "}
               {toggles.pass_through_shortcut || "快捷键"} 或从托盘菜单退出。

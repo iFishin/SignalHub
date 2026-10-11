@@ -21,6 +21,7 @@ pub struct Target(pub Mutex<Option<String>>);
 /// 菜单项的 id。**与托盘的 id 不重合** —— 两边的菜单事件都会走到
 /// `AppHandle::on_menu_event`，重合了就会互相误触发。
 const HIDE: &str = "group:hide";
+const MUTE: &str = "group:mute";
 const CLEAR: &str = "group:clear";
 const TOGGLE: &str = "group:toggle";
 const SETTINGS: &str = "group:settings";
@@ -29,23 +30,38 @@ const SETTINGS: &str = "group:settings";
 pub fn show(app: &AppHandle, group: &str) -> Result<(), String> {
     *app.state::<Target>().0.lock().expect("menu target poisoned") = Some(group.to_string());
 
-    let collapsed = crate::current_settings(app).collapsed;
+    let settings = crate::current_settings(app);
+    let muted = settings.muted_groups.iter().any(|name| name == group);
+
     let hide = MenuItem::with_id(app, HIDE, "隐藏该组", true, None::<&str>).map_err(menu_err)?;
+    // 措辞跟着当前状态走：写「切换静音」的话得先看一眼设置才知道会切成什么
+    let mute = MenuItem::with_id(
+        app,
+        MUTE,
+        if muted { "取消静音该组" } else { "静音该组" },
+        true,
+        None::<&str>,
+    )
+    .map_err(menu_err)?;
     let clear =
         MenuItem::with_id(app, CLEAR, "清除该组的状态", true, None::<&str>).map_err(menu_err)?;
     // 措辞跟着当前形态走：写「切换」的话得先看一眼灯才知道会切成什么
     let toggle = MenuItem::with_id(
         app,
         TOGGLE,
-        if collapsed { "展开牌面" } else { "折叠成一颗灯" },
+        if settings.collapsed { "展开牌面" } else { "折叠成一颗灯" },
         true,
         None::<&str>,
     )
     .map_err(menu_err)?;
-    let settings =
+    let open_settings =
         MenuItem::with_id(app, SETTINGS, "打开设置…", true, None::<&str>).map_err(menu_err)?;
 
-    let menu = Menu::with_items(app, &[&hide, &clear, &toggle, &settings]).map_err(menu_err)?;
+    let menu = Menu::with_items(
+        app,
+        &[&hide, &mute, &clear, &toggle, &open_settings],
+    )
+    .map_err(menu_err)?;
 
     let window = app
         .get_webview_window("main")
@@ -57,7 +73,7 @@ pub fn show(app: &AppHandle, group: &str) -> Result<(), String> {
 
 /// 分派一次菜单事件。返回「是不是我们这张菜单的」，好让调用方知道要不要管。
 pub fn handle(app: &AppHandle, id: &str) -> bool {
-    if !matches!(id, HIDE | CLEAR | TOGGLE | SETTINGS) {
+    if !matches!(id, HIDE | MUTE | CLEAR | TOGGLE | SETTINGS) {
         // 托盘菜单那些 id（quit / toggle / …）也走这条路，不是我们的就放行
         return false;
     }
@@ -81,6 +97,13 @@ pub fn handle(app: &AppHandle, id: &str) -> bool {
 
     let result = match id {
         HIDE => hide_group(app, &group),
+        MUTE => {
+            let muted = crate::current_settings(app)
+                .muted_groups
+                .iter()
+                .any(|name| name == &group);
+            set_muted(app, &group, !muted)
+        }
         CLEAR => {
             clear_group(app, &group);
             Ok(())
@@ -113,6 +136,25 @@ fn hide_group(app: &AppHandle, group: &str) -> Result<(), String> {
         crate::config::Settings { hidden_groups, ..settings },
     )
     .map(|_| ())
+}
+
+/// 静音 / 取消静音某一组。
+///
+/// 静音**只影响通知和提示音**：灯上照常显示，聚合、钩子和 `/v1/state` 都不变。
+/// 想让它从灯上消失用「隐藏该组」——两者是两件事，面板上也是分开的两栏。
+fn set_muted(app: &AppHandle, group: &str, muted: bool) -> Result<(), String> {
+    let settings = crate::current_settings(app);
+    let mut muted_groups = settings.muted_groups.clone();
+    if muted {
+        if !muted_groups.iter().any(|name| name == group) {
+            muted_groups.push(group.to_string());
+        }
+    } else {
+        muted_groups.retain(|name| name != group);
+    }
+
+    crate::persist_settings(app, crate::config::Settings { muted_groups, ..settings })
+        .map(|_| ())
 }
 
 /// 清掉某一组的全部会话。

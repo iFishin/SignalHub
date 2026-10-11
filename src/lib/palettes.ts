@@ -1,3 +1,6 @@
+import { useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { inTauri } from "./env";
 import type { Settings, Palette } from "./useSettings";
 import { SIGNALS, type SignalState } from "./types";
 
@@ -55,11 +58,14 @@ export const PALETTE_COLORS: Record<Palette, Record<SignalState, string>> = {
  * 算出每个状态最终用哪个颜色：**用户逐个指定的优先于配色预设**。
  *
  * 所以可以先选一套「色盲友好」，再单独把 error 调成更醒目的红。
+ *
+ * 逐个覆盖存在 `styles[state].color` 里（Rust 侧没写的项序列化成 `null`，
+ * 所以 `null` 和缺字段都读作「跟随预设」—— 用 `??` 一步到位）。
  */
 export function resolveColors(settings: Settings): Record<SignalState, string> {
   const base = { ...(PALETTE_COLORS[settings.palette] ?? PALETTE_COLORS.default) };
   for (const state of SIGNALS) {
-    const custom = settings.colors[state];
+    const custom = settings.styles[state]?.color ?? null;
     if (custom) base[state] = custom;
   }
   return base;
@@ -77,4 +83,23 @@ export function colorVars(settings: Settings): React.CSSProperties {
     style[`--c-${state}`] = color;
   }
   return style as React.CSSProperties;
+}
+
+/**
+ * 把解析好的颜色表推给 Rust —— 托盘图标用它取色。
+ *
+ * 由前端推而不是 Rust 自己算：配色是「配色方案 + 逐个状态覆盖」解析出来的结果，
+ * 只存在于这里。在 Rust 里复制一份就意味着两处会漂移，而「用户改了颜色但托盘
+ * 不变」是最难注意到的那种 bug。
+ *
+ * 依赖整个 `settings` 而不是 `resolveColors(settings)`：后者每次渲染都是新对象，
+ * 放进依赖数组等于每次都推。
+ */
+export function usePalettePush(settings: Settings): void {
+  useEffect(() => {
+    if (!inTauri) return;
+    invoke("set_palette_colors", { colors: resolveColors(settings) }).catch((err) =>
+      console.error("set_palette_colors 失败", err),
+    );
+  }, [settings]);
 }

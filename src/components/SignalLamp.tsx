@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { inTauri } from "../lib/env";
 import { SIGNAL_LABEL } from "../lib/signals";
-import { colorVars } from "../lib/palettes";
+import { lampVars, resolveShapes } from "../lib/lampStyle";
 import type { Settings } from "../lib/useSettings";
 import type { GroupView, SignalState } from "../lib/types";
 
@@ -111,8 +111,12 @@ function openGroupMenu(event: React.MouseEvent, group: string) {
 }
 
 export function SignalLamp({ aggregate, groups, settings }: Props) {
-  const { size, quiet, shape, collapsed, show, sign_opacity, blink_speed, hidden_groups } =
-    settings;
+  const { size, quiet, collapsed, show, sign_opacity, hidden_groups } = settings;
+
+  // 形状是逐状态的（一个窗口里多块牌可以不一样），所以先整份算出来，再按每块牌
+  // 的状态取。颜色和动画走 lampVars 的 CSS 变量，形状走元素属性 —— 形状不是
+  // 「一个值」，没法塞进一个根变量里。
+  const shapes = resolveShapes(settings);
 
   const toggle = () => {
     if (!inTauri) return;
@@ -143,13 +147,11 @@ export function SignalLamp({ aggregate, groups, settings }: Props) {
         {
           "--size": `${size}px`,
           "--sign-alpha": String(sign_opacity / 100),
-          "--blink-speed": String(blink_speed / 100),
-          ...colorVars(settings),
+          ...lampVars(settings),
         } as React.CSSProperties
       }
       data-aggregate={aggregate}
       data-quiet={quiet}
-      data-shape={shape}
       data-collapsed={collapsed}
       title={tooltip(aggregate, groups)}
       // 空白处（牌之间、留白）也要吃掉右键，否则会冒出 webview 自己的菜单
@@ -163,6 +165,7 @@ export function SignalLamp({ aggregate, groups, settings }: Props) {
             key={index}
             className="dot lamp-dot"
             data-state={group.aggregate}
+            data-shape={shapes[group.aggregate]}
             onContextMenu={(event) => openGroupMenu(event, group.name)}
           />
         ) : (
@@ -172,7 +175,7 @@ export function SignalLamp({ aggregate, groups, settings }: Props) {
             data-has-message={show.message && group.message ? "true" : "false"}
             onContextMenu={(event) => openGroupMenu(event, group.name)}
           >
-            <span className="dot" data-state={group.aggregate} />
+            <span className="dot" data-state={group.aggregate} data-shape={shapes[group.aggregate]} />
             <div className="sign-body">
               <div className="sign-line">
                 {show.name && group.name && (

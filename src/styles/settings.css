@@ -100,11 +100,11 @@ html[data-window="settings"] #root {
 }
 
 /* 内容区固定高度：窗口尺寸因此恒定，切页签不会跳。
-   高度取「最高那一页」—— 外观页有八个控件，是最高的那一页。这样六个页签
-   都不必滚动，窗口也只有 540px 高。超出仍会在这一块里滚（状态页的组多了就会），
+   高度取「最高那一页」—— 灯效页有一张 10 行的表，是最高的那一页。这样七个页签
+   都不必滚动，窗口也只有 580px 高。超出仍会在这一块里滚（状态页的组多了就会），
    而不是让整个窗口变高。 */
 .page {
-  height: 372px;
+  height: 412px;
   padding-top: 14px;
   overflow-y: auto;
 }
@@ -315,35 +315,30 @@ html[data-window="settings"] #root {
   outline: none;
 }
 
-/* ---- 颜色页：每个状态一个取色器 ---- */
+/* ---- 灯效页：逐个状态的色 / 形状 / 节奏 ---- */
 
-.colors {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 2px 14px;
-}
-
-.color-row {
+/* 表头 + 10 行对齐成一张表。色块和两列下拉都定宽，只有状态名伸缩 ——
+   这样扫一眼就知道哪一列在说什么。 */
+.style-head,
+.style-row {
   display: flex;
   align-items: center;
-  gap: 7px;
-  height: 30px;
-  cursor: pointer;
+  gap: 8px;
 }
 
-.color-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.style-head {
+  margin: 12px 0 2px;
+  color: var(--muted);
+  font-size: 11px;
 }
 
-/* 原生取色器：去掉默认的内边距和色块描边，让它看起来就是一个色块 */
-.color-row input[type="color"] {
-  width: 22px;
-  height: 22px;
+.style-row {
+  height: 26px;
+}
+
+input[type="color"].style-swatch {
+  width: 20px;
+  height: 20px;
   flex: none;
   padding: 0;
   border: 1px solid var(--line);
@@ -352,13 +347,87 @@ html[data-window="settings"] #root {
   cursor: pointer;
 }
 
-.color-row input[type="color"]::-webkit-color-swatch-wrapper {
+input[type="color"].style-swatch::-webkit-color-swatch-wrapper {
   padding: 0;
 }
 
-.color-row input[type="color"]::-webkit-color-swatch {
+input[type="color"].style-swatch::-webkit-color-swatch {
   border: none;
   border-radius: 3px;
+}
+
+.style-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 下拉。宽度和表头里的占位一致，两处都写同一个值 */
+.select {
+  box-sizing: border-box;
+  width: 84px;
+  padding: 3px 4px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.select:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.style-col {
+  flex: none;
+  width: 84px;
+}
+
+/* 「恢复成跟随全局」。没被覆盖过时藏起来但**保留位置** ——
+   否则 10 行的状态名列会参差不齐，表就散了。 */
+.style-reset {
+  flex: none;
+  width: 24px;
+  padding: 2px 0;
+  text-align: center;
+  visibility: hidden;
+}
+
+.style-row .btn.style-reset:not(:disabled) {
+  visibility: visible;
+}
+
+/* ---- 可点击的小标记（已隐藏 / 已静音）---- */
+
+.badge {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--hover);
+  color: var(--muted);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.badge:hover {
+  border-color: var(--accent);
+  color: var(--fg);
+}
+
+/* ---- 勿扰时段：开关 + 起止小时挤在一行 ---- */
+
+.hours {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .muted-text {

@@ -1,4 +1,4 @@
-import type { Settings, SignFields } from "./useSettings";
+import type { Settings, SignFields, StateStyle } from "./useSettings";
 
 /**
  * 外观预设。
@@ -98,5 +98,106 @@ export function isActivePreset(preset: Preset, settings: Settings): boolean {
     (["name", "state", "age", "message"] as const).every(
       (field) => settings.show[field] === show[field],
     )
+  );
+}
+
+/**
+ * 逐个状态的灯效预设：颜色 / 形状 / 节奏三样一起给。
+ *
+ * 与上面那几套的区别是它们回答的是**两个不同的问题**：那几套管「整块牌有多大、
+ * 多透、显示哪几段」，这几套管「红灯和绿灯怎么区分开」。混在一起会变成一套
+ * 谁也说不清的组合。
+ *
+ * 每套给的是**完整的一份 `styles` 表**，应用就是整份替换 —— 所以「当前是哪一套」
+ * 可以靠整体相等判断出来（见 `isActiveStylePreset`）。用户改掉任意一格之后
+ * 高亮就会消失，那是对的：它已经不是那一套了。
+ */
+export interface StylePreset {
+  id: string;
+  label: string;
+  hint: string;
+  styles: Record<string, StateStyle>;
+}
+
+export const STYLE_PRESETS: StylePreset[] = [
+  {
+    id: "follow",
+    label: "跟随全局",
+    hint: "清掉所有逐状态覆盖，颜色用配色方案、形状和节奏用「外观」页那两项",
+    styles: {},
+  },
+  {
+    id: "shape",
+    label: "形状区分",
+    hint: "需要授权 / 出错画成圆角方 —— 红绿是红绿色盲最难分的一对，而这两个最需要你注意",
+    styles: {
+      permission: { shape: "rounded" },
+      error: { shape: "rounded" },
+    },
+  },
+  {
+    id: "rhythm",
+    label: "节奏分级",
+    hint: "每个状态一套自己的节奏：推理快、执行慢、出错频闪，不在工作的常亮",
+    styles: {
+      thinking: { blink_ms: 400 },
+      working: { blink_ms: 1600 },
+      attention: { blink_ms: 1000 },
+      permission: { blink_ms: 900 },
+      error: { blink_ms: 300 },
+      idle: { blink_ms: 0 },
+      stale: { blink_ms: 0 },
+      offline: { blink_ms: 0 },
+      off: { blink_ms: 0 },
+    },
+  },
+  {
+    id: "calm",
+    label: "只在需要时闪",
+    hint: "干活的那几个状态都常亮，只有需要关注 / 授权 / 出错才闪",
+    styles: {
+      idle: { blink_ms: 0 },
+      thinking: { blink_ms: 0 },
+      working: { blink_ms: 0 },
+      stale: { blink_ms: 0 },
+      offline: { blink_ms: 0 },
+      off: { blink_ms: 0 },
+    },
+  },
+];
+
+/** 这一格有没有被覆盖过（空对象和全是 null 都算没有）。 */
+function hasAny(style: StateStyle | undefined): boolean {
+  return (
+    !!style &&
+    (style.color != null || style.shape != null || style.blink_ms != null)
+  );
+}
+
+/** 逐字段比，不比对象引用也不比 JSON 字符串 —— 键顺序在 Rust 那边往返一趟会变。 */
+function sameStyle(a: StateStyle, b: StateStyle): boolean {
+  return (
+    (a.color ?? null) === (b.color ?? null) &&
+    (a.shape ?? null) === (b.shape ?? null) &&
+    (a.blink_ms ?? null) === (b.blink_ms ?? null)
+  );
+}
+
+export function isActiveStylePreset(
+  preset: StylePreset,
+  settings: Settings,
+): boolean {
+  const want = Object.keys(preset.styles).filter((key) =>
+    hasAny(preset.styles[key]),
+  );
+  const have = Object.keys(settings.styles).filter((key) =>
+    hasAny(settings.styles[key]),
+  );
+  if (want.length !== have.length) return false;
+
+  return want.every(
+    (key) =>
+      have.includes(key) &&
+      sameStyle(preset.styles[key], settings.styles[key]),
   );
 }
