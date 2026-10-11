@@ -25,6 +25,19 @@ export type HookAction =
  */
 export type Hook = { when: string[] } & HookAction;
 
+/** 展开的牌上显示哪几段内容。四段都可以单独关掉 —— 有人只要一眼颜色，
+ *  有人要看清「卡在哪一步」。 */
+export interface SignFields {
+  /** 组名 */
+  name: boolean;
+  /** 状态名（如「需授权」） */
+  state: boolean;
+  /** 已持续多久 */
+  age: boolean;
+  /** 消息 —— 关掉之后牌永远是单行高（窗口高度也跟着少一行） */
+  message: boolean;
+}
+
 /** 与 Rust 侧 `config::Settings` 对应（JSON 字段名保持 snake_case）。 */
 export interface Settings {
   size: number;
@@ -39,6 +52,23 @@ export interface Settings {
   palette: Palette;
   /** 逐个状态覆盖颜色（`#rrggbb`）。空的表示全部用配色预设。 */
   colors: Record<string, string>;
+  /** 折叠成一颗单纯的灯（只剩灯，没有牌面）。**默认 false = 展开成牌。** */
+  collapsed: boolean;
+  /** 展开的牌上显示哪几段内容 */
+  show: SignFields;
+  /** 牌面背景的不透明度（0–100）。调低能看见桌面。 */
+  sign_opacity: number;
+  /** 闪烁节奏倍率（50–200，100 = 原始速度）。数字越大闪得越快。 */
+  blink_speed: number;
+  /** 需要你注意时，系统通知是否带提示音。 */
+  sound: boolean;
+  /**
+   * 被右键「隐藏」掉的组。
+   *
+   * **只影响灯上显示哪几块牌**，不影响聚合、通知和钩子 —— 聚合是全局的，
+   * 把一块牌藏起来不等于当这一组不存在。
+   */
+  hidden_groups: string[];
 }
 
 /** 与 Rust 侧 `config::Settings::default()` 一致。 */
@@ -51,6 +81,12 @@ const DEFAULTS: Settings = {
   shape: "circle",
   palette: "default",
   colors: {},
+  collapsed: false,
+  show: { name: true, state: true, age: true, message: true },
+  sign_opacity: 86,
+  blink_speed: 100,
+  sound: true,
+  hidden_groups: [],
 };
 
 const SETTINGS_EVENT = "signalhub://settings";

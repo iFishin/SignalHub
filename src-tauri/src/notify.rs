@@ -61,7 +61,7 @@ pub fn compose(app: tauri::AppHandle) -> Notifier {
             outbound::fire(&settings.hooks, snapshot);
         }
         if alerting && settings.notify {
-            alerts::send(&app, snapshot);
+            alerts::send(&app, snapshot, settings.sound);
         }
 
         emit(&app, snapshot);

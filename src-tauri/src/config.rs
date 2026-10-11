@@ -27,7 +27,7 @@ pub fn sign_width(size: u16) -> u16 {
 
 /// 一块牌的高度。有消息就多一行 —— 那块牌会变高，正好是个「有东西可读」的提示。
 ///
-/// **CSS 里的 `.sign` / `.sign.has-message` 必须与这两个值严格对齐**，
+/// **CSS 里的 `.sign` / `.sign[data-has-message="true"]` 必须与这两个值严格对齐**，
 /// 否则窗口会裁掉最后一块牌、或者底下留一条缝。
 pub fn sign_height(size: u16, has_message: bool) -> u16 {
     if has_message {
@@ -37,13 +37,21 @@ pub fn sign_height(size: u16, has_message: bool) -> u16 {
     }
 }
 
-/// 展开面板的宽度。固定值：面板内容是一列短文本，宽度不必随会话数变。
-pub const PANEL_WIDTH: u16 = 260;
-/// 面板的固定开销：上下内边距 + 头部那一行。
-pub const PANEL_CHROME: u16 = 56;
-/// 面板里每一行的高度。**CSS 里的 `.lamp-row` 必须正好也是这个高度**，
-/// 否则窗口会裁掉最后一行、或者底下留一条缝。
-pub const PANEL_ROW: u16 = 38;
+/// 折叠形态的圆点个数上限。折叠成一个单纯的灯时，一个组一个点。
+///
+/// 刻意和 `MAX_SIGNS` 取同一个值：折叠只是换了个外形，不该顺带少显示几个组 ——
+/// 那样会让人以为一折叠就把状态弄丢了。
+pub const MAX_DOTS: usize = MAX_SIGNS;
+
+/// 折叠形态的窗口尺寸：N 个点排成一行。
+///
+/// 这套几何比展开态小得多 —— 折叠的意义就是让出地方。一个组一个点，
+/// 所以点数和组数一样；一个组都没有时也要有一个点（表示 offline）。
+pub fn collapsed_window_size(size: u16, dots: usize) -> (u16, u16) {
+    let dots = dots.clamp(1, MAX_DOTS) as u16;
+    let gap = size / 3;
+    (dots * size + (dots - 1) * gap + LAMP_MARGIN, size + LAMP_MARGIN)
+}
 
 /// `~/.signalhub`
 ///
@@ -227,6 +235,28 @@ impl HookAction {
     }
 }
 
+/// 展开的牌上显示哪几段内容。四段都可以单独关掉 —— 有人只要一眼颜色，
+/// 有人要看清「卡在哪一步」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SignFields {
+    /// 组名
+    pub name: bool,
+    /// 状态名（如「需授权」）
+    pub state: bool,
+    /// 已持续多久
+    pub age: bool,
+    /// 消息 —— 关掉之后牌永远是单行高
+    pub message: bool,
+}
+
+impl Default for SignFields {
+    fn default() -> Self {
+        // 默认全开：牌的信息量就是它存在的理由
+        Self { name: true, state: true, age: true, message: true }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -255,7 +285,37 @@ pub struct Settings {
     /// 刻意不接受派生状态（它们不能上报），但用户要能改它们显示成什么颜色。
     /// 所以这里存字符串键、单独校验。
     pub colors: BTreeMap<String, String>,
+
+    /// 折叠成一个单纯的灯（只剩灯，没有牌面）。**默认 false：展开成牌。**
+    ///
+    /// 存进设置而不是当作瞬态开关：用户折叠是有意的选择，重启后该保持。
+    /// 托盘里有「展开 / 折叠外形」可以随时切回来，不会卡在折叠态。
+    pub collapsed: bool,
+    /// 展开的牌上显示哪几段内容
+    pub show: SignFields,
+    /// 牌面背景的不透明度（0–100）。调低能看见桌面。
+    pub sign_opacity: u8,
+    /// 用户从灯上右键「隐藏」掉的组。
+    ///
+    /// **只影响灯上显示哪几块牌**，不影响聚合、通知和钩子 —— 聚合是全局概念，
+    /// 把一块牌藏起来不等于当这一组不存在。想彻底忽略一组应该让它的上报方
+    /// 别再报，而不是指望这里。
+    pub hidden_groups: Vec<String>,
+    /// 闪烁节奏倍率（50–200，100 = 默认）。闪得太快会分心，太慢又看不出在动。
+    pub blink_speed: u16,
+    /// 需要你注意时，系统通知是否带声音。
+    ///
+    /// 声音挂在系统通知上（`NotificationBuilder::sound`），所以关掉通知就没有
+    /// 声音 —— 这是刻意的：不为一个提示音再加一条独立的音频通路和它的跨平台麻烦。
+    pub sound: bool,
 }
+
+/// 牌面背景的默认不透明度。够看清内容，又能透出一点桌面。
+pub const DEFAULT_SIGN_OPACITY: u8 = 86;
+
+/// 闪烁节奏的可调范围。上下界都留得住意义：再慢看不出在动，再快只剩烦。
+pub const MIN_BLINK_SPEED: u16 = 50;
+pub const MAX_BLINK_SPEED: u16 = 200;
 
 /// `#rrggbb` 或 `#rgb`。只做形状检查，不判断这个色值好不好看。
 pub fn is_hex_color(value: &str) -> bool {
@@ -304,6 +364,12 @@ impl Default for Settings {
             shape: Shape::default(),
             palette: Palette::default(),
             colors: BTreeMap::new(),
+            collapsed: false,
+            show: SignFields::default(),
+            sign_opacity: DEFAULT_SIGN_OPACITY,
+            blink_speed: 100,
+            hidden_groups: Vec::new(),
+            sound: true,
         }
     }
 }
@@ -313,6 +379,18 @@ impl Settings {
     /// 和前端传来的值。
     pub fn clamped(mut self) -> Self {
         self.size = self.size.clamp(MIN_SIZE, MAX_SIZE);
+        self.sign_opacity = self.sign_opacity.min(100);
+        self.blink_speed = self.blink_speed.clamp(MIN_BLINK_SPEED, MAX_BLINK_SPEED);
+        // 组名去空白、去空串、去重并排序。这个列表会被反复比较（每块牌都要问
+        // 一次「我该不该显示」），脏数据留在里面就每次都要重新规整。
+        self.hidden_groups = self
+            .hidden_groups
+            .iter()
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+            .collect();
+        self.hidden_groups.sort();
+        self.hidden_groups.dedup();
         // 空白串等于「不转发」，归一成 None，免得每次转发都白试一次
         self.webhook_url = self
             .webhook_url
@@ -330,6 +408,12 @@ impl Settings {
         self
     }
 
+    /// 这个组该不该出现在灯上。Rust 算窗口高度和前端渲染都必须问同一句话 ——
+    /// 两边算出不同的组，窗口就会裁掉最后一块牌，或者底下空一条。
+    pub fn shows_group(&self, name: &str) -> bool {
+        !self.hidden_groups.iter().any(|hidden| hidden == name)
+    }
+
     /// 窗口尺寸。`signs` 是可见牌的高度列表（Rust 侧算好，见 `sign_height`）。
     ///
     /// 一块牌时窗口就是「牌 + 留白」；多块竖着叠，高度逐块累加。
@@ -339,12 +423,6 @@ impl Settings {
         let stacked: u16 = signs.iter().take(count as usize).sum();
         let gaps = gap * count.saturating_sub(1);
         (sign_width(self.size) + LAMP_MARGIN, stacked + gaps + LAMP_MARGIN)
-    }
-
-    /// 展开面板的尺寸。行数取会话数，至少一行（避免出现一个空面板）。
-    pub fn panel_size(&self, rows: u16) -> (u16, u16) {
-        let rows = rows.max(1);
-        (PANEL_WIDTH, PANEL_CHROME + rows * PANEL_ROW)
     }
 }
 
@@ -589,6 +667,47 @@ mod tests {
         );
     }
 
+    /// 默认必须是「展开」：灯的本职是让人一眼看到状态，折叠是用户主动要的例外
+    #[test]
+    fn the_default_shape_is_expanded_and_the_sign_shows_everything() {
+        let settings = Settings::default();
+        assert!(!settings.collapsed, "默认应是展开的牌面");
+        assert_eq!(
+            settings.show,
+            SignFields { name: true, state: true, age: true, message: true },
+            "默认每段都显示"
+        );
+        assert!(settings.hidden_groups.is_empty(), "默认不藏任何组");
+        assert_eq!(settings.sign_opacity, DEFAULT_SIGN_OPACITY);
+        assert_eq!(settings.blink_speed, 100, "100 = 原始节奏");
+    }
+
+    /// 隐藏的组名来自右键菜单、也会被用户手改进配置文件，所以要规整：
+    /// 否则同一个组写成 " ci" 和 "ci" 会被当成两个，"已隐藏" 就时灵时不灵。
+    #[test]
+    fn hidden_groups_are_trimmed_deduped_and_sorted() {
+        let raw = r#"{"hidden_groups": [" ci ", "ci", "", "  ", "work", "zeta", "alpha"]}"#;
+        let settings = serde_json::from_str::<Settings>(raw).unwrap().clamped();
+
+        assert_eq!(
+            settings.hidden_groups,
+            vec!["alpha", "ci", "work", "zeta"],
+            "去空白、去空串、去重、排序"
+        );
+        assert!(!settings.shows_group("ci"), "藏起来的组不该显示");
+        assert!(settings.shows_group("other"), "没被藏起来的照常显示");
+    }
+
+    /// 旧版本的 config.json 里没有这些新字段，不能因此让整份设置失效
+    #[test]
+    fn missing_appearance_fields_fall_back_to_expanded() {
+        let settings: Settings = serde_json::from_str(r#"{"size": 30}"#).unwrap();
+        assert_eq!(settings.size, 30, "用户调过的值必须保留");
+        assert!(!settings.collapsed, "缺字段应退回「展开」，那是默认形态");
+        assert_eq!(settings.sign_opacity, DEFAULT_SIGN_OPACITY);
+        assert!(settings.hidden_groups.is_empty());
+    }
+
     #[test]
     fn clamped_pulls_out_of_range_sizes_back() {
         let wild = Settings { size: 9999, ..Settings::default() };
@@ -628,17 +747,35 @@ mod tests {
         }
     }
 
+    /// 折叠态：一个组一个点，窗口比展开态小得多
     #[test]
-    fn panel_grows_one_row_per_session_and_never_collapses_to_nothing() {
+    fn collapsed_window_holds_one_dot_per_group() {
+        let size = Settings::default().size;
+
+        let (w1, h1) = collapsed_window_size(size, 1);
+        assert_eq!(w1, size + LAMP_MARGIN, "一个点：方窗");
+        assert_eq!(h1, size + LAMP_MARGIN);
+
+        let (w3, h3) = collapsed_window_size(size, 3);
+        assert!(w3 > w1, "多点横着排，所以变宽");
+        assert_eq!(h3, h1, "高度只和点的大小有关");
+
+        // 一个组都没有时也要有一个点（表示 offline）
+        assert_eq!(collapsed_window_size(size, 0), collapsed_window_size(size, 1));
+        // 超出上限按上限算
+        assert_eq!(
+            collapsed_window_size(size, MAX_DOTS + 5),
+            collapsed_window_size(size, MAX_DOTS)
+        );
+    }
+
+    /// 折叠态必须比展开态小 —— 「折叠」的意义就是让出地方
+    #[test]
+    fn collapsed_is_much_smaller_than_expanded() {
         let settings = Settings::default();
-        let (w, h1) = settings.panel_size(1);
-        assert_eq!(w, PANEL_WIDTH, "面板宽度固定");
-        assert_eq!(h1, PANEL_CHROME + PANEL_ROW);
-
-        let (_, h3) = settings.panel_size(3);
-        assert_eq!(h3, PANEL_CHROME + 3 * PANEL_ROW, "每个会话一行");
-
-        // 没有会话时也要留一行，否则展开会得到一个空壳
-        assert_eq!(settings.panel_size(0), settings.panel_size(1));
+        let (cw, ch) = collapsed_window_size(settings.size, 1);
+        let (ew, eh) = settings.window_size(&[sign_height(settings.size, false)]);
+        assert!(cw < ew, "折叠态更窄: {cw} vs {ew}");
+        assert!(ch < eh, "折叠态更矮: {ch} vs {eh}");
     }
 }

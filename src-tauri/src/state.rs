@@ -354,6 +354,29 @@ impl Store {
         (removed, self.settle(before))
     }
 
+    /// 清掉某一组的全部会话（用户从灯上右键「清除该组」）。
+    ///
+    /// 返回 `(移除了几个会话, 可见状态是否变化)` —— 两个值要分开报，理由同
+    /// `remove_session`：清一个空的组不该被当成变化去推前端。
+    pub fn clear_group(&mut self, group: &str) -> (usize, bool) {
+        let before = self.visible();
+
+        // 两趟处理，同 `expire`：先只读地收集要删的 id，再动手删。
+        // 一趟里边迭代边删要跟借用检查绕，反而更难看。
+        let ids: Vec<String> = self
+            .sessions
+            .values()
+            .filter(|s| s.group == group)
+            .map(|s| s.id.clone())
+            .collect();
+
+        for id in &ids {
+            self.sessions.remove(id);
+        }
+
+        (ids.len(), self.settle(before))
+    }
+
     pub fn set_paused(&mut self, paused: bool) -> bool {
         let before = self.visible();
         self.paused = paused;
@@ -555,6 +578,14 @@ mod tests {
     fn rep(s: &mut Store, t: Instant, session: &str, state: Signal) -> bool {
         let mut req = Report::new(state);
         req.session = Some(session.to_string());
+        s.apply(t, req)
+    }
+
+    /// 指定组的版本，多组场景（如 clear_group 的用例）用它。
+    fn rep_in(s: &mut Store, t: Instant, session: &str, group: &str, state: Signal) -> bool {
+        let mut req = Report::new(state);
+        req.session = Some(session.to_string());
+        req.group = Some(group.to_string());
         s.apply(t, req)
     }
 
@@ -845,6 +876,68 @@ mod tests {
 
         // 删掉最后一个会话，就没有任何会话在报了
         assert_eq!(s.remove_session("a"), (true, true));
+        assert_eq!(s.aggregate(), Signal::Offline);
+    }
+
+    /// 清组只动那一个组：别的组的会话必须原样留着
+    #[test]
+    fn clear_group_removes_only_that_group() {
+        let (mut s, t) = (Store::default(), Instant::now());
+        rep_in(&mut s, t, "a1", "alpha", Signal::Working);
+        rep_in(&mut s, t, "a2", "alpha", Signal::Idle);
+        rep_in(&mut s, t, "b1", "beta", Signal::Error);
+
+        let (removed, changed) = s.clear_group("alpha");
+        assert_eq!(removed, 2);
+        assert!(changed, "会话表变了，前端需要更新");
+
+        let ids: Vec<String> = sessions(&s.snapshot()).iter().map(|v| v.id.clone()).collect();
+        assert_eq!(ids, vec!["b1".to_string()], "只该留下 beta 组的会话");
+    }
+
+    /// 清一个空组/不存在的组既没移除任何会话，也没有任何可见变化 ——
+    /// 前端不该为它收到一次推送
+    #[test]
+    fn clearing_an_empty_group_is_a_no_op() {
+        let (mut s, t) = (Store::default(), Instant::now());
+        rep_in(&mut s, t, "a", "alpha", Signal::Working);
+
+        assert_eq!(s.clear_group("nope"), (0, false));
+        assert_eq!(s.clear_group("alpha"), (1, true), "有会话的组要报移除了 1 个");
+    }
+
+    /// 决定聚合的那一组被清掉时聚合会变；不动聚合的那一组也会报变化
+    /// （会话表变了），但聚合保持不动
+    #[test]
+    fn clearing_a_group_reports_change_even_when_aggregate_is_untouched() {
+        let (mut s, t) = (Store::default(), Instant::now());
+        rep_in(&mut s, t, "a", "alpha", Signal::Idle);
+        rep_in(&mut s, t, "b", "beta", Signal::Error);
+
+        // beta 的 Error 优先级最高、在决定聚合，清掉 alpha 不影响聚合
+        let (removed, changed) = s.clear_group("alpha");
+        assert_eq!(removed, 1);
+        assert!(changed, "会话表变了，前端需要更新");
+        assert_eq!(s.aggregate(), Signal::Error, "聚合不该被影响");
+
+        // 再清掉决定聚合的 beta，聚合随之落下
+        let (removed, changed) = s.clear_group("beta");
+        assert_eq!(removed, 1);
+        assert!(changed);
+        assert_eq!(s.aggregate(), Signal::Offline, "一个会话都不剩了");
+    }
+
+    /// 把所有组都清空后回到 Offline —— 没有会话在报了，而不是 Idle
+    #[test]
+    fn clearing_every_group_returns_to_offline() {
+        let (mut s, t) = (Store::default(), Instant::now());
+        rep_in(&mut s, t, "a", "alpha", Signal::Working);
+        rep_in(&mut s, t, "b", "beta", Signal::Permission);
+
+        s.clear_group("alpha");
+        s.clear_group("beta");
+
+        assert!(sessions(&s.snapshot()).is_empty());
         assert_eq!(s.aggregate(), Signal::Offline);
     }
 

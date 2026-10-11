@@ -1,4 +1,5 @@
 mod alerts;
+mod menu;
 mod notify;
 mod outbound;
 mod server;
@@ -14,9 +15,9 @@ pub mod hooks;
 
 use config::Settings;
 use notify::Notifier;
-use state::{Report, Signal, Snapshot, Store};
+use state::{GroupView, Report, Signal, Snapshot, Store};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tauri::{Emitter, LogicalSize, Manager};
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_global_shortcut::{
@@ -30,8 +31,6 @@ type SharedSettings = Mutex<Settings>;
 /// 重启后必须回到可点击状态，否则用户一开机就面对一个点不动、拖不动的圆点。
 #[derive(Debug, Default, Clone, Copy)]
 struct UiFlags {
-    /// 灯球是否展开成会话列表面板
-    expanded: bool,
     /// 点击穿透：整个窗口忽略指针事件
     pass_through: bool,
 }
@@ -123,28 +122,47 @@ fn validate_settings(settings: &Settings) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn set_settings(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, SharedSettings>,
+fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<Settings, String> {
+    validate_settings(&settings)?;
+    persist_settings(&app, settings)
+}
+
+/// 设置变化的广播事件名。前端 `src/lib/useSettings.ts` 里的字面量必须与之一致。
+///
+/// 改设置的路径有三条（设置面板、托盘、灯上右键菜单），而两个窗口都得跟着变 ——
+/// 所以**每条路径都必须广播**，否则设置窗里的开关会显示过时的状态。
+const SETTINGS_EVENT: &str = "signalhub://settings";
+
+/// 改设置的统一出口：存盘 → 改内存 → 按新设置调整界面 → 广播给两个窗口。
+///
+/// 三条路径都会改设置，各写一遍迟早会漏掉其中一步（尤其是「广播」，漏了不报错，
+/// 只是界面偶尔不对）。收成一处就不会。
+pub(crate) fn persist_settings(
+    app: &tauri::AppHandle,
     settings: Settings,
 ) -> Result<Settings, String> {
-    validate_settings(&settings)?;
     let settings = settings.clamped();
 
     // 先落盘再改内存和界面：保存失败时不该出现「界面变了但重启就没了」
     config::save_settings(&settings).map_err(|err| format!("保存设置失败: {err}"))?;
-
-    *state.lock().expect("settings poisoned") = settings.clone();
+    *app.state::<SharedSettings>().lock().expect("settings poisoned") = settings.clone();
 
     let snapshot = app
         .state::<SharedStore>()
         .lock()
         .expect("state store poisoned")
         .snapshot();
-    apply_settings(&app, &settings, &snapshot);
-    // 两个窗口都要跟着变（灯球改尺寸，设置窗改控件状态）
-    let _ = app.emit("signalhub://settings", &settings);
+    apply_settings(app, &settings, &snapshot);
+    let _ = app.emit(SETTINGS_EVENT, &settings);
     Ok(settings)
+}
+
+/// 读出当前设置。
+pub(crate) fn current_settings(app: &tauri::AppHandle) -> Settings {
+    app.state::<SharedSettings>()
+        .lock()
+        .expect("settings poisoned")
+        .clone()
 }
 
 /// 给设置面板显示「怎么手动调用这个服务」用。端口和 token 都从文件读，
@@ -187,33 +205,6 @@ fn get_stats(stats: tauri::State<'_, SharedStats>, today: String) -> Vec<StatRow
             seconds: duration.as_secs(),
         })
         .collect()
-}
-
-/// 展开 / 收起会话列表面板。
-///
-/// 由前端点击触发，但**尺寸仍由 Rust 算** —— 它取决于会话数和设置，而这两样
-/// 都在 Rust 这边。前端只负责「点了一下」。
-#[tauri::command]
-fn set_lamp_expanded(
-    app: tauri::AppHandle,
-    ui: tauri::State<'_, SharedUi>,
-    expanded: bool,
-) -> bool {
-    // 先释放这把锁再调 apply_window_size，后者也会取它（std 的 Mutex 不可重入）
-    ui.lock().expect("ui poisoned").expanded = expanded;
-
-    let settings = app
-        .state::<SharedSettings>()
-        .lock()
-        .expect("settings poisoned")
-        .clone();
-    let snapshot = app
-        .state::<SharedStore>()
-        .lock()
-        .expect("state store poisoned")
-        .snapshot();
-    apply_window_size(&app, &settings, &snapshot);
-    expanded
 }
 
 /// 三个开关类功能的当前状态。做成一个命令是为了让前端**不必知道**
@@ -261,9 +252,6 @@ fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
 ///
 /// 命令和全局快捷键都走它 —— 两处各写一遍的话，行为迟早会分叉。
 fn set_pass_through_impl(app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
-    if enabled {
-        app.state::<SharedUi>().lock().expect("ui poisoned").expanded = false;
-    }
     app.state::<SharedUi>()
         .lock()
         .expect("ui poisoned")
@@ -276,20 +264,9 @@ fn set_pass_through_impl(app: &tauri::AppHandle, enabled: bool) -> Result<(), St
         .set_ignore_cursor_events(enabled)
         .map_err(|err| format!("切换点击穿透失败: {err}"))?;
 
-    // 开启时把面板收回去，否则会留下一个点不动的大窗口
+    // 开启时发一条通知说明怎么退出。**不再顺手把外形收起来**：穿透下窗口本来
+    // 就点不动，而外形是用户自己选的、存在设置里的，替用户改掉反而是越权。
     if enabled {
-        let settings = app
-            .state::<SharedSettings>()
-            .lock()
-            .expect("settings poisoned")
-            .clone();
-        let snapshot = app
-            .state::<SharedStore>()
-            .lock()
-            .expect("state store poisoned")
-            .snapshot();
-        apply_window_size(app, &settings, &snapshot);
-
         alerts::send_message(
             app,
             "已进入点击穿透模式",
@@ -321,6 +298,44 @@ fn quit(app: tauri::AppHandle) {
     app.exit(0);
 }
 
+/// 折叠 / 展开外形。
+///
+/// 三条路径都走它：灯上左键点击、灯上右键菜单、托盘菜单。写两份行为迟早分叉。
+pub(crate) fn set_collapsed(app: &tauri::AppHandle, collapsed: bool) -> Result<Settings, String> {
+    let current = current_settings(app);
+    if current.collapsed == collapsed {
+        // 没变就别写盘、别广播 —— 左键连点两下不该产生两次磁盘写入
+        return Ok(current);
+    }
+    persist_settings(app, Settings { collapsed, ..current })
+}
+
+/// 灯上左键点击：折叠 ↔ 展开。前端靠 `signalhub://settings` 广播重画，
+/// 这里把新设置返回去只是省掉一次多余的读取。
+#[tauri::command]
+fn toggle_collapsed(app: tauri::AppHandle) -> Result<Settings, String> {
+    let collapsed = !current_settings(&app).collapsed;
+    set_collapsed(&app, collapsed)
+}
+
+/// 时间线的窗口长度。近半小时够看出「刚才卡了多久」，又不至于挤成一条线。
+const TIMELINE_WINDOW: Duration = Duration::from_secs(30 * 60);
+
+/// 近 30 分钟的状态时间线，从旧到新，供设置面板画那条小色带。
+#[tauri::command]
+fn get_timeline(stats: tauri::State<'_, SharedStats>) -> Vec<stats::Segment> {
+    stats
+        .lock()
+        .expect("stats poisoned")
+        .timeline(Instant::now(), TIMELINE_WINDOW)
+}
+
+/// 在灯上某一组的位置弹出右键菜单。
+#[tauri::command]
+fn open_group_menu(app: tauri::AppHandle, group: String) -> Result<(), String> {
+    menu::show(&app, &group)
+}
+
 fn apply_settings(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapshot) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.set_always_on_top(settings.always_on_top);
@@ -328,27 +343,47 @@ fn apply_settings(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapsh
     apply_window_size(app, settings, snapshot);
 }
 
-/// 灯球上可见的牌的高度列表。
+/// 灯上真正会画出来的组：右键隐藏掉的不算，再按优先级截断到 `MAX_SIGNS`。
 ///
-/// 牌的**顺序**由服务端定（最紧急在前，见 `Store::snapshot_at`），所以这里只取
-/// 前 `MAX_SIGNS` 块 —— 和前端截断的规则一致。高度按「有没有消息」算：有东西
-/// 可读的牌多占一行，正好是个提示。
-fn visible_signs(settings: &Settings, snapshot: &Snapshot) -> Vec<u16> {
-    let mut heights: Vec<u16> = snapshot
+/// 牌的**顺序**由服务端定（最紧急在前，见 `Store::snapshot_at`），所以这里只截断、
+/// 不重排。
+///
+/// **前端渲染和窗口高度都依赖同一个判断。** 两边算出不同的组，窗口要么裁掉最后
+/// 一块牌，要么底下空一条。
+fn visible_groups<'a>(settings: &Settings, snapshot: &'a Snapshot) -> Vec<&'a GroupView> {
+    snapshot
         .groups
         .iter()
+        .filter(|group| settings.shows_group(&group.name))
         .take(config::MAX_SIGNS)
-        .map(|group| config::sign_height(settings.size, group.message.is_some()))
-        .collect();
-
-    // 一个组都没有时也要显示一块牌（表示 offline），否则窗口会塌成一条缝
-    if heights.is_empty() {
-        heights.push(config::sign_height(settings.size, false));
-    }
-    heights
+        .collect()
 }
 
-/// 按可见圆点个数（或展开后的行数）调整窗口尺寸。
+/// 这些组在展开态各占多高。有东西可读的牌多占一行，正好是个提示。
+///
+/// 注意「有没有消息」还要看**用户有没有把消息那段关掉** —— 关掉之后牌永远是
+/// 单行，窗口高度也得跟着少一行。两边算不一致就会裁掉最后一块牌。
+fn sign_heights(settings: &Settings, groups: &[&GroupView]) -> Vec<u16> {
+    let heights: Vec<u16> = groups
+        .iter()
+        .map(|group| {
+            config::sign_height(
+                settings.size,
+                settings.show.message && group.message.is_some(),
+            )
+        })
+        .collect();
+
+    // 一块牌都没有时也要留一块（表示 offline，或者用户把所有组都藏了），
+    // 否则窗口会塌成一条缝 —— 那样既看不见状态，也没法拖它
+    if heights.is_empty() {
+        vec![config::sign_height(settings.size, false)]
+    } else {
+        heights
+    }
+}
+
+/// 按可见牌的个数（折叠时是点的个数）调整窗口尺寸。
 ///
 /// 只在尺寸真的变了才 `set_size`：状态变化一秒可能好几次，每次都 resize
 /// 是没必要的系统调用。
@@ -357,15 +392,12 @@ fn apply_window_size(app: &tauri::AppHandle, settings: &Settings, snapshot: &Sna
         return;
     };
 
-    let expanded = app
-        .state::<SharedUi>()
-        .lock()
-        .expect("ui poisoned")
-        .expanded;
-    let (width, height) = if expanded {
-        settings.panel_size(snapshot.all_sessions().count() as u16)
+    // 展开态是一叠牌，折叠态是一排点 —— 两套几何，见 config.rs
+    let groups = visible_groups(settings, snapshot);
+    let (width, height) = if settings.collapsed {
+        config::collapsed_window_size(settings.size, groups.len())
     } else {
-        settings.window_size(&visible_signs(settings, snapshot))
+        settings.window_size(&sign_heights(settings, &groups))
     };
 
     // inner_size 给的是物理像素，要除掉缩放比才能和逻辑尺寸比较
@@ -462,6 +494,8 @@ pub fn run() {
         .manage(SharedStore::new(Mutex::new(Store::default())))
         .manage(SharedUi::default())
         .manage(SharedStats::default())
+        // 右键菜单只记「刚点的是哪一组」，见 menu.rs
+        .manage(menu::Target::default())
         .invoke_handler(tauri::generate_handler![
             get_state,
             set_state,
@@ -470,11 +504,13 @@ pub fn run() {
             set_settings,
             get_endpoint,
             open_settings,
-            set_lamp_expanded,
             get_toggles,
             set_autostart,
             set_pass_through,
             get_stats,
+            get_timeline,
+            toggle_collapsed,
+            open_group_menu,
             quit
         ])
         .setup(|app| {
@@ -539,6 +575,11 @@ pub fn run() {
             }
 
             wire_settings_window(app);
+            // 右键菜单是运行时构造的，`Menu` 自己没有事件回调 —— 只能挂在应用上，
+            // 靠 id 分派。托盘菜单有它自己的回调，两边的 id 不重合，互不打扰。
+            app.on_menu_event(|app, event| {
+                menu::handle(app, event.id().as_ref());
+            });
             tray::init(app.handle().clone())?;
             sweep::spawn(notify.clone(), app.state::<SharedStore>().inner().clone());
             server::spawn(

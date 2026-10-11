@@ -68,10 +68,12 @@ pub fn init(app: AppHandle) -> tauri::Result<()> {
     // 故意不显示「开 / 关」状态：快捷键也能切换它，菜单里的状态会漂移。
     // 准确状态在设置面板里（get_toggles）。
     let pass_through = MenuItem::with_id(&app, "pass_through", "切换点击穿透", true, None::<&str>)?;
+    // 折叠后只剩一个点，没有别的入口切回来 —— 所以托盘这一项是必需的
+    let collapsed = MenuItem::with_id(&app, "collapsed", "展开 / 折叠外形", true, None::<&str>)?;
     let quit = MenuItem::with_id(&app, "quit", "退出 SignalHub", true, None::<&str>)?;
     let menu = Menu::with_items(
         &app,
-        &[&toggle, &settings, &pause, &pass_through, &quit],
+        &[&toggle, &settings, &pause, &pass_through, &collapsed, &quit],
     )?;
 
     TrayIconBuilder::with_id("signalhub")
@@ -102,6 +104,16 @@ pub fn init(app: AppHandle) -> tauri::Result<()> {
                     .pass_through;
                 if let Err(err) = crate::set_pass_through_impl(app, !enabled) {
                     eprintln!("[signalhub] 托盘切换点击穿透失败: {err}");
+                }
+            }
+            "collapsed" => {
+                let collapsed = app
+                    .state::<crate::SharedSettings>()
+                    .lock()
+                    .expect("settings poisoned")
+                    .collapsed;
+                if let Err(err) = crate::set_collapsed(app, !collapsed) {
+                    eprintln!("[signalhub] 托盘切换折叠失败: {err}");
                 }
             }
             _ => {}

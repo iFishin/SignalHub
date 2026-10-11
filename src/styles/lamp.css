@@ -1,9 +1,11 @@
 /*
- * 悬浮牌样式。
+ * 悬浮灯样式。
  *
- * 形态是「交通牌」：一块深色圆角牌，里面一颗彩点 + 组名 + 状态 + 已持续，
- * 有消息时多一行。深色牌面是刻意和**应用图标**同一套语言（深色圆角方块 +
- * 彩点），这样悬浮灯和图标看起来是一个东西。
+ * 两种形态，共用同一批积木：
+ *   展开（默认）—— 一叠「交通牌」，每块 = 一颗彩点 + 组名 + 状态 + 已持续，
+ *                  有消息时多一行。深色牌面刻意和**应用图标**是同一套语言
+ *                  （深色圆角方块 + 彩点），这样悬浮灯和图标看起来是一个东西。
+ *   折叠        —— 每组一颗裸灯，没有牌面。点一下就切回展开。
  *
  * 朴素简约仍然成立：没有阴影、没有渐变、没有发光。要的是**结构**（外框、
  * 底色、文字位），不是装饰。
@@ -13,11 +15,13 @@
  * 2) 动画只动 opacity，交给 GPU 合成，避免这个常驻窗口烧 CPU。
  *
  * 几何必须和 Rust 的 config.rs 严格对齐：
- *   牌宽   = size × 7                  (sign_width)
- *   牌高   = size × 3/2（一行）        (sign_height(size, false))
- *          = size × 5/2（带消息两行）   (sign_height(size, true))
- *   牌间距 = size / 2                  (window_size 里的 gap)
- *   留白   = 10px 一侧                  (LAMP_MARGIN 总量 20)
+ *   牌宽     = size × 7                (sign_width)
+ *   牌高     = size × 3/2（一行）       (sign_height(size, false))
+ *            = size × 5/2（带消息两行）  (sign_height(size, true))
+ *   牌间距   = size / 2                (window_size 里的 gap)
+ *   折叠点径 = size                    (collapsed_window_size)
+ *   折叠点距 = size / 3
+ *   留白     = 10px 一侧                (LAMP_MARGIN 总量 20)
  * 任何一处改了都要同步改那边，否则窗口会裁掉最后一块牌、或者底下留一条缝。
  */
 
@@ -54,11 +58,18 @@ body,
   cursor: grabbing;
 }
 
+/* 折叠态：一组一颗点，横着排。间距和 vertical 模式一起对齐 config.rs */
+.lamp-root[data-collapsed="true"] {
+  flex-direction: row;
+  gap: calc(var(--size) / 3);
+}
+
 /* ---- 一块牌 -------------------------------------------------------------- */
 
 .sign {
-  /* 深色牌面，和图标同一套语言。半透明是为了在任何桌面上都不突兀。 */
-  --sign-bg: rgba(28, 28, 32, 0.86);
+  /* 深色牌面，和图标同一套语言。不透明度由用户调（外观页），默认 0.86 ——
+     够看清内容，又能透出一点桌面。 */
+  --sign-bg: rgba(28, 28, 32, var(--sign-alpha, 0.86));
   --sign-line: rgba(255, 255, 255, 0.14);
   --sign-fg: #ececef;
   --sign-muted: #9b9ba3;
@@ -81,7 +92,9 @@ body,
   overflow: hidden;
 }
 
-/* 有消息就多一行 —— 那块牌变高，正好是个「有东西可读」的提示 */
+/* 有消息就多一行 —— 那块牌变高，正好是个「有东西可读」的提示。
+   注意这个属性必须和 Rust 的 sign_heights 算出同一个真假值：用户把「消息」
+   那段关掉之后牌永远是单行，两边不一致就会裁掉最后一块牌。 */
 .sign[data-has-message="true"] {
   height: calc(var(--size) * 5 / 2);
 }
@@ -126,8 +139,11 @@ body,
   font-variant-numeric: tabular-nums;
 }
 
-/* ---- 牌里那颗灯 ---------------------------------------------------------- */
+/* ---- 灯珠 ---------------------------------------------------------------- */
 
+/* 牌里的点和折叠后的裸点是**同一个东西**，只是尺度不同：折叠态的 DOM 上同时挂着
+   `.dot`（拿到形状、动画、描边那一整套）和 `.lamp-dot`（把直径改成占满 size）。
+   这样六个状态的节奏规则只需写一遍 —— 分成两处迟早漏一处。 */
 .dot {
   --dot: calc(var(--size) * 0.55);
 
@@ -142,6 +158,12 @@ body,
   border: 1px solid var(--edge, var(--state));
   transition: background-color 180ms ease;
   will-change: opacity;
+}
+
+/* 折叠后点就是全部，所以它占满 size，而不是牌里的 0.55 倍。
+   规则放在 `.dot` 之后：两者特异性相同，靠源码顺序取胜。 */
+.lamp-dot {
+  --dot: var(--size);
 }
 
 /* 形状：全局设置。默认 circle 时 permission / error 会额外画成圆角方 ——
@@ -183,43 +205,48 @@ body,
 
 /* ---- 节奏 ---------------------------------------------------------------- */
 
+/* 时长都除以 --blink-speed（用户在外观页调的倍率，100 = 1）。用户调的是「节奏」，
+   倍率越大应该闪得越快 —— 所以是除而不是乘。
+   倍率由 Rust 夹在 0.5–2.0，除零不可能发生。 */
+
 /* 推理：快闪，读起来像「在转」 */
-.sign[data-state="thinking"] .dot {
-  animation: pulse 640ms ease-in-out infinite;
+.dot[data-state="thinking"] {
+  animation: pulse calc(640ms / var(--blink-speed, 1)) ease-in-out infinite;
 }
 
 /* 执行：慢闪 */
-.sign[data-state="working"] .dot {
-  animation: pulse 1600ms ease-in-out infinite;
+.dot[data-state="working"] {
+  animation: pulse calc(1600ms / var(--blink-speed, 1)) ease-in-out infinite;
 }
 
-/* 完成：常亮 + 一次入场脉冲 */
-.sign[data-state="done"] .dot {
+/* 完成：常亮 + 一次入场脉冲。这一下**不跟着节奏走** —— 它是一次性的「收到」，
+   调快调慢只会削弱它。 */
+.dot[data-state="done"] {
   animation: pop 380ms ease-out 1;
 }
 
-.sign[data-state="attention"] .dot {
-  animation: pulse 1000ms ease-in-out infinite;
+.dot[data-state="attention"] {
+  animation: pulse calc(1000ms / var(--blink-speed, 1)) ease-in-out infinite;
 }
 
 /* 需授权：红，平滑闪烁 */
-.sign[data-state="permission"] .dot {
-  animation: pulse 900ms ease-in-out infinite;
+.dot[data-state="permission"] {
+  animation: pulse calc(900ms / var(--blink-speed, 1)) ease-in-out infinite;
 }
 
 /* 出错：红 + steps() 硬切做频闪，一眼与 permission 的平滑闪烁区分开 */
-.sign[data-state="error"] .dot {
-  animation: pulse 340ms steps(2, end) infinite;
+.dot[data-state="error"] {
+  animation: pulse calc(340ms / var(--blink-speed, 1)) steps(2, end) infinite;
 }
 
 /* 三档「不在工作」都不闪，靠不透明度区分：
    stale 常亮（有会话，只是不说话了），offline / off 更淡。 */
-.sign[data-state="stale"] .dot {
+.dot[data-state="stale"] {
   opacity: 1;
 }
 
-.sign[data-state="offline"] .dot,
-.sign[data-state="off"] .dot {
+.dot[data-state="offline"],
+.dot[data-state="off"] {
   opacity: 0.45;
 }
 
@@ -229,15 +256,20 @@ body,
    从「一个常驻的牌子」变成「只在有事时存在的牌子」。
    done 也算「有事」—— 它是任务完成的确认，压暗就失去意义了。 */
 [data-quiet="true"][data-aggregate="idle"] .sign,
+[data-quiet="true"][data-aggregate="idle"] .lamp-dot,
 [data-quiet="true"][data-aggregate="stale"] .sign,
+[data-quiet="true"][data-aggregate="stale"] .lamp-dot,
 [data-quiet="true"][data-aggregate="offline"] .sign,
-[data-quiet="true"][data-aggregate="off"] .sign {
+[data-quiet="true"][data-aggregate="offline"] .lamp-dot,
+[data-quiet="true"][data-aggregate="off"] .sign,
+[data-quiet="true"][data-aggregate="off"] .lamp-dot {
   opacity: 0.15;
 }
 
 /* 悬停恢复，否则压暗之后找不到它来拖。规则放在压暗规则之后：两者特异性
-   相同，靠源码顺序决定胜负。 */
-.lamp-root:hover .sign {
+   相同（都是 3 个类/属性），靠源码顺序决定胜负。 */
+.lamp-root:hover .sign,
+.lamp-root:hover .lamp-dot {
   opacity: 1;
 }
 
@@ -268,123 +300,4 @@ body,
   .dot {
     animation: none !important;
   }
-}
-
-/* ---- 展开面板（点击牌子展开的会话列表）-------------------------------- */
-
-/* 几何必须和 Rust 的 config.rs 严格对齐：
-     高度 = PANEL_CHROME(56) + 行数 × PANEL_ROW(38)
-   56 = 上下内边距 10+10 + 头部 26 + 头部下间距 10。 */
-
-.lamp-panel-root {
-  padding: 0;
-  cursor: default;
-}
-
-.lamp-panel-root:active {
-  cursor: default;
-}
-
-.lamp-panel {
-  box-sizing: border-box;
-  width: 100%;
-  height: 100%;
-  padding: 10px 12px;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--bg);
-  color: var(--fg);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  font-size: 12px;
-  line-height: 1.35;
-}
-
-.lamp-panel-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 26px;
-  margin-bottom: 10px;
-}
-
-.lamp-panel-title {
-  font-weight: 600;
-}
-
-.lamp-panel-count {
-  margin-left: auto;
-  flex: none;
-  color: var(--muted);
-  font-size: 11.5px;
-}
-
-.lamp-head-dot,
-.lamp-row-dot {
-  width: 10px;
-  height: 10px;
-  flex: none;
-  border-radius: 50%;
-  background: var(--state);
-}
-
-/* 与牌上一致：需要你注意的两个状态用方角，不依赖颜色也能区分 */
-.lamp-panel-head[data-state="permission"] .lamp-head-dot,
-.lamp-panel-head[data-state="error"] .lamp-head-dot,
-.lamp-row[data-state="permission"] .lamp-row-dot,
-.lamp-row[data-state="error"] .lamp-row-dot {
-  border-radius: 28%;
-}
-
-.lamp-empty {
-  margin: 0;
-  color: var(--muted);
-}
-
-.lamp-rows {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.lamp-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  box-sizing: border-box;
-  height: 38px;
-  overflow: hidden;
-}
-
-.lamp-row-body {
-  flex: 1;
-  min-width: 0;
-}
-
-.lamp-row-line {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-
-.lamp-row-id {
-  overflow: hidden;
-  font-weight: 500;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.lamp-row-meta {
-  margin-left: auto;
-  flex: none;
-  color: var(--muted);
-  font-size: 11.5px;
-}
-
-.lamp-row-message {
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 11.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }

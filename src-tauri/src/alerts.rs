@@ -49,21 +49,55 @@ fn project_name(cwd: &str) -> String {
         .to_string()
 }
 
-/// 发一条通知。任何失败只记 stderr —— 通知发不出去不该影响状态机。
-pub fn send(app: &tauri::AppHandle, snapshot: &Snapshot) {
-    send_message(app, snapshot.aggregate.label(), &body(snapshot));
+/// 系统「默认提示音」的名字。**没有三平台通吃的写法**，只能逐平台取值：
+///
+/// - macOS 认这个哨兵串就播默认音效；换成别的名字，它会当成自定义音效去
+///   `/System/Library/Sounds` 里找同名文件，找不到就一声不吭。
+/// - Windows 的 toast 只认 `Default` / `IM` / `Mail` / `Reminder` / `SMS` /
+///   `Alarm*` 这几个内置标识，解析不了的串会被丢掉 —— 拿 macOS 那个哨兵喂它，
+///   结果就是静音。
+/// - Linux 走 XDG 的 `sound-name` 提示，而 dunst / GNOME 这些常见的通知守护进程
+///   压根不理会它。传个名字过去只会让人以为配好了，不如老实返回 `None`。
+#[cfg(target_os = "macos")]
+const DEFAULT_SOUND: Option<&str> = Some("NSUserNotificationDefaultSoundName");
+#[cfg(target_os = "windows")]
+const DEFAULT_SOUND: Option<&str> = Some("Default");
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+const DEFAULT_SOUND: Option<&str> = None;
+
+/// 把开关翻译成「挂在通知上的声音名」。抽出来是为了能在没有 AppHandle 的单测里
+/// 验证这个映射 —— `AppHandle` 在测试里根本造不出来。
+fn sound_name(sound: bool) -> Option<&'static str> {
+    if sound { DEFAULT_SOUND } else { None }
+}
+
+/// 发一条通知。`sound` 决定是否带系统提示音。任何失败只记 stderr ——
+/// 通知发不出去不该影响状态机。
+///
+/// 声音是挂在系统通知上的（`NotificationBuilder::sound`），所以它只有在通知本身
+/// 发得出去时才存在 —— 这正是 `Settings::sound` 与 `Settings::notify` 的耦合：
+/// 关掉通知，这里根本不会被调用，声音自然也一并没了。
+pub fn send(app: &tauri::AppHandle, snapshot: &Snapshot, sound: bool) {
+    show(app, snapshot.aggregate.label(), &body(snapshot), sound);
 }
 
 /// 发一条自定义文案的通知。状态通知之外的通告用它（例如「已进入穿透模式」）。
+/// 这类通告**不是**告警，固定静音。
 pub fn send_message(app: &tauri::AppHandle, title: &str, body: &str) {
-    let result = app
-        .notification()
-        .builder()
-        .title(title)
-        .body(body)
-        .show();
+    show(app, title, body, false);
+}
 
-    if let Err(err) = result {
+/// 通知的统一出口：标题 + 正文 + 可选的提示音，再 show。
+///
+/// 抽这一层是因为两条路径（告警 / 通告）走的是同一个 builder 链，只是声音不同，
+/// 把 `.title().body().show()` 抄两遍迟早会分叉。
+fn show(app: &tauri::AppHandle, title: &str, body: &str, sound: bool) {
+    let mut builder = app.notification().builder().title(title).body(body);
+    if let Some(name) = sound_name(sound) {
+        builder = builder.sound(name);
+    }
+
+    if let Err(err) = builder.show() {
         eprintln!("[signalhub] 发送通知失败: {err}");
     }
 }
@@ -195,5 +229,12 @@ mod tests {
         assert_eq!(project_name("/Users/me/proj/"), "proj");
         assert_eq!(project_name(r"C:\work\api"), "api");
         assert_eq!(project_name("proj"), "proj");
+    }
+
+    /// 开关到声音名的映射是唯一能在无 AppHandle 下单测的部分，所以单独钉住它。
+    #[test]
+    fn the_sound_flag_selects_the_default_sound() {
+        assert_eq!(sound_name(true), DEFAULT_SOUND, "开着就该带上本平台的默认音");
+        assert_eq!(sound_name(false), None, "关掉就不该带声音");
     }
 }

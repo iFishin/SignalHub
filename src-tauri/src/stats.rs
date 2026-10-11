@@ -5,8 +5,13 @@
 //! 就重置。这样不必引入时区依赖，也不用猜用户在哪一天。
 
 use crate::state::Signal;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+
+/// 时间线最多记住多少次状态变化。超过就丢最旧的 —— 常驻应用跑一周也不该
+/// 无限增长。
+const TIMELINE_CAPACITY: usize = 512;
 
 #[derive(Debug, Default)]
 pub struct Stats {
@@ -18,6 +23,20 @@ pub struct Stats {
     segment_start: Option<Instant>,
     /// 当前正在累计的状态
     current: Option<Signal>,
+    /// 最近的状态变化，按时间先后排列，供 `timeline` 画「近 N 分钟」的条带。
+    /// 只在状态**真的变了**时追加，所以相邻两项的状态必定不同。
+    timeline: Vec<(Instant, Signal)>,
+}
+
+/// 时间线上的一段：某个状态持续了多久。
+///
+/// 直接给时长而不是给时间戳：`Instant` 换成墙上时钟要处理时区和时钟回拨，
+/// 而前端只需要「这一段占多宽」。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct Segment {
+    pub state: Signal,
+    /// 这一段的时长（毫秒）
+    pub ms: u64,
 }
 
 impl Stats {
@@ -26,6 +45,15 @@ impl Stats {
         self.close_segment(now);
         self.current = Some(aggregate);
         self.segment_start = Some(now);
+
+        // 只在状态真的变了时记一笔 —— 同一个状态反复上报不该刷屏时间线
+        if self.timeline.last().map(|(_, s)| *s) != Some(aggregate) {
+            self.timeline.push((now, aggregate));
+            // 每次只多一个，所以最多丢一个；O(n) 的 remove(0) 在 512 的规模上无妨
+            if self.timeline.len() > TIMELINE_CAPACITY {
+                self.timeline.remove(0);
+            }
+        }
     }
 
     /// 取统计，按时长从多到少。
@@ -64,6 +92,57 @@ impl Stats {
             b.1.cmp(&a.1).then_with(|| b.0.priority().cmp(&a.0.priority()))
         });
         rows
+    }
+
+    /// 近 `window` 内的状态分段，**从旧到新**，覆盖 `[now - window, now]`。
+    ///
+    /// 最后一段是「现在还在持续的那一段」，会截到 `now`。第一个样本之前没有已知
+    /// 状态，所以时间线从 `max(now - window, 第一个样本的时刻)` 开始 —— 宁可短一点，
+    /// 也不假装知道应用启动前是什么状态。
+    pub fn timeline(&self, now: Instant, window: Duration) -> Vec<Segment> {
+        if self.timeline.is_empty() {
+            return Vec::new();
+        }
+
+        // 窗口左边界；减不动（早于 Instant 能表示的最早点）就不截窗口
+        let start = now.checked_sub(window).unwrap_or(now);
+        // 第一个样本之前状态未知，所以覆盖区间从两者中较晚的那个起算
+        let begin = start.max(self.timeline[0].0);
+        if begin >= now {
+            // 已知的状态都发生在 now 之后，这段时间里没什么可画的
+            return Vec::new();
+        }
+
+        // 先找出 begin 时刻生效的状态：最后一个不晚于 begin 的样本
+        let mut state = self.timeline[0].1;
+        let mut cursor = begin;
+        let mut segments: Vec<Segment> = Vec::new();
+
+        for &(at, next) in &self.timeline {
+            if at <= begin {
+                state = next;
+                continue;
+            }
+            if at >= now {
+                // 窗口右边界之外的变化不画；它属于「未来」
+                break;
+            }
+            // 上一段 [cursor, at) 到此为止，随后切换到 next
+            segments.push(Segment {
+                state,
+                ms: at.saturating_duration_since(cursor).as_millis() as u64,
+            });
+            state = next;
+            cursor = at;
+        }
+
+        // 收尾：当前状态从 cursor 一直持续到 now
+        segments.push(Segment {
+            state,
+            ms: now.saturating_duration_since(cursor).as_millis() as u64,
+        });
+
+        segments
     }
 
     fn close_segment(&mut self, now: Instant) {
@@ -169,5 +248,106 @@ mod tests {
 
         let rows = stats.report(t, "2026-10-11");
         assert!(rows.is_empty(), "零时长的状态不该出现在汇总里: {rows:?}");
+    }
+
+    /// 一个样本都没有时返回空 —— 别假装知道应用启动前是什么状态
+    #[test]
+    fn an_empty_timeline_has_no_segments() {
+        let stats = Stats::default();
+        let now = Instant::now();
+        assert!(stats.timeline(now, Duration::from_secs(1800)).is_empty());
+    }
+
+    /// 窗口内的转换按时间顺序各自成段，首尾相接，总长正好等于覆盖区间
+    #[test]
+    fn transitions_inside_the_window_become_contiguous_segments() {
+        let (mut stats, t) = (Stats::default(), Instant::now());
+        stats.record(t, Signal::Working);
+        stats.record(t + Duration::from_secs(10), Signal::Idle);
+        stats.record(t + Duration::from_secs(20), Signal::Error);
+
+        let segs = stats.timeline(t + Duration::from_secs(30), Duration::from_secs(30));
+        assert_eq!(
+            segs,
+            vec![
+                Segment { state: Signal::Working, ms: 10_000 },
+                Segment { state: Signal::Idle, ms: 10_000 },
+                Segment { state: Signal::Error, ms: 10_000 },
+            ]
+        );
+        assert_eq!(segs.last().unwrap().state, Signal::Error, "末段是最近记录的状态");
+        // 无缝隙、无重叠：各段之和等于覆盖区间
+        assert_eq!(segs.iter().map(|s| s.ms).sum::<u64>(), 30_000);
+    }
+
+    /// 比窗口还老的一段：整窗都是它，既不会被截成 0 也不会变成空
+    #[test]
+    fn a_state_older_than_the_window_fills_the_whole_window() {
+        let (mut stats, t) = (Stats::default(), Instant::now());
+        stats.record(t, Signal::Working);
+
+        let segs = stats.timeline(t + Duration::from_secs(600), Duration::from_secs(30));
+        assert_eq!(segs, vec![Segment { state: Signal::Working, ms: 30_000 }]);
+    }
+
+    /// 起点早于窗口边界的状态：第一段在边界处被截断，总长仍是整整一个窗口
+    #[test]
+    fn the_first_segment_is_truncated_at_the_window_boundary() {
+        let (mut stats, t) = (Stats::default(), Instant::now());
+        stats.record(t, Signal::Working); // 这一段开始于窗口之外
+        stats.record(t + Duration::from_secs(100), Signal::Idle);
+
+        // 窗口 [t+90, t+120]：Working 的后 10 秒 + Idle 的前 20 秒
+        let segs = stats.timeline(t + Duration::from_secs(120), Duration::from_secs(30));
+        assert_eq!(
+            segs,
+            vec![
+                Segment { state: Signal::Working, ms: 10_000 },
+                Segment { state: Signal::Idle, ms: 20_000 },
+            ]
+        );
+        assert_eq!(segs.iter().map(|s| s.ms).sum::<u64>(), 30_000);
+    }
+
+    /// 窗口把旧转换切掉时，接替它的那一段仍从边界开始，不留下空隙
+    #[test]
+    fn old_transitions_cut_off_by_the_window_leave_their_successor_at_the_boundary() {
+        let (mut stats, t) = (Stats::default(), Instant::now());
+        stats.record(t, Signal::Working);
+        stats.record(t + Duration::from_secs(10), Signal::Idle);
+        stats.record(t + Duration::from_secs(20), Signal::Error);
+
+        // 窗口 [t+15, t+30]：Working→Idle 的转换落在窗口外，Idle 从边界续上
+        let segs = stats.timeline(t + Duration::from_secs(30), Duration::from_secs(15));
+        assert_eq!(
+            segs,
+            vec![
+                Segment { state: Signal::Idle, ms: 5_000 },
+                Segment { state: Signal::Error, ms: 10_000 },
+            ]
+        );
+    }
+
+    /// 同一个状态反复上报只记一笔 —— 否则时间线会被无意义的重复刷满
+    #[test]
+    fn repeated_identical_states_add_only_one_sample() {
+        let (mut stats, t) = (Stats::default(), Instant::now());
+        for i in 0..10 {
+            stats.record(t + Duration::from_secs(i), Signal::Working);
+        }
+        assert_eq!(stats.timeline.len(), 1);
+    }
+
+    /// 时间线封顶：超出的最旧样本被丢掉，永远不超过容量，也不会 panic
+    #[test]
+    fn the_timeline_drops_the_oldest_entries_when_it_overflows() {
+        let (mut stats, t) = (Stats::default(), Instant::now());
+        // 两个状态交替，确保每一笔都真的被记下来
+        for i in 0..(TIMELINE_CAPACITY + 50) {
+            let state = if i % 2 == 0 { Signal::Working } else { Signal::Idle };
+            stats.record(t + Duration::from_secs(i as u64), state);
+        }
+        assert_eq!(stats.timeline.len(), TIMELINE_CAPACITY);
+        assert!(stats.timeline[0].0 > t, "最旧的样本应已被丢掉");
     }
 }

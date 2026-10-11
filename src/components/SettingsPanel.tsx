@@ -9,7 +9,9 @@ import {
   setPassThrough,
 } from "../lib/useToggles";
 import { useStats } from "../lib/useStats";
+import { useTimeline, type TimelineSegment } from "../lib/useTimeline";
 import { colorVars, resolveColors } from "../lib/palettes";
+import { PRESETS, isActivePreset } from "../lib/presets";
 import { SIGNALS, type Snapshot } from "../lib/types";
 
 /** 与 Rust 侧 config.rs 的 MIN_SIZE / MAX_SIZE / DEFAULT_SIZE 保持一致。 */
@@ -32,6 +34,17 @@ const PALETTES: { label: string; value: Palette }[] = [
   { label: "色盲友好", value: "colorblind" },
   { label: "高饱和", value: "vivid" },
 ];
+
+/** 牌上可以单独关掉的四段内容。顺序就是它们在牌上出现的顺序。 */
+const FIELDS: { key: keyof Settings["show"]; label: string }[] = [
+  { key: "name", label: "组名" },
+  { key: "state", label: "状态" },
+  { key: "age", label: "已持续" },
+  { key: "message", label: "消息" },
+];
+
+/** 与 Rust 侧 config.rs 的 MIN_BLINK_SPEED / MAX_BLINK_SPEED 一致。 */
+const BLINK_RANGE = { min: 50, max: 200 };
 
 type Tab = "status" | "look" | "colors" | "connect" | "hooks" | "system";
 
@@ -91,6 +104,40 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   );
 }
 
+/**
+ * 连续值的控件。
+ *
+ * 透明度和闪烁节奏都不适合分段按钮 —— 它们是有意义区间里的任意值，硬切成三档
+ * 会让用户觉得「差一点但调不过去」。旁边带一个读数，否则拖完不知道调到了几。
+ */
+function Slider({
+  value,
+  min,
+  max,
+  onChange,
+  format,
+}: {
+  value: number;
+  min: number;
+  max: number;
+  onChange: (value: number) => void;
+  format: (value: number) => string;
+}) {
+  return (
+    <div className="slider">
+      <input
+        type="range"
+        min={min}
+        max={max}
+        value={value}
+        // 拖动时连续触发也就连续保存 —— 和取色器同理：调外观必须能实时看到效果
+        onChange={(event) => onChange(Number(event.target.value))}
+      />
+      <span className="slider-value">{format(value)}</span>
+    </div>
+  );
+}
+
 /** 把秒数写成人看的时长：45s / 12m / 2h14m。 */
 function formatDuration(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
@@ -101,10 +148,45 @@ function formatDuration(seconds: number): string {
   return rest === 0 ? `${hours}h` : `${hours}h${rest}m`;
 }
 
+/**
+ * 近 30 分钟的状态条带。
+ *
+ * 每一段的**宽度就是它的时长** —— 一眼看出这半小时都在干什么，以及哪一段是不是
+ * 卡了很久。今日统计回答「一共多久」，这条回答「什么时候」，两个问题不一样。
+ */
+function TimelineStrip({ segments }: { segments: TimelineSegment[] }) {
+  if (segments.length === 0) return null;
+
+  return (
+    <div className="timeline">
+      <div className="timeline-bar">
+        {segments.map((segment, index) => (
+          <span
+            key={index}
+            className="timeline-seg"
+            data-state={segment.state}
+            // 时长决定宽度。极短的一段也留 1px —— 否则它会在视觉上消失，而
+            // 「只闪了一下」恰恰可能是要看的东西
+            style={{ flexGrow: Math.max(segment.ms, 1) }}
+            title={`${SIGNAL_LABEL[segment.state]} · ${formatDuration(
+              Math.round(segment.ms / 1000),
+            )}`}
+          />
+        ))}
+      </div>
+      <div className="timeline-axis">
+        <span>30 分钟前</span>
+        <span>现在</span>
+      </div>
+    </div>
+  );
+}
+
 export function SettingsPanel({ snapshot }: Props) {
   const settings = useSettings();
   const toggles = useToggles();
   const stats = useStats();
+  const timeline = useTimeline(snapshot.aggregate);
   const [tab, setTab] = useState<Tab>("status");
   const [endpoint, setEndpoint] = useState<Endpoint | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -127,6 +209,16 @@ export function SettingsPanel({ snapshot }: Props) {
     setError(null);
     updateSettings({ ...settings, ...next }).catch(reported);
   };
+
+  /** 单独改「牌上显示哪几段」里的一段。 */
+  const setField = (key: keyof Settings["show"], on: boolean) =>
+    patch({ show: { ...settings.show, [key]: on } });
+
+  /** 把某一组从「已隐藏」里放回来。 */
+  const unhide = (group: string) =>
+    patch({
+      hidden_groups: settings.hidden_groups.filter((name) => name !== group),
+    });
 
   // 钩子的文本输入用「草稿 + 失焦提交」：每敲一个字就存一次会把半截 URL
   // 写进配置（而且会被校验拒掉）。颜色不一样 —— 取色器要的就是即时反馈。
@@ -175,53 +267,119 @@ export function SettingsPanel({ snapshot }: Props) {
   const page = () => {
     switch (tab) {
       case "status":
-        return snapshot.groups.length === 0 ? (
-          <p className="empty">
-            暂无会话。接入智能体或调用上报接口后，这里会列出来。
-          </p>
-        ) : (
+        return (
           <>
-            {snapshot.groups.map((group) => (
-              <div className="group" key={group.name}>
-                <div className="group-head" data-state={group.aggregate}>
-                  <span className="state-dot" />
-                  <span className="group-name">{group.name}</span>
-                  <span className="group-meta">
-                    {SIGNAL_LABEL[group.aggregate]} · {group.sessions.length} 个会话
-                  </span>
-                </div>
-                <ul className="sessions">
-                  {group.sessions.map((session) => (
-                    <li
-                      key={session.id}
-                      className="session"
-                      data-state={session.state}
-                    >
-                      <span className="state-dot" />
-                      {/* 窄面板里挤成一行会把 id 压没，所以状态/来源单独放上行 */}
-                      <div className="session-body">
-                        <div className="session-line">
-                          <span className="id mono">{session.id}</span>
-                          <span className="meta">
-                            {SIGNAL_LABEL[session.state]}
-                            {session.agent ? ` · ${session.agent}` : ""}
-                          </span>
-                        </div>
-                        {session.message && (
-                          <div className="message">{session.message}</div>
-                        )}
-                      </div>
-                    </li>
-                  ))}
-                </ul>
+            <TimelineStrip segments={timeline} />
+
+            {settings.hidden_groups.length > 0 && (
+              <div className="row hidden-summary">
+                <span className="muted-text">
+                  灯上已隐藏 {settings.hidden_groups.length} 组（不影响通知和钩子）
+                </span>
+                <button
+                  type="button"
+                  className="btn btn-tiny"
+                  onClick={() => patch({ hidden_groups: [] })}
+                >
+                  全部显示
+                </button>
               </div>
-            ))}
+            )}
+
+            {snapshot.groups.length === 0 ? (
+              <p className="empty">
+                暂无会话。接入智能体或调用上报接口后，这里会列出来。
+              </p>
+            ) : (
+              snapshot.groups.map((group) => {
+                const hidden = settings.hidden_groups.includes(group.name);
+                return (
+                  <div className="group" key={group.name} data-hidden={hidden}>
+                    <div className="group-head" data-state={group.aggregate}>
+                      <span className="state-dot" />
+                      <span className="group-name">{group.name}</span>
+                      {hidden && <span className="group-hidden">已隐藏</span>}
+                      <span className="group-meta">
+                        {SIGNAL_LABEL[group.aggregate]} · {group.sessions.length} 个会话
+                      </span>
+                      {hidden && (
+                        <button
+                          type="button"
+                          className="btn btn-tiny"
+                          onClick={() => unhide(group.name)}
+                        >
+                          显示
+                        </button>
+                      )}
+                    </div>
+                    <ul className="sessions">
+                      {group.sessions.map((session) => (
+                        <li
+                          key={session.id}
+                          className="session"
+                          data-state={session.state}
+                        >
+                          <span className="state-dot" />
+                          {/* 窄面板里挤成一行会把 id 压没，所以状态/来源单独放上行 */}
+                          <div className="session-body">
+                            <div className="session-line">
+                              <span className="id mono">{session.id}</span>
+                              <span className="meta">
+                                {SIGNAL_LABEL[session.state]}
+                                {session.agent ? ` · ${session.agent}` : ""}
+                              </span>
+                            </div>
+                            {session.message && (
+                              <div className="message">{session.message}</div>
+                            )}
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                );
+              })
+            )}
           </>
         );
 
       case "look":
         return (
           <>
+            <Row label="预设">
+              <div className="chips chips-tight">
+                {PRESETS.map((preset) => (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    className="chip"
+                    title={preset.hint}
+                    data-active={isActivePreset(preset, settings)}
+                    onClick={() => patch(preset.apply)}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+            </Row>
+            <Row label="形态">
+              <div className="seg">
+                <button
+                  type="button"
+                  data-active={!settings.collapsed}
+                  onClick={() => patch({ collapsed: false })}
+                >
+                  展开牌面
+                </button>
+                <button
+                  type="button"
+                  data-active={settings.collapsed}
+                  onClick={() => patch({ collapsed: true })}
+                >
+                  一颗灯
+                </button>
+              </div>
+            </Row>
             <Row label="大小">
               <div className="seg">
                 {SIZES.map((size) => (
@@ -250,7 +408,57 @@ export function SettingsPanel({ snapshot }: Props) {
                 ))}
               </div>
             </Row>
-            <Row label="配色">
+            <Row label="背景透明度">
+              <Slider
+                value={settings.sign_opacity}
+                min={0}
+                max={100}
+                onChange={(sign_opacity) => patch({ sign_opacity })}
+                format={(value) => `${value}%`}
+              />
+            </Row>
+            <Row label="闪烁节奏">
+              <Slider
+                value={settings.blink_speed}
+                min={BLINK_RANGE.min}
+                max={BLINK_RANGE.max}
+                onChange={(blink_speed) => patch({ blink_speed })}
+                format={(value) => `${value}%`}
+              />
+            </Row>
+            <Row label="牌上显示">
+              <div className="chips chips-tight">
+                {FIELDS.map((field) => (
+                  <button
+                    key={field.key}
+                    type="button"
+                    className="chip"
+                    data-active={settings.show[field.key]}
+                    onClick={() => setField(field.key, !settings.show[field.key])}
+                  >
+                    {field.label}
+                  </button>
+                ))}
+              </div>
+            </Row>
+            <Row label="安静模式">
+              <Switch on={settings.quiet} onChange={(on) => patch({ quiet: on })} />
+            </Row>
+            <p className="hint">
+              形状只影响灯珠：改成圆角方或环会让 permission / error 的方角区分失效，
+              此时建议配合色盲友好配色。
+            </p>
+          </>
+        );
+
+      case "colors": {
+        const resolved = resolveColors(settings);
+        const overridden = Object.keys(settings.colors).length;
+        return (
+          <>
+            {/* 配色方案是「一套起点」，逐状态覆盖是「在这套起点上改哪几个」——
+                两件事放在同一页才看得出后者是在覆盖前者 */}
+            <Row label="配色方案">
               <div className="seg">
                 {PALETTES.map((palette) => (
                   <button
@@ -264,27 +472,6 @@ export function SettingsPanel({ snapshot }: Props) {
                 ))}
               </div>
             </Row>
-            <Row label="保持在最前">
-              <Switch
-                on={settings.always_on_top}
-                onChange={(on) => patch({ always_on_top: on })}
-              />
-            </Row>
-            <Row label="安静模式">
-              <Switch on={settings.quiet} onChange={(on) => patch({ quiet: on })} />
-            </Row>
-            <p className="hint">
-              形状只影响牌里那颗灯。改成圆角方或环会让 permission / error 的方角区分
-              失效，此时建议配合色盲友好配色。
-            </p>
-          </>
-        );
-
-      case "colors": {
-        const resolved = resolveColors(settings);
-        const overridden = Object.keys(settings.colors).length;
-        return (
-          <>
             <div className="colors">
               {SIGNALS.map((state) => (
                 <label key={state} className="color-row" data-state={state}>
@@ -319,7 +506,7 @@ export function SettingsPanel({ snapshot }: Props) {
               </button>
             </div>
             <p className="hint">
-              只覆盖你改过的状态，其余仍用「外观」页选的配色。描边和细环会跟着
+              只覆盖你改过的状态，其余仍用上面那套配色方案。描边和细环会跟着
               填充色自动派生，不用单独调。
             </p>
           </>
@@ -335,8 +522,12 @@ export function SettingsPanel({ snapshot }: Props) {
             <Row label="需要时弹通知">
               <Switch on={settings.notify} onChange={(on) => patch({ notify: on })} />
             </Row>
+            <Row label="通知带提示音">
+              <Switch on={settings.sound} onChange={(on) => patch({ sound: on })} />
+            </Row>
             <p className="hint">
-              需要授权、需要关注或出错时弹一条系统通知。
+              需要授权、需要关注或出错时弹一条系统通知。声音挂在通知上，所以关掉
+              通知也就没有声音。
             </p>
 
             {/* 转发搬到了「钩子」页（多条、可过滤、支持命令），这里只留入口 */}
@@ -468,6 +659,12 @@ export function SettingsPanel({ snapshot }: Props) {
       case "system":
         return (
           <>
+            <Row label="保持在最前">
+              <Switch
+                on={settings.always_on_top}
+                onChange={(on) => patch({ always_on_top: on })}
+              />
+            </Row>
             <Row label="开机自启">
               <Switch
                 on={toggles.autostart}

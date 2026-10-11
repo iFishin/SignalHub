@@ -1,11 +1,11 @@
-import { useRef, useState } from "react";
+import { useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { inTauri } from "../lib/env";
 import { SIGNAL_LABEL } from "../lib/signals";
 import { colorVars } from "../lib/palettes";
 import type { Settings } from "../lib/useSettings";
-import type { GroupView, SessionView, SignalState } from "../lib/types";
+import type { GroupView, SignalState } from "../lib/types";
 
 /** 与 Rust 侧 `config::MAX_SIGNS` 一致。超出的牌服务端已经截断。 */
 const MAX_SIGNS = 4;
@@ -17,17 +17,9 @@ interface Props {
   groups: GroupView[];
   /**
    * 整份设置都传进来，而不是拆成一堆 prop。
-   * 外观（大小 / 形状 / 安静）和配色都要用，拆开传只会越来越长。
+   * 外观（大小 / 形态 / 形状 / 安静 / 透明度 / 节奏）和配色都要用，拆开传只会越来越长。
    */
   settings: Settings;
-}
-
-/** 取路径最后一段作为项目名，比整条路径更适合做提示。 */
-function projectName(session: SessionView): string {
-  if (!session.cwd) return session.id;
-  // 两种分隔符都认，这样 Windows 上写的路径在别处也解析得对
-  const parts = session.cwd.split(/[\\/]/).filter(Boolean);
-  return parts.length > 0 ? parts[parts.length - 1] : session.id;
 }
 
 /** 「已持续多久」。牌上那一段短文本，所以只给一个单位、不写秒。 */
@@ -44,10 +36,12 @@ function formatAge(sinceMs: number): string {
 function tooltip(aggregate: SignalState, groups: GroupView[]): string {
   if (groups.length === 0) return SIGNAL_LABEL[aggregate];
 
+  const hint = "左键折叠 / 展开 · 右键单组菜单";
   if (groups.length === 1) {
     const only = groups[0];
     const head = `${only.name} · ${SIGNAL_LABEL[only.aggregate]}`;
-    return only.message ? `${head} — ${only.message}` : head;
+    const detail = only.message ? ` — ${only.message}` : "";
+    return `${head}${detail}\n${hint}`;
   }
 
   // 多组时把「哪个组在什么状态」列出来 —— 这是多块牌想回答的问题
@@ -57,6 +51,7 @@ function tooltip(aggregate: SignalState, groups: GroupView[]): string {
       const detail = group.message ? ` — ${group.message}` : "";
       return `${group.name} · ${SIGNAL_LABEL[group.aggregate]}${detail}`;
     }),
+    hint,
   ].join("\n");
 }
 
@@ -64,8 +59,10 @@ function tooltip(aggregate: SignalState, groups: GroupView[]): string {
  * 同一个元素上既要能拖窗口、又要能响应点击。
  *
  * 不能用 `data-tauri-drag-region`：它让系统在 mousedown 时接管鼠标，之后的
- * click 事件就不可靠了 —— 于是「点一下展开」会时灵时不灵。改成自己判断：
+ * click 事件就不可靠了 —— 于是「点一下折叠」会时灵时不灵。改成自己判断：
  * 按下后位移超过阈值才算拖拽（此时才把拖拽交给系统），否则算点击。
+ *
+ * 只认主键，所以右键原地就能弹菜单，不会顺带被当成一次点击。
  */
 function useDragOrClick(onClick: () => void) {
   const origin = useRef<{ x: number; y: number } | null>(null);
@@ -98,116 +95,101 @@ function useDragOrClick(onClick: () => void) {
   };
 }
 
+/**
+ * 弹某一组的右键菜单。菜单本身是原生的，见 Rust 侧的 `menu.rs`。
+ *
+ * 无论有没有组名都要 `preventDefault` —— 否则占位那块牌上会冒出 webview 自己的
+ * 右键菜单（dev 模式下是「重新加载」那种），和这个应用格格不入。
+ */
+function openGroupMenu(event: React.MouseEvent, group: string) {
+  event.preventDefault();
+  event.stopPropagation();
+  // 占位那块牌的名字是空的，它不对应任何真实的组 —— 弹出来只会藏掉一个叫 ""
+  // 的组，什么也不会发生，不如干脆不弹
+  if (!group || !inTauri) return;
+  invoke("open_group_menu", { group }).catch(console.error);
+}
+
 export function SignalLamp({ aggregate, groups, settings }: Props) {
-  const { size, quiet, shape } = settings;
-  const [expanded, setExpanded] = useState(false);
+  const { size, quiet, shape, collapsed, show, sign_opacity, blink_speed, hidden_groups } =
+    settings;
 
   const toggle = () => {
-    const next = !expanded;
-    setExpanded(next);
-    // 窗口尺寸由 Rust 算（它才知道可见牌的高度和设置），前端只负责「点了一下」
-    if (inTauri) {
-      invoke("set_lamp_expanded", { expanded: next }).catch(console.error);
-    }
+    if (!inTauri) return;
+    // 窗口尺寸由 Rust 算（它才知道可见牌的高度和设置），前端只负责「点了一下」。
+    // 形态存在设置里，所以下次启动还是用户上次选的那个。
+    invoke("toggle_collapsed").catch(console.error);
   };
 
   const drag = useDragOrClick(toggle);
 
   // 服务端已按优先级排好并截断，这里**不要再排** —— 窗口高度按「哪几块可见」算，
-  // 两边必须算出同一批牌
-  const signs = groups.slice(0, MAX_SIGNS);
-  const shown: GroupView[] =
-    signs.length > 0
-      ? signs
-      : [
-          {
-            name: SIGNAL_LABEL[aggregate],
-            aggregate,
-            message: null,
-            since_ms: 0,
-            sessions: [],
-          },
-        ];
+  // 两边必须算出同一批牌。隐藏掉的和截断规则两边也要一致（见 Rust 侧 visible_groups）。
+  const visible = groups
+    .filter((group) => !hidden_groups.includes(group.name))
+    .slice(0, MAX_SIGNS);
 
-  if (expanded) {
-    const sessions = groups.flatMap((group) => group.sessions);
-    const rows = sessions.length > 0 ? sessions : [];
-    return (
-      <div
-        className="lamp-root lamp-panel-root"
-        style={colorVars(settings)}
-        data-quiet="false"
-        title="点击收起"
-        onClick={toggle}
-      >
-        <div className="lamp-panel">
-          <div className="lamp-panel-head" data-state={aggregate}>
-            <span className="lamp-head-dot" />
-            <span className="lamp-panel-title">{SIGNAL_LABEL[aggregate]}</span>
-            <span className="lamp-panel-count">
-              {groups.length} 组 · {sessions.length} 个会话
-            </span>
-          </div>
-          {rows.length === 0 ? (
-            <p className="lamp-empty">暂无会话。</p>
-          ) : (
-            <ul className="lamp-rows">
-              {rows.map((session) => (
-                <li
-                  key={session.id}
-                  className="lamp-row"
-                  data-state={session.state}
-                >
-                  <span className="lamp-row-dot" />
-                  <div className="lamp-row-body">
-                    <div className="lamp-row-line">
-                      <span className="lamp-row-id">{projectName(session)}</span>
-                      <span className="lamp-row-meta">
-                        {SIGNAL_LABEL[session.state]}
-                        {session.agent ? ` · ${session.agent}` : ""}
-                      </span>
-                    </div>
-                    {session.message && (
-                      <div className="lamp-row-message">{session.message}</div>
-                    )}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </div>
-    );
-  }
+  // 一组都看不见时也留一块，否则窗口会塌成一条缝 —— 那样既看不见状态，也没法拖它。
+  // 名字留空：它不对应任何一个真实的组，右键菜单对它没有意义。
+  const shown: GroupView[] =
+    visible.length > 0
+      ? visible
+      : [{ name: "", aggregate, message: null, since_ms: 0, sessions: [] }];
 
   return (
     <div
       className="lamp-root"
-      style={{ "--size": `${size}px`, ...colorVars(settings) } as React.CSSProperties}
+      style={
+        {
+          "--size": `${size}px`,
+          "--sign-alpha": String(sign_opacity / 100),
+          "--blink-speed": String(blink_speed / 100),
+          ...colorVars(settings),
+        } as React.CSSProperties
+      }
       data-aggregate={aggregate}
       data-quiet={quiet}
       data-shape={shape}
+      data-collapsed={collapsed}
       title={tooltip(aggregate, groups)}
+      // 空白处（牌之间、留白）也要吃掉右键，否则会冒出 webview 自己的菜单
+      onContextMenu={(event) => event.preventDefault()}
       {...drag}
     >
-      {shown.map((group, index) => (
-        <div
-          key={group.name || index}
-          className="sign"
-          data-state={group.aggregate}
-          data-has-message={group.message ? "true" : "false"}
-        >
-          <span className="dot" />
-          <div className="sign-body">
-            <div className="sign-line">
-              <span className="sign-name">{group.name}</span>
-              <span className="sign-state">{SIGNAL_LABEL[group.aggregate]}</span>
+      {shown.map((group, index) =>
+        collapsed ? (
+          <span
+            // 折叠后只有点，没有可读的文字，所以 key 用下标；组名可能为空（占位那块）
+            key={index}
+            className="dot lamp-dot"
+            data-state={group.aggregate}
+            onContextMenu={(event) => openGroupMenu(event, group.name)}
+          />
+        ) : (
+          <div
+            key={group.name || index}
+            className="sign"
+            data-has-message={show.message && group.message ? "true" : "false"}
+            onContextMenu={(event) => openGroupMenu(event, group.name)}
+          >
+            <span className="dot" data-state={group.aggregate} />
+            <div className="sign-body">
+              <div className="sign-line">
+                {show.name && group.name && (
+                  <span className="sign-name">{group.name}</span>
+                )}
+                {show.state && (
+                  <span className="sign-state">{SIGNAL_LABEL[group.aggregate]}</span>
+                )}
+              </div>
+              {show.message && group.message && (
+                <div className="sign-message">{group.message}</div>
+              )}
             </div>
-            {group.message && <div className="sign-message">{group.message}</div>}
+            {show.age && <span className="sign-age">{formatAge(group.since_ms)}</span>}
           </div>
-          <span className="sign-age">{formatAge(group.since_ms)}</span>
-        </div>
-      ))}
+        ),
+      )}
     </div>
   );
 }

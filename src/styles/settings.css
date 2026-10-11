@@ -4,7 +4,7 @@
  * 同样走朴素简约路线：没有阴影、没有渐变、控件扁平。
  * 分隔靠 1px 细线，视觉层次靠字号与灰度，不靠立体感。
  *
- * 调色板变量在 theme.css（灯球的展开面板也用同一份）。
+ * 调色板变量在 theme.css。
  */
 
 /* 设置窗不是透明窗口，得自己铺底色。
@@ -100,10 +100,11 @@ html[data-window="settings"] #root {
 }
 
 /* 内容区固定高度：窗口尺寸因此恒定，切页签不会跳。
-   高度取「最高那一页」—— 接入页和外观页都在 320 上下。这样四个页签都不必
-   滚动，窗口也只有 480px 高。超出仍会在这一块里滚，而不是让整个窗口变高。 */
+   高度取「最高那一页」—— 外观页有八个控件，是最高的那一页。这样六个页签
+   都不必滚动，窗口也只有 540px 高。超出仍会在这一块里滚（状态页的组多了就会），
+   而不是让整个窗口变高。 */
 .page {
-  height: 312px;
+  height: 372px;
   padding-top: 14px;
   overflow-y: auto;
 }
@@ -444,6 +445,111 @@ html[data-window="settings"] #root {
   border-color: var(--accent);
   background: var(--accent);
   color: #fff;
+}
+
+/* 挤在一行里的 chips（预设、牌上显示哪几段）。
+   默认那份是给钩子页的过滤条件用的，会折成两三行并留出下边距；这里两种都不想要。 */
+.chips-tight {
+  flex-wrap: nowrap;
+  margin-bottom: 0;
+}
+
+/* ---- 滑杆（背景透明度 / 闪烁节奏） ---- */
+
+.slider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  width: 168px;
+}
+
+/* 去掉原生外观，自己画轨道和滑块 —— 默认样式是立体带高光的，
+   和这个面板的扁平风不搭 */
+.slider input[type="range"] {
+  flex: 1;
+  height: 12px;
+  margin: 0;
+  background: transparent;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+}
+
+.slider input[type="range"]::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--line);
+}
+
+.slider input[type="range"]::-webkit-slider-thumb {
+  width: 11px;
+  height: 11px;
+  /* 让滑块居中在 3px 的轨道上：(11 - 3) / 2，取负 */
+  margin-top: -4px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--fg);
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* 读数。等宽数字，免得拖动时右边那几个数字来回抖 */
+.slider-value {
+  flex: none;
+  width: 34px;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* ---- 状态页：近 30 分钟时间线 ---- */
+
+.timeline {
+  margin-bottom: 14px;
+}
+
+.timeline-bar {
+  display: flex;
+  height: 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+/* 宽度由 flexGrow 按时长分配（见 TimelineStrip），这里只定最低可见度 */
+.timeline-seg {
+  flex-basis: 0;
+  min-width: 1px;
+  background: var(--state, var(--muted));
+}
+
+.timeline-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+/* 已隐藏的组：把会话列表压暗，一眼看出它在灯上不占位置。
+   组名那一行**不**压暗 —— 那行里有「显示」按钮，压暗了会被当成禁用，
+   而它恰恰是这个状态下的主要操作。 */
+.group[data-hidden="true"] .sessions {
+  opacity: 0.5;
+}
+
+.group-hidden {
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--hover);
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.hidden-summary {
+  margin-bottom: 12px;
 }
 
 /* ---- 状态页：按组列出会话 ---- */
