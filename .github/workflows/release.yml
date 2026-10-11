@@ -8,8 +8,10 @@ name: Release
 # Release 里。
 #
 # 现在**没有签名**（见 README 的「安装」一节）。macOS 上第一次打开会被 Gatekeeper
-# 拦，Windows 上会被 SmartScreen 拦一道 —— 绕法写在 releaseBody 里，用户看得到。
-# 以后拿到证书，在这里补 codesign / notarytool / signtool 三步即可，其余不用动。
+# 拦，Windows 上会被 SmartScreen 拦一道 —— 绕法写在 `.github/release-body.md` 里，
+# 那份说明会被塞进发布页，用户看得到。
+# 以后拿到证书，在下面 `tauri-action` 那一步前面补 codesign / notarytool / signtool
+# 三步即可，其余不用动。
 
 on:
   push:
@@ -17,9 +19,65 @@ on:
   workflow_dispatch:
 
 jobs:
-  release:
-    # 建 Release、传产物都要写权限。仓库设置里 Actions 的 Workflow permissions
-    # 也得是 read and write，否则会报 "Resource not accessible by integration"。
+  # 先把发布建出来，**只跑一次**。
+  #
+  # 这一步单独拆出来是有原因的：三个构建 job 并行跑，每个都会去「没有就建一个」。
+  # 两个 job 若几乎同时构建完，就会双双建出草稿 —— 于是同一个 tag 下出现两份发布、
+  # 各挂一半产物（tauri-action 上游 #914 至今未修）。`retryAttempts` 救不了这个，
+  # 因为那种情形压根不报错，只是多建了一个。把「创建」挪到矩阵外面，竞争就不存在。
+  #
+  # 版本号从 `tauri.conf.json` 读，和 tauri-action 替换 `__VERSION__` 用的是同一个
+  # 来源 —— 两边算出不同的 tag 会建出一个没人往里传产物的空发布。
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.create.outputs.result }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/github-script@v9
+        id: create
+        with:
+          script: |
+            const fs = require('fs');
+            const conf = JSON.parse(
+              fs.readFileSync('src-tauri/tauri.conf.json', 'utf8'),
+            );
+            const tag = `v${conf.version}`;
+
+            // 幂等：这个 tag 已经有发布就复用（重跑 workflow 走这条）。
+            // listReleases 对有权写入的人是**包含草稿**的，所以草稿也认得出来。
+            const { data: releases } = await github.rest.repos.listReleases({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100,
+            });
+            const existing = releases.find((r) => r.tag_name === tag);
+            if (existing) {
+              core.info(`复用已有的发布 ${tag}（id ${existing.id}）`);
+              return existing.id;
+            }
+
+            const body = fs.readFileSync('.github/release-body.md', 'utf8');
+            const { data: created } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tag,
+              name: `SignalHub ${tag}`,
+              body,
+              // **草稿**：未签名的包先自己装一遍看看再公开。想打完就发布，改成 false。
+              draft: true,
+              prerelease: false,
+            });
+            core.info(`新建了发布 ${tag}（id ${created.id}）`);
+            return created.id;
+
+  build:
+    needs: create-release
+    # 建 Release、传产物都要写权限。仓库设置里 Actions 的 Workflow permissions 默认是
+    # read，job 级的这一段会覆盖它 —— 不加就报 "Resource not accessible by integration"。
     permissions:
       contents: write
 
@@ -57,53 +115,17 @@ jobs:
 
       - run: npm ci
 
-      # `args` 里那个 `--target` 会传给 tauri build，于是 `beforeBuildCommand`
-      # 跑 `scripts/stage-cli.mjs` 时能拿到同一个目标三元组，把 CLI 编译成**这份包
-      # 对应架构**的 sidecar 放进 `src-tauri/binaries/`。sidecar 必须在打包前就
-      # 在那儿 —— Tauri 只负责把它塞进包里，不会替你编译。
+      # 只传 `releaseId`，**不传 `tagName`**：给了 releaseId 之后 tauri-action 会跳过
+      # 「查找或创建发布」那一步，直接往这个 id 上传产物 —— 这正是上面那个 job 存在的
+      # 意义。（两个都给的话，tagName 会被忽略，但少写一个少一处误解。）
+      #
+      # `args` 里那个 `--target` 会传给 tauri build，于是 `beforeBuildCommand` 跑
+      # `scripts/stage-cli.mjs` 时能拿到同一个目标三元组，把 CLI 编译成**这份包对应
+      # 架构**的 sidecar 放进 `src-tauri/binaries/`。sidecar 必须在打包前就在那儿
+      # —— Tauri 只负责把它塞进包里，不会替你编译。
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: v__VERSION__
-          releaseName: "SignalHub v__VERSION__"
-          # **草稿**：未签名的包先自己装一遍看看再公开。想打完就发布，改成 false。
-          releaseDraft: true
-          prerelease: false
+          releaseId: ${{ needs.create-release.outputs.release_id }}
           args: --target ${{ matrix.target }}
-          releaseBody: |
-            ### 安装
-
-            **macOS** —— 下载 `.dmg`，把 SignalHub 拖进「应用程序」。
-            Apple Silicon 选 `aarch64` 那个，Intel 选 `x64`。
-
-            这一版**没有签名**，所以第一次打开会被 Gatekeeper 拦住。**推荐**在终端里跑：
-
-            ```
-            xattr -dr com.apple.quarantine /Applications/SignalHub.app
-            ```
-
-            它递归清掉整个包的隔离标记 —— 应用和打包在里面的 `signalhub` 命令都
-            覆盖到。（右键点图标 →「打开」→ 再点一次也可以，只是不保证覆盖到里面
-            那个命令。）
-
-            **Windows** —— 下载 `-setup.exe`（NSIS 安装器）或 `.msi`。
-
-            这一版**没有签名**，SmartScreen 会拦一道：点「更多信息」→「仍要运行」。
-
-            ### 命令行
-
-            `signalhub` 这个命令**已经打包在应用里了**，不用另外装 —— 设置里的
-            「接入」页一键接入时会自动用它。想在终端里直接用，把它加到 PATH：
-
-            macOS：
-
-            ```
-            ln -s /Applications/SignalHub.app/Contents/MacOS/signalhub /usr/local/bin/signalhub
-            ```
-
-            Windows（管理员 PowerShell，路径按实际安装位置改）：
-
-            ```
-            New-Item -ItemType SymbolicLink -Path "$env:LOCALAPPDATA\Microsoft\WindowsApps\signalhub.exe" -Target "C:\Program Files\SignalHub\signalhub.exe"
-            ```
