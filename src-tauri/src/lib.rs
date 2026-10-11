@@ -168,37 +168,6 @@ fn get_stats(stats: tauri::State<'_, SharedStats>, today: String) -> Vec<StatRow
         .collect()
 }
 
-/// 把设置窗调整到内容需要的高度。
-///
-/// 高度由**前端量出来**传进来：内容高度是 CSS 的事，Rust 这边算不出来。
-/// 上限取屏幕可用高度（留出菜单栏和边距），超出就让面板内部滚动 —— 否则
-/// 在 13 寸笔记本上窗口会顶到屏幕外。
-///
-/// 这么做是为了去掉「每加一行设置都要手工量一次高度」的反复劳动：之前
-/// 620 → 640 → 760 → 820 就是这么一路量上来的，而且每次都可能量漏。
-#[tauri::command]
-fn fit_settings_window(app: tauri::AppHandle, height: u32) -> Result<(), String> {
-    let Some(window) = app.get_webview_window("settings") else {
-        return Ok(());
-    };
-
-    let available = window
-        .current_monitor()
-        .ok()
-        .flatten()
-        .map(|monitor| {
-            // monitor.size() 是物理像素，除以缩放比才是逻辑像素
-            let logical = monitor.size().height as f64 / monitor.scale_factor();
-            (logical as u32).saturating_sub(120)
-        })
-        .unwrap_or(800);
-
-    let height = height.clamp(240, available.max(240));
-    window
-        .set_size(LogicalSize::new(420, height))
-        .map_err(|err| format!("调整设置窗高度失败: {err}"))
-}
-
 /// 展开 / 收起会话列表面板。
 ///
 /// 由前端点击触发，但**尺寸仍由 Rust 算** —— 它取决于会话数和设置，而这两样
@@ -467,7 +436,6 @@ pub fn run() {
             set_settings,
             get_endpoint,
             open_settings,
-            fit_settings_window,
             set_lamp_expanded,
             get_toggles,
             set_autostart,

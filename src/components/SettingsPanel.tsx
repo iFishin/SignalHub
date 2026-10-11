@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { inTauri } from "../lib/env";
 import { SIGNAL_LABEL } from "../lib/signals";
@@ -16,6 +16,15 @@ const SIZES = [
   { label: "小", value: 16 },
   { label: "中", value: 22 },
   { label: "大", value: 32 },
+];
+
+type Tab = "status" | "look" | "connect" | "system";
+
+const TABS: { id: Tab; label: string }[] = [
+  { id: "status", label: "状态" },
+  { id: "look", label: "外观" },
+  { id: "connect", label: "接入" },
+  { id: "system", label: "系统" },
 ];
 
 interface Endpoint {
@@ -65,22 +74,9 @@ export function SettingsPanel({ snapshot }: Props) {
   const settings = useSettings();
   const toggles = useToggles();
   const stats = useStats();
+  const [tab, setTab] = useState<Tab>("status");
   const [endpoint, setEndpoint] = useState<Endpoint | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const panel = useRef<HTMLDivElement>(null);
-  const sentHeight = useRef(0);
-
-  // 让窗口跟着内容长。`.settings` 是 height:100vh + overflow-y:auto，
-  // 所以它的 scrollHeight 就是内容高度、与窗口高度无关 —— 不会来回振荡。
-  // 只在高度真的变了才调 IPC：状态推送一秒可能好几次，每次都调太浪费。
-  useLayoutEffect(() => {
-    if (!inTauri) return;
-    const height = panel.current?.scrollHeight;
-    if (height && height !== sentHeight.current) {
-      sentHeight.current = height;
-      invoke("fit_settings_window", { height }).catch(console.error);
-    }
-  });
 
   useEffect(() => {
     if (!inTauri) return;
@@ -119,108 +115,12 @@ export function SettingsPanel({ snapshot }: Props) {
       `-H 'Content-Type: application/json' -d '{"state":"working"}'`
     : null;
 
-  return (
-    <div className="settings" ref={panel}>
-      <h1 data-state={snapshot.aggregate}>
-        <span className="state-dot" />
-        {SIGNAL_LABEL[snapshot.aggregate]}
-      </h1>
-      <p className="headline-message">
-        {snapshot.paused
-          ? "监控已暂停：灯球显示熄灭，但会话仍在记录"
-          : (snapshot.message ?? `${snapshot.sessions.length} 个会话`)}
-      </p>
-
-      {stats.length > 0 && (
-        <p className="stats">
-          今日{" "}
-          {stats
-            .map((row) => `${row.label} ${formatDuration(row.seconds)}`)
-            .join(" · ")}
-        </p>
-      )}
-
-      <div className="section">
-        <div className="section-title">灯球</div>
-        <Row label="大小">
-          <div className="seg">
-            {SIZES.map((size) => (
-              <button
-                key={size.value}
-                type="button"
-                data-active={settings.size === size.value}
-                onClick={() => patch({ size: size.value })}
-              >
-                {size.label}
-              </button>
-            ))}
-          </div>
-        </Row>
-        <Row label="保持在最前">
-          <Switch
-            on={settings.always_on_top}
-            onChange={(on) => patch({ always_on_top: on })}
-          />
-        </Row>
-        <Row label="安静模式">
-          <Switch on={settings.quiet} onChange={(on) => patch({ quiet: on })} />
-        </Row>
-        <p className="hint">空闲或沉默时圆点几乎透明，悬停恢复。</p>
-      </div>
-
-      <div className="section">
-        <div className="section-title">监控</div>
-        <Row label="暂停监控">
-          <Switch on={snapshot.paused} onChange={setPaused} />
-        </Row>
-        <Row label="需要时弹通知">
-          <Switch on={settings.notify} onChange={(on) => patch({ notify: on })} />
-        </Row>
-        <p className="hint">需要授权、需要关注或出错时弹一条系统通知。</p>
-
-        {/* 转发地址只在失焦或回车时提交 —— 每敲一个字就存盘和发 IPC 太浪费，
-            而且中间态（还没敲完的 URL）会被校验拒绝。 */}
-        <div className="field">
-          <label htmlFor="webhook">转发到</label>
-          <input
-            id="webhook"
-            className="input"
-            type="url"
-            spellCheck={false}
-            placeholder="https://ntfy.sh/my-topic"
-            value={webhookDraft ?? settings.webhook_url ?? ""}
-            onChange={(event) => setWebhookDraft(event.target.value)}
-            onBlur={commitWebhook}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") event.currentTarget.blur();
-            }}
-          />
-        </div>
-        <p className="hint">
-          填了就把需要注意的状态 POST 到该地址（ntfy / Slack / 自建接口都行），
-          与系统通知同一个触发时机。留空则不转发。
-        </p>
-      </div>
-
-      <div className="section">
-        <div className="section-title">接入</div>
-        <div className="kv">
-          <span className="k">端口</span>
-          <span className="mono">{endpoint?.port ?? "—"}</span>
-        </div>
-        <div className="kv">
-          <span className="k">Token</span>
-          <span className="mono">
-            {endpoint?.token_preview ? `${endpoint.token_preview}…` : "—"}
-          </span>
-        </div>
-        {curlExample && <div className="hint mono">{curlExample}</div>}
-      </div>
-
-      <div className="section">
-        <div className="section-title">会话</div>
-        {snapshot.sessions.length === 0 ? (
-          <p className="empty" style={{ margin: 0 }}>
+  // 每个页签的内容。写成函数而不是子组件，是为了免去把十几个 prop 一路传下去。
+  const page = () => {
+    switch (tab) {
+      case "status":
+        return snapshot.sessions.length === 0 ? (
+          <p className="empty">
             暂无会话。接入智能体或调用上报接口后，这里会列出来。
           </p>
         ) : (
@@ -244,38 +144,168 @@ export function SettingsPanel({ snapshot }: Props) {
               </li>
             ))}
           </ul>
+        );
+
+      case "look":
+        return (
+          <>
+            <Row label="大小">
+              <div className="seg">
+                {SIZES.map((size) => (
+                  <button
+                    key={size.value}
+                    type="button"
+                    data-active={settings.size === size.value}
+                    onClick={() => patch({ size: size.value })}
+                  >
+                    {size.label}
+                  </button>
+                ))}
+              </div>
+            </Row>
+            <Row label="保持在最前">
+              <Switch
+                on={settings.always_on_top}
+                onChange={(on) => patch({ always_on_top: on })}
+              />
+            </Row>
+            <Row label="安静模式">
+              <Switch on={settings.quiet} onChange={(on) => patch({ quiet: on })} />
+            </Row>
+            <p className="hint">空闲或沉默时圆点几乎透明，悬停恢复。</p>
+          </>
+        );
+
+      case "connect":
+        return (
+          <>
+            <Row label="暂停监控">
+              <Switch on={snapshot.paused} onChange={setPaused} />
+            </Row>
+            <Row label="需要时弹通知">
+              <Switch on={settings.notify} onChange={(on) => patch({ notify: on })} />
+            </Row>
+            <p className="hint">
+              需要授权、需要关注或出错时弹一条系统通知。
+            </p>
+
+            {/* 转发地址只在失焦或回车时提交 —— 每敲一个字就存盘和发 IPC 太浪费，
+                而且中间态（还没敲完的 URL）会被校验拒绝。 */}
+            <div className="field">
+              <label htmlFor="webhook">转发到</label>
+              <input
+                id="webhook"
+                className="input"
+                type="url"
+                spellCheck={false}
+                placeholder="https://ntfy.sh/my-topic"
+                value={webhookDraft ?? settings.webhook_url ?? ""}
+                onChange={(event) => setWebhookDraft(event.target.value)}
+                onBlur={commitWebhook}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") event.currentTarget.blur();
+                }}
+              />
+            </div>
+            <p className="hint">
+              填了就把需要注意的状态 POST 到该地址，与系统通知同一个触发时机。
+              留空则不转发。
+            </p>
+
+            <div className="kv">
+              <span className="k">端口</span>
+              <span className="mono">{endpoint?.port ?? "—"}</span>
+            </div>
+            <div className="kv">
+              <span className="k">Token</span>
+              <span className="mono">
+                {endpoint?.token_preview ? `${endpoint.token_preview}…` : "—"}
+              </span>
+            </div>
+            {curlExample && <div className="hint mono">{curlExample}</div>}
+          </>
+        );
+
+      case "system":
+        return (
+          <>
+            <Row label="开机自启">
+              <Switch
+                on={toggles.autostart}
+                onChange={(on) => {
+                  setError(null);
+                  setAutostart(on).catch(reported);
+                }}
+              />
+            </Row>
+            <Row label="点击穿透">
+              <Switch
+                on={toggles.pass_through}
+                onChange={(on) => {
+                  setError(null);
+                  setPassThrough(on).catch(reported);
+                }}
+              />
+            </Row>
+            <p className="hint">
+              穿透后圆点不再响应鼠标，按{" "}
+              {toggles.pass_through_shortcut || "快捷键"} 或从托盘菜单退出。
+              该模式不会保留到下次启动。
+            </p>
+          </>
+        );
+    }
+  };
+
+  return (
+    <div className="settings">
+      <h1 data-state={snapshot.aggregate}>
+        <span className="state-dot" />
+        {SIGNAL_LABEL[snapshot.aggregate]}
+        {snapshot.sessions.length > 0 && (
+          <span className="headline-count">{snapshot.sessions.length} 个会话</span>
         )}
+      </h1>
+      {/* 没有提示文本时整段不渲染 —— 否则会白占一行高度 */}
+      {(snapshot.paused || snapshot.message) && (
+        <p className="headline-message">
+          {snapshot.paused
+            ? "监控已暂停：灯球显示熄灭，但会话仍在记录"
+            : snapshot.message}
+        </p>
+      )}
+
+      {stats.length > 0 && (
+        <p className="stats">
+          今日{" "}
+          {stats
+            .map((row) => `${row.label} ${formatDuration(row.seconds)}`)
+            .join(" · ")}
+        </p>
+      )}
+
+      <div className="tabs" role="tablist">
+        {TABS.map((entry) => (
+          <button
+            key={entry.id}
+            type="button"
+            role="tab"
+            className="tab"
+            data-active={tab === entry.id}
+            aria-selected={tab === entry.id}
+            onClick={() => setTab(entry.id)}
+          >
+            {entry.label}
+          </button>
+        ))}
       </div>
+
+      {/* 固定高度 + 内部滚动：窗口尺寸因此恒定，切页签不会跳 */}
+      <div className="page">{page()}</div>
 
       {error && <p className="error">{error}</p>}
 
-      <div className="section">
-        <div className="section-title">系统</div>
-        <Row label="开机自启">
-          <Switch
-            on={toggles.autostart}
-            onChange={(on) => {
-              setError(null);
-              setAutostart(on).catch(reported);
-            }}
-          />
-        </Row>
-        <Row label="点击穿透">
-          <Switch
-            on={toggles.pass_through}
-            onChange={(on) => {
-              setError(null);
-              setPassThrough(on).catch(reported);
-            }}
-          />
-        </Row>
-        <p className="hint">
-          穿透后圆点不再响应鼠标，按 {toggles.pass_through_shortcut || "快捷键"}
-          或从托盘菜单退出。该模式不会保留到下次启动。
-        </p>
-      </div>
-
-      <div className="section">
+      <div className="footer">
         <button
           type="button"
           className="btn danger"
