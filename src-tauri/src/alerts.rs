@@ -7,10 +7,11 @@
 //! 只有最外面那层 `send` 碰 `AppHandle`（测试里造不出来）。
 
 use crate::config::Settings;
-use crate::state::{Signal, Snapshot};
+use crate::state::{SessionView, Signal, Snapshot};
 use std::sync::Mutex;
 use std::time::Duration;
-use tauri_plugin_notification::NotificationExt;
+use tauri::Manager;
+use tauri_plugin_notification::{Action, ActionType, NotificationExt};
 
 /// 决定「要不要弹通知」的聚合：**静音掉的组不参与**。
 ///
@@ -47,13 +48,7 @@ fn is_muted(name: &str, muted: &[String]) -> bool {
 /// 只在**没被静音**的组里找优先级最高的那个会话 —— 否则静音组的消息还是会
 /// 出现在正文里，用户看到的就是一条「明明静音了却还在吵我」的通知。
 fn body(snapshot: &Snapshot, muted: &[String]) -> String {
-    let Some(session) = snapshot
-        .groups
-        .iter()
-        .filter(|group| !is_muted(&group.name, muted))
-        .flat_map(|group| group.sessions.iter())
-        .max_by_key(|session| session.state.priority())
-    else {
+    let Some((_, session)) = alerting_session(snapshot, muted) else {
         return String::new();
     };
 
@@ -64,6 +59,27 @@ fn body(snapshot: &Snapshot, muted: &[String]) -> String {
         (true, Some(message)) => message.to_string(),
         (true, None) => String::new(),
     }
+}
+
+/// 决定这条通知的那个会话：**排除静音组之后**优先级最高的那个，连同它所在的组名。
+///
+/// 标题、正文、动作按钮的目标都跟着它，所以只能算一次 —— 三处各算一遍的话，
+/// 一旦算得不一致，就会出现「标题说的是 A 组、按钮却作用到 B 组」的通知。
+fn alerting_session<'a>(
+    snapshot: &'a Snapshot,
+    muted: &[String],
+) -> Option<(&'a str, &'a SessionView)> {
+    snapshot
+        .groups
+        .iter()
+        .filter(|group| !is_muted(&group.name, muted))
+        .flat_map(|group| {
+            group
+                .sessions
+                .iter()
+                .map(move |session| (group.name.as_str(), session))
+        })
+        .max_by_key(|(_, session)| session.state.priority())
 }
 
 /// 取路径最后一段。两种分隔符都认，免得 Windows 上写的路径在别处解析错。
@@ -209,6 +225,61 @@ fn sound_name(sound: bool) -> Option<&'static str> {
     if sound { DEFAULT_SOUND } else { None }
 }
 
+/// 通知上那组动作按钮的类型 id。
+///
+/// 系统要求先把按钮注册成一个「类型」，通知再按 id 引用它 —— 这是 macOS 的
+/// `UNNotificationCategory` 那一套，插件在三个桌面上都抹平了。
+const ACTION_TYPE_ID: &str = "signalhub.alert";
+
+/// 「打开项目目录」。**放第一个是刻意的**：macOS 上按钮收在「选项」菜单里，
+/// 而点「选项」本身会上报第一个动作，所以第一个必须是点了也无害的那个。
+const ACTION_REVEAL: &str = "reveal";
+
+/// 「静音该组」
+const ACTION_MUTE: &str = "mute";
+
+/// 最近一条告警通知说的是哪一组、哪个目录。
+///
+/// 按钮是**用户点的时候**才回调的，而那时状态可能早就变了：从当前快照重新算
+/// 「优先级最高的会话」会指向另一个会话，用户点的按钮就作用到了别处。所以在发
+/// 通知的那一刻把目标记下来。
+///
+/// 只记最后一条就够：告警本身有节流（同一个 episode 只弹一次），同时存在两条
+/// 待处理的通知实际上不会发生。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AlertTarget {
+    /// 决定这条通知的那个会话所在的项目目录。「打开项目目录」用它。
+    pub cwd: Option<String>,
+    /// 它所属的组。「静音该组」用它。
+    pub group: String,
+}
+
+#[derive(Default)]
+pub struct LastAlert(Mutex<Option<AlertTarget>>);
+
+impl LastAlert {
+    fn set(&self, target: AlertTarget) {
+        *self.0.lock().expect("alert target poisoned") = Some(target);
+    }
+
+    fn get(&self) -> Option<AlertTarget> {
+        self.0.lock().expect("alert target poisoned").clone()
+    }
+}
+
+/// 这条通知说的会话是谁。
+fn target_for(snapshot: &Snapshot, muted: &[String]) -> AlertTarget {
+    match alerting_session(snapshot, muted) {
+        Some((group, session)) => AlertTarget {
+            cwd: session.cwd.clone(),
+            group: group.to_string(),
+        },
+        // 没有会话时不该走到这里（没会话的聚合是 Offline，不是紧急状态），
+        // 但真走到了就留一个空目标：按钮点下去什么也不做，比作用到别处强。
+        None => AlertTarget::default(),
+    }
+}
+
 /// 发一条通知。`sound` 决定是否带系统提示音。任何失败只记 stderr ——
 /// 通知发不出去不该影响状态机。
 ///
@@ -220,27 +291,152 @@ pub fn send(app: &tauri::AppHandle, snapshot: &Snapshot, sound: bool, muted: &[S
     // 一个被静音的组里时，标题会写着那一组的状态，而正文却是另一组的会话 ——
     // 一条自己跟自己不一致的通知。
     let title = alerting_aggregate(snapshot, muted).label();
-    show(app, title, &body(snapshot, muted), sound);
+    // 记下这条通知说的是谁：按钮回调时状态可能已经变了，见 AlertTarget 的说明
+    app.state::<LastAlert>().set(target_for(snapshot, muted));
+    show(
+        app,
+        title,
+        &body(snapshot, muted),
+        sound,
+        Some(ACTION_TYPE_ID),
+    );
 }
 
 /// 发一条自定义文案的通知。状态通知之外的通告用它（例如「已进入穿透模式」）。
-/// 这类通告**不是**告警，固定静音。
+/// 这类通告**不是**告警，固定静音，也没有动作按钮。
 pub fn send_message(app: &tauri::AppHandle, title: &str, body: &str) {
-    show(app, title, body, false);
+    show(app, title, body, false, None);
 }
 
-/// 通知的统一出口：标题 + 正文 + 可选的提示音，再 show。
+/// 通知的统一出口：标题 + 正文 + 可选的提示音和动作类型，再 show。
 ///
-/// 抽这一层是因为两条路径（告警 / 通告）走的是同一个 builder 链，只是声音不同，
-/// 把 `.title().body().show()` 抄两遍迟早会分叉。
-fn show(app: &tauri::AppHandle, title: &str, body: &str, sound: bool) {
+/// 抽这一层是因为两条路径（告警 / 通告）走的是同一个 builder 链，只是声音和
+/// 按钮不同，把 `.title().body().show()` 抄两遍迟早会分叉。
+fn show(
+    app: &tauri::AppHandle,
+    title: &str,
+    body: &str,
+    sound: bool,
+    action_type: Option<&str>,
+) {
     let mut builder = app.notification().builder().title(title).body(body);
     if let Some(name) = sound_name(sound) {
         builder = builder.sound(name);
     }
+    if let Some(action_type) = action_type {
+        builder = builder.action_type_id(action_type);
+    }
 
     if let Err(err) = builder.show() {
         eprintln!("[signalhub] 发送通知失败: {err}");
+    }
+}
+
+/// 注册通知上的动作按钮，以及它们被点之后怎么处理。
+///
+/// **两件事必须一起做**：插件在「没有注册处理函数」时会干脆不显示按钮（否则点
+/// 下去没人接）。绑在一个函数里，就不会只做一半 —— 只注册类型不加处理函数的
+/// 表现是「按钮从来没见过」，而且不报错。
+///
+/// 代价：一旦挂上处理函数，插件对**所有**通知都会起一条线程等用户交互（它要靠
+/// 这个才知道用户点了什么）。告警本身有节流（一个 episode 只弹一次），所以挂着
+/// 的线程最多就是「今天弹过几条通知」那么多，不值得为它绕路。
+pub fn wire_actions(app: &tauri::AppHandle) {
+    let notification = app.notification();
+
+    let actions = vec![
+        Action::builder(ACTION_REVEAL, "打开项目目录").build(),
+        Action::builder(ACTION_MUTE, "静音该组").build(),
+    ];
+    let action_type = ActionType::builder(ACTION_TYPE_ID).actions(actions).build();
+
+    if let Err(err) = notification.register_action_types(vec![action_type]) {
+        eprintln!("[signalhub] 注册通知动作类型失败: {err}");
+        return;
+    }
+
+    let handle = app.clone();
+    if let Err(err) = notification.on_action(move |performed| {
+        let Some(target) = handle.state::<LastAlert>().get() else {
+            return;
+        };
+        match performed.action_id() {
+            // 点通知本体等同于「打开项目目录」—— 「知道了，我去看看」是最自然的
+            // 那件事，而什么都不做会让人觉得点了没反应
+            "tap" | ACTION_REVEAL => reveal(&target),
+            ACTION_MUTE => mute(&handle, &target),
+            _ => {}
+        }
+    }) {
+        eprintln!("[signalhub] 注册通知动作处理函数失败: {err}");
+    }
+}
+
+/// 在文件管理器里打开那个项目目录。
+///
+/// 走系统自带的命令而不是引一个「打开文件管理器」的 crate：三个平台各一条命令，
+/// 为这一件事多一个依赖不划算。
+///
+/// **路径作为独立的 argv 传，绝不过 shell** —— 它来自智能体上报的 `cwd`，是不可信
+/// 输入，拼进 `sh -c` 就是一个命令注入。（`outbound.rs` 的钩子走 shell 是因为那里
+/// 用户就是要写管道和重定向，这里没有那个需求。）
+fn reveal(target: &AlertTarget) {
+    let Some(cwd) = target.cwd.as_deref() else {
+        return;
+    };
+    // 目录可能已经没了（项目被删、移动盘没挂上）。那就不动 —— 弹一个「找不到」
+    // 的报错框比什么都不做更烦人。
+    if !std::path::Path::new(cwd).is_dir() {
+        return;
+    }
+    if let Err(err) = open_directory(cwd) {
+        eprintln!("[signalhub] 打开项目目录失败: {err}");
+    }
+}
+
+/// 在 Finder 里**选中**那个目录，而不是打开它：用户要的是「它在哪」，
+/// 弹一个新窗口反而挡事。
+#[cfg(target_os = "macos")]
+fn open_directory(path: &str) -> std::io::Result<()> {
+    let mut command = std::process::Command::new("open");
+    command.args(["-R", path]);
+    spawn_detached(command)
+}
+
+/// explorer 的选择语法很怪：`/select,<路径>` 必须当成**一个**参数传。
+#[cfg(target_os = "windows")]
+fn open_directory(path: &str) -> std::io::Result<()> {
+    let mut command = std::process::Command::new("explorer");
+    command.arg(format!("/select,{path}"));
+    spawn_detached(command)
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn open_directory(path: &str) -> std::io::Result<()> {
+    let mut command = std::process::Command::new("xdg-open");
+    command.arg(path);
+    spawn_detached(command)
+}
+
+/// 起一个进程，然后在一条后台线程上回收它。
+///
+/// 直接 `spawn()` 不管的话，子进程退出后会变成僵尸留在进程表里 —— 这是个常驻
+/// 应用，攒起来是要出问题的。这里不需要它的结果，所以只回收、不阻塞。
+fn spawn_detached(mut command: std::process::Command) -> std::io::Result<()> {
+    let mut child = command.spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
+/// 从通知里静音那一组。
+fn mute(app: &tauri::AppHandle, target: &AlertTarget) {
+    if target.group.is_empty() {
+        return;
+    }
+    if let Err(err) = crate::set_group_muted(app, &target.group, true) {
+        eprintln!("[signalhub] 从通知里静音该组失败: {err}");
     }
 }
 
@@ -387,6 +583,56 @@ mod tests {
             "ci · 要授权",
             "静音掉的组不该出现在正文里"
         );
+    }
+
+    // ---- 动作按钮的目标 -------------------------------------------------------
+
+    /// 按钮的目标必须和正文说的是**同一个**会话 —— 否则会出现「正文说 ci 要授权，
+    /// 点『静音该组』却静音了 work」这种自相矛盾的通知
+    #[test]
+    fn the_action_target_matches_the_session_the_body_names() {
+        let snapshot = snapshot_of(vec![
+            group(
+                "work",
+                Signal::Error,
+                vec![session("a", Signal::Error, Some("/srv/work"), Some("炸了"))],
+            ),
+            group(
+                "ci",
+                Signal::Permission,
+                vec![session("b", Signal::Permission, Some("/srv/ci"), Some("要授权"))],
+            ),
+        ]);
+
+        assert_eq!(
+            target_for(&snapshot, &[]),
+            AlertTarget { cwd: Some("/srv/work".into()), group: "work".into() }
+        );
+        assert_eq!(
+            target_for(&snapshot, &["work".into()]),
+            AlertTarget { cwd: Some("/srv/ci".into()), group: "ci".into() },
+            "静音掉最高的那一组后，目标要跟着落到剩下的那一路"
+        );
+    }
+
+    /// 没有会话时不该 panic，也不该指向任何真实的组 —— 按钮点下去什么也不做
+    #[test]
+    fn a_snapshot_with_no_sessions_yields_an_empty_target() {
+        assert_eq!(target_for(&snapshot_of(vec![]), &[]), AlertTarget::default());
+    }
+
+    /// 会话没有 cwd 时只记组名：「打开项目目录」会自己什么都不做（见 reveal）
+    #[test]
+    fn a_session_without_a_directory_still_gives_a_group() {
+        let snapshot = snapshot_of(vec![group(
+            "ci",
+            Signal::Error,
+            vec![session("a", Signal::Error, None, Some("炸了"))],
+        )]);
+
+        let target = target_for(&snapshot, &[]);
+        assert_eq!(target.cwd, None);
+        assert_eq!(target.group, "ci", "静音该组仍然要能用");
     }
 
     // ---- 勿扰 ---------------------------------------------------------------

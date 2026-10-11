@@ -329,6 +329,28 @@ fn toggle_collapsed(app: tauri::AppHandle) -> Result<Settings, String> {
     set_collapsed(&app, collapsed)
 }
 
+/// 静音 / 取消静音某一组。
+///
+/// 两条路径都走它：灯上右键菜单、通知上的「静音该组」按钮。和 `set_collapsed`
+/// 一样 —— 同一件事有两条入口时，各写一遍行为迟早分叉。
+pub(crate) fn set_group_muted(
+    app: &tauri::AppHandle,
+    group: &str,
+    muted: bool,
+) -> Result<Settings, String> {
+    let settings = current_settings(app);
+    let mut muted_groups = settings.muted_groups.clone();
+    if muted {
+        if !muted_groups.iter().any(|name| name == group) {
+            muted_groups.push(group.to_string());
+        }
+    } else {
+        muted_groups.retain(|name| name != group);
+    }
+
+    persist_settings(app, Settings { muted_groups, ..settings })
+}
+
 /// 时间线的窗口长度。近半小时够看出「刚才卡了多久」，又不至于挤成一条线。
 const TIMELINE_WINDOW: Duration = Duration::from_secs(30 * 60);
 
@@ -550,6 +572,8 @@ pub fn run() {
         .manage(SharedStats::default())
         .manage(SharedPalette::default())
         .manage(alerts::LocalHour::default())
+        // 最近一条告警通知说的是谁 —— 动作按钮回调时要用，见 alerts::LastAlert
+        .manage(alerts::LastAlert::default())
         // 右键菜单只记「刚点的是哪一组」，见 menu.rs
         .manage(menu::Target::default())
         .invoke_handler(tauri::generate_handler![
@@ -602,6 +626,9 @@ pub fn run() {
             app.manage(notify.clone());
 
             alerts::ensure_permission(app.handle(), &settings);
+            // 通知上的动作按钮（打开项目目录 / 静音该组）。注册类型和挂处理函数
+            // 必须一起做，只做一半的表现是「按钮从来没见过」且不报错。
+            alerts::wire_actions(app.handle());
 
             // 全局快捷键是点击穿透唯一的键盘出路，所以先把它注册成功 ——
             // 注册失败只记日志（不阻断启动），但用户从托盘菜单仍能退出穿透。

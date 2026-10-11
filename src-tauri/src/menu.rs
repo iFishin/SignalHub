@@ -102,7 +102,9 @@ pub fn handle(app: &AppHandle, id: &str) -> bool {
                 .muted_groups
                 .iter()
                 .any(|name| name == &group);
-            set_muted(app, &group, !muted)
+            // 通知上的「静音该组」按钮走的是同一个函数 —— 两条入口各写一遍
+            // 行为迟早分叉
+            crate::set_group_muted(app, &group, !muted).map(|_| ())
         }
         CLEAR => {
             clear_group(app, &group);
@@ -136,25 +138,6 @@ fn hide_group(app: &AppHandle, group: &str) -> Result<(), String> {
         crate::config::Settings { hidden_groups, ..settings },
     )
     .map(|_| ())
-}
-
-/// 静音 / 取消静音某一组。
-///
-/// 静音**只影响通知和提示音**：灯上照常显示，聚合、钩子和 `/v1/state` 都不变。
-/// 想让它从灯上消失用「隐藏该组」——两者是两件事，面板上也是分开的两栏。
-fn set_muted(app: &AppHandle, group: &str, muted: bool) -> Result<(), String> {
-    let settings = crate::current_settings(app);
-    let mut muted_groups = settings.muted_groups.clone();
-    if muted {
-        if !muted_groups.iter().any(|name| name == group) {
-            muted_groups.push(group.to_string());
-        }
-    } else {
-        muted_groups.retain(|name| name != group);
-    }
-
-    crate::persist_settings(app, crate::config::Settings { muted_groups, ..settings })
-        .map(|_| ())
 }
 
 /// 清掉某一组的全部会话。
