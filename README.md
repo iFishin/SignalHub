@@ -98,13 +98,15 @@ signalhub watch --until done --timeout 10m        # CI 里等某个状态
 ## 接入智能体
 
 ```bash
-signalhub install hooks claude-code      # 也支持 codex / cursor
+signalhub install hooks claude-code      # 也支持 codex / cursor / gemini / goose
 signalhub install hooks claude-code --dry-run   # 先看看会改什么
 ```
 
 它会往智能体的配置文件里写 hook（Claude Code 是 `~/.claude/settings.json`）。**只动 `hooks` 这一个键**，其余内容原样保留，写之前自动备份到 `*.signalhub-backup`；重复执行不会产生重复条目，命令变了会原地更新；配置不是合法 JSON 时会直接中止、绝不覆盖。卸载用 `signalhub uninstall hooks claude-code`。
 
-装完重启智能体即可生效。之后提问 → 绿快闪、调工具 → 绿慢闪、需要授权 → 红闪、答完亮一下再回常亮。
+**Goose 是个例外**：它走插件机制，所以装的是我们自己的一个目录（`~/.agents/plugins/signalhub/`），不碰你的任何共享配置 —— 卸载时整份删掉。其余几家才是在共享配置里插一条。
+
+装完重启智能体即可生效。之后提问 → 绿快闪、调工具 → 绿慢闪、需要授权 → 红闪、答完亮一下再回常亮。各家的差异（哪家没有「需要授权」事件、哪家的字段名不一样）见 [docs/api.md §4](docs/api.md)。
 
 建议先把 CLI 放进 PATH，这样写进配置的是可移植的裸名字而不是绝对路径：
 
@@ -127,6 +129,6 @@ $user = [Environment]::GetEnvironmentVariable('Path', 'User')
 
 ## 进度
 
-已完成：悬浮灯球、状态聚合与 TTL、HTTP 上报接口、CLI（含 `watch`）、设置面板、hook 自动接线（Claude Code / Codex / Cursor）、系统通知与提示音、通知动作按钮、窗口位置记忆、展开 / 折叠两种形态、每组右键菜单、今日时长统计与近 30 分钟时间线、出站钩子转发、每个状态的颜色 / 形状 / 节奏可单独调、按组静音、勿扰时段、持续多久才提醒、托盘图标跟随状态、单实例、开机自启、全局快捷键、点击穿透。
+已完成：悬浮灯球、状态聚合与 TTL、HTTP 上报接口、CLI（含 `watch`）、设置面板、hook 自动接线（Claude Code / Codex / Cursor / Gemini CLI / Goose）、系统通知与提示音、通知动作按钮、窗口位置记忆、展开 / 折叠两种形态、每组右键菜单、今日时长统计与近 30 分钟时间线、出站钩子转发、每个状态的颜色 / 形状 / 节奏可单独调、按组静音、勿扰时段、持续多久才提醒、托盘图标跟随状态、单实例、开机自启、全局快捷键、点击穿透。
 
 待做：把 CLI 作为 sidecar 打进 app bundle（分发才需要）。

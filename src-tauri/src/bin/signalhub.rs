@@ -642,6 +642,20 @@ fn uninstall_hooks(agent: &str, flags: &Flags) -> Result<(), Failure> {
 
 /// hook 路径上**不允许**出现任何 `println!`。见文件头的约束 1。
 fn hook(agent: &str, flags: &Flags) -> Result<(), Failure> {
+    // **约束 1 的唯一例外，而且是有理由的。** Gemini 明确要求 hook 的 stdout 是
+    // 纯 JSON（"must not print any plain text to stdout other than the final
+    // JSON"），而 exit 0 时它会把 stdout 当 JSON 解析；空 stdout 算不算合法 JSON
+    // 它没写清楚。打一个空对象在两种解读下都安全：合法的 JSON，且不含任何
+    // decision / continue 字段 —— 等于「没有意见」，不改变它的任何行为。
+    //
+    // 放在最前面是为了覆盖所有出口（包括下面「stdin 不是合法 JSON」那条提前
+    // return 的路径）。stdout 是进程结束后才被读的，先打后打都一样。
+    //
+    // 其余几家都明确接受空 stdout，所以不加。
+    if agent == "gemini" {
+        println!("{{}}");
+    }
+
     let mut input = String::new();
     std::io::stdin()
         .read_to_string(&mut input)
@@ -655,7 +669,7 @@ fn hook(agent: &str, flags: &Flags) -> Result<(), Failure> {
         }
     };
 
-    let event = payload["hook_event_name"].as_str().unwrap_or("?").to_string();
+    let event = event_name(&payload).unwrap_or("?").to_string();
     let session = session_id(&payload).unwrap_or_else(|| agent.to_string());
 
     let Some(action) = map_event(agent, &payload) else {
@@ -743,13 +757,60 @@ enum Action {
 }
 
 fn map_event(agent: &str, payload: &Value) -> Option<Action> {
-    let event = payload["hook_event_name"].as_str()?;
+    let event = event_name(payload)?;
     match agent {
         "claude-code" => map_claude(event, payload),
         "codex" => map_codex(event),
         "cursor" => map_cursor(event, payload),
+        "gemini" => map_gemini(event),
+        "goose" => map_goose(event),
         _ => None,
     }
+}
+
+/// payload 里「事件叫什么」的字段名。
+///
+/// 只有 **Goose 用 `event`**，其余几家都是 `hook_event_name`。这里按顺序试，
+/// 而不是按 agent 分支：字段名是 payload 的属性，不是 agent 的属性，多试一个
+/// 不会有副作用（同一个 payload 里不会两个都有且冲突）。
+fn event_name(payload: &Value) -> Option<&str> {
+    ["hook_event_name", "event"]
+        .iter()
+        .find_map(|key| payload[*key].as_str())
+}
+
+/// Gemini CLI（docs/hooks/reference.md）。PascalCase，语义与 Claude Code 那一族一致。
+///
+/// **它没有「需要授权」事件** —— 权限点是靠 hook 的返回值决定的，而上报型 hook
+/// 不返回值。所以红色只能靠 `Notification` 兜：那个事件的确切触发条件官方参考
+/// 里没写，这里按「通知 = 有事要你看一眼」映射成 `attention`（最轻的那一档）。
+/// 映射错了的表现是多几盏黄灯，不会漏掉真正的异常。
+fn map_gemini(event: &str) -> Option<Action> {
+    Some(match event {
+        "SessionStart" => Action::Report("idle"),
+        "BeforeAgent" | "PreCompress" => Action::Report("thinking"),
+        "BeforeTool" | "AfterTool" => Action::Report("working"),
+        "AfterAgent" => Action::Report("done"),
+        "Notification" => Action::Report("attention"),
+        "SessionEnd" => Action::Clear,
+        _ => return None,
+    })
+}
+
+/// Goose 的插件 hook。事件名与 Claude Code 同构。
+///
+/// 同样**没有 `PermissionRequest`**：Goose 的授权也是靠 PreToolUse 的返回值
+/// （`decision: "block"`）实现的，上报型 hook 不返回值。
+fn map_goose(event: &str) -> Option<Action> {
+    Some(match event {
+        "SessionStart" => Action::Report("idle"),
+        "UserPromptSubmit" => Action::Report("thinking"),
+        "PreToolUse" | "PostToolUse" => Action::Report("working"),
+        "PostToolUseFailure" => Action::Report("attention"),
+        "Stop" => Action::Report("done"),
+        "SessionEnd" => Action::Clear,
+        _ => return None,
+    })
 }
 
 /// 映射表见 docs/api.md §4.2，含**明确忽略**的事件清单 ——
@@ -832,9 +893,13 @@ fn session_id(payload: &Value) -> Option<String> {
 }
 
 /// Claude Code / Codex 用 `cwd`；Cursor 给的是 `workspace_roots` 数组。
+/// 各家 payload 里「当前工作目录」的字段名不同，做宽容匹配：
+/// Claude Code / Codex / Gemini / Cursor 用 `cwd`，**Goose 用 `working_dir`**，
+/// Cursor 的项目级配置用 `workspace_roots` 数组。
 fn cwd_of(payload: &Value) -> Option<String> {
     payload["cwd"]
         .as_str()
+        .or_else(|| payload["working_dir"].as_str())
         .or_else(|| payload["workspace_roots"].as_array()?.first()?.as_str())
         .map(str::to_string)
 }
@@ -881,10 +946,12 @@ signalhub {version} —— 桌面悬浮状态灯的上报客户端
   1  参数错误或服务端返回错误
   3  SignalHub 没有在运行
 
-智能体: claude-code codex cursor
+智能体: {agents}
   install hooks 会改动它们的配置文件，写之前自动备份，且只动 hooks 这一个键。
+  （Goose 例外：它是插件，装的是自己的目录，不碰你的共享配置。）
 ",
-        version = env!("CARGO_PKG_VERSION")
+        version = env!("CARGO_PKG_VERSION"),
+        agents = hooks::ALL_NAMES.join(" ")
     )
 }
 
@@ -900,6 +967,76 @@ mod tests {
         match map_event(agent, payload)? {
             Action::Report(state) => Some(state),
             Action::Clear => None,
+        }
+    }
+
+    /// 和 `state_of` 的区别：把「清除会话」也表达出来，而不是和「不认识这个事件」
+    /// 一样返回 None。要断言 SessionEnd 的映射就得用这个。
+    fn action_of(agent: &str, payload: &Value) -> Option<&'static str> {
+        match map_event(agent, payload)? {
+            Action::Report(state) => Some(state),
+            Action::Clear => Some("clear"),
+        }
+    }
+
+    // ---- Gemini CLI ----
+
+    /// Gemini 用 PascalCase，语义和 Claude Code 那一族一致
+    #[test]
+    fn gemini_maps_its_event_set() {
+        for (name, want) in [
+            ("SessionStart", "idle"),
+            ("BeforeAgent", "thinking"),
+            ("PreCompress", "thinking"),
+            ("BeforeTool", "working"),
+            ("AfterTool", "working"),
+            ("Notification", "attention"),
+            ("AfterAgent", "done"),
+        ] {
+            assert_eq!(state_of("gemini", &event(name)), Some(want), "{name}");
+        }
+        assert_eq!(action_of("gemini", &event("SessionEnd")), Some("clear"));
+
+        // 每次模型调用都触发的那几个：不装也不映射，否则灯会一直在闪
+        for noise in ["BeforeModel", "AfterModel", "BeforeToolSelection"] {
+            assert_eq!(state_of("gemini", &event(noise)), None, "{noise} 该被忽略");
+        }
+    }
+
+    // ---- Goose ----
+
+    /// Goose 的事件名和 Claude Code 同构，但**事件名在 `event`**、
+    /// 工作目录在 `working_dir` —— 这两条是它和其余几家最容易踩岔的地方
+    #[test]
+    fn goose_reads_its_own_field_names() {
+        let payload = json!({
+            "event": "PreToolUse",
+            "session_id": "s-9",
+            "working_dir": "/proj",
+        });
+
+        assert_eq!(state_of("goose", &payload), Some("working"));
+        assert_eq!(session_id(&payload).as_deref(), Some("s-9"));
+        assert_eq!(cwd_of(&payload).as_deref(), Some("/proj"));
+    }
+
+    #[test]
+    fn goose_maps_its_event_set() {
+        for (name, want) in [
+            ("SessionStart", "idle"),
+            ("UserPromptSubmit", "thinking"),
+            ("PreToolUse", "working"),
+            ("PostToolUse", "working"),
+            ("PostToolUseFailure", "attention"),
+            ("Stop", "done"),
+        ] {
+            assert_eq!(state_of("goose", &event(name)), Some(want), "{name}");
+        }
+        assert_eq!(action_of("goose", &event("SessionEnd")), Some("clear"));
+
+        // 读文件是高频事件，装了灯会一直闪
+        for noise in ["BeforeReadFile", "AfterFileEdit"] {
+            assert_eq!(state_of("goose", &event(noise)), None, "{noise} 该被忽略");
         }
     }
 

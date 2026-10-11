@@ -690,7 +690,9 @@ SignalHub/
 
 **`hooks.rs` 和 `outbound.rs` 名字里都有 hook，但方向相反：** 前者是**入站**（把 SignalHub 的 hook 装进智能体的配置文件，让它们能上报进来），后者是**出站**（状态变化时 SignalHub 主动往外 POST 或执行命令）。两个文件顶部都写了这句区分。
 
-**关于 `hooks.rs` 为什么不是 `integration/{claude_code,codex,cursor}.rs`：** 原计划按智能体拆三个文件，实际写下来发现三者的差异只在「配置路径 + 事件名清单 + handler 形状」这张表里，而**安装逻辑（保留无关键、幂等、备份、解析失败中止、精确摘除自己的 handler）三家完全一样且是最需要谨慎的部分**。拆成三个文件会把这段逻辑抄三遍，或者抽出一层反而更绕。所以是一个 `hooks.rs`，内部用一个小 `Agent` 枚举和一张事件表区分差异。
+**关于 `hooks.rs` 为什么不是 `integration/{claude_code,codex,cursor}.rs`：** 原计划按智能体拆三个文件，实际写下来发现三者的差异只在「配置路径 + 事件名清单 + handler 形状」这张表里，而**安装逻辑（保留无关键、幂等、备份、解析失败中止、精确摘除自己的 handler）各家完全一样且是最需要谨慎的部分**。拆成多个文件会把这段逻辑抄好几遍，或者抽出一层反而更绕。所以是一个 `hooks.rs`，内部用一个小 `Agent` 枚举和一张事件表区分差异。
+
+这个判断后来被验证了两次：**加 Gemini CLI 和 Goose 各只花了不到一小时**，而且改的确实是那张表 —— 唯一的例外是 Goose，它走插件目录而不是共享配置，安装/卸载各多了一步（写清单、删目录），那也只在 `install`/`uninstall` 两个入口里各加了十来行，`install_at` 那条共用的核心逻辑一行没动。
 
 **关于两个二进制。** 这个包里有两个 bin：app（`signalhub-app`，源自 `src/main.rs`）和 CLI（`signalhub`，源自 `src/bin/signalhub.rs`）。两者同名会冲突，而 app 的名字用户看不到（通过 .app 启动），CLI 的名字却要写进智能体的 hook 配置里，所以让给 CLI。`[package] default-run = "signalhub-app"` 让 `cargo run`（也就是 `tauri dev`）选 app 那个，`tauri.conf.json` 的 `mainBinaryName` 同步设为 `signalhub-app`。
 
@@ -753,7 +755,7 @@ SignalHub/
 | 2 | 状态机 + TTL sweep + 前后端联动 + 单测 | ✅ 已完成 |
 | 3 | HTTP 服务：axum 路由、token、端口发现 | ✅ 已完成 |
 | 4 | CLI（`hook` 子命令 + 状态上报 + status/clear/monitor） | ✅ 已完成 |
-| 5 | hook 自动接线：`install hooks` / `uninstall hooks`（三家智能体） | ✅ 已完成 |
+| 5 | hook 自动接线：`install hooks` / `uninstall hooks` | ✅ 已完成 |
 | 6 | 设置面板（圆点大小、置顶、暂停、会话列表） | ✅ 已完成 |
 | 6b | 状态模型补全：`stale` / `offline`、每状态 TTL、hook 调用日志 | ✅ 已完成 |
 | 6c | 灯球渲染：多会话多点、色盲形状、沉默细环、安静模式 | ✅ 已完成 |
@@ -779,7 +781,8 @@ SignalHub/
 | 7o | 托盘图标跟随状态变色 | ✅ 已完成 |
 | 7p | 通知带动作按钮（打开项目目录 / 静音该组） | ✅ 已完成（dev 下看不到，见 §3.19） |
 | 7q | Windows 适配：托盘反色、`noRedirectionBitmap`、`.exe` 查找、三平台 CI | ✅ 已完成（CI 尚未跑过） |
-| 7r | 把 CLI 作为 sidecar 打进 app bundle | ⏳ 待做（分发才需要） |
+| 7r | 智能体接入扩到五家：加 Gemini CLI 和 Goose | ✅ 已完成 |
+| 7s | 把 CLI 作为 sidecar 打进 app bundle | ⏳ 待做（分发才需要） |
 
 三处偏离原计划的地方，都记在这里以免以后当成疏漏：
 

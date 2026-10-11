@@ -22,6 +22,8 @@ pub enum Agent {
     ClaudeCode,
     Codex,
     Cursor,
+    Gemini,
+    Goose,
 }
 
 impl Agent {
@@ -32,9 +34,12 @@ impl Agent {
             "claude-code" | "claude" | "claudecode" => Agent::ClaudeCode,
             "codex" | "codex-cli" => Agent::Codex,
             "cursor" => Agent::Cursor,
+            "gemini" | "gemini-cli" => Agent::Gemini,
+            "goose" => Agent::Goose,
             other => {
                 return Err(format!(
-                    "不认识的智能体 {other:?}；支持 claude-code / codex / cursor"
+                    "不认识的智能体 {other:?}；支持 {}",
+                    ALL_NAMES.join(" / ")
                 ));
             }
         })
@@ -45,6 +50,8 @@ impl Agent {
             Agent::ClaudeCode => "Claude Code",
             Agent::Codex => "Codex",
             Agent::Cursor => "Cursor",
+            Agent::Gemini => "Gemini CLI",
+            Agent::Goose => "Goose",
         }
     }
 
@@ -52,14 +59,25 @@ impl Agent {
     ///
     /// Codex 也可以用 config.toml 写 hook，但这里刻意用独立的 hooks.json：
     /// 改 TOML 需要保留格式和注释，而 JSON 可以整份解析后重写，安全得多。
+    ///
+    /// Goose 是**插件目录**而不是共享配置：我们要建
+    /// `~/.agents/plugins/signalhub/`，里面放 `plugin.json`（清单）和
+    /// `hooks/hooks.json`（hook 定义）。这条路比改共享配置更安全 ——
+    /// 那两个文件都是我们自己建的，不存在「解析不了用户手写的内容」这回事。
     fn config_relative_path(self) -> &'static str {
         match self {
             Agent::ClaudeCode => ".claude/settings.json",
             Agent::Codex => ".codex/hooks.json",
             Agent::Cursor => ".cursor/hooks.json",
+            Agent::Gemini => ".gemini/settings.json",
+            Agent::Goose => ".agents/plugins/signalhub/hooks/hooks.json",
         }
     }
 }
+
+/// 全部智能体，按加入顺序。`parse` 的报错信息和 CLI 的 help 都用它，
+/// 免得新增一个之后忘改其中一处、报错里少列一个。
+pub const ALL_NAMES: [&str; 5] = ["claude-code", "codex", "cursor", "gemini", "goose"];
 
 /// 事件名清单。[`须写 matcher`]: 只有 Claude Code 的 SessionStart 需要
 /// —— 不加限制的话，上下文压缩时触发的 SessionStart 会被当成「会话开始」，
@@ -114,6 +132,37 @@ fn events(agent: Agent) -> &'static [(&'static str, Option<&'static str>)] {
             ("stop", None),
             ("sessionEnd", None),
         ],
+        // Gemini CLI：PascalCase，和 Claude Code 同构（docs/hooks/reference.md）。
+        //
+        // **只装用得上的那几个。** BeforeModel / AfterModel / BeforeToolSelection
+        // 是每次模型调用都触发的，装上去纯属噪音 —— 灯会一直在闪而信息量为零。
+        // 同一个理由，Claude Code 那边也刻意忽略了一长串事件。
+        Agent::Gemini => &[
+            ("SessionStart", None),
+            ("BeforeAgent", None),
+            ("BeforeTool", None),
+            ("AfterTool", None),
+            ("Notification", None),
+            ("PreCompress", None),
+            ("AfterAgent", None),
+            ("SessionEnd", None),
+        ],
+        // Goose 的**插件** hook。事件名和 payload 字段都自成一格：事件名在
+        // `event` 而不是 `hook_event_name`，工作目录在 `working_dir` 而不是
+        // `cwd`（见 CLI 里的 map_goose）。
+        //
+        // BeforeReadFile / AfterFileEdit / Before|AfterShellExecution 刻意不装：
+        // 读文件是高频事件，装了灯会一直闪。Goose 也明确说了它**不发**
+        // SubagentStart / SubagentStop，所以那两个不用考虑。
+        Agent::Goose => &[
+            ("SessionStart", None),
+            ("UserPromptSubmit", None),
+            ("PreToolUse", None),
+            ("PostToolUse", None),
+            ("PostToolUseFailure", None),
+            ("Stop", None),
+            ("SessionEnd", None),
+        ],
     }
 }
 
@@ -139,6 +188,8 @@ pub struct Report {
     pub removed_handlers: usize,
     /// true 表示只演算、没有落盘
     pub dry_run: bool,
+    /// Goose 专用的插件清单路径。其余智能体没有这个文件。
+    pub manifest: Option<PathBuf>,
 }
 
 // ---- 对外入口 --------------------------------------------------------------
@@ -175,17 +226,67 @@ fn agent_name_for_cli(agent: Agent) -> &'static str {
         Agent::ClaudeCode => "claude-code",
         Agent::Codex => "codex",
         Agent::Cursor => "cursor",
+        Agent::Gemini => "gemini",
+        Agent::Goose => "goose",
     }
 }
 
+/// Goose 插件的目录 —— 就是我们建的那个，卸载时整份删掉。
+///
+/// 只有 Goose 是「自己的目录」，其余几家都是在用户的共享配置里插一条。
+/// 所以这里返回 `Option`：`None` 表示这个智能体没有自己的目录可清理。
+fn plugin_dir(agent: Agent) -> Option<PathBuf> {
+    let path = config_path(agent).ok()?;
+    match agent {
+        // hooks.json → hooks/ → signalhub/
+        Agent::Goose => Some(path.parent()?.parent()?.to_path_buf()),
+        _ => None,
+    }
+}
+
+/// Goose 的插件清单。内容固定，没有任何来自用户的输入。
+const GOOSE_MANIFEST: &str = r#"{
+  "name": "signalhub",
+  "version": "0.1.0",
+  "description": "Report this session's status to SignalHub"
+}
+"#;
+
 pub fn install(agent: Agent, dry_run: bool) -> Result<Report, String> {
     let path = config_path(agent)?;
-    install_at(agent, &resolve_hook_command(agent), &path, dry_run)
+    let mut report = install_at(agent, &resolve_hook_command(agent), &path, dry_run)?;
+
+    // Goose 的 hook 必须放在一个**插件**里，光有 hooks.json 它不会加载 ——
+    // 清单是插件的身份证。演练模式不落盘，所以这里也跳过。
+    if agent == Agent::Goose && !dry_run {
+        let Some(dir) = plugin_dir(agent) else {
+            return Err("算不出 Goose 插件目录".to_string());
+        };
+        let manifest = dir.join("plugin.json");
+        if let Err(err) = fs::write(&manifest, GOOSE_MANIFEST) {
+            return Err(format!("写插件清单 {} 失败: {err}", manifest.display()));
+        }
+        report.manifest = Some(manifest);
+    }
+    Ok(report)
 }
 
 pub fn uninstall(agent: Agent, dry_run: bool) -> Result<Report, String> {
     let path = config_path(agent)?;
-    uninstall_at(&path, dry_run)
+    let report = uninstall_at(&path, dry_run)?;
+
+    // Goose：整个插件目录都是我们建的（名字就叫 signalhub），所以直接删掉。
+    // 留着的话，一个空的插件目录仍会被 goose 加载，只是什么都不做 ——
+    // 「卸载了但还在那儿」比彻底删掉更难解释。
+    if agent == Agent::Goose
+        && !dry_run
+        && let Some(dir) = plugin_dir(agent)
+        && dir.is_dir()
+    {
+        fs::remove_dir_all(&dir)
+            .map_err(|err| format!("删除插件目录 {} 失败: {err}", dir.display()))?;
+    }
+    Ok(report)
 }
 
 // ---- 实现 ------------------------------------------------------------------
@@ -283,6 +384,7 @@ fn install_at(agent: Agent, command: &str, path: &Path, dry_run: bool) -> Result
             removed: Vec::new(),
             removed_handlers: 0,
             dry_run,
+            manifest: None,
         });
     }
 
@@ -301,6 +403,7 @@ fn install_at(agent: Agent, command: &str, path: &Path, dry_run: bool) -> Result
         removed: Vec::new(),
         removed_handlers: 0,
         dry_run,
+        manifest: None,
     })
 }
 
@@ -315,6 +418,7 @@ fn uninstall_at(path: &Path, dry_run: bool) -> Result<Report, String> {
         removed: Vec::new(),
         removed_handlers: 0,
         dry_run,
+        manifest: None,
     };
 
     let Ok(text) = fs::read_to_string(path) else {
@@ -392,6 +496,7 @@ fn uninstall_at(path: &Path, dry_run: bool) -> Result<Report, String> {
         removed,
         removed_handlers,
         dry_run,
+        manifest: None,
     })
 }
 
@@ -487,11 +592,35 @@ fn first_token(command: &str) -> Option<&str> {
     trimmed.split_whitespace().next()
 }
 
-/// 构造一个 matcher-group。三种智能体的形状不同：
+/// 构造一个 matcher-group。三种形状：
 /// Claude Code / Codex 是 `{ matcher?, hooks: [ { type, command, async } ] }`，
+/// Gemini / Goose 同构但**没有 `async`**、改带 `timeout`，
 /// Cursor 是 `{ command, timeout }` 直接作为一组。
 fn handler_group(agent: Agent, command: &str, matcher: Option<&str>) -> Value {
     match agent {
+        // Cursor 这边 preToolUse 之类是会被等待的，所以超时保护有意义
+        Agent::Cursor => json!({ "command": command, "timeout": 5 }),
+        // Gemini / Goose 也会**同步等待** hook（两家都没有 async 开关），所以给
+        // 一个明确的超时，免得一个挂住的 hook 把智能体卡在那儿。
+        //
+        // `async: true` 是 Claude Code 的扩展字段，这两家的文档里都没有 ——
+        // 不写。Copilot 的文档甚至明确说了「inline 的 hooks 里有一项校验不过，
+        // 整个 hooks 字段作废」，所以对不认识的字段宁可保守。
+        Agent::Gemini | Agent::Goose => {
+            let mut group = Map::new();
+            if let Some(matcher) = matcher {
+                group.insert("matcher".into(), json!(matcher));
+            }
+            group.insert(
+                "hooks".into(),
+                json!([{
+                    "type": "command",
+                    "command": command,
+                    "timeout": sync_timeout(agent),
+                }]),
+            );
+            Value::Object(group)
+        }
         // `async: true` 是 type=command 独有的字段。它让 hook 在后台跑、不阻塞
         // 智能体。注意异步 hook 不受 timeout 约束（见 docs/api.md §4.4）。
         Agent::ClaudeCode | Agent::Codex => {
@@ -505,8 +634,20 @@ fn handler_group(agent: Agent, command: &str, matcher: Option<&str>) -> Value {
             );
             Value::Object(group)
         }
-        // Cursor 这边 preToolUse 之类是会被等待的，所以超时保护有意义
-        Agent::Cursor => json!({ "command": command, "timeout": 5 }),
+    }
+}
+
+/// 同步 hook 的超时。
+///
+/// **单位两家不一样**：Gemini 是毫秒（默认 60000），Goose 是秒（默认 30）。
+/// 写错单位不会报错，只会得到一个荒谬的值（5 毫秒和 5 秒差三个数量级），
+/// 所以放在一个函数里、带注释，别在调用处各写各的。
+///
+/// 5 秒：本地 HTTP 上报的正常耗时是毫秒级，5 秒已经是很宽松的上限。
+fn sync_timeout(agent: Agent) -> u32 {
+    match agent {
+        Agent::Gemini => 5_000,
+        _ => 5,
     }
 }
 
@@ -677,6 +818,71 @@ mod tests {
         let root = read(&path);
         assert_eq!(root["hooks"]["SessionStart"][0]["matcher"], "startup|resume");
         assert!(root["hooks"]["Stop"][0].get("matcher").is_none());
+    }
+
+    // ---- Gemini / Goose -------------------------------------------------------
+
+    /// 两家都是「同步等 hook」的，所以**不能**带 `async`（那是 Claude Code 的
+    /// 扩展字段，它们的文档里没有），改带 `timeout`。
+    #[test]
+    fn gemini_and_goose_get_a_timeout_instead_of_async() {
+        for agent in [Agent::Gemini, Agent::Goose] {
+            let dir = TempDir::new();
+            let path = dir.file("hooks.json");
+            install_at(agent, CMD, &path, false).unwrap();
+
+            let root = read(&path);
+            for groups in root["hooks"].as_object().unwrap().values() {
+                let handler = &groups[0]["hooks"][0];
+                assert_eq!(handler["type"], "command", "{agent:?}");
+                assert_eq!(handler["command"], CMD, "{agent:?}");
+                assert!(handler.get("async").is_none(), "{agent:?} 不该写 async");
+                assert!(handler.get("timeout").is_some(), "{agent:?} 该带超时");
+            }
+        }
+    }
+
+    /// 超时的**单位两家不一样**：Gemini 是毫秒、Goose 是秒。写错不会报错，
+    /// 只会得到一个差三个数量级的荒谬值，所以单独钉住。
+    #[test]
+    fn the_two_sync_timeouts_use_their_own_units() {
+        assert_eq!(sync_timeout(Agent::Gemini), 5_000, "Gemini 用毫秒");
+        assert_eq!(sync_timeout(Agent::Goose), 5, "Goose 用秒");
+
+        let dir = TempDir::new();
+        let path = dir.file("hooks.json");
+        install_at(Agent::Goose, CMD, &path, false).unwrap();
+        assert_eq!(read(&path)["hooks"]["Stop"][0]["hooks"][0]["timeout"], 5);
+    }
+
+    /// Goose 的 hook 必须待在**插件目录**里，光有 hooks.json 它不会加载
+    #[test]
+    fn goose_hooks_live_inside_its_plugin_directory() {
+        assert_eq!(
+            Agent::Goose.config_relative_path(),
+            ".agents/plugins/signalhub/hooks/hooks.json"
+        );
+        assert_eq!(Agent::Gemini.config_relative_path(), ".gemini/settings.json");
+    }
+
+    /// 每个智能体的配置路径都必须不一样 —— 两个 agent 指向同一个文件的话，
+    /// 装第二个会把第一个的条目当成自己的、原地改掉
+    #[test]
+    fn every_agent_has_its_own_config_path() {
+        let mut paths: Vec<&str> = ALL_NAMES
+            .iter()
+            .map(|name| Agent::parse(name).unwrap().config_relative_path())
+            .collect();
+        let total = paths.len();
+        paths.sort_unstable();
+        paths.dedup();
+        assert_eq!(paths.len(), total, "有智能体共用了同一个配置文件");
+
+        // ALL_NAMES 里的每个名字都要能解析回来，否则 help 里列的是个假名字
+        for name in ALL_NAMES {
+            let agent = Agent::parse(name).unwrap();
+            assert_eq!(agent_name_for_cli(agent), name, "{name} 的 CLI 名字对不上");
+        }
     }
 
     /// 这是最重要的一条：settings.json 里往往还有别的东西

@@ -596,6 +596,78 @@ curl -sf -m 1 -X POST "http://127.0.0.1:$(cat ~/.signalhub/port)/v1/state" \
 
 `-m 1` 保证不阻塞，`-sf` + `|| true` 保证失败不影响调用方。
 
+### 4.11 Gemini CLI
+
+配置位置：`~/.gemini/settings.json`（用户级）、`<repo>/.gemini/settings.json`（项目级）。形状与 Claude Code 同构，但**没有 `async`**（那是 Claude Code 的扩展字段，它的文档里没有），改带 `timeout`：
+
+```json
+{"hooks":{"SessionStart":[{"hooks":[
+  {"type":"command","command":"signalhub hook gemini","timeout":5000}]}]}}
+```
+
+**装 8 个事件**（PascalCase）：
+
+| 事件 | 映射 |
+|---|---|
+| `SessionStart` | `idle` |
+| `BeforeAgent` | `thinking` |
+| `PreCompress` | `thinking` |
+| `BeforeTool` / `AfterTool` | `working` |
+| `Notification` | `attention` |
+| `AfterAgent` | `done` |
+| `SessionEnd` | 清除会话 |
+
+stdin 字段：`session_id`、`transcript_path`、`cwd`、`hook_event_name`、`timestamp`；`SessionStart` 另有 `source`，工具事件另有 `tool_name`、`tool_input`。
+
+**刻意不装** `BeforeModel`、`AfterModel`、`BeforeToolSelection`：这三个每次模型调用都触发，装上去灯会一直在闪而信息量为零。
+
+两条要注意的：
+
+1. **它没有「需要授权」事件。** 权限点靠 hook 的返回值决定，而上报型 hook 不返回值。所以 `Notification` 是唯一的「有事要你看一眼」信号 —— 但**官方参考里没写它确切的触发条件**，这里按「通知 = 有事」映射成 `attention`（最轻的那一档）。映射偏了的表现是多几盏黄灯，不会漏掉真正的异常。
+2. **stdout 必须是纯 JSON。** Gemini 要求 hook「除了最后那段 JSON 之外不得往 stdout 打任何东西」，而 exit 0 时它会把 stdout 当 JSON 解析。所以 `signalhub hook gemini` 会往 stdout 打一个 `{}` —— 这是**全项目唯一一处违反「hook 模式 stdout 必须为空」**的地方，理由写在 `bin/signalhub.rs` 里：空 stdout 算不算合法 JSON 它没写清楚，而 `{}` 在两种解读下都安全（合法的 JSON，且不含任何 decision 字段）。其余几家都明确接受空 stdout，所以不加。
+
+`timeout` 是**毫秒**（默认 60000），这里设 5000。Gemini 的 hook 是**同步**的（没有 async 开关），所以超时保护是必需的。
+
+### 4.12 Goose
+
+**Goose 走的是插件，不是共享配置。** 装的是我们自己的一个目录：
+
+```
+~/.agents/plugins/signalhub/
+├─ plugin.json          插件清单（Goose 靠它发现插件）
+└─ hooks/hooks.json     hook 定义
+```
+
+```json
+{"hooks":{"PreToolUse":[{"hooks":[
+  {"type":"command","command":"signalhub hook goose","timeout":5}]}]}}
+```
+
+**这条路比改共享配置更安全**：两个文件都是我们自己建的，不存在「解析不了用户手写的内容」这回事；卸载时整个目录删掉即可（名字就叫 signalhub，不会误伤）。
+
+**装 7 个事件**：
+
+| 事件 | 映射 |
+|---|---|
+| `SessionStart` | `idle` |
+| `UserPromptSubmit` | `thinking` |
+| `PreToolUse` / `PostToolUse` | `working` |
+| `PostToolUseFailure` | `attention` |
+| `Stop` | `done` |
+| `SessionEnd` | 清除会话 |
+
+**payload 的字段名自成一格**，这是接它最容易踩岔的地方：
+
+- 事件名在 **`event`**，不是 `hook_event_name`（其余几家都是后者）；
+- 工作目录在 **`working_dir`**，不是 `cwd`；
+- 会话 id 仍是 `session_id`。
+
+**刻意不装** `BeforeReadFile`、`AfterFileEdit`、`Before|AfterShellExecution`：读文件是高频事件。Goose 也明确说了它**不发** `SubagentStart` / `SubagentStop`，那两个不用考虑。
+
+`timeout` 是**秒**（默认 30），这里设 5 —— 和 Gemini 的毫秒差三个数量级，`hooks.rs` 里专门有个带注释的函数说明这件事。
+
+同样**没有 `PermissionRequest`**：Goose 的授权靠 `PreToolUse` 返回 `decision: "block"` 实现，上报型 hook 不返回值。
+
 ---
 
 ## 5. 降级通道（v1.1，未实现）
