@@ -1,0 +1,57 @@
+name: CI
+
+# 三个平台各跑一遍 `cargo test` + 前端构建。
+#
+# 存在的理由很具体：这个项目声称跨平台，但平台相关的代码（`#[cfg(windows)]`、
+# `#[cfg(unix)]`）在开发机上**根本编不进去**，所以它们从来没被编译过。macOS 上
+# 全绿不代表 Windows 上能编过 —— 而这类错误（少一个 import、用了只在一个平台
+# 存在的 API、`.exe` 后缀没处理）恰恰是最容易犯、又最难在自己机器上发现的。
+#
+# 前端一起跑：`npm run build` 里含 `tsc`，类型错误三平台一样，但顺手跑不花时间。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      # 一个平台挂了也让别的跑完 —— 想知道的是「哪几个平台有问题」，
+      # 而不是「第一个出错的是哪个」
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # tauri 在 Linux 上要链 webkit2gtk / gtk，缺了连 `cargo test` 都编不过
+      - name: 安装 Linux 上编译 tauri 需要的系统库
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev \
+            build-essential curl wget file
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      - name: 前端类型检查与构建
+        run: npm run build
+
+      - name: Rust 测试（lib + CLI）
+        run: cargo test --manifest-path src-tauri/Cargo.toml

@@ -135,6 +135,47 @@ fn dot_rgba(color: [u8; 3], size: u32) -> Vec<u8> {
     rgba
 }
 
+/// 不跟随状态时用的字形：三点单色，和原来一样。
+///
+/// **两个平台走的是两条完全不同的路：**
+///
+/// - macOS：只填 alpha，交给系统按菜单栏明暗反色（模板图）。
+/// - 其它平台：**没有模板着色这回事**。`is_template` 参数在非 macOS 上是被直接
+///   丢掉的（`tray-icon` 里那个方法连图都不收），托盘实现把原始位图交给系统、
+///   没有任何主题逻辑。于是那张 RGB 全 0 的图在 Windows 上就是**纯黑** ——
+///   深色任务栏上等于看不见。所以那些平台上直接涂成中性灰。
+///
+/// 想要真正的黑白自适应得读 Windows 的 `SystemUsesLightTheme` 注册表键，
+/// 为一个图标引一个注册表依赖不值得；中性灰在明暗两种任务栏上都有对比度。
+#[cfg(target_os = "macos")]
+fn monochrome_glyph() -> (Vec<u8>, u32, u32, bool) {
+    (tray_glyph_rgba(), TRAY_GLYPH_W, TRAY_GLYPH_H, true)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn monochrome_glyph() -> (Vec<u8>, u32, u32, bool) {
+    (
+        paint(tray_glyph_rgba(), NEUTRAL_GRAY),
+        TRAY_GLYPH_W,
+        TRAY_GLYPH_H,
+        false,
+    )
+}
+
+/// 中性灰。亮色任务栏（约 `#f3f3f3`）和暗色任务栏（约 `#202020`）上都够看清，
+/// 这也是它存在的全部理由 —— 不是「好看的颜色」，是「两边都不糊的颜色」。
+#[cfg(not(target_os = "macos"))]
+const NEUTRAL_GRAY: [u8; 3] = [0x8a, 0x8a, 0x8e];
+
+/// 把模板图（RGB 全 0、只有 alpha）涂成一个固定颜色，保留 alpha。
+#[cfg(not(target_os = "macos"))]
+fn paint(mut rgba: Vec<u8>, color: [u8; 3]) -> Vec<u8> {
+    for pixel in rgba.chunks_mut(4) {
+        pixel[..3].copy_from_slice(&color);
+    }
+    rgba
+}
+
 /// 让托盘图标跟上当前状态。
 ///
 /// `colors` 是前端算好的「状态名 → `#rrggbb`」。**颜色表不在 Rust 里复制一份**：
@@ -147,7 +188,7 @@ pub fn sync(app: &AppHandle, state: Signal, follows: bool, colors: &BTreeMap<Str
         return;
     };
 
-    // 关掉跟随、或这个状态没有可用颜色时，rgb 为 None，退回单色模板图（今天的行为）。
+    // 关掉跟随、或这个状态没有可用颜色时，退回单色字形（见 monochrome_glyph）。
     let rgb = if follows {
         colors.get(state.name()).and_then(|hex| parse_hex_color(hex))
     } else {
@@ -161,7 +202,7 @@ pub fn sync(app: &AppHandle, state: Signal, follows: bool, colors: &BTreeMap<Str
             TRAY_DOT_SIZE,
             false,
         ),
-        None => (tray_glyph_rgba(), TRAY_GLYPH_W, TRAY_GLYPH_H, true),
+        None => monochrome_glyph(),
     };
 
     // 用 set_icon_with_as_template 而不是先 set_icon 再 set_icon_as_template：
@@ -407,6 +448,42 @@ mod tests {
 
         for bad in ["1f6feb", "#gggggg", "", "#", "nonsense", "#12", "#12345", "#你好"] {
             assert_eq!(parse_hex_color(bad), None, "{bad:?} 应被拒绝");
+        }
+    }
+
+    /// 非 macOS 平台上**不能**交一张 RGB 全 0 的图 —— 那是纯黑，深色任务栏上
+    /// 等于看不见。这条只有在非 macOS 上才会编译进去（本机是 macOS），
+    /// 所以它靠 CI 的 Windows / Linux 那两个 job 兜底。
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn the_monochrome_glyph_is_painted_so_a_dark_taskbar_can_see_it() {
+        let (rgba, _, _, is_template) = monochrome_glyph();
+        assert!(!is_template, "非 macOS 上模板标志没有意义，不该声称自己是模板图");
+
+        let opaque: Vec<&[u8]> = rgba.chunks(4).filter(|p| p[3] > 0).collect();
+        assert!(!opaque.is_empty(), "字形不该是空的");
+        assert!(
+            opaque.iter().all(|p| p[..3] == NEUTRAL_GRAY),
+            "有像素的地方都该是中性灰"
+        );
+        assert!(
+            opaque.iter().all(|p| p[..3] != [0, 0, 0]),
+            "绝不能是纯黑 —— 这就是这个函数存在的理由"
+        );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn painting_keeps_the_alpha_channel() {
+        let template = tray_glyph_rgba();
+        let painted = paint(template.clone(), [1, 2, 3]);
+
+        assert_eq!(painted.len(), template.len());
+        for (before, after) in template.chunks(4).zip(painted.chunks(4)) {
+            assert_eq!(before[3], after[3], "alpha 不能动，形状全靠它");
+            if before[3] > 0 {
+                assert_eq!(&after[..3], &[1, 2, 3]);
+            }
         }
     }
 }

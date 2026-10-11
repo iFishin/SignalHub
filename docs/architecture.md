@@ -719,14 +719,28 @@ SignalHub/
 
 ## 7. 平台注意事项
 
+**下表的每一条都是查过依赖源码或实测过的**，不是「大概是吧」；真没验证的会明说。
+
 | 事项 | 说明 |
 |---|---|
 | macOS 全屏 Space 无法覆盖 | `alwaysOnTop` 不能浮在别的应用的全屏 Space 之上，需要更高的 NSWindow level 和私有 API。所有同类工具的共同限制，**不要在 v1 承诺**。 |
-| Windows 透明窗口白闪 | 建议加 `no_redirection_bitmap(true)` |
+| Windows 透明窗口白闪 | 已按官方建议设 `noRedirectionBitmap`（对应 `WS_EX_NOREDIRECTIONBITMAP`）。不设的话，webview 内容渲染出来之前会闪一下白底。 |
+| Windows 上 `set_visible_on_all_workspaces` 是**静默 no-op** | `tao` 里那个方法只在 macOS / Linux 上实现，Windows 上返回 `Ok` 但什么都不做。所以 `setup` 里那个 `?` 不会让启动失败 —— 但它也不提供任何效果。 |
+| **Windows 不给托盘图标反色** | 模板图（RGB 全 0、只有 alpha）在 macOS 上由系统按菜单栏明暗着色；非 macOS 上 `is_template` 参数是被直接丢掉的（`tray-icon` 里那个方法连图都不收），托盘实现把原始位图交给系统、没有任何主题逻辑。所以那张图在 Windows 上就是**纯黑**，深色任务栏上等于看不见。`tray::monochrome_glyph()` 因此在非 macOS 上把三点图涂成中性灰。 |
+| Windows 上 PATH 里的可执行文件带 `.exe` | `Path::is_file()` **不做 PATHEXT 展开**，只找 `signalhub` 会永远找不到 `signalhub.exe`。所以查命令时要把 `.exe` 也试一遍（见 `hooks::candidates`）。 |
 | Linux/Wayland | 透明窗口与 `shadow` 官方标注不支持。Linux 是硬需求时优先 X11。 |
-| `set_shadow` | Linux 不支持 |
-| `set_skip_taskbar` | macOS 不支持（用 Accessory 策略替代） |
+| `set_shadow` | Linux 不支持；Windows 上对无边框窗口加的是 1px 白边（Win11 上是圆角）。 |
+| `set_skip_taskbar` | macOS 不支持（用 Accessory 策略替代）；Windows 上有效。 |
 | 首次运行防火墙弹窗 | 绑定 127.0.0.1 通常不弹，但仍可能提示。 |
+| **灯球在 Windows 上能不能拖** | **未验证**。窗口配了 `focus: false`（Windows 上走 `SW_SHOWNOACTIVATE`，即不可激活），而拖拽是 JS 调 `startDragging()`（Windows 实现是发 `WM_NCLBUTTONDOWN` / `HTCAPTION`）。理论上可行，但没有真机试过 —— 而拖动是这个工具的基本操作，所以这条值得优先验。 |
+
+### 7.1 跨平台这件事靠 CI 兜着，不靠自觉
+
+平台相关的代码（`#[cfg(windows)]`、`#[cfg(unix)]`）**在开发机上根本编不进去**。macOS 上 `cargo test` 全绿，完全不能说明 Windows 上能编过 —— 上面那张表里的两个 Windows 缺陷（托盘纯黑、`.exe` 没试）都是这么漏掉的，而且第二个是**编译期就该发现**的那一类。
+
+所以 `.github/workflows/ci.yml` 在 macOS / Windows / Linux 三个 runner 上各跑一遍 `cargo test` 和前端构建。Linux 那个 job 要装 webkit2gtk / gtk，否则连 `cargo test` 都链不过。
+
+**这份 CI 本身还没跑过**（是刚加的），第一次 push 之后要去看三个 job 的结果。
 
 ---
 
@@ -764,7 +778,8 @@ SignalHub/
 | 7n | 持续多久才提醒（过滤一秒内进出 permission 的状态） | ✅ 已完成 |
 | 7o | 托盘图标跟随状态变色 | ✅ 已完成 |
 | 7p | 通知带动作按钮（打开项目目录 / 静音该组） | ✅ 已完成（dev 下看不到，见 §3.19） |
-| 7q | 把 CLI 作为 sidecar 打进 app bundle | ⏳ 待做（分发才需要） |
+| 7q | Windows 适配：托盘反色、`noRedirectionBitmap`、`.exe` 查找、三平台 CI | ✅ 已完成（CI 尚未跑过） |
+| 7r | 把 CLI 作为 sidecar 打进 app bundle | ⏳ 待做（分发才需要） |
 
 三处偏离原计划的地方，都记在这里以免以后当成疏漏：
 

@@ -202,6 +202,10 @@ curl -s -X POST ... -d '{"state":"error","session":"b","group":"ci"}'
 
 ### 2.9 curl 示例
 
+> 本节的示例都是 POSIX shell（`$(cat …)`）。**Windows 上把 `~/.signalhub` 换成
+> `%USERPROFILE%\.signalhub`**，取文件内容用 `Get-Content`；README 的「上报状态」
+> 一节有一份完整的 PowerShell 写法。
+
 ```bash
 PORT=$(cat ~/.signalhub/port)
 TOKEN=$(cat ~/.signalhub/token)

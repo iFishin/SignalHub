@@ -59,7 +59,7 @@ npm install
 npm run tauri dev
 ```
 
-首次启动会在 `~/.signalhub/` 下生成 `port` 和 `token` 两个文件。窗口无边框、不占任务栏也不进 Dock，**退出请用菜单栏的托盘图标**。
+首次启动会在 `~/.signalhub/`（Windows 上是 `%USERPROFILE%\.signalhub`）下生成 `port` 和 `token` 两个文件。窗口无边框、不占任务栏也不进 Dock，**退出请用菜单栏的托盘图标**。
 
 ## 上报状态
 
@@ -70,6 +70,18 @@ curl -s -X POST "http://127.0.0.1:$(cat ~/.signalhub/port)/v1/state" \
   -H "Authorization: Bearer $(cat ~/.signalhub/token)" \
   -H 'Content-Type: application/json' \
   -d '{"state":"permission","session":"demo","message":"需要批准"}'
+```
+
+Windows 上没有 `$(cat …)` 这套，PowerShell 里等价的是：
+
+```powershell
+$dir = "$env:USERPROFILE\.signalhub"
+$port = Get-Content "$dir\port"
+$token = Get-Content "$dir\token"
+Invoke-RestMethod -Method Post "http://127.0.0.1:$port/v1/state" `
+  -Headers @{ Authorization = "Bearer $token" } `
+  -ContentType 'application/json' `
+  -Body '{"state":"permission","session":"demo","message":"需要批准"}'
 ```
 
 或者用 CLI：
@@ -99,6 +111,14 @@ signalhub install hooks claude-code --dry-run   # 先看看会改什么
 ```bash
 ln -sfn "$(pwd)/src-tauri/target/debug/signalhub" ~/.local/bin/signalhub
 signalhub install hooks claude-code
+```
+
+Windows 上没有软链接这一步，把 `src-tauri\target\debug`（`signalhub.exe` 就在那里）追加进**用户** PATH 即可，加完重开一个终端：
+
+```powershell
+$user = [Environment]::GetEnvironmentVariable('Path', 'User')
+[Environment]::SetEnvironmentVariable('Path',
+  "$user;$(Resolve-Path src-tauri\target\debug)", 'User')
 ```
 
 绝对路径也能用，但二进制一挪动 hook 就会静默失效（智能体会话里什么都看不到），排查起来很费劲。

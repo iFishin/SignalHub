@@ -28,7 +28,8 @@
         "visible": false,
         "maximizable": false,
         "minimizable": false,
-        "closable": false
+        "closable": false,
+        "noRedirectionBitmap": true
       },
       {
         "label": "settings",

@@ -544,8 +544,24 @@ pub fn signalhub_on_path() -> bool {
 fn on_path(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
-        .map(|dir| dir.join(name))
+        .flat_map(|dir| candidates(&dir, name))
         .find(|candidate| is_executable(candidate))
+}
+
+/// 一个目录里，这个命令可能叫什么。
+///
+/// **Windows 上必须把 `.exe` 也试一遍。** `Path::is_file()` 不做 PATHEXT 展开，
+/// 只找 `signalhub` 的话在 Windows 上永远找不到 —— 后果是 `signalhub_on_path()`
+/// 恒为 false、装 hook 时永远写绝对路径（能用），但用户照着文档把二进制放进
+/// PATH 也白放，而文档偏偏是这么建议的。
+#[cfg(windows)]
+fn candidates(dir: &Path, name: &str) -> [PathBuf; 2] {
+    [dir.join(format!("{name}.exe")), dir.join(name)]
+}
+
+#[cfg(not(windows))]
+fn candidates(dir: &Path, name: &str) -> [PathBuf; 1] {
+    [dir.join(name)]
 }
 
 #[cfg(unix)]
@@ -559,6 +575,28 @@ fn is_executable(path: &Path) -> bool {
 #[cfg(not(unix))]
 fn is_executable(path: &Path) -> bool {
     path.is_file()
+}
+
+/// Windows 上 PATH 里的可执行文件带 `.exe`，而 `Path::is_file()` 不做 PATHEXT
+/// 展开 —— 少了这一步，「signalhub 已在 PATH 里」永远判成否。这条只有 Windows
+/// 的 CI 会跑，本机（macOS）编不进去。
+#[cfg(all(windows, test))]
+#[test]
+fn path_lookup_tries_the_exe_suffix() {
+    let names: Vec<String> = candidates(Path::new(r"C:\bin"), "signalhub")
+        .iter()
+        .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, vec!["signalhub.exe", "signalhub"]);
+
+    // 真的找一个必然存在的命令，确认这条路走得通
+    let found = on_path("cmd").or_else(|| on_path("powershell"));
+    assert!(found.is_some(), "PATH 里总该有 cmd 或 powershell");
+    assert_eq!(
+        found.unwrap().extension().and_then(|ext| ext.to_str()),
+        Some("exe"),
+        "找到的应该是带 .exe 的那个"
+    );
 }
 
 #[cfg(test)]
