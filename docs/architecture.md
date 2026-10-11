@@ -213,6 +213,8 @@ impl Store {
 
 **`show.message` 不是纯外观。** 牌有没有消息那一行决定了窗口高度：`lib.rs` 的 `visible_groups` / `sign_heights` 必须和前端 `data-has-message` 算出**同一个**布尔值（消息存在**且**用户没关掉那一段），否则窗口会裁掉最后一块牌。
 
+**`show.age`（已持续）反过来不碰几何，但有一个别处没有的依赖。** 它是同一行里靠右的一段（`flex: none`），不占额外的行，所以 `sign_heights` 不管它。但这个数字是**算出来的**（`now - since`），而灯球只在状态变化时重绘、`sweep` 也只在会话真的过期时才推事件 —— 于是没有任何东西会让它随时间重绘，它会永远停在状态刚变化那一刻算出的 **0s**（`formatAge` 里的 `Date.now()` 只在重绘那一刻被求值，而那一刻的答案恰好就是 0）。所以灯球里挂了一个 `useNow`（`src/lib/useNow.ts`），每秒推一次「现在」。**加任何「算出来的时间显示」之前，先想清楚谁让它重绘。**
+
 **逐个状态：颜色 + 形状 + 节奏。** 全局的 `palette` / `shape` / `blink_speed` 是**默认值**，「灯效」页可以逐个状态覆盖，存在 `Settings.styles: BTreeMap<String, StateStyle>` 里：
 
 ```rust

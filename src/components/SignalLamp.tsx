@@ -5,6 +5,7 @@ import { inTauri } from "../lib/env";
 import { signalLabel } from "../lib/signals";
 import { useLang, useMessages, type Messages, type Lang } from "../lib/i18n";
 import { lampVars, resolveShapes } from "../lib/lampStyle";
+import { useNow } from "../lib/useNow";
 import type { GroupMeta, Settings } from "../lib/useSettings";
 import type { GroupView, SignalState } from "../lib/types";
 
@@ -23,10 +24,15 @@ interface Props {
   settings: Settings;
 }
 
-/** 「已持续多久」。牌上那一段短文本，所以只给一个单位、不写秒。 */
-function formatAge(sinceMs: number): string {
+/**
+ * 「已持续多久」。牌上那一段短文本，所以只给一个单位、不写秒。
+ *
+ * `now` 由调用方传进来（见 `useNow`），**不在这里读 `Date.now()`** —— 那样它就只
+ * 在重绘时才被求值，而这个组件只在状态变化时重绘，于是永远显示 0s。
+ */
+function formatAge(sinceMs: number, now: number): string {
   if (!sinceMs) return "";
-  const seconds = Math.max(0, Math.round((Date.now() - sinceMs) / 1000));
+  const seconds = Math.max(0, Math.round((now - sinceMs) / 1000));
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m`;
@@ -152,6 +158,10 @@ export function SignalLamp({ aggregate, groups, settings }: Props) {
   // 「一个值」，没法塞进一个根变量里。
   const shapes = resolveShapes(settings);
 
+  // 「已持续」是算出来的，所以得有东西让它随时间重绘 —— 否则它永远停在状态刚变化
+  // 那一刻，也就是 0s。折叠形态和关掉这一格的牌上没有这个数字，不起定时器。
+  const now = useNow(show.age && !collapsed);
+
   const toggle = () => {
     if (!inTauri) return;
     // 窗口尺寸由 Rust 算（它才知道可见牌的高度和设置），前端只负责「点了一下」。
@@ -226,7 +236,7 @@ export function SignalLamp({ aggregate, groups, settings }: Props) {
                 <div className="sign-message">{group.message}</div>
               )}
             </div>
-            {show.age && <span className="sign-age">{formatAge(group.since_ms)}</span>}
+            {show.age && <span className="sign-age">{formatAge(group.since_ms, now)}</span>}
           </div>
         ),
       )}
