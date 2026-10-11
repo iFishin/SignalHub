@@ -54,7 +54,30 @@ curl -s -X POST ... -d '{"state":"error","session":"b","group":"ci"}'
 
 **每个状态都有静默超时**（`working` 90 秒、`thinking` 60 秒、`idle` 600 秒…）。超时后会话不会直接消失，而是转入 `stale`（灰、常亮），再过 5 分钟才真正删除。这样「智能体崩溃了/不说话了」和「智能体空闲待命」是两种不同的显示——不会出现「智能体早就没了，灯还在闪」的情况。
 
-## 运行
+## 安装
+
+从 [Releases](https://github.com/iFishin/SignalHub/releases) 下载：
+
+- **macOS** —— `.dmg`，拖进「应用程序」。Apple Silicon 选 `aarch64`，Intel 选 `x64`。
+- **Windows** —— `-setup.exe`（NSIS 安装器）或 `.msi`。
+
+安装包**没有签名**，所以第一次打开会被拦一道。macOS 上**推荐**在终端里跑：
+
+```bash
+xattr -dr com.apple.quarantine /Applications/SignalHub.app
+```
+
+它递归清掉整个包的隔离标记 —— 应用和打包在里面的 `signalhub` 命令都覆盖到。（右键点图标 →「打开」→ 再点一次也可以，只是不保证覆盖到里面那个命令。）Windows 上在 SmartScreen 里点「更多信息」→「仍要运行」。
+
+`signalhub` 这个命令**已经打包在应用里**，不用另外装 —— 「设置 → 接入」页的一键接入会自己用它。想在终端里直接用，把它加到 PATH：
+
+```bash
+ln -sfn /Applications/SignalHub.app/Contents/MacOS/signalhub /usr/local/bin/signalhub
+```
+
+打一个 `v` 开头的 tag 就会自动出这三份包，见 [.github/workflows/release.yml](.github/workflows/release.yml)。
+
+## 从源码运行
 
 需要 Node.js 与 Rust 工具链。
 
@@ -62,6 +85,8 @@ curl -s -X POST ... -d '{"state":"error","session":"b","group":"ci"}'
 npm install
 npm run tauri dev
 ```
+
+**跑 `cargo test` 之前要先 `npm run stage-cli`。** CLI 是作为 sidecar 打进应用包的（见 [tauri.conf.json](src-tauri/tauri.conf.json) 的 `externalBin`），而 `tauri-build` 在**构建脚本阶段**就校验那个文件在不在 —— 少了它连 `cargo test` 都编不过。`tauri dev` / `tauri build` 会自己先跑这一步，只有直接调 `cargo` 时才需要手动补一次（`cargo clean` 之后也要重跑）。
 
 首次启动会在 `~/.signalhub/`（Windows 上是 `%USERPROFILE%\.signalhub`）下生成 `port` 和 `token` 两个文件。窗口无边框、不占任务栏也不进 Dock，**退出请用菜单栏的托盘图标**。
 

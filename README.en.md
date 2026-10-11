@@ -56,7 +56,30 @@ Three channels that do not rely on colour:
 
 **Every state has a silence timeout** (`working` 90s, `thinking` 60s, `idle` 600s, …). When it expires the session does not vanish — it turns `stale` (grey, steady) and is deleted five minutes later. That way "the agent crashed / stopped talking" and "the agent is idle and waiting" look different, and you never get a lamp that keeps blinking for an agent that is long gone.
 
-## Running it
+## Installing
+
+Grab a build from [Releases](https://github.com/iFishin/SignalHub/releases):
+
+- **macOS** — the `.dmg`; drag SignalHub into Applications. Pick `aarch64` on Apple Silicon, `x64` on Intel.
+- **Windows** — the `-setup.exe` (NSIS installer) or the `.msi`.
+
+**The builds are unsigned**, so the first launch is blocked once. On macOS, run this in a terminal:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/SignalHub.app
+```
+
+That clears the quarantine flag recursively for the whole bundle — both the app and the `signalhub` command bundled inside it. (Right-clicking the icon → Open → Open also works, but may not cover that inner command.) On Windows, click "More info" → "Run anyway" in SmartScreen.
+
+The `signalhub` command **ships inside the app** — no separate install. The one-click setup under Settings → Connect uses it. To use it in a terminal, put it on your PATH:
+
+```bash
+ln -sfn /Applications/SignalHub.app/Contents/MacOS/signalhub /usr/local/bin/signalhub
+```
+
+Pushing a tag starting with `v` builds all three packages automatically — see [.github/workflows/release.yml](.github/workflows/release.yml).
+
+## Running from source
 
 You need Node.js and a Rust toolchain.
 
@@ -64,6 +87,8 @@ You need Node.js and a Rust toolchain.
 npm install
 npm run tauri dev
 ```
+
+**Run `npm run stage-cli` before `cargo test`.** The CLI ships as a sidecar inside the app bundle (see `externalBin` in [tauri.conf.json](src-tauri/tauri.conf.json)), and `tauri-build` checks that the file exists at **build-script time** — without it, even `cargo test` fails to compile. `tauri dev` / `tauri build` run that step for you; only direct `cargo` invocations need it (and again after `cargo clean`).
 
 On first launch it creates `port` and `token` under `~/.signalhub/` (`%USERPROFILE%\.signalhub` on Windows). The window is borderless, is not in the taskbar and does not take a Dock icon — **quit it from the tray icon**.
 

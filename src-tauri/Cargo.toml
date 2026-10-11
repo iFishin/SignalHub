@@ -1,5 +1,9 @@
 [package]
-name = "signalhub"
+# **不叫 `signalhub`**，尽管另外两个名字都叫它。Tauri 不允许 sidecar 和包同名
+# （「Cannot define a sidecar with the same name as the Cargo package name」），
+# 而我们要把 CLI 作为 sidecar 打进包里（见 tauri.conf.json 的 `externalBin`）。
+# 包名本身没有被任何二进制用上 —— 两个 bin 都是显式命名的。
+name = "signalhub-desktop"
 version = "0.1.0"
 description = "Desktop floating status light for AI agents and any other program"
 authors = ["you"]

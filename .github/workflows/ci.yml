@@ -53,5 +53,13 @@ jobs:
       - name: 前端类型检查与构建
         run: npm run build
 
+      # `tauri-build` 在**构建脚本阶段**就校验 `bundle.externalBin` 里的文件在不在，
+      # 所以 `cargo test` 之前必须先把 sidecar 放好 —— 哪怕测试根本不碰它。
+      #
+      # `--debug` 让脚本走 debug 构建：测试本来就是 debug，跟着走省掉一次 release
+      # 编译。
+      - name: 暂存 CLI sidecar
+        run: node scripts/stage-cli.mjs --debug
+
       - name: Rust 测试（lib + CLI）
         run: cargo test --manifest-path src-tauri/Cargo.toml

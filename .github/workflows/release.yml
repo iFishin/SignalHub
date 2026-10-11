@@ -1,0 +1,109 @@
+name: Release
+
+# 打一个 `v` 开头的 tag 就出三份安装包。
+#
+# 为什么必须是三个 runner 而不是一台机器：**Tauri 不能交叉编译**。macOS 的
+# `.app` / `.dmg` 只能在 macOS 上打，Windows 的 `.msi` / `.exe` 只能在 Windows 上打。
+# 所以「一次出多平台安装包」唯一的路子是矩阵：每个平台各跑一台，产物汇到同一个
+# Release 里。
+#
+# 现在**没有签名**（见 README 的「安装」一节）。macOS 上第一次打开会被 Gatekeeper
+# 拦，Windows 上会被 SmartScreen 拦一道 —— 绕法写在 releaseBody 里，用户看得到。
+# 以后拿到证书，在这里补 codesign / notarytool / signtool 三步即可，其余不用动。
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  release:
+    # 建 Release、传产物都要写权限。仓库设置里 Actions 的 Workflow permissions
+    # 也得是 read and write，否则会报 "Resource not accessible by integration"。
+    permissions:
+      contents: write
+
+    strategy:
+      # 一个平台挂了也让别的跑完 —— 想知道的是「哪几个平台有问题」
+      fail-fast: false
+      matrix:
+        include:
+          # Apple Silicon 和 Intel 各打一份：一份 dmg 盖不住两种架构。第二行在
+          # arm64 的 runner 上是交叉编译，靠 rust-toolchain 那步装上目标。
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      # `args` 里那个 `--target` 会传给 tauri build，于是 `beforeBuildCommand`
+      # 跑 `scripts/stage-cli.mjs` 时能拿到同一个目标三元组，把 CLI 编译成**这份包
+      # 对应架构**的 sidecar 放进 `src-tauri/binaries/`。sidecar 必须在打包前就
+      # 在那儿 —— Tauri 只负责把它塞进包里，不会替你编译。
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: "SignalHub v__VERSION__"
+          # **草稿**：未签名的包先自己装一遍看看再公开。想打完就发布，改成 false。
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.target }}
+          releaseBody: |
+            ### 安装
+
+            **macOS** —— 下载 `.dmg`，把 SignalHub 拖进「应用程序」。
+            Apple Silicon 选 `aarch64` 那个，Intel 选 `x64`。
+
+            这一版**没有签名**，所以第一次打开会被 Gatekeeper 拦住。**推荐**在终端里跑：
+
+            ```
+            xattr -dr com.apple.quarantine /Applications/SignalHub.app
+            ```
+
+            它递归清掉整个包的隔离标记 —— 应用和打包在里面的 `signalhub` 命令都
+            覆盖到。（右键点图标 →「打开」→ 再点一次也可以，只是不保证覆盖到里面
+            那个命令。）
+
+            **Windows** —— 下载 `-setup.exe`（NSIS 安装器）或 `.msi`。
+
+            这一版**没有签名**，SmartScreen 会拦一道：点「更多信息」→「仍要运行」。
+
+            ### 命令行
+
+            `signalhub` 这个命令**已经打包在应用里了**，不用另外装 —— 设置里的
+            「接入」页一键接入时会自动用它。想在终端里直接用，把它加到 PATH：
+
+            macOS：
+
+            ```
+            ln -s /Applications/SignalHub.app/Contents/MacOS/signalhub /usr/local/bin/signalhub
+            ```
+
+            Windows（管理员 PowerShell，路径按实际安装位置改）：
+
+            ```
+            New-Item -ItemType SymbolicLink -Path "$env:LOCALAPPDATA\Microsoft\WindowsApps\signalhub.exe" -Target "C:\Program Files\SignalHub\signalhub.exe"
+            ```

@@ -284,17 +284,32 @@ pub fn config_path(agent: Agent) -> Result<PathBuf, String> {
         .ok_or_else(|| "找不到用户主目录".to_string())
 }
 
+/// 我们自己的 CLI 文件名。装了包的用户手上**没有** `signalhub` 这个命令，只有
+/// 跟着 bundle 一起进去的这个文件。
+const CLI_BINARY: &str = if cfg!(windows) {
+    "signalhub.exe"
+} else {
+    "signalhub"
+};
+
 /// 要写进配置的 hook 命令。
 ///
-/// 优先用裸名字 `signalhub`：它更可移植，用户重装或挪动二进制都不会失效。
-/// 但 PATH 里没有时就必须写绝对路径，否则装完不生效——那是最难排查的一类问题。
-/// 所以这里是「能用裸名字就用，否则退回当前可执行文件的绝对路径」。
+/// 三条路，按优先级：
+///
+/// 1. **PATH 上的裸名字 `signalhub`** —— 最可移植，用户重装或挪动 app 都不会失效，
+///    所以只要它在就用它。
+/// 2. **和当前可执行文件同目录的那个 CLI** —— 装了包的用户走这条：sidecar 就放在
+///    主二进制旁边（macOS 是 `Contents/MacOS/`，Windows 是 exe 旁边）。`tauri dev`
+///    也走这条，因为 CLI 和 app 都落在 `target/debug/` 里。
+/// 3. 都没有就退回裸名字 —— 至少是一条读得懂的命令。
+///
+/// **绝不能用 `current_exe()` 兜底**（这里原来就是那么写的）：那是 GUI 二进制，它
+/// 不认 `hook` 参数，而单实例插件会把它变成「把已经开着的窗口叫到前面」—— 不报
+/// 状态，也不报错。
 pub fn resolve_hook_command(agent: Agent) -> String {
     let program = match on_path("signalhub") {
         Some(_) => "signalhub".to_string(),
-        None => std::env::current_exe()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|_| "signalhub".to_string()),
+        None => bundled_cli().unwrap_or_else(|| "signalhub".to_string()),
     };
     // 含空格的路径必须引起来，否则被 shell 拆成两个参数
     let program = if program.chars().any(char::is_whitespace) {
@@ -303,6 +318,22 @@ pub fn resolve_hook_command(agent: Agent) -> String {
         program
     };
     format!("{program} hook {}", agent_name_for_cli(agent))
+}
+
+/// 和当前可执行文件放在一起的那个 CLI，在的话给出它的绝对路径。
+///
+/// 找不到就返回 `None`，由调用方决定怎么兜底 —— 这个函数只回答「在不在」。
+fn bundled_cli() -> Option<String> {
+    let sibling = cli_beside(&std::env::current_exe().ok()?)?;
+    sibling.exists().then(|| sibling.display().to_string())
+}
+
+/// 给定一个可执行文件路径，算出「同目录的 CLI」应该在哪。
+///
+/// 抽成纯函数是为了能单测 —— `bundled_cli` 自己依赖 `current_exe()`，测试里改不了
+/// 当前进程的可执行文件路径。
+fn cli_beside(exe: &std::path::Path) -> Option<std::path::PathBuf> {
+    Some(exe.parent()?.join(CLI_BINARY))
 }
 
 fn agent_name_for_cli(agent: Agent) -> &'static str {
@@ -1296,6 +1327,35 @@ mod tests {
     }
 
     // ---- 命令识别 ----
+
+    /// sidecar 和主二进制**在同一个目录里** —— 这是 `bundled_cli` 靠「兄弟文件」
+    /// 找到它的前提。Tauri 的 externalBin 就是这么放的（macOS 进 `Contents/MacOS/`，
+    /// Windows 放在 exe 旁边）。
+    #[test]
+    fn the_cli_sits_beside_the_main_binary() {
+        let app = std::path::Path::new("/Applications/SignalHub.app/Contents/MacOS/signalhub-app");
+        let cli = cli_beside(app).expect("同目录的 CLI 路径");
+
+        assert_eq!(cli.parent(), app.parent(), "必须在同一个目录");
+        assert_eq!(cli.file_name().unwrap(), CLI_BINARY);
+        // 这条是重点：**不能**是 GUI 二进制。它不认 hook 参数，而单实例插件会把
+        // 它变成「把已经开着的窗口叫到前面」—— 静默失效，最难查。
+        assert_ne!(cli.file_name().unwrap(), "signalhub-app");
+    }
+
+    /// 装出来的命令必须能被我们自己认出来 —— 否则卸载时找不到它、「已经装过没有」
+    /// 也会答错。`binary_name` 会剥掉 `.exe`，所以 Windows 上也成立。
+    #[test]
+    fn the_command_we_write_is_one_we_can_recognize() {
+        let cli = cli_beside(std::path::Path::new(
+            "/Applications/SignalHub.app/Contents/MacOS/signalhub-app",
+        ))
+        .unwrap();
+
+        let command = format!("{} hook claude-code", cli.display());
+        assert!(is_our_hook_command(&command), "{command}");
+        assert_eq!(binary_name(&cli.to_string_lossy()), "signalhub");
+    }
 
     #[test]
     fn our_commands_are_recognized() {

@@ -733,11 +733,17 @@ SignalHub/
 
 **关于两个二进制。** 这个包里有两个 bin：app（`signalhub-app`，源自 `src/main.rs`）和 CLI（`signalhub`，源自 `src/bin/signalhub.rs`）。两者同名会冲突，而 app 的名字用户看不到（通过 .app 启动），CLI 的名字却要写进智能体的 hook 配置里，所以让给 CLI。`[package] default-run = "signalhub-app"` 让 `cargo run`（也就是 `tauri dev`）选 app 那个，`tauri.conf.json` 的 `mainBinaryName` 同步设为 `signalhub-app`。
 
+**Cargo 包名不叫 `signalhub`，叫 `signalhub-desktop`。** 纯粹是为了绕开一条 Tauri 的限制：sidecar 不允许和包同名（「Cannot define a sidecar with the same name as the Cargo package name」）。包名本身没有被任何二进制用上 —— 两个 bin 都是显式命名的，`[lib] name = "signalhub_lib"` 也是显式的。
+
+**CLI 是作为 sidecar 打进应用包的**（`bundle.externalBin`）。这不是锦上添花：装了 `.dmg` 的用户手上没有 `signalhub` 这个命令，而「接入」页一键接入写进智能体配置的恰恰是 `signalhub hook <agent>`。不把它一起装进去，那条命令就是个跑不起来的东西 —— 而且是静默的。`resolve_hook_command` 因此按「PATH 上的裸名字 → 与主二进制同目录的那个 → 裸名字兜底」三级找它，**绝不能用 `current_exe()` 兜底**（原来就是那么写的）：那是 GUI 二进制，它不认 `hook` 参数，而单实例插件会把它变成「把已经开着的窗口叫到前面」，不报状态也不报错。
+
+**这条 sidecar 给 `cargo` 加了一个前置步骤，值得知道。** `tauri-build` 在**构建脚本阶段**就校验 `externalBin` 里的文件在不在，所以 `cargo test` 之前必须先 `npm run stage-cli`（`scripts/stage-cli.mjs`）—— 哪怕测试根本不碰那个文件。脚本内部还有一层蛋生鸡：编译这个包里的任何东西（包括 CLI 自己）都会跑 `build.rs`，于是「编译那个文件」的命令本身要求那个文件已经存在；解法是给那一次 cargo 调用设 `TAURI_CONFIG` 把 `externalBin` 临时置空。`tauri dev` / `tauri build` 会自己先跑这一步，只有直接调 `cargo` 时才需要手动补。
+
 **关于 `notify.rs`：** 状态变化的通知出口被抽成一个 `Notifier = Arc<dyn Fn(&Snapshot)>`，而不是让各处直接持有 `AppHandle`。原因是 `AppHandle` 在单测里造不出来——有了这层间接，`server.rs` 可以用一个只记数的闭包当通知器，起一个真实监听端口跑完整的 HTTP 层测试，覆盖鉴权、路由、状态码、聚合结果。这个抽象不是为未来预留的，它当场就换来了 16 个能跑的集成测试。
 
 **关于 CLI 的 crate 组织**：CLI 用 `#[path = "../config.rs"] mod config;` 直接包含源码，而不是 `use signalhub_lib::config`——后者会把整个 Tauri 拖进这个本该很小的二进制（实测 3.1MB 且不链接 Tauri）。同样的原因，它不校验状态名，只把状态字符串原样转发给服务端，避免出现两张别名表。将来若构建时间或体积成为问题，再抽成 cargo workspace 里的 `crates/signalhub-cli`。
 
-**state.rs 是关键**：它是纯逻辑、无 I/O、时间可注入（`apply(now, …)`），因此可以完整单测而不需要跑起 Tauri 或等待真实时间流逝。整个仓库的单测：`cargo test` 跑出 lib 145 + CLI 115（CLI 通过 `#[path]` 复用了 config / hooks / state 三个模块，所以两边有一部分是同一批用例）。
+**state.rs 是关键**：它是纯逻辑、无 I/O、时间可注入（`apply(now, …)`），因此可以完整单测而不需要跑起 Tauri 或等待真实时间流逝。整个仓库的单测：`cargo test` 跑出 lib 184 + CLI 134（CLI 通过 `#[path]` 复用了 config / hooks / state 三个模块，所以两边有一部分是同一批用例）。
 
 ---
 
