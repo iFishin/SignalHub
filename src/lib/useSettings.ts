@@ -11,6 +11,8 @@ export interface Settings {
   quiet: boolean;
   /** 需要你注意时弹系统通知。 */
   notify: boolean;
+  /** 出站转发目标；null 表示不转发。 */
+  webhook_url: string | null;
 }
 
 /** 与 Rust 侧 `config::Settings::default()` 一致。 */
@@ -19,6 +21,7 @@ const DEFAULTS: Settings = {
   always_on_top: true,
   quiet: true,
   notify: true,
+  webhook_url: null,
 };
 
 const SETTINGS_EVENT = "signalhub://settings";

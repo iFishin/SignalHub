@@ -2,6 +2,7 @@ mod alerts;
 mod notify;
 mod server;
 mod state;
+mod stats;
 mod sweep;
 mod tray;
 
@@ -35,6 +36,9 @@ struct UiFlags {
 }
 
 type SharedUi = Mutex<UiFlags>;
+
+/// 状态时长统计。按前端给的本地日期分桶，见 stats.rs。
+type SharedStats = Arc<Mutex<stats::Stats>>;
 
 /// 点击穿透的逃生快捷键。**穿透一旦开启，鼠标就没法再操作那个窗口**，
 /// 所以这是唯一的键盘出路（另一条是托盘菜单）。
@@ -85,7 +89,7 @@ fn set_paused(
 
 #[tauri::command]
 fn get_settings(settings: tauri::State<'_, SharedSettings>) -> Settings {
-    *settings.lock().expect("settings poisoned")
+    settings.lock().expect("settings poisoned").clone()
 }
 
 #[tauri::command]
@@ -96,19 +100,29 @@ fn set_settings(
 ) -> Result<Settings, String> {
     let settings = settings.clamped();
 
-    // 先落盘再改内存和界面：保存失败时不该出现「界面变了但重启就没了」
-    config::save_settings(settings).map_err(|err| format!("保存设置失败: {err}"))?;
+    // webhook 地址是用户输入，在系统边界上校验一次。存进去的必须是可用的，
+    // 否则会变成「每次转发都静默失败一次」，而失败只写 stderr，很难发现。
+    if let Some(url) = settings.webhook_url.as_deref() {
+        if !alerts::valid_webhook_url(url) {
+            return Err(format!(
+                "webhook 地址不合法：{url:?}（需要以 http:// 或 https:// 开头）"
+            ));
+        }
+    }
 
-    *state.lock().expect("settings poisoned") = settings;
+    // 先落盘再改内存和界面：保存失败时不该出现「界面变了但重启就没了」
+    config::save_settings(&settings).map_err(|err| format!("保存设置失败: {err}"))?;
+
+    *state.lock().expect("settings poisoned") = settings.clone();
 
     let snapshot = app
         .state::<SharedStore>()
         .lock()
         .expect("state store poisoned")
         .snapshot();
-    apply_settings(&app, settings, &snapshot);
+    apply_settings(&app, &settings, &snapshot);
     // 两个窗口都要跟着变（灯球改尺寸，设置窗改控件状态）
-    let _ = app.emit("signalhub://settings", settings);
+    let _ = app.emit("signalhub://settings", &settings);
     Ok(settings)
 }
 
@@ -127,6 +141,31 @@ fn get_endpoint() -> serde_json::Value {
 #[tauri::command]
 fn open_settings(app: tauri::AppHandle) {
     reveal_settings(&app);
+}
+
+/// 今日各状态的累计时长，按时长从多到少。
+///
+/// `today` 由前端传本地日期 —— Rust 这边没有时区数据，只有 UTC。
+#[derive(serde::Serialize)]
+struct StatRow {
+    state: Signal,
+    label: &'static str,
+    seconds: u64,
+}
+
+#[tauri::command]
+fn get_stats(stats: tauri::State<'_, SharedStats>, today: String) -> Vec<StatRow> {
+    stats
+        .lock()
+        .expect("stats poisoned")
+        .report(Instant::now(), &today)
+        .into_iter()
+        .map(|(state, duration)| StatRow {
+            state,
+            label: state.label(),
+            seconds: duration.as_secs(),
+        })
+        .collect()
 }
 
 /// 把设置窗调整到内容需要的高度。
@@ -173,16 +212,17 @@ fn set_lamp_expanded(
     // 先释放这把锁再调 apply_window_size，后者也会取它（std 的 Mutex 不可重入）
     ui.lock().expect("ui poisoned").expanded = expanded;
 
-    let settings = *app
+    let settings = app
         .state::<SharedSettings>()
         .lock()
-        .expect("settings poisoned");
+        .expect("settings poisoned")
+        .clone();
     let snapshot = app
         .state::<SharedStore>()
         .lock()
         .expect("state store poisoned")
         .snapshot();
-    apply_window_size(&app, settings, &snapshot);
+    apply_window_size(&app, &settings, &snapshot);
     expanded
 }
 
@@ -248,16 +288,17 @@ fn set_pass_through_impl(app: &tauri::AppHandle, enabled: bool) -> Result<(), St
 
     // 开启时把面板收回去，否则会留下一个点不动的大窗口
     if enabled {
-        let settings = *app
+        let settings = app
             .state::<SharedSettings>()
             .lock()
-            .expect("settings poisoned");
+            .expect("settings poisoned")
+            .clone();
         let snapshot = app
             .state::<SharedStore>()
             .lock()
             .expect("state store poisoned")
             .snapshot();
-        apply_window_size(app, settings, &snapshot);
+        apply_window_size(app, &settings, &snapshot);
 
         alerts::send_message(
             app,
@@ -290,7 +331,7 @@ fn quit(app: tauri::AppHandle) {
     app.exit(0);
 }
 
-fn apply_settings(app: &tauri::AppHandle, settings: Settings, snapshot: &Snapshot) {
+fn apply_settings(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapshot) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.set_always_on_top(settings.always_on_top);
     }
@@ -308,7 +349,7 @@ fn visible_dots(snapshot: &Snapshot) -> u16 {
 ///
 /// 只在尺寸真的变了才 `set_size`：状态变化一秒可能好几次，每次都 resize
 /// 是没必要的系统调用。
-fn apply_window_size(app: &tauri::AppHandle, settings: Settings, snapshot: &Snapshot) {
+fn apply_window_size(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapshot) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
@@ -417,6 +458,7 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(SharedStore::new(Mutex::new(Store::default())))
         .manage(SharedUi::default())
+        .manage(SharedStats::default())
         .invoke_handler(tauri::generate_handler![
             get_state,
             set_state,
@@ -430,6 +472,7 @@ pub fn run() {
             get_toggles,
             set_autostart,
             set_pass_through,
+            get_stats,
             quit
         ])
         .setup(|app| {
@@ -439,7 +482,7 @@ pub fn run() {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             let settings = config::load_settings();
-            app.manage(SharedSettings::new(settings));
+            app.manage(SharedSettings::new(settings.clone()));
 
             // 先套用尺寸和置顶，再显示：否则会先按配置里的默认尺寸闪一下
             let initial = app
@@ -447,7 +490,7 @@ pub fn run() {
                 .lock()
                 .expect("state store poisoned")
                 .snapshot();
-            apply_settings(app.handle(), settings, &initial);
+            apply_settings(app.handle(), &settings, &initial);
             if let Some(window) = app.get_webview_window("main") {
                 window.set_visible_on_all_workspaces(true)?;
                 window.show()?;
@@ -457,36 +500,12 @@ pub fn run() {
             // 让启动直接失败并打出来，好过一个「能启动但上报接口静默不工作」的 app。
             let token = config::load_or_create_token()?;
 
-            // 通知出口多包一层：每次状态变化都要先按圆点个数核对窗口尺寸、
-            // 判断该不该弹系统通知，再推给前端。放在这里而不是 sweep 里，
-            // 是因为这两件事都取决于快照内容。
-            let emit = notify::to_lamp_window(app.handle().clone());
-            let last_alerted: Arc<Mutex<Option<Signal>>> = Arc::new(Mutex::new(None));
-            let notify: Notifier = {
-                let app_handle = app.handle().clone();
-                let last_alerted = last_alerted.clone();
-                Arc::new(move |snapshot: &Snapshot| {
-                    let settings = *app_handle
-                        .state::<SharedSettings>()
-                        .lock()
-                        .expect("settings poisoned");
-                    apply_window_size(&app_handle, settings, snapshot);
-
-                    // 通知只在「新变成需要注意」时发一次，所以要记住上一次的聚合。
-                    // previous 无论是否真的发通知都要更新 —— 否则用户重新打开通知
-                    // 开关时会立刻收到一条关于「早就发生过的」状态的通知。
-                    let mut previous = last_alerted.lock().expect("alert state poisoned");
-                    if settings.notify && alerts::should_alert(*previous, snapshot.aggregate) {
-                        alerts::send(&app_handle, snapshot);
-                    }
-                    *previous = Some(snapshot.aggregate);
-
-                    emit(snapshot);
-                })
-            };
+            // 通知器只有一个构造入口（notify::compose），它把窗口尺寸、统计、
+            // 系统通知、webhook 转发、推事件这几件事一起管起来。
+            let notify: Notifier = notify::compose(app.handle().clone());
             app.manage(notify.clone());
 
-            alerts::ensure_permission(app.handle(), settings);
+            alerts::ensure_permission(app.handle(), &settings);
 
             // 全局快捷键是点击穿透唯一的键盘出路，所以先把它注册成功 ——
             // 注册失败只记日志（不阻断启动），但用户从托盘菜单仍能退出穿透。
@@ -519,9 +538,9 @@ pub fn run() {
 
             wire_settings_window(app);
             tray::init(app.handle().clone())?;
-            sweep::spawn(notify, app.state::<SharedStore>().inner().clone());
+            sweep::spawn(notify.clone(), app.state::<SharedStore>().inner().clone());
             server::spawn(
-                app.handle().clone(),
+                notify,
                 app.state::<SharedStore>().inner().clone(),
                 token,
             );

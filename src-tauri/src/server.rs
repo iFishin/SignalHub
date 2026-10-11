@@ -26,13 +26,13 @@ struct Ctx {
 }
 
 /// 绑定 127.0.0.1 并开始服务。返回后不阻塞调用方。
-pub fn spawn(app: tauri::AppHandle, store: Arc<Mutex<Store>>, token: String) {
-    let ctx = Ctx {
-        store,
-        notify: crate::notify::to_lamp_window(app),
-        token,
-        started: Instant::now(),
-    };
+///
+/// 接收 `Notifier` 而不是 `AppHandle`：**必须用 app 里 manage 的那个组合版
+/// 通知器**，它除了推事件给前端，还要核对窗口尺寸、记统计、发通知和转发。
+/// 这里若自己构造一个（早先就是这么写的），HTTP 上报这条路径就会绕过
+/// 那一整套逻辑 —— 而智能体的 hook 恰好全部走这条路。
+pub fn spawn(notify: Notifier, store: Arc<Mutex<Store>>, token: String) {
+    let ctx = Ctx { store, notify, token, started: Instant::now() };
 
     tauri::async_runtime::spawn(async move {
         let listener = match tokio::net::TcpListener::bind(("127.0.0.1", PREFERRED_PORT)).await {

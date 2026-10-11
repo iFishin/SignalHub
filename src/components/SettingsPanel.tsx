@@ -8,6 +8,7 @@ import {
   setAutostart,
   setPassThrough,
 } from "../lib/useToggles";
+import { useStats } from "../lib/useStats";
 import type { Snapshot } from "../lib/types";
 
 /** 与 Rust 侧 config.rs 的 MIN_SIZE / MAX_SIZE / DEFAULT_SIZE 保持一致。 */
@@ -50,9 +51,20 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   );
 }
 
+/** 把秒数写成人看的时长：45s / 12m / 2h14m。 */
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${hours}h` : `${hours}h${rest}m`;
+}
+
 export function SettingsPanel({ snapshot }: Props) {
   const settings = useSettings();
   const toggles = useToggles();
+  const stats = useStats();
   const [endpoint, setEndpoint] = useState<Endpoint | null>(null);
   const [error, setError] = useState<string | null>(null);
   const panel = useRef<HTMLDivElement>(null);
@@ -78,6 +90,18 @@ export function SettingsPanel({ snapshot }: Props) {
   }, []);
 
   const reported = (err: unknown) => setError(String(err));
+
+  // 转发地址的编辑草稿。null 表示「没在编辑」，显示已保存的值。
+  const [webhookDraft, setWebhookDraft] = useState<string | null>(null);
+
+  const commitWebhook = () => {
+    if (webhookDraft === null) return;
+    const next = webhookDraft.trim();
+    setWebhookDraft(null);
+    if (next === (settings.webhook_url ?? "")) return; // 没改就别白存一次
+    setError(null);
+    updateSettings({ ...settings, webhook_url: next || null }).catch(reported);
+  };
 
   const patch = (next: Partial<Settings>) => {
     setError(null);
@@ -106,6 +130,15 @@ export function SettingsPanel({ snapshot }: Props) {
           ? "监控已暂停：灯球显示熄灭，但会话仍在记录"
           : (snapshot.message ?? `${snapshot.sessions.length} 个会话`)}
       </p>
+
+      {stats.length > 0 && (
+        <p className="stats">
+          今日{" "}
+          {stats
+            .map((row) => `${row.label} ${formatDuration(row.seconds)}`)
+            .join(" · ")}
+        </p>
+      )}
 
       <div className="section">
         <div className="section-title">灯球</div>
@@ -144,6 +177,29 @@ export function SettingsPanel({ snapshot }: Props) {
           <Switch on={settings.notify} onChange={(on) => patch({ notify: on })} />
         </Row>
         <p className="hint">需要授权、需要关注或出错时弹一条系统通知。</p>
+
+        {/* 转发地址只在失焦或回车时提交 —— 每敲一个字就存盘和发 IPC 太浪费，
+            而且中间态（还没敲完的 URL）会被校验拒绝。 */}
+        <div className="field">
+          <label htmlFor="webhook">转发到</label>
+          <input
+            id="webhook"
+            className="input"
+            type="url"
+            spellCheck={false}
+            placeholder="https://ntfy.sh/my-topic"
+            value={webhookDraft ?? settings.webhook_url ?? ""}
+            onChange={(event) => setWebhookDraft(event.target.value)}
+            onBlur={commitWebhook}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") event.currentTarget.blur();
+            }}
+          />
+        </div>
+        <p className="hint">
+          填了就把需要注意的状态 POST 到该地址（ntfy / Slack / 自建接口都行），
+          与系统通知同一个触发时机。留空则不转发。
+        </p>
       </div>
 
       <div className="section">

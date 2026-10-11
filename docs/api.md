@@ -479,7 +479,7 @@ Cursor 的 **`stop` 事件带 `status`（`completed` / `aborted` / `error`）**�
 
 只有当 Cursor 的 hook 返回 `permission: allow|deny|ask` 时才涉及授权，而上报型 hook 不返回这个字段，因此**就没有对应的「需要授权」事件可映射**——这是 Cursor 侧的能力缺口，不要在文档里假装有。
 
-### 4.9 hook 调用日志
+### 4.8 hook 调用日志
 
 hook 模式会把每次调用追加到 `~/.signalhub/hooks.log`：
 
@@ -495,7 +495,50 @@ hook 模式会把每次调用追加到 `~/.signalhub/hooks.log`：
 
 日志超过 512KB 会轮转一次（`hooks.log.1`），只保留一代。写日志失败一律忽略——为了记日志而弄坏智能体的 hook 是本末倒置。
 
-### 4.8 不用 CLI 的最小接入
+### 4.9 出站转发（SignalHub 往外发）
+
+这是唯一一个方向相反的接口：设置里填一个 URL，SignalHub 就会在聚合**新变成** `permission` / `attention` / `error` 时往它 POST 一段 JSON。用于手机推送（ntfy）、团队频道（Slack）、或自建服务。
+
+触发时机与系统通知**完全相同**（`should_alert`），但开关独立——有人只想要手机推送、不想要系统弹窗，反之亦然。
+
+**请求**：`POST <你填的 URL>`，`Content-Type: application/json`
+
+```json
+{
+  "snapshot": {
+    "aggregate": "permission",
+    "paused": false,
+    "since_ms": 1791683689000,
+    "message": "需要批准: rm -rf build",
+    "sessions": [
+      {
+        "id": "abc123",
+        "state": "permission",
+        "agent": "claude-code",
+        "cwd": "/Users/me/proj",
+        "message": "需要批准: rm -rf build",
+        "age_ms": 4200,
+        "stale_progress": null
+      }
+    ]
+  },
+  "at_ms": 1791683690537
+}
+```
+
+`snapshot` 与 `GET /v1/state` 的结构完全一致；`at_ms` 是发送时刻（epoch 毫秒）——接收方多半要记时间，而 `since_ms` 是状态起点。
+
+**行为约定**：
+
+- 只在新跃迁时发一次，不是每次状态变化都发。一轮工具调用会触发几十次推送。
+- 异步发送，带 3s 连接 / 8s 总超时。**目标服务挂掉不会影响 SignalHub 的状态机**。
+- 失败只写 stderr（`[signalhub] webhook 转发失败（<url>）: …`），不重试。本地状态灯不该因为远端不可达而变复杂。
+- URL 在保存时就校验（必须 `http://` 或 `https://` 开头），不合格会拒绝保存并说明原因——否则会变成「每次转发都静默失败一次」。
+- 留空 = 关闭转发。
+
+**ntfy 示例**：地址填 `https://ntfy.sh/<你的主题>` 即可，ntfy 会忽略 JSON body 里不认识的字段并显示一条通知。
+
+### 4.10 不用 CLI 的最小接入
 
 任何程序只要能发 HTTP 就能上报，无需安装 CLI：
 

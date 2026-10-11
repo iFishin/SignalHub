@@ -47,8 +47,11 @@ serde_json = "1"
 tokio = { version = "1", features = ["time", "net", "io-util", "macros", "rt-multi-thread"] }
 # getrandom 已在 Tauri 的依赖树里，复用版本可以避免重复编译
 getrandom = "0.3"
-# CLI 用的 HTTP 客户端。只连本机明文端口，所以关掉默认的 TLS 特性。
-ureq = { version = "3", default-features = false }
+# CLI 的 HTTP 客户端（app 侧发 webhook 也用它）。
+# 关掉默认的 gzip 但**必须留 rustls** —— webhook 目标（ntfy / Slack）都是
+# HTTPS。选 rustls 而不是 native-tls 是因为后者在 Linux 上要系统 libssl，
+# 跨平台构建会多一道坎。
+ureq = { version = "3", default-features = false, features = ["rustls"] }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

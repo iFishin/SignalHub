@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// 直到 TTL 到期，用户看不出区别。
 const STALE_GRACE: Duration = Duration::from_secs(5 * 60);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Signal {
     /// 一个会话都没有。派生状态，不可上报。

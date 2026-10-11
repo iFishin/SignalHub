@@ -45,6 +45,15 @@ html[data-window="settings"] #root {
   overflow-wrap: anywhere;
 }
 
+/* 今日时长汇总。紧跟在标题下 —— 它是「今天整体怎么样」，和上面那条
+   「现在怎么样」是一组。 */
+.settings .stats {
+  margin: -10px 0 18px;
+  color: var(--muted);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
 .section {
   padding-top: 14px;
   border-top: 1px solid var(--line);
@@ -207,6 +216,41 @@ html[data-window="settings"] #root {
   flex: none;
   width: 52px;
   color: var(--muted);
+}
+
+/* ---- 文本输入 ---- */
+
+.field {
+  margin-top: 8px;
+}
+
+.field label {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+}
+
+.input::placeholder {
+  color: var(--muted);
+  opacity: 0.75;
+}
+
+.input:focus {
+  border-color: var(--accent);
+  outline: none;
 }
 
 /* ---- 会话列表 ---- */

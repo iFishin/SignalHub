@@ -120,7 +120,9 @@ pub fn hook_log_path() -> io::Result<PathBuf> {
 /// 加 `serde(default)` 是为了向前兼容：这是用户可手改、也会跨版本留存的文件，
 /// 缺字段时应退回该字段的默认值，而不是整份解析失败 —— 否则每次新增设置项
 /// 都会把用户已经调好的其他设置一起重置。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// 不派生 `Copy`：`webhook_url` 是 `Option<String>`。相关方法因此都取 `&self`。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     /// 圆点直径（px）
@@ -131,11 +133,20 @@ pub struct Settings {
     pub quiet: bool,
     /// 需要你注意（授权 / 关注 / 出错）时弹系统通知。
     pub notify: bool,
+    /// 出站转发目标。填了就说明「不止本地想知道」，聚合进入需要注意的状态时
+    /// 会往这里 POST 一段 JSON（ntfy / Slack / 自建接口都行）。
+    pub webhook_url: Option<String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { size: DEFAULT_SIZE, always_on_top: true, quiet: true, notify: true }
+        Self {
+            size: DEFAULT_SIZE,
+            always_on_top: true,
+            quiet: true,
+            notify: true,
+            webhook_url: None,
+        }
     }
 }
 
@@ -144,6 +155,13 @@ impl Settings {
     /// 和前端传来的值。
     pub fn clamped(mut self) -> Self {
         self.size = self.size.clamp(MIN_SIZE, MAX_SIZE);
+        // 空白串等于「不转发」，归一成 None，免得每次转发都白试一次
+        self.webhook_url = self
+            .webhook_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+            .map(str::to_string);
         self
     }
 
@@ -152,7 +170,7 @@ impl Settings {
     /// 只有一个会话时窗口仍是 `size + LAMP_MARGIN` 的方形（默认 22+20=42）——
     /// 多点只在真有多个会话时才占宽。否则一个常驻的宽透明窗口会白白吃掉桌面的
     /// 点击，而那正是这个工具最不该有的副作用。
-    pub fn window_size(self, dots: u16) -> (u16, u16) {
+    pub fn window_size(&self, dots: u16) -> (u16, u16) {
         let dots = dots.clamp(1, MAX_DOTS);
         let gap = self.size / 3;
         let width = dots * self.size + (dots - 1) * gap + LAMP_MARGIN;
@@ -161,7 +179,7 @@ impl Settings {
     }
 
     /// 展开面板的尺寸。行数取会话数，至少一行（避免出现一个空面板）。
-    pub fn panel_size(self, rows: u16) -> (u16, u16) {
+    pub fn panel_size(&self, rows: u16) -> (u16, u16) {
         let rows = rows.max(1);
         (PANEL_WIDTH, PANEL_CHROME + rows * PANEL_ROW)
     }
@@ -189,8 +207,8 @@ pub fn load_settings() -> Settings {
     }
 }
 
-pub fn save_settings(settings: Settings) -> io::Result<()> {
-    let settings = settings.clamped();
+pub fn save_settings(settings: &Settings) -> io::Result<()> {
+    let settings = settings.clone().clamped();
     let json = serde_json::to_string_pretty(&settings)
         .map_err(|err| io::Error::other(format!("序列化设置失败: {err}")))?;
     fs::write(settings_file()?, json)

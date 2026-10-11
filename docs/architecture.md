@@ -213,6 +213,39 @@ width = dots * size + (dots - 1) * (size / 3) + LAMP_MARGIN
 
 > **dev 模式的限制**：`tauri dev` 跑的是未打包的裸二进制，而 macOS 的 `UNUserNotificationCenter` 需要 bundle identifier。所以通知在 dev 下可能**不显示**（调用本身会成功、不报错）。要确认真的能弹，得 `npm run tauri build` 出真正的 .app。这一点没在 dev 下验证过，不要当成已验证。
 
+**出站转发**用同一个触发判断（`should_alert`），但**独立开关**：设置里填一个 URL，就会把快照 POST 过去（ntfy / Slack / 自建接口都行）。两个设计点：
+
+1. **必须异步。** 转发是在状态变更路径上被调用的（HTTP 上报和 sweep 都会触发），同步发一个网络请求会把状态机卡住。所以走 `spawn_blocking`，并带 3s/8s 超时——目标服务挂掉不该拖累灯球。
+2. **URL 在 `set_settings` 里校验。** 存进去的必须是可用的，否则会变成「每次转发都静默失败一次」，而失败只写 stderr，很难发现。
+
+`ureq` 因此**必须带 rustls**（webhook 目标都是 HTTPS）。选 rustls 而不是 native-tls，是因为后者在 Linux 上要系统 libssl，跨平台构建会多一道坎。
+
+### 3.15 一个把三个功能同时静默废掉的接线 bug
+
+这一条值得单独记，因为它的形态很典型。
+
+现象：webhook 配好了、地址正确，但从不发出；系统通知也从没弹过。
+
+根因：**通知器有两个构造方式**。`notify::to_lamp_window(app)` 只负责把事件推给前端窗口；而 lib.rs 在 setup 里组合了一个「推事件 + 核对窗口尺寸 + 记统计 + 发通知 + 转发」的闭包，把它 `manage` 进 Tauri state。但 `server::spawn` 自己又调了一次 `notify::to_lamp_window(app)` —— 于是**所有走 HTTP 上报的状态变化全部绕过了那一整套逻辑**。而智能体的 hook 恰好全走 HTTP。
+
+更糟的是它**不报错**：`alerts::send` 和 `alerts::forward` 根本没被调用，所以既没有通知、也没有失败日志。我早先「通知没有报错」的验证是个**假阴性**——它验证的是「没有错误」，而真相是「没有尝试」。
+
+**修法不是补一处调用，而是去掉另一种构造方式**：把组合逻辑收进 `notify::compose(app)`，让它成为唯一入口，`to_lamp_window` 降级为模块私有的 `emit`。这样「某个路径用错通知器」在结构上就不可能发生。
+
+教训：**当一个功能有多条入口路径（HTTP / sweep / 命令 / 托盘）时，共享的那层逻辑必须只有一个构造点**。否则漏掉一条路径的表现不是报错，而是「功能静默不生效」。
+
+### 3.16 今日状态时长统计
+
+按「前端给的本地日期」分桶——**本地日期只有前端知道**（Rust 这边没有时区数据，`SystemTime` 只给 UTC），所以由前端在查询时带过来（`new Date().toLocaleDateString("sv")` 给的就是本地时区的 ISO 日期）；日期一变就重置。这样不必引入时区依赖。
+
+三个不显然的点：
+
+1. **第一次拿到日期只记下来，不清空。** 否则从启动到第一次查询之间累计的时间会被白扔——而第一次查询往往发生在用户打开设置窗时。
+2. **跨天时当前这段也重新起算**，否则会把昨天那段算进今天。
+3. **查询会把「正在进行的那一段」也算进去**，所以不必等状态变化就能看到当前进度；结算完立刻把这段重新打开，否则反复查询会漏时间。
+
+时长平局时按优先级排——否则顺序取决于 `HashMap` 的迭代顺序，界面每次刷新都可能换个次序。
+
 ### 3.9 窗口位置记忆
 
 用 `tauri-plugin-window-state`，但**只让它记位置，不记尺寸**：
@@ -475,8 +508,8 @@ SignalHub/
 | 6g | 单实例、开机自启、全局快捷键、点击穿透 | ✅ 已完成 |
 | 6h | 设置窗按内容自动定高（不再手工量） | ✅ 已完成 |
 | 7a | `signalhub watch`：终端跟随 / CI 里等状态 | ✅ 已完成 |
-| 7b | 出站 webhook / ntfy 转发 | ⏳ 待做（配置格式待定） |
-| 7c | 今日状态时长统计 | ⏳ 待做（展示方式待定） |
+| 7b | 出站 webhook 转发 | ✅ 已完成 |
+| 7c | 今日状态时长统计 | ✅ 已完成 |
 | 7d | 把 CLI 作为 sidecar 打进 app bundle | ⏳ 待做（分发才需要） |
 
 三处偏离原计划的地方，都记在这里以免以后当成疏漏：
@@ -500,7 +533,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["time", "net", "io-util", "macros", "rt-multi-thread"] }
 getrandom = "0.3"             # 已在 Tauri 依赖树里，复用版本即免一次编译；用于生成 token
-ureq = { version = "3", default-features = false }   # CLI 的 HTTP 客户端，关掉默认 TLS
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+#   ↑ CLI 连本机明文端口用不上 TLS，但 app 侧的出站 webhook 目标
+#     （ntfy / Slack）都是 HTTPS，所以必须带 rustls
 tauri-plugin-window-state = "2"   # 只用来记窗口位置，见 §3.9
 tauri-plugin-notification = "2"   # 需要你注意时弹通知，见 §3.8
 tauri-plugin-single-instance = "2"  # 多开会抢端口和状态文件，见 §3.12
