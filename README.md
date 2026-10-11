@@ -1,8 +1,10 @@
 # SignalHub
 
+**中文** · [English](README.en.md)
+
 跨平台的桌面悬浮状态指示器。一组始终置顶、可拖拽的透明状态牌，用颜色和明暗节奏表示当前状态；左键点一下可以折叠成一颗单纯的灯。
 
-优先适配 AI 智能体（Claude Code / Codex / Cursor），但**不绑定智能体**——任何程序只要能发一个 HTTP 请求就能上报状态。
+优先适配 AI 智能体（Claude Code / Codex / Cursor / Gemini CLI / Goose），但**不绑定智能体**——任何程序只要能发一个 HTTP 请求就能上报状态。
 
 ## 状态
 

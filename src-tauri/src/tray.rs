@@ -219,20 +219,7 @@ pub fn sync(app: &AppHandle, state: Signal, follows: bool, colors: &BTreeMap<Str
 /// 托盘是这台没有 Dock 图标、窗口又不可关闭的应用**唯一**的退出入口，
 /// 所以它在 Phase 1 就必须存在，不属于后续打磨项。
 pub fn init(app: AppHandle) -> tauri::Result<()> {
-    // 这些构造器都要求传 &M（M: Manager），所以统一用 &app
-    let toggle = MenuItem::with_id(&app, "toggle", "显示 / 隐藏灯球", true, None::<&str>)?;
-    let settings = MenuItem::with_id(&app, "settings", "设置…", true, None::<&str>)?;
-    let pause = MenuItem::with_id(&app, "pause", "暂停 / 恢复监控", true, None::<&str>)?;
-    // 故意不显示「开 / 关」状态：快捷键也能切换它，菜单里的状态会漂移。
-    // 准确状态在设置面板里（get_toggles）。
-    let pass_through = MenuItem::with_id(&app, "pass_through", "切换点击穿透", true, None::<&str>)?;
-    // 折叠后只剩一个点，没有别的入口切回来 —— 所以托盘这一项是必需的
-    let collapsed = MenuItem::with_id(&app, "collapsed", "展开 / 折叠外形", true, None::<&str>)?;
-    let quit = MenuItem::with_id(&app, "quit", "退出 SignalHub", true, None::<&str>)?;
-    let menu = Menu::with_items(
-        &app,
-        &[&toggle, &settings, &pause, &pass_through, &collapsed, &quit],
-    )?;
+    let menu = build_menu(&app, crate::current_lang(&app))?;
 
     TrayIconBuilder::with_id("signalhub")
         // 托盘用单独的单色字形，**不用应用图标**：应用图标是深色圆角方块 +
@@ -279,6 +266,46 @@ pub fn init(app: AppHandle) -> tauri::Result<()> {
         .build(&app)?;
 
     Ok(())
+}
+
+/// 按当前语言重建托盘菜单。
+///
+/// 菜单是启动时建好就一直挂着的，换语言只能整个换掉 —— 逐项改文案需要把
+/// `MenuItem` 存下来，而那些句柄除了这一件事之外没有任何用处。
+///
+/// 菜单项的 **id 不变**，所以 `on_menu_event` 那个分派不用动。
+pub fn rebuild_menu(app: &AppHandle, lang: crate::lang::Lang) {
+    let Some(tray) = app.tray_by_id("signalhub") else {
+        return;
+    };
+    match build_menu(app, lang) {
+        Ok(menu) => {
+            if let Err(err) = tray.set_menu(Some(menu)) {
+                eprintln!("[signalhub] 重建托盘菜单失败: {err}");
+            }
+        }
+        Err(err) => eprintln!("[signalhub] 构造托盘菜单失败: {err}"),
+    }
+}
+
+fn build_menu(app: &AppHandle, lang: crate::lang::Lang) -> tauri::Result<Menu<tauri::Wry>> {
+    let t = crate::lang::text(lang);
+    // 这些构造器都要求传 &M（M: Manager），所以统一用 app
+    let toggle = MenuItem::with_id(app, "toggle", t.tray_show_hide, true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", t.tray_settings, true, None::<&str>)?;
+    let pause = MenuItem::with_id(app, "pause", t.tray_pause, true, None::<&str>)?;
+    // 故意不显示「开 / 关」状态：快捷键也能切换它，菜单里的状态会漂移。
+    // 准确状态在设置面板里（get_toggles）。
+    let pass_through =
+        MenuItem::with_id(app, "pass_through", t.tray_pass_through, true, None::<&str>)?;
+    // 折叠后只剩一个点，没有别的入口切回来 —— 所以托盘这一项是必需的
+    let collapsed = MenuItem::with_id(app, "collapsed", t.tray_collapsed, true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", t.tray_quit, true, None::<&str>)?;
+
+    Menu::with_items(
+        app,
+        &[&toggle, &settings, &pause, &pass_through, &collapsed, &quit],
+    )
 }
 
 fn toggle_lamp(app: &AppHandle) {

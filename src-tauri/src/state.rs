@@ -95,26 +95,6 @@ impl Signal {
         }
     }
 
-    /// 中文名。**只用于系统通知的文案** —— 界面上的文案在前端的 `signals.ts`。
-    ///
-    /// 在这里重复一份是因为通知由 Rust 侧发出（比前端可靠：webview 出问题也
-    /// 照发）。match 是穷尽的，所以新增状态时编译器会强制补上标签，
-    /// 不会静默漏掉。
-    pub fn label(self) -> &'static str {
-        match self {
-            Signal::Offline => "没有智能体在上报",
-            Signal::Off => "已暂停监控",
-            Signal::Stale => "会话已沉默",
-            Signal::Idle => "空闲",
-            Signal::Done => "已完成",
-            Signal::Thinking => "推理中",
-            Signal::Working => "执行中",
-            Signal::Attention => "需要关注",
-            Signal::Permission => "需要授权",
-            Signal::Error => "出错 / 阻塞",
-        }
-    }
-
     /// 全部状态名，含派生状态。
     ///
     /// `parse` 刻意**不接受** `stale` / `offline`（它们是聚合产物，不能被上报），

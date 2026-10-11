@@ -290,7 +290,8 @@ pub fn send(app: &tauri::AppHandle, snapshot: &Snapshot, sound: bool, muted: &[S
     // 标题也要用**排除静音组之后**的聚合值：用全局那个的话，全局最高恰好在
     // 一个被静音的组里时，标题会写着那一组的状态，而正文却是另一组的会话 ——
     // 一条自己跟自己不一致的通知。
-    let title = alerting_aggregate(snapshot, muted).label();
+    let lang = crate::current_lang(app);
+    let title = crate::lang::signal_label(lang, alerting_aggregate(snapshot, muted));
     // 记下这条通知说的是谁：按钮回调时状态可能已经变了，见 AlertTarget 的说明
     app.state::<LastAlert>().set(target_for(snapshot, muted));
     show(
@@ -343,10 +344,11 @@ fn show(
 /// 的线程最多就是「今天弹过几条通知」那么多，不值得为它绕路。
 pub fn wire_actions(app: &tauri::AppHandle) {
     let notification = app.notification();
+    let t = crate::lang::text(crate::current_lang(app));
 
     let actions = vec![
-        Action::builder(ACTION_REVEAL, "打开项目目录").build(),
-        Action::builder(ACTION_MUTE, "静音该组").build(),
+        Action::builder(ACTION_REVEAL, t.action_reveal).build(),
+        Action::builder(ACTION_MUTE, t.action_mute).build(),
     ];
     let action_type = ActionType::builder(ACTION_TYPE_ID).actions(actions).build();
 

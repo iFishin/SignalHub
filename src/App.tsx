@@ -6,6 +6,7 @@ import { useSignal } from "./lib/useSignal";
 import { useSettings } from "./lib/useSettings";
 import { usePalettePush } from "./lib/palettes";
 import { useLocalHour } from "./lib/useLocalHour";
+import { useLangPush } from "./lib/i18n";
 import { inTauri, windowKind } from "./lib/env";
 import { REPORTABLE_SIGNALS } from "./lib/types";
 
@@ -58,6 +59,7 @@ export default function App() {
   // 每个状态解析出来的颜色（托盘图标要用）。见各自的注释。
   useLocalHour();
   usePalettePush(settings);
+  useLangPush();
   useDevKeys();
   useQuitShortcut();
 

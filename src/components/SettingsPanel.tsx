@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { inTauri } from "../lib/env";
-import { SIGNAL_LABEL } from "../lib/signals";
+import { signalLabel } from "../lib/signals";
+import { useLang, useMessages, type Lang, type Messages } from "../lib/i18n";
 import { useSettings, updateSettings, type Settings, type Shape, type Palette, type Hook, type StateStyle } from "../lib/useSettings";
 import {
   useToggles,
@@ -11,37 +12,45 @@ import {
 import { useStats } from "../lib/useStats";
 import { useTimeline, type TimelineSegment } from "../lib/useTimeline";
 import { colorVars, resolveColors } from "../lib/palettes";
-import { PRESETS, isActivePreset, STYLE_PRESETS, isActiveStylePreset } from "../lib/presets";
+import { presets, isActivePreset, stylePresets, isActiveStylePreset } from "../lib/presets";
 import { SIGNALS, type Snapshot } from "../lib/types";
 
 /** 与 Rust 侧 config.rs 的 MIN_SIZE / MAX_SIZE / DEFAULT_SIZE 保持一致。 */
-const SIZES = [
-  { label: "小", value: 16 },
-  { label: "中", value: 22 },
-  { label: "大", value: 32 },
-];
+function sizeOptions(m: Messages): { label: string; value: number }[] {
+  return [
+    { label: m.sizeSmall, value: 16 },
+    { label: m.sizeMedium, value: 22 },
+    { label: m.sizeLarge, value: 32 },
+  ];
+}
 
 /** 与 Rust 侧 `config::Shape` 一致。 */
-const SHAPES: { label: string; value: Shape }[] = [
-  { label: "圆", value: "circle" },
-  { label: "圆角方", value: "rounded" },
-  { label: "环", value: "ring" },
-];
+function shapeOptions(m: Messages): { label: string; value: Shape }[] {
+  return [
+    { label: m.shapeCircle, value: "circle" },
+    { label: m.shapeRounded, value: "rounded" },
+    { label: m.shapeRing, value: "ring" },
+  ];
+}
 
 /** 与 Rust 侧 `config::Palette` 一致。给预设而不是任意取色。 */
-const PALETTES: { label: string; value: Palette }[] = [
-  { label: "默认", value: "default" },
-  { label: "色盲友好", value: "colorblind" },
-  { label: "高饱和", value: "vivid" },
-];
+function paletteOptions(m: Messages): { label: string; value: Palette }[] {
+  return [
+    { label: m.paletteDefault, value: "default" },
+    { label: m.paletteColorblind, value: "colorblind" },
+    { label: m.paletteVivid, value: "vivid" },
+  ];
+}
 
 /** 牌上可以单独关掉的四段内容。顺序就是它们在牌上出现的顺序。 */
-const FIELDS: { key: keyof Settings["show"]; label: string }[] = [
-  { key: "name", label: "组名" },
-  { key: "state", label: "状态" },
-  { key: "age", label: "已持续" },
-  { key: "message", label: "消息" },
-];
+function fieldOptions(m: Messages): { key: keyof Settings["show"]; label: string }[] {
+  return [
+    { key: "name", label: m.fieldName },
+    { key: "state", label: m.fieldState },
+    { key: "age", label: m.fieldAge },
+    { key: "message", label: m.fieldMessage },
+  ];
+}
 
 /** 与 Rust 侧 config.rs 的 MIN_BLINK_SPEED / MAX_BLINK_SPEED 一致。 */
 const BLINK_RANGE = { min: 50, max: 200 };
@@ -53,54 +62,46 @@ const BLINK_RANGE = { min: 50, max: 200 };
  * 慢一点」本来也就那么几档。配置文件里手写的、不在这张表里的值会临时补一个
  * 选项进去（见下面的 `extraBlink`），不会显示成空白。
  */
-const BLINK_OPTIONS: { label: string; value: string }[] = [
-  { label: "跟随", value: "" },
-  { label: "常亮", value: "0" },
-  { label: "2.0s", value: "2000" },
-  { label: "1.2s", value: "1200" },
-  { label: "0.7s", value: "700" },
-  { label: "0.4s", value: "400" },
-  { label: "0.2s", value: "200" },
-];
+function blinkOptions(m: Messages): { label: string; value: string }[] {
+  return [
+    { label: m.follow, value: "" },
+    { label: m.solid, value: "0" },
+    { label: "2.0s", value: "2000" },
+    { label: "1.2s", value: "1200" },
+    { label: "0.7s", value: "700" },
+    { label: "0.4s", value: "400" },
+    { label: "0.2s", value: "200" },
+  ];
+}
 
 /** 勿扰时段的起止小时。只有小时没有分钟 —— 见 config::QuietHours 的说明。 */
 const HOURS = Array.from({ length: 24 }, (_, hour) => hour);
 
 /** 「持续多久才提醒」的档位。0 = 立刻。 */
-const ALERT_DELAYS: { label: string; value: number }[] = [
-  { label: "立刻", value: 0 },
-  { label: "3 秒", value: 3 },
-  { label: "5 秒", value: 5 },
-  { label: "10 秒", value: 10 },
-  { label: "30 秒", value: 30 },
-  { label: "1 分钟", value: 60 },
-];
+function alertDelayOptions(m: Messages): { label: string; value: number }[] {
+  return [
+    { label: m.delayNow, value: 0 },
+    { label: m.seconds(3), value: 3 },
+    { label: m.seconds(5), value: 5 },
+    { label: m.seconds(10), value: 10 },
+    { label: m.seconds(30), value: 30 },
+    { label: m.oneMinute, value: 60 },
+  ];
+}
 
 type Tab = "status" | "look" | "style" | "alert" | "connect" | "hooks" | "system";
 
-const TABS: { id: Tab; label: string }[] = [
-  { id: "status", label: "状态" },
-  { id: "look", label: "外观" },
-  { id: "style", label: "灯效" },
-  { id: "alert", label: "提醒" },
-  { id: "connect", label: "接入" },
-  { id: "hooks", label: "钩子" },
-  { id: "system", label: "系统" },
-];
-
-/** 状态名的短标签，给钩子过滤条件的那些小按钮用（10 个要挤在一行里换行）。 */
-const SHORT_LABEL: Record<string, string> = {
-  idle: "空闲",
-  thinking: "推理",
-  working: "执行",
-  done: "完成",
-  attention: "关注",
-  permission: "授权",
-  error: "出错",
-  stale: "沉默",
-  offline: "离线",
-  off: "暂停",
-};
+function tabOptions(m: Messages): { id: Tab; label: string }[] {
+  return [
+    { id: "status", label: m.tabStatus },
+    { id: "look", label: m.tabLook },
+    { id: "style", label: m.tabStyle },
+    { id: "alert", label: m.tabAlert },
+    { id: "connect", label: m.tabConnect },
+    { id: "hooks", label: m.tabHooks },
+    { id: "system", label: m.tabSystem },
+  ];
+}
 
 interface Endpoint {
   port: number | null;
@@ -185,7 +186,15 @@ function formatDuration(seconds: number): string {
  * 每一段的**宽度就是它的时长** —— 一眼看出这半小时都在干什么，以及哪一段是不是
  * 卡了很久。今日统计回答「一共多久」，这条回答「什么时候」，两个问题不一样。
  */
-function TimelineStrip({ segments }: { segments: TimelineSegment[] }) {
+function TimelineStrip({
+  segments,
+  m,
+  lang,
+}: {
+  segments: TimelineSegment[];
+  m: Messages;
+  lang: Lang;
+}) {
   if (segments.length === 0) return null;
 
   return (
@@ -199,15 +208,15 @@ function TimelineStrip({ segments }: { segments: TimelineSegment[] }) {
             // 时长决定宽度。极短的一段也留 1px —— 否则它会在视觉上消失，而
             // 「只闪了一下」恰恰可能是要看的东西
             style={{ flexGrow: Math.max(segment.ms, 1) }}
-            title={`${SIGNAL_LABEL[segment.state]} · ${formatDuration(
+            title={`${signalLabel(lang, segment.state)} · ${formatDuration(
               Math.round(segment.ms / 1000),
             )}`}
           />
         ))}
       </div>
       <div className="timeline-axis">
-        <span>30 分钟前</span>
-        <span>现在</span>
+        <span>{m.timelineStart}</span>
+        <span>{m.timelineNow}</span>
       </div>
     </div>
   );
@@ -218,6 +227,15 @@ export function SettingsPanel({ snapshot }: Props) {
   const toggles = useToggles();
   const stats = useStats();
   const timeline = useTimeline(snapshot.aggregate);
+  const m = useMessages();
+  const lang = useLang();
+  const sizes = sizeOptions(m);
+  const shapes = shapeOptions(m);
+  const palettes = paletteOptions(m);
+  const fields = fieldOptions(m);
+  const blinkChoices = blinkOptions(m);
+  const alertChoices = alertDelayOptions(m);
+  const tabs = tabOptions(m);
   const [tab, setTab] = useState<Tab>("status");
   const [endpoint, setEndpoint] = useState<Endpoint | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -313,34 +331,32 @@ export function SettingsPanel({ snapshot }: Props) {
       case "status":
         return (
           <>
-            <TimelineStrip segments={timeline} />
+            <TimelineStrip segments={timeline} m={m} lang={lang} />
 
             {(settings.hidden_groups.length > 0 ||
               settings.muted_groups.length > 0) && (
               <div className="row hidden-summary">
                 <span className="muted-text">
                   {settings.hidden_groups.length > 0 &&
-                    `灯上隐藏 ${settings.hidden_groups.length} 组`}
+                    m.hiddenOnLamp(settings.hidden_groups.length)}
                   {settings.hidden_groups.length > 0 &&
                     settings.muted_groups.length > 0 &&
                     " · "}
                   {settings.muted_groups.length > 0 &&
-                    `静音 ${settings.muted_groups.length} 组`}
+                    m.mutedGroups(settings.muted_groups.length)}
                 </span>
                 <button
                   type="button"
                   className="btn btn-tiny"
                   onClick={() => patch({ hidden_groups: [], muted_groups: [] })}
                 >
-                  全部恢复
+                  {m.restoreAll}
                 </button>
               </div>
             )}
 
             {snapshot.groups.length === 0 ? (
-              <p className="empty">
-                暂无会话。接入智能体或调用上报接口后，这里会列出来。
-              </p>
+              <p className="empty">{m.emptySessions}</p>
             ) : (
               snapshot.groups.map((group) => {
                 const hidden = settings.hidden_groups.includes(group.name);
@@ -357,33 +373,34 @@ export function SettingsPanel({ snapshot }: Props) {
                         <button
                           type="button"
                           className="badge"
-                          title="点一下让它在灯上重新显示"
+                          title={m.hiddenBadgeHint}
                           onClick={() => unhide(group.name)}
                         >
-                          已隐藏
+                          {m.hidden}
                         </button>
                       )}
                       {muted && (
                         <button
                           type="button"
                           className="badge"
-                          title="点一下取消静音"
+                          title={m.mutedBadgeHint}
                           onClick={() => setMuted(group.name, false)}
                         >
-                          已静音
+                          {m.muted}
                         </button>
                       )}
                       <span className="group-meta">
-                        {SIGNAL_LABEL[group.aggregate]} · {group.sessions.length} 个会话
+                        {signalLabel(lang, group.aggregate)} ·{" "}
+                        {m.sessions(group.sessions.length)}
                       </span>
                       {!muted && (
                         <button
                           type="button"
                           className="btn btn-tiny"
-                          title="不再因为这一组弹通知 / 出声"
+                          title={m.muteHint}
                           onClick={() => setMuted(group.name, true)}
                         >
-                          静音
+                          {m.mute}
                         </button>
                       )}
                     </div>
@@ -400,7 +417,7 @@ export function SettingsPanel({ snapshot }: Props) {
                             <div className="session-line">
                               <span className="id mono">{session.id}</span>
                               <span className="meta">
-                                {SIGNAL_LABEL[session.state]}
+                                {signalLabel(lang, session.state)}
                                 {session.agent ? ` · ${session.agent}` : ""}
                               </span>
                             </div>
@@ -421,9 +438,9 @@ export function SettingsPanel({ snapshot }: Props) {
       case "look":
         return (
           <>
-            <Row label="预设">
+            <Row label={m.presets}>
               <div className="chips chips-tight">
-                {PRESETS.map((preset) => (
+                {presets(m).map((preset) => (
                   <button
                     key={preset.id}
                     type="button"
@@ -437,27 +454,27 @@ export function SettingsPanel({ snapshot }: Props) {
                 ))}
               </div>
             </Row>
-            <Row label="形态">
+            <Row label={m.form}>
               <div className="seg">
                 <button
                   type="button"
                   data-active={!settings.collapsed}
                   onClick={() => patch({ collapsed: false })}
                 >
-                  展开牌面
+                  {m.expanded}
                 </button>
                 <button
                   type="button"
                   data-active={settings.collapsed}
                   onClick={() => patch({ collapsed: true })}
                 >
-                  一颗灯
+                  {m.singleLight}
                 </button>
               </div>
             </Row>
-            <Row label="大小">
+            <Row label={m.size}>
               <div className="seg">
-                {SIZES.map((size) => (
+                {sizes.map((size) => (
                   <button
                     key={size.value}
                     type="button"
@@ -469,9 +486,9 @@ export function SettingsPanel({ snapshot }: Props) {
                 ))}
               </div>
             </Row>
-            <Row label="形状">
+            <Row label={m.shape}>
               <div className="seg">
-                {SHAPES.map((shape) => (
+                {shapes.map((shape) => (
                   <button
                     key={shape.value}
                     type="button"
@@ -485,9 +502,9 @@ export function SettingsPanel({ snapshot }: Props) {
             </Row>
             {/* 配色方案和形状、节奏倍率是一类东西：都是「没被逐个状态覆盖时用哪个」。
                 所以放这一页，逐状态的覆盖在「灯效」页。 */}
-            <Row label="配色方案">
+            <Row label={m.palette}>
               <div className="seg">
-                {PALETTES.map((palette) => (
+                {palettes.map((palette) => (
                   <button
                     key={palette.value}
                     type="button"
@@ -499,7 +516,7 @@ export function SettingsPanel({ snapshot }: Props) {
                 ))}
               </div>
             </Row>
-            <Row label="背景透明度">
+            <Row label={m.signOpacity}>
               <Slider
                 value={settings.sign_opacity}
                 min={0}
@@ -508,7 +525,7 @@ export function SettingsPanel({ snapshot }: Props) {
                 format={(value) => `${value}%`}
               />
             </Row>
-            <Row label="闪烁节奏">
+            <Row label={m.blinkSpeed}>
               <Slider
                 value={settings.blink_speed}
                 min={BLINK_RANGE.min}
@@ -517,9 +534,9 @@ export function SettingsPanel({ snapshot }: Props) {
                 format={(value) => `${value}%`}
               />
             </Row>
-            <Row label="牌上显示">
+            <Row label={m.onSign}>
               <div className="chips chips-tight">
-                {FIELDS.map((field) => (
+                {fields.map((field) => (
                   <button
                     key={field.key}
                     type="button"
@@ -532,13 +549,10 @@ export function SettingsPanel({ snapshot }: Props) {
                 ))}
               </div>
             </Row>
-            <Row label="安静模式">
+            <Row label={m.quietMode}>
               <Switch on={settings.quiet} onChange={(on) => patch({ quiet: on })} />
             </Row>
-            <p className="hint">
-              形状只影响灯珠：改成圆角方或环会让 permission / error 的方角区分失效，
-              此时建议配合色盲友好配色。
-            </p>
+            <p className="hint">{m.lookHint}</p>
           </>
         );
 
@@ -569,9 +583,9 @@ export function SettingsPanel({ snapshot }: Props) {
 
         return (
           <>
-            <Row label="预设">
+            <Row label={m.presets}>
               <div className="chips chips-tight">
-                {STYLE_PRESETS.map((preset) => (
+                {stylePresets(m).map((preset) => (
                   <button
                     key={preset.id}
                     type="button"
@@ -589,9 +603,9 @@ export function SettingsPanel({ snapshot }: Props) {
 
             <div className="style-head">
               <span className="style-swatch" />
-              <span className="style-name">状态</span>
-              <span className="style-col">形状</span>
-              <span className="style-col">节奏</span>
+              <span className="style-name">{m.state}</span>
+              <span className="style-col">{m.shape}</span>
+              <span className="style-col">{m.rhythm}</span>
               <span className="style-reset" />
             </div>
 
@@ -604,7 +618,7 @@ export function SettingsPanel({ snapshot }: Props) {
                 // 手改配置文件可能写出选项里没有的毫秒数，临时补一个选项，
                 // 否则 select 会显示成空白 —— 看起来像「没设」，其实设了
                 const extraBlink =
-                  blink !== "" && !BLINK_OPTIONS.some((o) => o.value === blink)
+                  blink !== "" && !blinkChoices.some((o) => o.value === blink)
                     ? blink
                     : null;
 
@@ -615,16 +629,16 @@ export function SettingsPanel({ snapshot }: Props) {
                     <input
                       type="color"
                       className="style-swatch"
-                      title="灯珠颜色"
+                      title={m.lightColor}
                       value={resolved[state]}
                       onChange={(event) =>
                         setStyle(state, { color: event.target.value })
                       }
                     />
-                    <span className="style-name">{SIGNAL_LABEL[state]}</span>
+                    <span className="style-name">{signalLabel(lang, state)}</span>
                     <select
                       className="select style-col"
-                      title="灯珠形状"
+                      title={m.lightShape}
                       value={style.shape ?? ""}
                       onChange={(event) =>
                         setStyle(state, {
@@ -632,8 +646,8 @@ export function SettingsPanel({ snapshot }: Props) {
                         })
                       }
                     >
-                      <option value="">跟随</option>
-                      {SHAPES.map((shape) => (
+                      <option value="">{m.follow}</option>
+                      {shapes.map((shape) => (
                         <option key={shape.value} value={shape.value}>
                           {shape.label}
                         </option>
@@ -641,7 +655,7 @@ export function SettingsPanel({ snapshot }: Props) {
                     </select>
                     <select
                       className="select style-col"
-                      title="闪烁间隔"
+                      title={m.blinkInterval}
                       value={blink}
                       onChange={(event) =>
                         setStyle(state, {
@@ -652,7 +666,7 @@ export function SettingsPanel({ snapshot }: Props) {
                         })
                       }
                     >
-                      {BLINK_OPTIONS.map((option) => (
+                      {blinkChoices.map((option) => (
                         <option key={option.value} value={option.value}>
                           {option.label}
                         </option>
@@ -662,7 +676,7 @@ export function SettingsPanel({ snapshot }: Props) {
                     <button
                       type="button"
                       className="btn btn-tiny style-reset"
-                      title="恢复成跟随全局"
+                      title={m.resetToGlobal}
                       disabled={!overridden}
                       onClick={() => resetStyle(state)}
                     >
@@ -673,9 +687,7 @@ export function SettingsPanel({ snapshot }: Props) {
               })}
             </div>
 
-            <p className="hint">
-              「跟随」= 用「外观」页选的那两项（形状、节奏倍率）。
-            </p>
+            <p className="hint">{m.styleHint}</p>
           </>
         );
       }
@@ -683,38 +695,38 @@ export function SettingsPanel({ snapshot }: Props) {
       case "alert": {
         // 阈值给一列固定档位而不是滑块：这是个粗选择（「立刻」还是「等一会儿」），
         // 秒级的精调没有意义。配置文件里手写的不在表里的值会补一个选项进来。
-        const extraDelay = ALERT_DELAYS.some((d) => d.value === settings.alert_after_secs)
+        const extraDelay = alertChoices.some((d) => d.value === settings.alert_after_secs)
           ? null
           : settings.alert_after_secs;
 
         return (
           <>
-            <Row label="需要时弹通知">
+            <Row label={m.notifyWhenNeeded}>
               <Switch on={settings.notify} onChange={(on) => patch({ notify: on })} />
             </Row>
-            <Row label="通知带提示音">
+            <Row label={m.soundWithNotify}>
               <Switch on={settings.sound} onChange={(on) => patch({ sound: on })} />
             </Row>
-            <Row label="持续多久才提醒">
+            <Row label={m.alertAfter}>
               <select
                 className="select"
-                title="状态要持续这么久才弹通知，一闪而过的忽略掉"
+                title={m.alertAfterHint}
                 value={settings.alert_after_secs}
                 onChange={(event) =>
                   patch({ alert_after_secs: Number(event.target.value) })
                 }
               >
-                {ALERT_DELAYS.map((delay) => (
+                {alertChoices.map((delay) => (
                   <option key={delay.value} value={delay.value}>
                     {delay.label}
                   </option>
                 ))}
                 {extraDelay !== null && (
-                  <option value={extraDelay}>{extraDelay} 秒</option>
+                  <option value={extraDelay}>{m.seconds(extraDelay)}</option>
                 )}
               </select>
             </Row>
-            <Row label="勿扰时段">
+            <Row label={m.quietHours}>
               <div className="hours">
                 <Switch
                   on={settings.quiet_hours.enabled}
@@ -763,11 +775,7 @@ export function SettingsPanel({ snapshot }: Props) {
                 </select>
               </div>
             </Row>
-            <p className="hint">
-              需要授权、需要关注或出错时弹一条系统通知。声音挂在通知上，所以关掉
-              通知也就没有声音。勿扰时段里不弹也不出声，灯照常显示 —— 而且不补发：
-              早上醒来收到一堆昨晚的通知，正是勿扰想避免的。
-            </p>
+            <p className="hint">{m.alertHint}</p>
           </>
         );
       }
@@ -775,27 +783,22 @@ export function SettingsPanel({ snapshot }: Props) {
       case "connect":
         return (
           <>
-            <Row label="暂停监控">
+            <Row label={m.pauseMonitoring}>
               <Switch on={snapshot.paused} onChange={setPaused} />
             </Row>
-            <p className="hint">
-              暂停后灯球显示为熄灭，但会话仍在记录 —— 恢复时立刻回到真实状态。
-              弹不弹通知在「提醒」页。
-            </p>
+            <p className="hint">{m.connectHint}</p>
 
             {/* 转发搬到了「钩子」页（多条、可过滤、支持命令），这里只留入口 */}
             <div className="row">
-              <span>出站钩子</span>
+              <span>{m.outboundHooks}</span>
               <button type="button" className="btn" onClick={() => setTab("hooks")}>
-                去配置
+                {m.configure}
               </button>
             </div>
-            <p className="hint">
-              状态变化时可以 POST 到某个地址或跑一条命令 —— 在「钩子」页配置。
-            </p>
+            <p className="hint">{m.connectHookHint}</p>
 
             <div className="kv">
-              <span className="k">端口</span>
+              <span className="k">{m.port}</span>
               <span className="mono">{endpoint?.port ?? "—"}</span>
             </div>
             <div className="kv">
@@ -811,11 +814,7 @@ export function SettingsPanel({ snapshot }: Props) {
       case "hooks":
         return (
           <>
-            {settings.hooks.length === 0 && (
-              <p className="empty">
-                还没有钩子。加一条，就能在状态变化时 POST 到某个地址或跑一条命令。
-              </p>
-            )}
+            {settings.hooks.length === 0 && <p className="empty">{m.noHooks}</p>}
 
             {settings.hooks.map((hook, index) => {
               const target = hook.type === "http" ? hook.url : hook.command;
@@ -827,8 +826,8 @@ export function SettingsPanel({ snapshot }: Props) {
                 <div className="hook" key={index}>
                   <div className="hook-head">
                     <span className="hook-title">
-                      钩子 {index + 1}
-                      {!configured && <span className="hook-warn">未填目标</span>}
+                      {m.hookN(index + 1)}
+                      {!configured && <span className="hook-warn">{m.noTarget}</span>}
                     </span>
                     <button
                       type="button"
@@ -837,7 +836,7 @@ export function SettingsPanel({ snapshot }: Props) {
                         setHooks(settings.hooks.filter((_, i) => i !== index))
                       }
                     >
-                      删除
+                      {m.delete}
                     </button>
                   </div>
 
@@ -856,12 +855,12 @@ export function SettingsPanel({ snapshot }: Props) {
                           })
                         }
                       >
-                        {SHORT_LABEL[state] ?? state}
+                        {m.shortSignal[state] ?? state}
                       </button>
                     ))}
                   </div>
 
-                  <Row label="类型">
+                  <Row label={m.type}>
                     <div className="seg">
                       <button
                         type="button"
@@ -875,7 +874,7 @@ export function SettingsPanel({ snapshot }: Props) {
                         data-active={hook.type === "command"}
                         onClick={() => updateHook(index, { type: "command", command: "" })}
                       >
-                        命令
+                        {m.command}
                       </button>
                     </div>
                   </Row>
@@ -884,7 +883,9 @@ export function SettingsPanel({ snapshot }: Props) {
                     className={hook.type === "http" ? "input" : "input mono"}
                     spellCheck={false}
                     placeholder={
-                      hook.type === "http" ? "https://ntfy.sh/my-topic" : "say 完成"
+                      hook.type === "http"
+                        ? "https://ntfy.sh/my-topic"
+                        : m.commandPlaceholder
                     }
                     value={shown}
                     onChange={(event) =>
@@ -900,31 +901,28 @@ export function SettingsPanel({ snapshot }: Props) {
             })}
 
             <button type="button" className="btn" onClick={addHook}>
-              + 添加钩子
+              {m.addHook}
             </button>
-            <p className="hint">
-              状态全不选 = 任何变化都触发。命令通过 sh -c 执行，超时 10 秒 ——
-              配置文件在你手里，所以这里没有额外的开关。
-            </p>
+            <p className="hint">{m.hooksHint}</p>
           </>
         );
 
       case "system":
         return (
           <>
-            <Row label="保持在最前">
+            <Row label={m.alwaysOnTop}>
               <Switch
                 on={settings.always_on_top}
                 onChange={(on) => patch({ always_on_top: on })}
               />
             </Row>
-            <Row label="托盘跟随状态">
+            <Row label={m.trayFollowsState}>
               <Switch
                 on={settings.tray_follows_state}
                 onChange={(on) => patch({ tray_follows_state: on })}
               />
             </Row>
-            <Row label="开机自启">
+            <Row label={m.launchAtLogin}>
               <Switch
                 on={toggles.autostart}
                 onChange={(on) => {
@@ -933,7 +931,7 @@ export function SettingsPanel({ snapshot }: Props) {
                 }}
               />
             </Row>
-            <Row label="点击穿透">
+            <Row label={m.clickThrough}>
               <Switch
                 on={toggles.pass_through}
                 onChange={(on) => {
@@ -942,14 +940,37 @@ export function SettingsPanel({ snapshot }: Props) {
                 }}
               />
             </Row>
+            {/* 语言：auto 跟随系统，由前端把 navigator.language 解析成 zh / en 后推给 Rust */}
+            <Row label={m.language}>
+              <div className="seg">
+                <button
+                  type="button"
+                  data-active={settings.locale === "auto"}
+                  onClick={() => patch({ locale: "auto" })}
+                >
+                  {m.langAuto}
+                </button>
+                <button
+                  type="button"
+                  data-active={settings.locale === "zh"}
+                  onClick={() => patch({ locale: "zh" })}
+                >
+                  {m.langZh}
+                </button>
+                <button
+                  type="button"
+                  data-active={settings.locale === "en"}
+                  onClick={() => patch({ locale: "en" })}
+                >
+                  {m.langEn}
+                </button>
+              </div>
+            </Row>
+            <p className="hint">{m.systemHintTray}</p>
             <p className="hint">
-              托盘跟随状态时，菜单栏那颗点会变成当前状态的颜色 —— 不看悬浮灯也
-              知道现在什么情况。关掉就回到单色字形，跟着菜单栏明暗自动反色。
-            </p>
-            <p className="hint">
-              穿透后圆点不再响应鼠标，按{" "}
-              {toggles.pass_through_shortcut || "快捷键"} 或从托盘菜单退出。
-              该模式不会保留到下次启动。
+              {m.systemHintPassThrough(
+                toggles.pass_through_shortcut || m.shortcutFallback,
+              )}
             </p>
           </>
         );
@@ -961,25 +982,23 @@ export function SettingsPanel({ snapshot }: Props) {
     <div className="settings" style={colorVars(settings)}>
       <h1 data-state={snapshot.aggregate}>
         <span className="state-dot" />
-        {SIGNAL_LABEL[snapshot.aggregate]}
+        {signalLabel(lang, snapshot.aggregate)}
         {snapshot.groups.length > 0 && (
           <span className="headline-count">
-            {snapshot.groups.length} 组 · {sessionCount} 个会话
+            {m.groupsAndSessions(snapshot.groups.length, sessionCount)}
           </span>
         )}
       </h1>
       {/* 没有提示文本时整段不渲染 —— 否则会白占一行高度 */}
       {(snapshot.paused || snapshot.message) && (
         <p className="headline-message">
-          {snapshot.paused
-            ? "监控已暂停：灯球显示熄灭，但会话仍在记录"
-            : snapshot.message}
+          {snapshot.paused ? m.pausedBanner : snapshot.message}
         </p>
       )}
 
       {stats.length > 0 && (
         <p className="stats">
-          今日{" "}
+          {m.today}{" "}
           {stats
             .map((row) => `${row.label} ${formatDuration(row.seconds)}`)
             .join(" · ")}
@@ -987,7 +1006,7 @@ export function SettingsPanel({ snapshot }: Props) {
       )}
 
       <div className="tabs" role="tablist">
-        {TABS.map((entry) => (
+        {tabs.map((entry) => (
           <button
             key={entry.id}
             type="button"
@@ -1013,7 +1032,7 @@ export function SettingsPanel({ snapshot }: Props) {
           className="btn danger"
           onClick={() => void invoke("quit").catch(reported)}
         >
-          退出 SignalHub
+          {m.quit}
         </button>
       </div>
     </div>

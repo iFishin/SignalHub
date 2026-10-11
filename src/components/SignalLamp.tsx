@@ -2,7 +2,8 @@ import { useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { inTauri } from "../lib/env";
-import { SIGNAL_LABEL } from "../lib/signals";
+import { signalLabel } from "../lib/signals";
+import { useLang, useMessages, type Messages, type Lang } from "../lib/i18n";
 import { lampVars, resolveShapes } from "../lib/lampStyle";
 import type { Settings } from "../lib/useSettings";
 import type { GroupView, SignalState } from "../lib/types";
@@ -33,23 +34,23 @@ function formatAge(sinceMs: number): string {
   return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
 }
 
-function tooltip(aggregate: SignalState, groups: GroupView[]): string {
-  if (groups.length === 0) return SIGNAL_LABEL[aggregate];
+function tooltip(m: Messages, lang: Lang, aggregate: SignalState, groups: GroupView[]): string {
+  if (groups.length === 0) return signalLabel(lang, aggregate);
 
-  const hint = "左键折叠 / 展开 · 右键单组菜单";
+  const hint = m.lampHint;
   if (groups.length === 1) {
     const only = groups[0];
-    const head = `${only.name} · ${SIGNAL_LABEL[only.aggregate]}`;
+    const head = `${only.name} · ${signalLabel(lang, only.aggregate)}`;
     const detail = only.message ? ` — ${only.message}` : "";
     return `${head}${detail}\n${hint}`;
   }
 
   // 多组时把「哪个组在什么状态」列出来 —— 这是多块牌想回答的问题
   return [
-    `${SIGNAL_LABEL[aggregate]}（${groups.length} 组）`,
+    `${signalLabel(lang, aggregate)}${m.groupsCount(groups.length)}`,
     ...groups.map((group) => {
       const detail = group.message ? ` — ${group.message}` : "";
-      return `${group.name} · ${SIGNAL_LABEL[group.aggregate]}${detail}`;
+      return `${group.name} · ${signalLabel(lang, group.aggregate)}${detail}`;
     }),
     hint,
   ].join("\n");
@@ -112,6 +113,8 @@ function openGroupMenu(event: React.MouseEvent, group: string) {
 
 export function SignalLamp({ aggregate, groups, settings }: Props) {
   const { size, quiet, collapsed, show, sign_opacity, hidden_groups } = settings;
+  const m = useMessages();
+  const lang = useLang();
 
   // 形状是逐状态的（一个窗口里多块牌可以不一样），所以先整份算出来，再按每块牌
   // 的状态取。颜色和动画走 lampVars 的 CSS 变量，形状走元素属性 —— 形状不是
@@ -153,7 +156,7 @@ export function SignalLamp({ aggregate, groups, settings }: Props) {
       data-aggregate={aggregate}
       data-quiet={quiet}
       data-collapsed={collapsed}
-      title={tooltip(aggregate, groups)}
+      title={tooltip(m, lang, aggregate, groups)}
       // 空白处（牌之间、留白）也要吃掉右键，否则会冒出 webview 自己的菜单
       onContextMenu={(event) => event.preventDefault()}
       {...drag}
@@ -182,7 +185,7 @@ export function SignalLamp({ aggregate, groups, settings }: Props) {
                   <span className="sign-name">{group.name}</span>
                 )}
                 {show.state && (
-                  <span className="sign-state">{SIGNAL_LABEL[group.aggregate]}</span>
+                  <span className="sign-state">{signalLabel(lang, group.aggregate)}</span>
                 )}
               </div>
               {show.message && group.message && (

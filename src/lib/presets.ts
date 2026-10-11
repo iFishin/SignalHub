@@ -1,3 +1,4 @@
+import type { Messages } from "./i18n";
 import type { Settings, SignFields, StateStyle } from "./useSettings";
 
 /**
@@ -30,56 +31,58 @@ const ALL_FIELDS: SignFields = {
 };
 
 /** 与 Rust 侧 config.rs 的 MIN_SIZE / MAX_SIZE 对齐 —— 32 是允许的最大值。 */
-export const PRESETS: Preset[] = [
-  {
-    id: "light",
-    label: "单灯",
-    hint: "折叠成一颗灯，只有颜色，最不打扰",
-    apply: {
-      size: 22,
-      collapsed: true,
-      show: ALL_FIELDS,
-      sign_opacity: 86,
-      blink_speed: 100,
+export function presets(m: Messages): Preset[] {
+  return [
+    {
+      id: "light",
+      label: m.presetLight,
+      hint: m.presetLightHint,
+      apply: {
+        size: 22,
+        collapsed: true,
+        show: ALL_FIELDS,
+        sign_opacity: 86,
+        blink_speed: 100,
+      },
     },
-  },
-  {
-    id: "compact",
-    label: "紧凑",
-    hint: "窄一条，留组名和状态，不要消息",
-    apply: {
-      size: 16,
-      collapsed: false,
-      show: { name: true, state: true, age: true, message: false },
-      sign_opacity: 80,
-      blink_speed: 100,
+    {
+      id: "compact",
+      label: m.presetCompact,
+      hint: m.presetCompactHint,
+      apply: {
+        size: 16,
+        collapsed: false,
+        show: { name: true, state: true, age: true, message: false },
+        sign_opacity: 80,
+        blink_speed: 100,
+      },
     },
-  },
-  {
-    id: "standard",
-    label: "标准",
-    hint: "组名 / 状态 / 已持续 / 消息都显示",
-    apply: {
-      size: 22,
-      collapsed: false,
-      show: ALL_FIELDS,
-      sign_opacity: 86,
-      blink_speed: 100,
+    {
+      id: "standard",
+      label: m.presetStandard,
+      hint: m.presetStandardHint,
+      apply: {
+        size: 22,
+        collapsed: false,
+        show: ALL_FIELDS,
+        sign_opacity: 86,
+        blink_speed: 100,
+      },
     },
-  },
-  {
-    id: "bold",
-    label: "醒目",
-    hint: "更大更实，闪得也快一点",
-    apply: {
-      size: 32,
-      collapsed: false,
-      show: ALL_FIELDS,
-      sign_opacity: 100,
-      blink_speed: 140,
+    {
+      id: "bold",
+      label: m.presetBold,
+      hint: m.presetBoldHint,
+      apply: {
+        size: 32,
+        collapsed: false,
+        show: ALL_FIELDS,
+        sign_opacity: 100,
+        blink_speed: 140,
+      },
     },
-  },
-];
+  ];
+}
 
 /**
  * 当前外观是不是正好等于这套预设（用来高亮选中的那一个）。
@@ -119,52 +122,54 @@ export interface StylePreset {
   styles: Record<string, StateStyle>;
 }
 
-export const STYLE_PRESETS: StylePreset[] = [
-  {
-    id: "follow",
-    label: "跟随全局",
-    hint: "清掉所有逐状态覆盖，颜色用配色方案、形状和节奏用「外观」页那两项",
-    styles: {},
-  },
-  {
-    id: "shape",
-    label: "形状区分",
-    hint: "需要授权 / 出错画成圆角方 —— 红绿是红绿色盲最难分的一对，而这两个最需要你注意",
-    styles: {
-      permission: { shape: "rounded" },
-      error: { shape: "rounded" },
+export function stylePresets(m: Messages): StylePreset[] {
+  return [
+    {
+      id: "follow",
+      label: m.stylePresetFollow,
+      hint: m.stylePresetFollowHint,
+      styles: {},
     },
-  },
-  {
-    id: "rhythm",
-    label: "节奏分级",
-    hint: "每个状态一套自己的节奏：推理快、执行慢、出错频闪，不在工作的常亮",
-    styles: {
-      thinking: { blink_ms: 400 },
-      working: { blink_ms: 1600 },
-      attention: { blink_ms: 1000 },
-      permission: { blink_ms: 900 },
-      error: { blink_ms: 300 },
-      idle: { blink_ms: 0 },
-      stale: { blink_ms: 0 },
-      offline: { blink_ms: 0 },
-      off: { blink_ms: 0 },
+    {
+      id: "shape",
+      label: m.stylePresetShape,
+      hint: m.stylePresetShapeHint,
+      styles: {
+        permission: { shape: "rounded" },
+        error: { shape: "rounded" },
+      },
     },
-  },
-  {
-    id: "calm",
-    label: "只在需要时闪",
-    hint: "干活的那几个状态都常亮，只有需要关注 / 授权 / 出错才闪",
-    styles: {
-      idle: { blink_ms: 0 },
-      thinking: { blink_ms: 0 },
-      working: { blink_ms: 0 },
-      stale: { blink_ms: 0 },
-      offline: { blink_ms: 0 },
-      off: { blink_ms: 0 },
+    {
+      id: "rhythm",
+      label: m.stylePresetRhythm,
+      hint: m.stylePresetRhythmHint,
+      styles: {
+        thinking: { blink_ms: 400 },
+        working: { blink_ms: 1600 },
+        attention: { blink_ms: 1000 },
+        permission: { blink_ms: 900 },
+        error: { blink_ms: 300 },
+        idle: { blink_ms: 0 },
+        stale: { blink_ms: 0 },
+        offline: { blink_ms: 0 },
+        off: { blink_ms: 0 },
+      },
     },
-  },
-];
+    {
+      id: "calm",
+      label: m.stylePresetCalm,
+      hint: m.stylePresetCalmHint,
+      styles: {
+        idle: { blink_ms: 0 },
+        thinking: { blink_ms: 0 },
+        working: { blink_ms: 0 },
+        stale: { blink_ms: 0 },
+        offline: { blink_ms: 0 },
+        off: { blink_ms: 0 },
+      },
+    },
+  ];
+}
 
 /** 这一格有没有被覆盖过（空对象和全是 null 都算没有）。 */
 function hasAny(style: StateStyle | undefined): boolean {

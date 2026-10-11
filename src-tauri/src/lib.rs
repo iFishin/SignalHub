@@ -1,4 +1,5 @@
 mod alerts;
+mod lang;
 mod menu;
 mod notify;
 mod outbound;
@@ -204,7 +205,12 @@ struct StatRow {
 }
 
 #[tauri::command]
-fn get_stats(stats: tauri::State<'_, SharedStats>, today: String) -> Vec<StatRow> {
+fn get_stats(
+    app: tauri::AppHandle,
+    stats: tauri::State<'_, SharedStats>,
+    today: String,
+) -> Vec<StatRow> {
+    let lang = current_lang(&app);
     stats
         .lock()
         .expect("stats poisoned")
@@ -212,7 +218,7 @@ fn get_stats(stats: tauri::State<'_, SharedStats>, today: String) -> Vec<StatRow
         .into_iter()
         .map(|(state, duration)| StatRow {
             state,
-            label: state.label(),
+            label: lang::signal_label(lang, state),
             seconds: duration.as_secs(),
         })
         .collect()
@@ -278,12 +284,11 @@ fn set_pass_through_impl(app: &tauri::AppHandle, enabled: bool) -> Result<(), St
     // 开启时发一条通知说明怎么退出。**不再顺手把外形收起来**：穿透下窗口本来
     // 就点不动，而外形是用户自己选的、存在设置里的，替用户改掉反而是越权。
     if enabled {
+        let lang = current_lang(app);
         alerts::send_message(
             app,
-            "已进入点击穿透模式",
-            &format!(
-                "圆点不再响应鼠标。按 {PASS_THROUGH_SHORTCUT_LABEL} 或从托盘菜单退出。"
-            ),
+            lang::text(lang).pass_through_title,
+            &lang::pass_through_body(lang, PASS_THROUGH_SHORTCUT_LABEL),
         );
     }
 
@@ -367,6 +372,39 @@ fn get_timeline(stats: tauri::State<'_, SharedStats>) -> Vec<stats::Segment> {
 #[tauri::command]
 fn open_group_menu(app: tauri::AppHandle, group: String) -> Result<(), String> {
     menu::show(&app, &group)
+}
+
+/// 前端推过来的**解析后**的界面语言（`"auto"` 由前端解析 —— Rust 不知道系统语言）。
+///
+/// 原生界面（托盘菜单、右键菜单、通知按钮、窗口标题）不经过 webview，前端换不了，
+/// 所以语言一变就得把这几样重建一遍。收在 `apply_lang` 一个函数里，免得以后新增
+/// 一处原生文案时忘了加进来 —— 漏掉的表现是界面上混着两种语言，而那只有肉眼能发现。
+#[tauri::command]
+fn set_lang(app: tauri::AppHandle, lang: String) -> Result<(), String> {
+    let Some(lang) = lang::Lang::parse(&lang) else {
+        return Err(format!("不认识的语言 {lang:?}；可用 zh / en"));
+    };
+    app.state::<lang::LocalLang>().set(lang);
+    apply_lang(&app);
+    Ok(())
+}
+
+/// 把语言应用到所有原生界面。语言变了就调它。
+pub(crate) fn apply_lang(app: &tauri::AppHandle) {
+    let lang = app.state::<lang::LocalLang>().get();
+    // 托盘菜单是启动时建好就一直挂着的，换语言得整个重建
+    tray::rebuild_menu(app, lang);
+    // 通知的动作按钮也带文案，重新注册一次（同 id 覆盖）
+    alerts::wire_actions(app);
+    // 设置窗的标题在 tauri.conf.json 里，是静态的，只能运行时改
+    if let Some(window) = app.get_webview_window("settings") {
+        let _ = window.set_title(lang::text(lang).settings_window_title);
+    }
+}
+
+/// 当前语言。命令和托盘菜单共用。
+pub(crate) fn current_lang(app: &tauri::AppHandle) -> lang::Lang {
+    app.state::<lang::LocalLang>().get()
 }
 
 /// 前端把算好的颜色表推过来 —— 托盘图标用它取色。
@@ -572,6 +610,7 @@ pub fn run() {
         .manage(SharedStats::default())
         .manage(SharedPalette::default())
         .manage(alerts::LocalHour::default())
+        .manage(lang::LocalLang::default())
         // 最近一条告警通知说的是谁 —— 动作按钮回调时要用，见 alerts::LastAlert
         .manage(alerts::LastAlert::default())
         // 右键菜单只记「刚点的是哪一组」，见 menu.rs
@@ -593,6 +632,7 @@ pub fn run() {
             open_group_menu,
             set_palette_colors,
             set_local_hour,
+            set_lang,
             quit
         ])
         .setup(|app| {

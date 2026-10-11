@@ -331,6 +331,21 @@ impl QuietHours {
     }
 }
 
+/// 界面语言的**偏好**。注意和 `lang::Lang` 的区别：那个是**解析后**的语言，
+/// 只有中文和英文；这里的 `Auto` 要由前端解析成具体语言 —— Rust 不知道系统语言。
+///
+/// 定义在这个文件而不是 `lang.rs`：`Settings` 要被 CLI 通过 `#[path]` 共用，
+/// 而 `lang.rs` 是 app 侧的模块。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Locale {
+    /// 跟随系统
+    #[default]
+    Auto,
+    Zh,
+    En,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -353,6 +368,8 @@ pub struct Settings {
     pub shape: Shape,
     /// 配色方案（用户没单独指定颜色时的默认值）
     pub palette: Palette,
+    /// 界面语言偏好。`Auto` 由**前端**解析成具体语言 —— Rust 不知道系统语言。
+    pub locale: Locale,
     /// 逐个状态的外观覆盖（颜色 / 形状 / 节奏）。没写的项跟随全局。
     ///
     /// 键是状态名，**含 `stale` / `offline` 这类派生状态** —— `Signal::parse`
@@ -487,6 +504,7 @@ impl Default for Settings {
             hooks: Vec::new(),
             shape: Shape::default(),
             palette: Palette::default(),
+            locale: Locale::default(),
             styles: BTreeMap::new(),
             colors: BTreeMap::new(),
             collapsed: false,

@@ -108,6 +108,8 @@ export interface Settings {
   alert_after_secs: number;
   /** 托盘图标是否跟随当前聚合状态变色。 */
   tray_follows_state: boolean;
+  /** 界面语言。"auto" = 跟随系统。 */
+  locale: "auto" | "zh" | "en";
 }
 
 /** 与 Rust 侧 `config::Settings::default()` 一致。 */
@@ -130,6 +132,7 @@ const DEFAULTS: Settings = {
   quiet_hours: { enabled: false, start: 22, end: 8 },
   alert_after_secs: 5,
   tray_follows_state: true,
+  locale: "auto",
 };
 
 const SETTINGS_EVENT = "signalhub://settings";

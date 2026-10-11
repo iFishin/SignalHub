@@ -32,30 +32,31 @@ pub fn show(app: &AppHandle, group: &str) -> Result<(), String> {
 
     let settings = crate::current_settings(app);
     let muted = settings.muted_groups.iter().any(|name| name == group);
+    let t = crate::lang::text(crate::current_lang(app));
 
-    let hide = MenuItem::with_id(app, HIDE, "隐藏该组", true, None::<&str>).map_err(menu_err)?;
+    let hide = MenuItem::with_id(app, HIDE, t.menu_hide, true, None::<&str>).map_err(menu_err)?;
     // 措辞跟着当前状态走：写「切换静音」的话得先看一眼设置才知道会切成什么
     let mute = MenuItem::with_id(
         app,
         MUTE,
-        if muted { "取消静音该组" } else { "静音该组" },
+        if muted { t.menu_unmute } else { t.menu_mute },
         true,
         None::<&str>,
     )
     .map_err(menu_err)?;
     let clear =
-        MenuItem::with_id(app, CLEAR, "清除该组的状态", true, None::<&str>).map_err(menu_err)?;
+        MenuItem::with_id(app, CLEAR, t.menu_clear, true, None::<&str>).map_err(menu_err)?;
     // 措辞跟着当前形态走：写「切换」的话得先看一眼灯才知道会切成什么
     let toggle = MenuItem::with_id(
         app,
         TOGGLE,
-        if settings.collapsed { "展开牌面" } else { "折叠成一颗灯" },
+        if settings.collapsed { t.menu_expand } else { t.menu_collapse },
         true,
         None::<&str>,
     )
     .map_err(menu_err)?;
     let open_settings =
-        MenuItem::with_id(app, SETTINGS, "打开设置…", true, None::<&str>).map_err(menu_err)?;
+        MenuItem::with_id(app, SETTINGS, t.menu_settings, true, None::<&str>).map_err(menu_err)?;
 
     let menu = Menu::with_items(
         app,
