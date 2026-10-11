@@ -33,6 +33,22 @@ html[data-window="settings"] #root {
   user-select: none;
 }
 
+/* 整块面板禁选是为了「像个应用」：点标签、拖滚动条时不会顺手刷蓝一片文字。
+   但**值是用户要拿走的东西** —— token、路径、端点、会话 id、示例命令、报错原文
+   —— 禁选之后连手选都做不到。这里把它们放回来，复制按钮只是顺手的第二条路，
+   不是唯一的路。 */
+.settings .mono,
+.settings .code,
+.settings .doc,
+.settings .faq-q,
+.settings .hint,
+.settings .muted-text,
+.settings .feed-message,
+.settings .headline-message {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
 .settings h1 {
   display: flex;
   align-items: center;
@@ -287,6 +303,11 @@ html[data-window="settings"] #root {
   flex: none;
   width: 52px;
   color: var(--muted);
+}
+
+/* 端口 / token 那两行里的复制按钮：值可以被挤窄（token 本来就换行），按钮不能。 */
+.kv > .kv-copy {
+  flex: none;
 }
 
 /* ---- 文本输入 ---- */

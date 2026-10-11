@@ -320,7 +320,9 @@ fn toggle_lamp(app: &AppHandle) {
     }
 }
 
-fn toggle_monitor(app: &AppHandle) {
+/// 暂停 / 恢复监控。托盘和灯上的右键菜单都走这里 —— 两条入口各写一遍，
+/// 「暂停到底做了什么」迟早分叉。
+pub(crate) fn toggle_monitor(app: &AppHandle) {
     let store = app.state::<Arc<Mutex<Store>>>();
     let (changed, snapshot) = {
         let mut guard = store.lock().expect("state store poisoned");

@@ -26,6 +26,13 @@ const CLEAR: &str = "group:clear";
 const TOGGLE: &str = "group:toggle";
 const SETTINGS: &str = "group:settings";
 
+/// 灯上**通用**菜单的 id（空白处和占位牌用的那张）。同样与托盘、与组菜单都不
+/// 重合：三边的菜单事件都会走到 `AppHandle::on_menu_event`。
+const LAMP_SETTINGS: &str = "lamp:settings";
+const LAMP_PAUSE: &str = "lamp:pause";
+const LAMP_COLLAPSED: &str = "lamp:collapsed";
+const LAMP_QUIT: &str = "lamp:quit";
+
 /// 在灯球窗口上弹出菜单。`group` 是右键点中的那一组的名字。
 pub fn show(app: &AppHandle, group: &str) -> Result<(), String> {
     *app.state::<Target>().0.lock().expect("menu target poisoned") = Some(group.to_string());
@@ -64,16 +71,78 @@ pub fn show(app: &AppHandle, group: &str) -> Result<(), String> {
     )
     .map_err(menu_err)?;
 
+    popup(app, &menu)
+}
+
+/// 灯上空白处（以及还没接任何上报方时那块占位牌）的右键菜单。
+///
+/// 这一张不是「某一组的操作」，而是**灯自己的入口**。存在的理由很具体：第一次
+/// 装好、还没接任何上报方时，灯上那块牌的名字是空的，它对不上任何真实的组 ——
+/// 于是 `open_group_menu` 那条路走不通，灯上完全没有进入设置的地方，用户只能
+/// 去托盘里找。
+pub fn show_general(app: &AppHandle) -> Result<(), String> {
+    let t = crate::lang::text(crate::current_lang(app));
+    let collapsed = crate::current_settings(app).collapsed;
+
+    let open_settings =
+        MenuItem::with_id(app, LAMP_SETTINGS, t.menu_settings, true, None::<&str>).map_err(menu_err)?;
+    // 措辞跟托盘一致、**不显示当前开没开**：快捷键也能切换暂停，菜单里那份状态
+    // 会漂移，不如从一开始就不声称它知道
+    let pause = MenuItem::with_id(app, LAMP_PAUSE, t.tray_pause, true, None::<&str>).map_err(menu_err)?;
+    let collapse = MenuItem::with_id(
+        app,
+        LAMP_COLLAPSED,
+        if collapsed { t.menu_expand } else { t.menu_collapse },
+        true,
+        None::<&str>,
+    )
+    .map_err(menu_err)?;
+    let quit = MenuItem::with_id(app, LAMP_QUIT, t.tray_quit, true, None::<&str>).map_err(menu_err)?;
+
+    let menu = Menu::with_items(app, &[&open_settings, &pause, &collapse, &quit]).map_err(menu_err)?;
+
+    popup(app, &menu)
+}
+
+/// 把菜单弹在灯球窗口上。两张菜单共用，免得「找不到窗口」这条错误处理写两遍。
+fn popup(app: &AppHandle, menu: &Menu<tauri::Wry>) -> Result<(), String> {
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| "找不到灯球窗口".to_string())?;
     window
-        .popup_menu(&menu)
+        .popup_menu(menu)
         .map_err(|err| format!("弹出右键菜单失败: {err}"))
 }
 
 /// 分派一次菜单事件。返回「是不是我们这张菜单的」，好让调用方知道要不要管。
 pub fn handle(app: &AppHandle, id: &str) -> bool {
+    // 灯自己那张菜单（空白处 / 占位牌）。它不与任何组绑定，所以先判、先返回。
+    if matches!(id, LAMP_SETTINGS | LAMP_PAUSE | LAMP_COLLAPSED | LAMP_QUIT) {
+        let result = match id {
+            LAMP_SETTINGS => {
+                crate::reveal_settings(app);
+                Ok(())
+            }
+            LAMP_PAUSE => {
+                crate::tray::toggle_monitor(app);
+                Ok(())
+            }
+            LAMP_COLLAPSED => {
+                let collapsed = !crate::current_settings(app).collapsed;
+                crate::set_collapsed(app, collapsed).map(|_| ())
+            }
+            LAMP_QUIT => {
+                app.exit(0);
+                Ok(())
+            }
+            _ => unreachable!("上面已经过滤过 id 了"),
+        };
+        if let Err(err) = result {
+            eprintln!("[signalhub] 灯上菜单操作失败: {err}");
+        }
+        return true;
+    }
+
     if !matches!(id, HIDE | MUTE | CLEAR | TOGGLE | SETTINGS) {
         // 托盘菜单那些 id（quit / toggle / …）也走这条路，不是我们的就放行
         return false;

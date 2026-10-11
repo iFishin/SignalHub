@@ -12,6 +12,7 @@ import {
 import { useStats } from "../lib/useStats";
 import { useTimeline, type TimelineSegment } from "../lib/useTimeline";
 import { useOutboundLog, lastAttemptFor, type Attempt } from "../lib/useOutboundLog";
+import { useNow } from "../lib/useNow";
 import { useAgents, type AgentStatus, type HookChange } from "../lib/useAgents";
 import { colorVars, resolveColors } from "../lib/palettes";
 import { presets, isActivePreset, stylePresets, isActiveStylePreset } from "../lib/presets";
@@ -194,14 +195,41 @@ function formatDuration(seconds: number): string {
   return rest === 0 ? `${hours}h` : `${hours}h${rest}m`;
 }
 
-/** 「多久以前」。与灯球的 formatAge 同一套算法，只是入参是 epoch 毫秒（at_ms）。 */
-function formatAge(atMs: number): string {
-  const seconds = Math.max(0, Math.round((Date.now() - atMs) / 1000));
+/**
+ * 「多久以前」。与灯球的 `formatAge` 同一套算法，只是入参是 epoch 毫秒（at_ms）。
+ *
+ * `now` 由调用方传进来（见 `useNow`），**不在这里读 `Date.now()`** —— 那样它就只
+ * 在重绘时才被求值，一个不重绘的面板会把这个数字冻在那一刻。
+ */
+function formatAge(atMs: number, now: number): string {
+  const seconds = Math.max(0, Math.round((now - atMs) / 1000));
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m`;
   const hours = Math.floor(minutes / 60);
   return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
+}
+
+/**
+ * 面板是不是真的在屏幕上。
+ *
+ * 设置窗的 webview 一直活着，隐藏着也照样收事件、照样重绘 —— 而这个窗口里有几个
+ * 每秒级的钟（「多久以前」）。隐藏时把它们停掉，是这块面板唯一需要的省电措施。
+ */
+function useVisible(): boolean {
+  const [visible, setVisible] = useState(() => !document.hidden);
+
+  useEffect(() => {
+    const sync = () => setVisible(!document.hidden);
+    document.addEventListener("visibilitychange", sync);
+    window.addEventListener("focus", sync);
+    return () => {
+      document.removeEventListener("visibilitychange", sync);
+      window.removeEventListener("focus", sync);
+    };
+  }, []);
+
+  return visible;
 }
 
 /**
@@ -211,10 +239,10 @@ function formatAge(atMs: number): string {
  * 用户要的就是「对方回了几 / 为什么没成」。命令成功没有状态码，那一段就省掉，
  * 不留一个空的分隔点。
  */
-function attemptLine(m: Messages, attempt: Attempt): string {
+function attemptLine(m: Messages, attempt: Attempt, now: number): string {
   const mark = attempt.ok ? "✓" : "✗";
   const detail = attempt.detail.trim();
-  const age = m.firedAgo(formatAge(attempt.at_ms));
+  const age = m.firedAgo(formatAge(attempt.at_ms, now));
   return detail ? `${mark} ${detail} · ${age}` : `${mark} ${age}`;
 }
 
@@ -525,6 +553,13 @@ export function SettingsPanel({ snapshot }: Props) {
   const alertChoices = alertDelayOptions(m);
   const tabs = tabOptions(m);
   const [tab, setTab] = useState<Tab>("status");
+
+  // 「多久以前」要跟着时间走。**只在真的显示这两段的页签上开钟**（消息流在
+  // 「状态」、出站结果在「转发」），其它五页一个定时器都不起 —— 这块面板一秒
+  // 重绘一次不便宜，没显示的东西不值得为它重绘。
+  const visible = useVisible();
+  const now = useNow(visible && (tab === "status" || tab === "hooks"));
+
   const [endpoint, setEndpoint] = useState<Endpoint | null>(null);
   const [error, setError] = useState<string | null>(null);
   // 正在接入 / 卸载的那个智能体（按 id），用来禁用按钮。同时只可能有一个在飞。
@@ -869,7 +904,7 @@ export function SettingsPanel({ snapshot }: Props) {
                       <span className="state-dot" data-state={entry.state} />
                       <div className="feed-body">
                         <div className="feed-line">
-                          <span className="muted-text">{formatAge(entry.at_ms)}</span>
+                          <span className="muted-text">{formatAge(entry.at_ms, now)}</span>
                           <span className="muted-text">{entry.group}</span>
                           <span className="feed-session mono">{entry.session}</span>
                         </div>
@@ -1247,10 +1282,28 @@ export function SettingsPanel({ snapshot }: Props) {
               <div className="kv">
                 <span className="k">{m.port}</span>
                 <span className="mono">{endpoint?.port ?? "—"}</span>
+                {endpoint?.port != null && (
+                  <button
+                    type="button"
+                    className="btn btn-tiny kv-copy"
+                    onClick={() => copy("port", String(endpoint.port))}
+                  >
+                    {copyLabel("port")}
+                  </button>
+                )}
               </div>
               <div className="kv">
                 <span className="k">{m.apiToken}</span>
                 <span className="mono token">{endpoint?.token ?? "—"}</span>
+                {endpoint?.token && (
+                  <button
+                    type="button"
+                    className="btn btn-tiny kv-copy"
+                    onClick={() => copy("token", endpoint.token!)}
+                  >
+                    {copyLabel("token")}
+                  </button>
+                )}
               </div>
               <div className="row">
                 <span className="muted-text mono">{endpoint?.dir ?? "—"}</span>
@@ -1466,7 +1519,7 @@ export function SettingsPanel({ snapshot }: Props) {
                       也不要拿别的钩子的结果显示在这里。 */}
                   {configured && (
                     <span className="hook-result mono">
-                      {attempt ? attemptLine(m, attempt) : m.neverFired}
+                      {attempt ? attemptLine(m, attempt, now) : m.neverFired}
                     </span>
                   )}
                 </div>

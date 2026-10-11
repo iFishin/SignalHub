@@ -278,8 +278,17 @@ fn sustained(snapshot: &Snapshot, muted: &[String], state: Signal, threshold: Du
 }
 
 /// 只负责把快照推给前端窗口。窗口尺寸、统计、通知都由 `compose` 里的闭包管。
+///
+/// **两个窗口都要推。** 这里原来只发 `main`，而设置窗（`visible: false` 也照样在
+/// 启动时就把 webview 加载起来）只在挂载时 `get_state` 拉过一次 —— 于是打开设置
+/// 面板看到的永远是**应用启动那一刻**的会话和时间线。
+///
+/// 不按「设置窗是否可见」挑着发，是因为那要问窗口，而 `is_visible()` 在 macOS 上
+/// 是一次**阻塞的主线程往返**（tauri-runtime-wry 的 `window_getter!`），而这条
+/// 推送路径是从 HTTP 上报线程和 sweep 任务里走的 —— 往热路径上加同步调用不值当。
+/// 隐藏的设置窗多渲染几次只是它自己的开销，不会拖慢上报。
 fn emit(app: &tauri::AppHandle, snapshot: &Snapshot) {
-    if let Err(err) = app.emit_to("main", STATE_EVENT, snapshot) {
+    if let Err(err) = app.emit(STATE_EVENT, snapshot) {
         eprintln!("[signalhub] 推送状态失败: {err}");
     }
 }

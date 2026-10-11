@@ -142,10 +142,22 @@ function useDragOrClick(onClick: () => void) {
 function openGroupMenu(event: React.MouseEvent, group: string) {
   event.preventDefault();
   event.stopPropagation();
-  // 占位那块牌的名字是空的，它不对应任何真实的组 —— 弹出来只会藏掉一个叫 ""
-  // 的组，什么也不会发生，不如干脆不弹
-  if (!group || !inTauri) return;
-  invoke("open_group_menu", { group }).catch(console.error);
+  if (!inTauri) return;
+  // 占位那块牌的名字是空的，它不对应任何真实的组 —— 组菜单对它只会藏掉一个叫 ""
+  // 的组，什么也不会发生。这时弹的是**灯自己那张菜单**：第一次装上、还没接任何
+  // 上报方时，这是灯上唯一能进设置的地方。
+  if (group) {
+    invoke("open_group_menu", { group }).catch(console.error);
+  } else {
+    invoke("open_lamp_menu").catch(console.error);
+  }
+}
+
+/** 空白处（牌之间、留白）的右键：吃掉 webview 自己的菜单，弹灯自己那张。 */
+function openLampMenu(event: React.MouseEvent) {
+  event.preventDefault();
+  if (!inTauri) return;
+  invoke("open_lamp_menu").catch(console.error);
 }
 
 export function SignalLamp({ aggregate, groups, settings }: Props) {
@@ -201,8 +213,9 @@ export function SignalLamp({ aggregate, groups, settings }: Props) {
       data-quiet={quiet}
       data-collapsed={collapsed}
       title={tooltip(m, lang, aggregate, groups, settings.group_meta)}
-      // 空白处（牌之间、留白）也要吃掉右键，否则会冒出 webview 自己的菜单
-      onContextMenu={(event) => event.preventDefault()}
+      // 空白处（牌之间、留白）也要吃掉右键，否则会冒出 webview 自己的菜单；
+      // 顺手弹的是灯自己那张（进设置 / 暂停 / 折叠 / 退出）
+      onContextMenu={openLampMenu}
       {...drag}
     >
       {shown.map((group, index) =>
