@@ -127,6 +127,23 @@ pub fn pass_through_body(lang: Lang, shortcut: &str) -> String {
     }
 }
 
+/// 「已经等了多久」。重复提醒的正文用它 —— 见 `alerts::send_reminder`。
+///
+/// 超过一小时就换成小时制：卡了三个小时时「已等待 180 分钟」还得让人自己换算。
+pub fn stuck_for(lang: Lang, minutes: u64) -> String {
+    let hours = minutes / 60;
+    let rest = minutes % 60;
+
+    match (lang, hours, rest) {
+        (Lang::Zh, 0, _) => format!("已等待 {minutes} 分钟"),
+        (Lang::Zh, h, 0) => format!("已等待 {h} 小时"),
+        (Lang::Zh, h, m) => format!("已等待 {h} 小时 {m} 分钟"),
+        (Lang::En, 0, _) => format!("waiting {minutes}m"),
+        (Lang::En, h, 0) => format!("waiting {h}h"),
+        (Lang::En, h, m) => format!("waiting {h}h {m}m"),
+    }
+}
+
 static ZH: NativeText = NativeText {
     tray_show_hide: "显示 / 隐藏灯球",
     tray_settings: "设置…",
@@ -260,5 +277,25 @@ mod tests {
                 .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
             "穿透说明里还有中文"
         );
+        assert!(
+            !stuck_for(Lang::En, 95)
+                .chars()
+                .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+            "「已等待多久」的英文里还有中文"
+        );
+    }
+
+    /// 「已经等了多久」。一小时以上换成小时制 —— 卡了三小时还写「已等待 180 分钟」
+    /// 得让人自己换算，而这行字是重复提醒里唯一的新信息。
+    #[test]
+    fn stuck_for_switches_to_hours_past_sixty_minutes() {
+        assert_eq!(stuck_for(Lang::Zh, 5), "已等待 5 分钟");
+        assert_eq!(stuck_for(Lang::Zh, 59), "已等待 59 分钟");
+        assert_eq!(stuck_for(Lang::Zh, 60), "已等待 1 小时");
+        assert_eq!(stuck_for(Lang::Zh, 95), "已等待 1 小时 35 分钟");
+
+        assert_eq!(stuck_for(Lang::En, 5), "waiting 5m");
+        assert_eq!(stuck_for(Lang::En, 60), "waiting 1h");
+        assert_eq!(stuck_for(Lang::En, 95), "waiting 1h 35m");
     }
 }

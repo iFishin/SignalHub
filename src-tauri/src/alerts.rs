@@ -124,6 +124,12 @@ pub struct Gate {
     notified: bool,
     /// 这个 episode 已经排过一次延迟检查了
     pending: bool,
+    /// 第几轮。**重复提醒靠它认身份。**
+    ///
+    /// 状态离开又回到同一个值时是一轮新的（`alerting` 变过，只是恰好变了回来）。
+    /// 上一轮排下的提醒任务必须认得出这件事并失效 —— 否则它会替新一轮发一条
+    /// 「已等待 20 分钟」，而新一轮其实才刚开始。
+    episode: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,6 +153,8 @@ impl Gate {
             self.alerting = Some(alerting);
             self.notified = false;
             self.pending = false;
+            // 轮次加一：上一轮排下的重复提醒因此失效（见 `episode` 的说明）
+            self.episode = self.episode.wrapping_add(1);
         }
 
         // 不是紧急状态就永远不弹 —— 落回普通状态不需要通知
@@ -195,6 +203,32 @@ impl Gate {
             false
         }
     }
+
+    /// 现在是第几轮。重复提醒的任务拿它认身份 —— 对不上就说明那一轮已经过去了。
+    pub fn episode(&self) -> u64 {
+        self.episode
+    }
+}
+
+/// 这个状态已经持续了多久（毫秒）。取**最久的那一组**：几组同时处于同一个紧急
+/// 状态时，只要有一组卡了很久，这个状态就该按最久的算。
+///
+/// 和 `sustained` 用同一个事实来源（`GroupView::since_ms`）—— 各算一份的话，两处
+/// 迟早会对「到底卡了多久」给出不同的答案。
+pub fn stuck_for_ms(snapshot: &Snapshot, muted: &[String], state: Signal) -> u64 {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    snapshot
+        .groups
+        .iter()
+        .filter(|group| !is_muted(&group.name, muted))
+        .filter(|group| group.aggregate == state)
+        .map(|group| now_ms.saturating_sub(group.since_ms))
+        .max()
+        .unwrap_or(0)
 }
 
 /// 这个状态值得打扰用户吗。抽出来是为了让「哪些状态算紧急」只有一处定义 ——
@@ -202,6 +236,20 @@ impl Gate {
 pub fn is_urgent(state: Signal) -> bool {
     matches!(state, Signal::Permission | Signal::Attention | Signal::Error)
 }
+
+/// 第一次通知之后再提醒几次，间隔递增。
+///
+/// 5 分钟就先提一次：卡住的是智能体，它**真的什么都不做**，所以越早把人叫回来越好。
+/// 之后越拖越久再提，50 分钟之后停 —— 到那时还没人管，再响多半也没用，而一直响就
+/// 成了骚扰。
+///
+/// 放在这里而不是 `notify.rs`：它是**告警策略**（提几次、隔多久），而那个文件只管
+/// 怎么排任务。分开放的话，这个常量就没法单测了。
+pub const REMIND_GAPS: [Duration; 3] = [
+    Duration::from_secs(5 * 60),
+    Duration::from_secs(15 * 60),
+    Duration::from_secs(30 * 60),
+];
 
 /// 系统「默认提示音」的名字。**没有三平台通吃的写法**，只能逐平台取值：
 ///
@@ -287,6 +335,43 @@ fn target_for(snapshot: &Snapshot, muted: &[String]) -> AlertTarget {
 /// 发得出去时才存在 —— 这正是 `Settings::sound` 与 `Settings::notify` 的耦合：
 /// 关掉通知，这里根本不会被调用，声音自然也一并没了。
 pub fn send(app: &tauri::AppHandle, snapshot: &Snapshot, sound: bool, muted: &[String]) {
+    send_alert(app, snapshot, sound, muted, body(snapshot, muted));
+}
+
+/// 重复提醒：状态还卡着，再提一次，正文里带上**已经等了多久**。
+///
+/// 为什么要有这个：智能体卡在等授权上时是**真的什么都不做**，没人去管它就永远停在
+/// 那儿。而第一次通知只弹一次 —— 你要是正好在开会、没看见那条，回来只看到一盏红
+/// 灯，完全不知道它已经卡了一小时。
+///
+/// 正文不是把第一次的通知重发一遍，而是明说等了多久：**「还没解决」和「已经卡了
+/// 20 分钟」是两条不同的信息**，后者才推得动人。
+pub fn send_reminder(app: &tauri::AppHandle, snapshot: &Snapshot, sound: bool, muted: &[String]) {
+    let state = alerting_aggregate(snapshot, muted);
+    let minutes = stuck_for_ms(snapshot, muted, state) / 60_000;
+    let lang = crate::current_lang(app);
+
+    let mut text = body(snapshot, muted);
+    if !text.is_empty() {
+        text.push('\n');
+    }
+    text.push_str(&crate::lang::stuck_for(lang, minutes));
+
+    send_alert(app, snapshot, sound, muted, text);
+}
+
+/// 告警通知的公共部分：标题、记下「这条通知说的是谁」、发出去。正文由调用方给
+/// （第一次通知和重复提醒只有正文不同）。
+///
+/// 抽这一层是因为 `LastAlert` 那一步**不能漏**：动作按钮是用户点的时候才回调的，
+/// 那时状态可能早就变了，少了这一步按钮就会作用到别的组上。
+fn send_alert(
+    app: &tauri::AppHandle,
+    snapshot: &Snapshot,
+    sound: bool,
+    muted: &[String],
+    body: String,
+) {
     // 标题也要用**排除静音组之后**的聚合值：用全局那个的话，全局最高恰好在
     // 一个被静音的组里时，标题会写着那一组的状态，而正文却是另一组的会话 ——
     // 一条自己跟自己不一致的通知。
@@ -294,13 +379,7 @@ pub fn send(app: &tauri::AppHandle, snapshot: &Snapshot, sound: bool, muted: &[S
     let title = crate::lang::signal_label(lang, alerting_aggregate(snapshot, muted));
     // 记下这条通知说的是谁：按钮回调时状态可能已经变了，见 AlertTarget 的说明
     app.state::<LastAlert>().set(target_for(snapshot, muted));
-    show(
-        app,
-        title,
-        &body(snapshot, muted),
-        sound,
-        Some(ACTION_TYPE_ID),
-    );
+    show(app, title, &body, sound, Some(ACTION_TYPE_ID));
 }
 
 /// 发一条自定义文案的通知。状态通知之外的通告用它（例如「已进入穿透模式」）。
@@ -915,5 +994,99 @@ mod tests {
     fn the_sound_flag_selects_the_default_sound() {
         assert_eq!(sound_name(true), DEFAULT_SOUND, "开着就该带上本平台的默认音");
         assert_eq!(sound_name(false), None, "关掉就不该带声音");
+    }
+
+    // ---- 重复提醒 -------------------------------------------------------------
+
+    /// 现在（epoch 毫秒），给下面几个用例算 since 用。
+    fn now_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("时钟倒退")
+            .as_millis() as u64
+    }
+
+    fn group_since(name: &str, aggregate: Signal, minutes_ago: u64) -> GroupView {
+        let mut group = group(name, aggregate, vec![]);
+        group.since_ms = now_ms() - minutes_ago * 60_000;
+        group
+    }
+
+    /// 轮次只在**状态真的变了**时才推进。
+    ///
+    /// `observe` 每次状态推送都会被调用（一轮工具调用几十次），要是每次都加一，
+    /// 排下的提醒就永远认不出自己那一轮、永远提前失效 —— 等于这个功能不存在。
+    #[test]
+    fn the_episode_advances_only_when_the_state_changes() {
+        let mut gate = Gate::default();
+
+        for _ in 0..5 {
+            gate.observe(Signal::Permission, Duration::ZERO, false);
+        }
+        let first = gate.episode();
+        assert_eq!(gate.episode(), first, "同一个状态推五次不该算五轮");
+
+        gate.observe(Signal::Working, Duration::ZERO, false);
+        assert_ne!(gate.episode(), first, "状态变了就是新的一轮");
+
+        // **离开又回到同一个值**也是一轮新的：提醒任务必须认得出这件事，否则它会
+        // 替新一轮发一条「已等待 20 分钟」，而新一轮才刚开始。
+        let second = gate.episode();
+        gate.observe(Signal::Permission, Duration::ZERO, false);
+        assert_ne!(gate.episode(), second, "回到同一个值也是一轮新的");
+    }
+
+    /// 「已经等了多久」取**最久的那一组**：几组同时处于同一个紧急状态时，只要有一组
+    /// 卡了很久，这个状态就该按最久的算。
+    #[test]
+    fn stuck_for_takes_the_longest_matching_group() {
+        let snap = snapshot_of(vec![
+            group_since("ci", Signal::Permission, 20),
+            group_since("docs", Signal::Permission, 1),
+            // 别的状态不参与
+            group_since("web", Signal::Working, 999),
+        ]);
+
+        let ms = stuck_for_ms(&snap, &[], Signal::Permission);
+        assert!(
+            (20 * 60_000..21 * 60_000).contains(&ms),
+            "该取最久的那组（20 分钟），实际 {ms}"
+        );
+    }
+
+    /// 静音组不算数 —— 和告警本身同一条规则。否则一个被标了「别吵我」的组会一直
+    /// 触发提醒，而那正是用户说「别烦我」的意思。
+    #[test]
+    fn stuck_for_ignores_muted_groups() {
+        let snap = snapshot_of(vec![
+            group_since("noisy", Signal::Error, 30),
+            group_since("ci", Signal::Error, 2),
+        ]);
+
+        let ms = stuck_for_ms(&snap, &["noisy".to_string()], Signal::Error);
+        assert!(
+            (2 * 60_000..3 * 60_000).contains(&ms),
+            "被静音的那组不该算进来，实际 {ms}"
+        );
+    }
+
+    /// 一组都不匹配时是 0，不是 panic、也不是「所有组里最久的那个」
+    #[test]
+    fn stuck_for_is_zero_when_nothing_matches() {
+        let snap = snapshot_of(vec![group_since("ci", Signal::Working, 30)]);
+        assert_eq!(stuck_for_ms(&snap, &[], Signal::Error), 0);
+        assert_eq!(stuck_for_ms(&snapshot_of(vec![]), &[], Signal::Error), 0);
+    }
+
+    /// 间隔必须是递增的。这条不是在测代码，是在钉住那个设计决定：越拖越久再提，
+    /// 而不是固定频率地响 —— 后者对「一直卡着」和「刚卡住」一视同仁。
+    #[test]
+    fn the_reminder_gaps_grow() {
+        let gaps: Vec<u64> = REMIND_GAPS.iter().map(|gap| gap.as_secs()).collect();
+        assert!(
+            gaps.windows(2).all(|pair| pair[0] < pair[1]),
+            "重复提醒的间隔应当递增：{gaps:?}"
+        );
+        assert!(!gaps.is_empty(), "至少得提一次，否则这个功能不存在");
     }
 }

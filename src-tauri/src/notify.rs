@@ -124,23 +124,23 @@ fn decide_alert(
 ) {
     let muted = &settings.muted_groups;
     let alerting = alerts::alerting_aggregate(snapshot, muted);
-
-    // 前端还没推过时间就当作「不勿扰」：宁可多弹一条，也不要在用户不知情时
-    // 把通知静掉 —— 那会表现为「通知功能坏了」，是最难归因的一类问题。
-    let quiet = match app.state::<alerts::LocalHour>().get() {
-        Some(hour) => settings.quiet_hours.covers(hour),
-        None => false,
-    };
+    let quiet = is_quiet_now(app);
 
     let threshold = Duration::from_secs(settings.alert_after_secs as u64);
-    let decision = gate
-        .lock()
-        .expect("gate poisoned")
-        .observe(alerting, threshold, quiet);
+    // 决定和轮次**在同一次加锁里取**：分两次的话，中间可能被另一次状态推送插进来，
+    // 于是这里抓到的会是新一轮的编号、而决定属于上一轮 —— 那正好让轮次判断失效。
+    let (decision, episode) = {
+        let mut gate = gate.lock().expect("gate poisoned");
+        let decision = gate.observe(alerting, threshold, quiet);
+        (decision, gate.episode())
+    };
 
     match decision {
         alerts::Decision::None => {}
-        alerts::Decision::Now => alerts::send(app, snapshot, settings.sound, muted),
+        alerts::Decision::Now => {
+            alerts::send(app, snapshot, settings.sound, muted);
+            spawn_reminders(app.clone(), gate.clone(), muted.clone(), alerting, episode);
+        }
         alerts::Decision::Later => {
             let app = app.clone();
             let gate = gate.clone();
@@ -151,6 +151,12 @@ fn decide_alert(
             // 状态可能已经变了，或者离开又回来变成了一个同名的「新」状态。
             tauri::async_runtime::spawn(async move {
                 tokio::time::sleep(threshold).await;
+
+                // 还是排任务时那一轮吗？状态离开又回来（哪怕回到同一个值）已经是
+                // 新的一轮了 —— 拿旧一轮的检查去替它弹，等于跳过了它自己的阈值。
+                if gate.lock().expect("gate poisoned").episode() != episode {
+                    return;
+                }
 
                 let snapshot = app
                     .state::<SharedStore>()
@@ -171,9 +177,81 @@ fn decide_alert(
                     return;
                 }
                 alerts::send(&app, &snapshot, sound, &muted);
+                spawn_reminders(app.clone(), gate.clone(), muted.clone(), alerting, episode);
             });
         }
     }
+}
+
+/// 现在是不是勿扰时段。
+///
+/// 前端还没推过时间就当作「不勿扰」：宁可多弹一条，也不要在用户不知情时把通知静掉
+/// —— 那会表现为「通知功能坏了」，是最难归因的一类问题。
+///
+/// 每步重算而不是沿用第一次通知时的判断：等待期间用户可能改了时段设置。
+fn is_quiet_now(app: &tauri::AppHandle) -> bool {
+    let settings = app
+        .state::<SharedSettings>()
+        .lock()
+        .expect("settings poisoned")
+        .clone();
+    match app.state::<alerts::LocalHour>().get() {
+        Some(hour) => settings.quiet_hours.covers(hour),
+        None => false,
+    }
+}
+
+/// 排一条重复提醒的链：每到一个间隔就重判一次，该提就提，然后等下一个间隔。
+///
+/// **每一步都要重判，不能一路睡到底。** 这中间状态可能已经过去了、用户可能把通知
+/// 关了、也可能进了勿扰时段 —— 链上任何一步发现不该提，就整条停掉。
+///
+/// 判据全部现读（快照、设置、本地时间），不看排链时捕获的值：`sound` 这类设置用户
+/// 随时可能改，用旧值就是在替他做决定。
+fn spawn_reminders(
+    app: tauri::AppHandle,
+    gate: Arc<Mutex<alerts::Gate>>,
+    muted: Vec<String>,
+    alerting: Signal,
+    episode: u64,
+) {
+    tauri::async_runtime::spawn(async move {
+        for gap in alerts::REMIND_GAPS {
+            tokio::time::sleep(gap).await;
+
+            // 还是同一轮吗？状态离开又回来是新的一轮，上一轮排下的提醒必须失效 ——
+            // 否则会替新一轮发一条「已等待 20 分钟」，而它才刚开始。
+            if gate.lock().expect("gate poisoned").episode() != episode {
+                return;
+            }
+
+            let settings = app
+                .state::<SharedSettings>()
+                .lock()
+                .expect("settings poisoned")
+                .clone();
+            if !settings.notify {
+                return; // 用户把通知关了
+            }
+            // 进了勿扰时段就停，**不延后补发** —— 和第一次通知同一条理由：早上醒来
+            // 面对一夜攒下的通知，正是勿扰想避免的。
+            if is_quiet_now(&app) {
+                return;
+            }
+
+            let snapshot = app
+                .state::<SharedStore>()
+                .lock()
+                .expect("state store poisoned")
+                .snapshot();
+            // 事情过去了：状态变了、被静音了、或者暂停了
+            if alerts::alerting_aggregate(&snapshot, &muted) != alerting {
+                return;
+            }
+
+            alerts::send_reminder(&app, &snapshot, settings.sound, &muted);
+        }
+    });
 }
 
 /// 这个聚合值真的已经持续够久了吗。
