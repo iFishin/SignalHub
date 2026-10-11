@@ -526,7 +526,72 @@ fn apply_window_size(app: &tauri::AppHandle, settings: &Settings, snapshot: &Sna
 
     if needs_resize {
         let _ = window.set_size(LogicalSize::new(width, height));
+        // 尺寸变了才可能越界，所以放在这个分支里
+        keep_on_screen(&window, width, height);
     }
+}
+
+/// 尺寸变了之后，把窗口推回屏幕内。
+///
+/// **为什么需要**：位置是记住的（`tauri-plugin-window-state`），而尺寸由内容决定
+/// （`apply_window_size`）。组一多、或者从旧版本升上来（默认从一颗灯变成一叠牌），
+/// 窗口就会长大 —— 一个原本贴着屏幕右下角的点会长到屏幕外面去。用户看到的是一块
+/// 被裁掉一半的牌子，而且多半想不到是尺寸变了。
+///
+/// **只在尺寸真的变了之后调**，所以不会和用户拖动打架：用户把窗口拖到哪就是哪，
+/// 只要它没越界，这里一个像素都不动。
+///
+/// `width`/`height` 是**刚设下去的逻辑尺寸**，不是读回来的 —— `set_size` 是往事件
+/// 循环投一条消息，紧接着读 `outer_size()` 拿到的还是旧值，用它算会把窗口夹到错的
+/// 位置。所以这里自己换算成物理像素。
+///
+/// 用工作区（`work_area`）而不是整块屏幕：任务栏 / Dock 占掉的那一条不算可用空间，
+/// 按整屏算的话，贴着底边的窗口会有一截压在任务栏底下。
+fn keep_on_screen(window: &tauri::WebviewWindow, width: u16, height: u16) {
+    let (Ok(Some(monitor)), Ok(position)) = (window.current_monitor(), window.outer_position())
+    else {
+        // 拿不到显示器信息（多屏拔插的瞬间、无头环境）就什么都不做 ——
+        // 这只是个兜底，失败不该有任何副作用
+        return;
+    };
+
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let size = (
+        (width as f64 * scale).round() as i32,
+        (height as f64 * scale).round() as i32,
+    );
+    let area = monitor.work_area();
+    let bounds = (
+        (area.position.x, area.position.y),
+        (
+            area.position.x + area.size.width as i32,
+            area.position.y + area.size.height as i32,
+        ),
+    );
+
+    let (x, y) = clamp_to_area((position.x, position.y), size, bounds);
+    if (x, y) != (position.x, position.y) {
+        let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+    }
+}
+
+/// 把一个窗口位置夹进工作区。返回夹紧后的左上角。
+///
+/// `bounds` 是 `((左, 上), (右, 下))`。抽成纯函数是为了能单测 —— 边界情况（窗口
+/// 比工作区还大、副屏在左侧时的负坐标）是这里最容易写错的地方，而它们在真机上
+/// 很难复现。
+fn clamp_to_area(
+    position: (i32, i32),
+    size: (i32, i32),
+    bounds: ((i32, i32), (i32, i32)),
+) -> (i32, i32) {
+    let ((left, top), (right, bottom)) = bounds;
+    // 窗口比工作区还大时 `right - width` 会小于 `left`，`clamp` 遇到 min > max 会
+    // panic。取 max 保证区间非空，此时结果就是「贴到左上角」—— 那也是唯一合理的
+    // 位置（屏幕装不下它，至少让左上角可见）。
+    let max_x = (right - size.0).max(left);
+    let max_y = (bottom - size.1).max(top);
+    (position.0.clamp(left, max_x), position.1.clamp(top, max_y))
 }
 
 /// 由命令和托盘菜单共用。
@@ -717,4 +782,58 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clamp_to_area;
+
+    /// 一块 1920×1080、任务栏占掉底部 40px 的屏幕
+    const SCREEN: ((i32, i32), (i32, i32)) = ((0, 0), (1920, 1040));
+    /// 一块 200×160 的窗口
+    const WINDOW: (i32, i32) = (200, 160);
+
+    #[test]
+    fn a_window_that_fits_is_left_alone() {
+        for position in [(0, 0), (960, 520), (100, 100)] {
+            assert_eq!(clamp_to_area(position, WINDOW, SCREEN), position, "{position:?}");
+        }
+    }
+
+    /// 贴着右下边缘是允许的 —— 夹的是「不许整块出去」，不是「必须留出边距」
+    #[test]
+    fn hugging_the_bottom_right_corner_is_fine() {
+        assert_eq!(clamp_to_area((1720, 880), WINDOW, SCREEN), (1720, 880));
+    }
+
+    /// 尺寸变大之后跑到右/下边外面 —— 这就是这个函数存在的理由
+    #[test]
+    fn a_window_hanging_off_the_right_or_bottom_is_pulled_back() {
+        assert_eq!(clamp_to_area((1900, 500), WINDOW, SCREEN), (1720, 500));
+        assert_eq!(clamp_to_area((500, 1200), WINDOW, SCREEN), (500, 880));
+        assert_eq!(clamp_to_area((1900, 1200), WINDOW, SCREEN), (1720, 880));
+    }
+
+    /// 左/上越界也要管：副屏摆在左侧时坐标是负的，主屏在右侧，窗口可能被推到
+    /// 主屏左边之外
+    #[test]
+    fn a_window_hanging_off_the_left_or_top_is_pulled_back() {
+        assert_eq!(clamp_to_area((-500, 100), WINDOW, SCREEN), (0, 100));
+        assert_eq!(clamp_to_area((100, -500), WINDOW, SCREEN), (100, 0));
+    }
+
+    /// 窗口比工作区还大：`clamp` 在 min > max 时会 panic，所以这条既是行为测试
+    /// 也是「别 panic」的测试
+    #[test]
+    fn a_window_bigger_than_the_screen_goes_to_the_top_left() {
+        assert_eq!(clamp_to_area((500, 500), (4000, 3000), SCREEN), (0, 0));
+    }
+
+    /// 工作区不一定从 (0,0) 开始（副屏在主屏左边/上边时是负的）
+    #[test]
+    fn an_area_with_a_negative_origin_is_respected() {
+        let area = ((-1920, -200), (0, 880));
+        assert_eq!(clamp_to_area((-1900, 700), WINDOW, area), (-1900, 700), "区内不动");
+        assert_eq!(clamp_to_area((-2000, 900), WINDOW, area), (-1920, 720), "越界拉回");
+    }
 }
