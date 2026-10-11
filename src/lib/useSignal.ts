@@ -13,7 +13,7 @@ const INITIAL: Snapshot = {
   paused: false,
   since_ms: 0,
   message: null,
-  sessions: [],
+  groups: [],
 };
 
 export function useSignal(): Snapshot {

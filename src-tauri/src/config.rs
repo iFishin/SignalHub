@@ -13,9 +13,29 @@ pub const DEFAULT_SIZE: u16 = 22;
 /// 圆点四周留白的**总量**（不是每边）。留白是为了好抓取圆点来拖动。
 pub const LAMP_MARGIN: u16 = 20;
 
-/// 灯球最多同时显示几个会话。超出的按优先级截断 —— 会话列表本就是按优先级
-/// 排的，所以截断后剩下的恰好是最紧急的那几个。
-pub const MAX_DOTS: u16 = 3;
+/// 灯球上最多同时显示几块牌。超出的截断 —— 牌按优先级排，所以留下的是最紧急的。
+pub const MAX_SIGNS: usize = 4;
+
+/// 牌的宽度。
+///
+/// 由 `size` 派生，不另加一个设置 —— `size` 现在表示整块牌的尺度，「大小」
+/// 一个旋钮就够。文字长度不定，所以宽度**固定**、超出用省略号截断：让宽度
+/// 跟着文字走会让窗口每次消息变化都跳一下。
+pub fn sign_width(size: u16) -> u16 {
+    size * 7
+}
+
+/// 一块牌的高度。有消息就多一行 —— 那块牌会变高，正好是个「有东西可读」的提示。
+///
+/// **CSS 里的 `.sign` / `.sign.has-message` 必须与这两个值严格对齐**，
+/// 否则窗口会裁掉最后一块牌、或者底下留一条缝。
+pub fn sign_height(size: u16, has_message: bool) -> u16 {
+    if has_message {
+        size * 5 / 2
+    } else {
+        size * 3 / 2
+    }
+}
 
 /// 展开面板的宽度。固定值：面板内容是一列短文本，宽度不必随会话数变。
 pub const PANEL_WIDTH: u16 = 260;
@@ -227,11 +247,6 @@ pub struct Settings {
     pub hooks: Vec<Hook>,
     /// 圆点形状
     pub shape: Shape,
-    /// 给圆点套一圈中性细环。
-    ///
-    /// 解决的是「一个纯色点很容易和桌面上别的 UI 元素混在一起」—— 加了外壳
-    /// 之后它读起来像「灰壳里的一颗灯」，也就是实体指示灯的样子。默认开。
-    pub bezel: bool,
     /// 配色方案（用户没单独指定颜色时的默认值）
     pub palette: Palette,
     /// 每个状态的自定义颜色，`#rrggbb`。没写的用配色的默认值。
@@ -287,7 +302,6 @@ impl Default for Settings {
             webhook_url: None,
             hooks: Vec::new(),
             shape: Shape::default(),
-            bezel: true,
             palette: Palette::default(),
             colors: BTreeMap::new(),
         }
@@ -316,17 +330,15 @@ impl Settings {
         self
     }
 
-    /// 按可见圆点个数算出窗口尺寸。
+    /// 窗口尺寸。`signs` 是可见牌的高度列表（Rust 侧算好，见 `sign_height`）。
     ///
-    /// 只有一个会话时窗口仍是 `size + LAMP_MARGIN` 的方形（默认 22+20=42）——
-    /// 多点只在真有多个会话时才占宽。否则一个常驻的宽透明窗口会白白吃掉桌面的
-    /// 点击，而那正是这个工具最不该有的副作用。
-    pub fn window_size(&self, dots: u16) -> (u16, u16) {
-        let dots = dots.clamp(1, MAX_DOTS);
-        let gap = self.size / 3;
-        let width = dots * self.size + (dots - 1) * gap + LAMP_MARGIN;
-        let height = self.size + LAMP_MARGIN;
-        (width, height)
+    /// 一块牌时窗口就是「牌 + 留白」；多块竖着叠，高度逐块累加。
+    pub fn window_size(&self, signs: &[u16]) -> (u16, u16) {
+        let gap = self.size / 2;
+        let count = signs.len().clamp(1, MAX_SIGNS) as u16;
+        let stacked: u16 = signs.iter().take(count as usize).sum();
+        let gaps = gap * count.saturating_sub(1);
+        (sign_width(self.size) + LAMP_MARGIN, stacked + gaps + LAMP_MARGIN)
     }
 
     /// 展开面板的尺寸。行数取会话数，至少一行（避免出现一个空面板）。
@@ -586,23 +598,34 @@ mod tests {
     }
 
     #[test]
-    fn window_size_only_grows_when_there_are_multiple_dots() {
+    fn window_grows_downward_as_signs_stack() {
         let settings = Settings::default();
-        let size = settings.size;
+        let one_line = sign_height(settings.size, false);
+        let one = settings.window_size(&[one_line]);
 
-        // 一个圆点：方形，和加多点之前一样
-        let (w1, h1) = settings.window_size(1);
-        assert_eq!(w1, size + LAMP_MARGIN);
-        assert_eq!(h1, size + LAMP_MARGIN);
+        // 宽度不随牌数变 —— 牌是竖着叠的，不是横着排
+        let two = settings.window_size(&[one_line, one_line]);
+        assert_eq!(two.0, one.0, "宽度固定");
+        assert!(two.1 > one.1, "多一块牌就多占一份高度");
 
-        // 两个圆点起才开始变宽，高度不变
-        let (w2, _) = settings.window_size(2);
-        assert!(w2 > w1, "多一个圆点就该多占一份宽度");
-        let (_, h3) = settings.window_size(3);
-        assert_eq!(h3, h1, "高度只和圆点直径有关");
+        // 有消息的那块多一行，于是窗口更高 —— 那是刻意的提示
+        let with_message = settings.window_size(&[sign_height(settings.size, true)]);
+        assert!(with_message.1 > one.1, "有消息的牌多占一行");
 
-        // 超出上限按上限算，不会无限变宽
-        assert_eq!(settings.window_size(99), settings.window_size(MAX_DOTS));
+        // 超出上限按上限算，不会无限往下长
+        let many = vec![one_line; MAX_SIGNS + 3];
+        let capped = vec![one_line; MAX_SIGNS];
+        assert_eq!(settings.window_size(&many), settings.window_size(&capped));
+    }
+
+    #[test]
+    fn a_sign_is_wider_than_tall_and_scales_with_size() {
+        for size in [16, 22, 32] {
+            let width = sign_width(size);
+            let height = sign_height(size, false);
+            assert!(width > height, "牌是横条：{size} → {width}×{height}");
+            assert_eq!(sign_height(size, true), height * 5 / 3, "有消息时约 1.67 倍高");
+        }
     }
 
     #[test]

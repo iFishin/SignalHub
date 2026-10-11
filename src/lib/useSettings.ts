@@ -36,8 +36,6 @@ export interface Settings {
   /** 出站钩子。 */
   hooks: Hook[];
   shape: Shape;
-  /** 给圆点套一圈中性细环，让它读起来像指示灯而不是 UI 色块。 */
-  bezel: boolean;
   palette: Palette;
   /** 逐个状态覆盖颜色（`#rrggbb`）。空的表示全部用配色预设。 */
   colors: Record<string, string>;
@@ -51,7 +49,6 @@ const DEFAULTS: Settings = {
   notify: true,
   hooks: [],
   shape: "circle",
-  bezel: true,
   palette: "default",
   colors: {},
 };

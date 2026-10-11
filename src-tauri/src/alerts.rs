@@ -23,9 +23,12 @@ pub fn should_alert(previous: Option<Signal>, current: Signal) -> bool {
 
 /// 通知正文：胜出会话的项目名 + 它自己的说明。
 ///
-/// `sessions` 已按优先级排序，所以第一个就是决定聚合的那一路。
+/// 与分组无关 —— 取全局优先级最高的那个会话，也就是决定 `aggregate` 的那一路。
 fn body(snapshot: &Snapshot) -> String {
-    let Some(session) = snapshot.sessions.first() else {
+    let Some(session) = snapshot
+        .all_sessions()
+        .max_by_key(|session| session.state.priority())
+    else {
         return String::new();
     };
 
@@ -107,7 +110,19 @@ mod tests {
     }
 
     fn snapshot(aggregate: Signal, sessions: Vec<SessionView>) -> Snapshot {
-        Snapshot { aggregate, paused: false, since_ms: 0, message: None, sessions }
+        Snapshot {
+            aggregate,
+            paused: false,
+            since_ms: 0,
+            message: None,
+            groups: vec![crate::state::GroupView {
+                name: crate::state::DEFAULT_GROUP.to_string(),
+                aggregate,
+                message: None,
+                since_ms: 0,
+                sessions,
+            }],
+        }
     }
 
     #[test]

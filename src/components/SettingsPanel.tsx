@@ -118,6 +118,11 @@ export function SettingsPanel({ snapshot }: Props) {
 
   const reported = (err: unknown) => setError(String(err));
 
+  const sessionCount = snapshot.groups.reduce(
+    (sum, group) => sum + group.sessions.length,
+    0,
+  );
+
   const patch = (next: Partial<Settings>) => {
     setError(null);
     updateSettings({ ...settings, ...next }).catch(reported);
@@ -170,31 +175,48 @@ export function SettingsPanel({ snapshot }: Props) {
   const page = () => {
     switch (tab) {
       case "status":
-        return snapshot.sessions.length === 0 ? (
+        return snapshot.groups.length === 0 ? (
           <p className="empty">
             暂无会话。接入智能体或调用上报接口后，这里会列出来。
           </p>
         ) : (
-          <ul className="sessions">
-            {snapshot.sessions.map((session) => (
-              <li key={session.id} className="session" data-state={session.state}>
-                <span className="state-dot" />
-                {/* 窄面板里挤成一行会把 id 压没，所以状态/来源单独放上行 */}
-                <div className="session-body">
-                  <div className="session-line">
-                    <span className="id mono">{session.id}</span>
-                    <span className="meta">
-                      {SIGNAL_LABEL[session.state]}
-                      {session.agent ? ` · ${session.agent}` : ""}
-                    </span>
-                  </div>
-                  {session.message && (
-                    <div className="message">{session.message}</div>
-                  )}
+          <>
+            {snapshot.groups.map((group) => (
+              <div className="group" key={group.name}>
+                <div className="group-head" data-state={group.aggregate}>
+                  <span className="state-dot" />
+                  <span className="group-name">{group.name}</span>
+                  <span className="group-meta">
+                    {SIGNAL_LABEL[group.aggregate]} · {group.sessions.length} 个会话
+                  </span>
                 </div>
-              </li>
+                <ul className="sessions">
+                  {group.sessions.map((session) => (
+                    <li
+                      key={session.id}
+                      className="session"
+                      data-state={session.state}
+                    >
+                      <span className="state-dot" />
+                      {/* 窄面板里挤成一行会把 id 压没，所以状态/来源单独放上行 */}
+                      <div className="session-body">
+                        <div className="session-line">
+                          <span className="id mono">{session.id}</span>
+                          <span className="meta">
+                            {SIGNAL_LABEL[session.state]}
+                            {session.agent ? ` · ${session.agent}` : ""}
+                          </span>
+                        </div>
+                        {session.message && (
+                          <div className="message">{session.message}</div>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             ))}
-          </ul>
+          </>
         );
 
       case "look":
@@ -228,9 +250,6 @@ export function SettingsPanel({ snapshot }: Props) {
                 ))}
               </div>
             </Row>
-            <Row label="外壳">
-              <Switch on={settings.bezel} onChange={(on) => patch({ bezel: on })} />
-            </Row>
             <Row label="配色">
               <div className="seg">
                 {PALETTES.map((palette) => (
@@ -255,8 +274,8 @@ export function SettingsPanel({ snapshot }: Props) {
               <Switch on={settings.quiet} onChange={(on) => patch({ quiet: on })} />
             </Row>
             <p className="hint">
-              外壳是一圈中性细环，让它读起来像指示灯而不是普通色块。改成圆角方或环
-              会让 permission / error 的方角区分失效，此时建议配合色盲友好配色。
+              形状只影响牌里那颗灯。改成圆角方或环会让 permission / error 的方角区分
+              失效，此时建议配合色盲友好配色。
             </p>
           </>
         );
@@ -483,8 +502,10 @@ export function SettingsPanel({ snapshot }: Props) {
       <h1 data-state={snapshot.aggregate}>
         <span className="state-dot" />
         {SIGNAL_LABEL[snapshot.aggregate]}
-        {snapshot.sessions.length > 0 && (
-          <span className="headline-count">{snapshot.sessions.length} 个会话</span>
+        {snapshot.groups.length > 0 && (
+          <span className="headline-count">
+            {snapshot.groups.length} 组 · {sessionCount} 个会话
+          </span>
         )}
       </h1>
       {/* 没有提示文本时整段不渲染 —— 否则会白占一行高度 */}

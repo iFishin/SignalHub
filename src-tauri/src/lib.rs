@@ -71,6 +71,7 @@ fn set_state(
     let req = Report {
         state: Signal::parse(&state)?,
         session,
+        group: None,
         agent: Some("debug".into()),
         cwd: None,
         message,
@@ -327,11 +328,24 @@ fn apply_settings(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapsh
     apply_window_size(app, settings, snapshot);
 }
 
-/// 灯球上可见的圆点个数。没有会话时也要显示一个点（表示 offline），所以下限是
-/// 1；上限是 `MAX_DOTS`，超出的按优先级截断 —— 会话列表本就按优先级排，
-/// 所以剩下的恰好是最紧急的那几个。
-fn visible_dots(snapshot: &Snapshot) -> u16 {
-    (snapshot.sessions.len() as u16).clamp(1, config::MAX_DOTS)
+/// 灯球上可见的牌的高度列表。
+///
+/// 牌的**顺序**由服务端定（最紧急在前，见 `Store::snapshot_at`），所以这里只取
+/// 前 `MAX_SIGNS` 块 —— 和前端截断的规则一致。高度按「有没有消息」算：有东西
+/// 可读的牌多占一行，正好是个提示。
+fn visible_signs(settings: &Settings, snapshot: &Snapshot) -> Vec<u16> {
+    let mut heights: Vec<u16> = snapshot
+        .groups
+        .iter()
+        .take(config::MAX_SIGNS)
+        .map(|group| config::sign_height(settings.size, group.message.is_some()))
+        .collect();
+
+    // 一个组都没有时也要显示一块牌（表示 offline），否则窗口会塌成一条缝
+    if heights.is_empty() {
+        heights.push(config::sign_height(settings.size, false));
+    }
+    heights
 }
 
 /// 按可见圆点个数（或展开后的行数）调整窗口尺寸。
@@ -349,9 +363,9 @@ fn apply_window_size(app: &tauri::AppHandle, settings: &Settings, snapshot: &Sna
         .expect("ui poisoned")
         .expanded;
     let (width, height) = if expanded {
-        settings.panel_size(snapshot.sessions.len() as u16)
+        settings.panel_size(snapshot.all_sessions().count() as u16)
     } else {
-        settings.window_size(visible_dots(snapshot))
+        settings.window_size(&visible_signs(settings, snapshot))
     };
 
     // inner_size 给的是物理像素，要除掉缩放比才能和逻辑尺寸比较

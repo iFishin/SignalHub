@@ -172,6 +172,10 @@ impl<'de> Deserialize<'de> for Signal {
 pub struct Report {
     pub state: Signal,
     pub session: Option<String>,
+    /// 归属的组。不传就是 `default` —— 单组用户完全不用管这个字段。
+    ///
+    /// 分组是为了「多组状态灯」：灯球上每组一块牌，各自聚合。
+    pub group: Option<String>,
     pub agent: Option<String>,
     pub cwd: Option<String>,
     pub message: Option<String>,
@@ -182,18 +186,35 @@ impl Report {
     /// 只给单测用的紧凑构造器；生产路径上的 Report 都来自反序列化。
     #[cfg(test)]
     pub fn new(state: Signal) -> Self {
-        Report { state, session: None, agent: None, cwd: None, message: None, ttl_ms: None }
+        Report {
+            state,
+            session: None,
+            group: None,
+            agent: None,
+            cwd: None,
+            message: None,
+            ttl_ms: None,
+        }
     }
 
     pub fn session_id(&self) -> &str {
         self.session.as_deref().unwrap_or("default")
     }
+
+    pub fn group_id(&self) -> &str {
+        self.group.as_deref().map(str::trim).filter(|g| !g.is_empty()).unwrap_or(DEFAULT_GROUP)
+    }
 }
+
+/// 没指定组时的组名。
+pub const DEFAULT_GROUP: &str = "default";
 
 #[derive(Debug, Clone)]
 struct Session {
     /// 冗余存一份 id，让聚合平局时的排序确定（HashMap 迭代顺序不确定）。
     id: String,
+    /// 归属的组。灯球上每组一块牌。
+    group: String,
     state: Signal,
     agent: Option<String>,
     cwd: Option<String>,
@@ -220,13 +241,35 @@ pub struct SessionView {
     pub stale_progress: Option<f32>,
 }
 
+/// 一个组在灯球上的样子：一块牌。
+#[derive(Debug, Clone, Serialize)]
+pub struct GroupView {
+    pub name: String,
+    /// 这一组自己的聚合（组内取最高优先级）
+    pub aggregate: Signal,
+    /// 这一组里决定聚合的那个会话的说明，用作牌上的消息行
+    pub message: Option<String>,
+    /// 这一组里最早进入当前状态的时间，用于牌上的「已持续多久」
+    pub since_ms: u64,
+    pub sessions: Vec<SessionView>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Snapshot {
+    /// 所有组里最高的那个 —— 通知、钩子、托盘都用它，与分组无关
     pub aggregate: Signal,
     pub paused: bool,
     pub since_ms: u64,
     pub message: Option<String>,
-    pub sessions: Vec<SessionView>,
+    /// 每组的聚合结果，按组名排序（顺序稳定，牌不会跳）
+    pub groups: Vec<GroupView>,
+}
+
+impl Snapshot {
+    /// 摊平所有组里的会话。通知文案、会话列表这类「与分组无关」的用途走它。
+    pub fn all_sessions(&self) -> impl Iterator<Item = &SessionView> {
+        self.groups.iter().flat_map(|group| group.sessions.iter())
+    }
 }
 
 /// 前端真正会渲染的那部分。用它做前后比对，避免「message 变了但聚合没变」
@@ -236,7 +279,8 @@ struct Visible {
     aggregate: Signal,
     paused: bool,
     message: Option<String>,
-    sessions: Vec<(String, Signal)>,
+    /// 带上组名 —— 一个会话换组会改变牌的分组，那是可见变化
+    sessions: Vec<(String, String, Signal)>,
 }
 
 #[derive(Debug, Default)]
@@ -249,8 +293,9 @@ pub struct Store {
 
 impl Store {
     pub fn apply(&mut self, now: Instant, req: Report) -> bool {
-        // 先取出会话名，之后就只移动 req 的各个字段，不再整体借用它
+        // 先取出会话名和组名，之后就只移动 req 的各个字段，不再整体借用它
         let session = req.session_id().to_string();
+        let group = req.group_id().to_string();
 
         // `off` 作用在会话上等价于清除该会话；全局暂停走 set_paused。
         if req.state == Signal::Off {
@@ -277,6 +322,8 @@ impl Store {
             session.clone(),
             Session {
                 id: session,
+                // 组和状态一样是后写覆盖：换个组上报就把这个会话挪过去
+                group,
                 state: req.state,
                 agent,
                 cwd,
@@ -368,9 +415,56 @@ impl Store {
 
     /// 时间可注入的版本。`stale_progress` 依赖「现在」，用真实时钟就没法单测。
     pub fn snapshot_at(&self, now: Instant) -> Snapshot {
-        let mut sessions: Vec<SessionView> = self
+        let mut groups: Vec<GroupView> = self
+            .group_names()
+            .into_iter()
+            .map(|name| {
+                let winner = self.winner_in(&name);
+                GroupView {
+                    aggregate: winner.map(|s| s.state).unwrap_or(Signal::Offline),
+                    message: winner.and_then(|s| s.message.clone()),
+                    // 这一组进入当前状态多久了 —— 牌上「已持续」那一段
+                    since_ms: winner.map(|s| epoch_ms(s.since)).unwrap_or(0),
+                    sessions: self.views_in(&name, now),
+                    name,
+                }
+            })
+            .collect();
+
+        // 最紧急的排在最前：灯球上牌的顺序就是优先级顺序，瞥一眼先看到该看的那块。
+        // 平局按名字，保证顺序稳定。
+        //
+        // 排序放在服务端而不是前端，是为了让「哪几块牌可见」只有一个判断点 ——
+        // 窗口高度取决于可见牌的高度，Rust 必须和前端算出同一批牌。
+        groups.sort_by(|a, b| {
+            b.aggregate
+                .priority()
+                .cmp(&a.aggregate.priority())
+                .then_with(|| a.name.cmp(&b.name))
+        });
+
+        Snapshot {
+            aggregate: self.aggregate(),
+            paused: self.paused,
+            since_ms: self.since.map(epoch_ms).unwrap_or(0),
+            message: self.winner().and_then(|s| s.message.clone()),
+            groups,
+        }
+    }
+
+    /// 所有组名，排序过 —— 牌的顺序因此稳定，不随 HashMap 的迭代顺序跳。
+    fn group_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.sessions.values().map(|s| s.group.clone()).collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    fn views_in(&self, group: &str, now: Instant) -> Vec<SessionView> {
+        let mut views: Vec<SessionView> = self
             .sessions
             .values()
+            .filter(|s| s.group == group)
             .map(|s| SessionView {
                 id: s.id.clone(),
                 state: s.state,
@@ -389,38 +483,32 @@ impl Store {
                 }),
             })
             .collect();
-        sessions.sort_by(|a, b| {
+        views.sort_by(|a, b| {
             b.state.priority().cmp(&a.state.priority()).then_with(|| a.id.cmp(&b.id))
         });
-
-        Snapshot {
-            aggregate: self.aggregate(),
-            paused: self.paused,
-            since_ms: self
-                .since
-                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0),
-            message: self.winner().and_then(|s| s.message.clone()),
-            sessions,
-        }
+        views
     }
 
     /// 优先级最高者；平局时取最近进入该状态的，再平局取 id 最小者，保证结果确定。
     fn winner(&self) -> Option<&Session> {
-        self.sessions.values().max_by(|a, b| {
-            a.state
-                .priority()
-                .cmp(&b.state.priority())
-                .then_with(|| a.since.cmp(&b.since))
-                .then_with(|| b.id.cmp(&a.id))
-        })
+        self.sessions.values().max_by(|a, b| by_priority(a, b))
+    }
+
+    /// 某一组里优先级最高的会话 —— 那块牌的颜色和消息由它决定。
+    fn winner_in(&self, group: &str) -> Option<&Session> {
+        self.sessions
+            .values()
+            .filter(|s| s.group == group)
+            .max_by(|a, b| by_priority(a, b))
     }
 
     /// 用于前后比对：只要会话集合、聚合值或 tooltip 文本变了就返回不同的值。
     fn visible(&self) -> Visible {
-        let mut sessions: Vec<(String, Signal)> =
-            self.sessions.iter().map(|(k, s)| (k.clone(), s.state)).collect();
+        let mut sessions: Vec<(String, String, Signal)> = self
+            .sessions
+            .iter()
+            .map(|(k, s)| (k.clone(), s.group.clone(), s.state))
+            .collect();
         // 按会话名排序即可得到规范顺序（会话名唯一），无需 Signal 实现 Ord
         sessions.sort_by(|a, b| a.0.cmp(&b.0));
         Visible {
@@ -440,9 +528,29 @@ impl Store {
     }
 }
 
+/// 优先级最高者胜；平局取最近进入该状态的，再平局取 id 最小者 —— 结果确定。
+fn by_priority(a: &Session, b: &Session) -> std::cmp::Ordering {
+    a.state
+        .priority()
+        .cmp(&b.state.priority())
+        .then_with(|| a.since.cmp(&b.since))
+        .then_with(|| b.id.cmp(&a.id))
+}
+
+fn epoch_ms(time: SystemTime) -> u64 {
+    time.duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 大部分用例只用一个组，摊平后就是「所有会话」。
+    fn sessions(snapshot: &Snapshot) -> Vec<SessionView> {
+        snapshot.all_sessions().cloned().collect()
+    }
 
     fn rep(s: &mut Store, t: Instant, session: &str, state: Signal) -> bool {
         let mut req = Report::new(state);
@@ -473,9 +581,7 @@ mod tests {
         rep(&mut s, t, "b", Signal::Working);
 
         assert_eq!(s.aggregate(), Signal::Permission);
-        assert!(s
-            .snapshot()
-            .sessions
+        assert!(sessions(&s.snapshot())
             .iter()
             .any(|v| v.id == "a" && v.state == Signal::Permission));
     }
@@ -499,7 +605,7 @@ mod tests {
         assert_eq!(s.aggregate(), Signal::Done);
 
         assert!(s.expire(t + Duration::from_secs(31)));
-        assert!(s.snapshot().sessions.is_empty(), "不该留下 stale 会话");
+        assert!(sessions(&s.snapshot()).is_empty(), "不该留下 stale 会话");
         assert_eq!(s.aggregate(), Signal::Offline);
     }
 
@@ -539,7 +645,7 @@ mod tests {
         second.session = Some("a".into());
         s.apply(t, second);
 
-        let v = &s.snapshot().sessions[0];
+        let v = &sessions(&s.snapshot())[0];
         assert_eq!(v.agent.as_deref(), Some("claude-code"));
         assert_eq!(v.cwd.as_deref(), Some("/proj"));
         assert_eq!(v.message, None);
@@ -584,7 +690,7 @@ mod tests {
 
         assert!(s.expire(t + idle_ttl));
         assert_eq!(s.aggregate(), Signal::Stale);
-        assert_eq!(s.snapshot().sessions.len(), 1, "stale 会话要保留，不是删掉");
+        assert_eq!(sessions(&s.snapshot()).len(), 1, "stale 会话要保留，不是删掉");
     }
 
     /// 会话静默超时后转 stale，而不是消失 —— 这是「智能体不说话了」和
@@ -596,7 +702,7 @@ mod tests {
 
         assert!(s.expire(t + Signal::Working.default_ttl()));
 
-        let view = &s.snapshot().sessions[0];
+        let view = &sessions(&s.snapshot())[0];
         assert_eq!(view.state, Signal::Stale);
         assert_eq!(view.id, "a", "会话还在，只是标记为沉默");
         assert_eq!(s.aggregate(), Signal::Stale);
@@ -615,7 +721,7 @@ mod tests {
         assert_eq!(s.aggregate(), Signal::Stale, "宽限期内仍应保留");
 
         assert!(s.expire(t + ttl + Duration::from_secs(301)));
-        assert!(s.snapshot().sessions.is_empty());
+        assert!(sessions(&s.snapshot()).is_empty());
         assert_eq!(s.aggregate(), Signal::Offline);
     }
 
@@ -628,7 +734,7 @@ mod tests {
 
         s.expire(t + Signal::Working.default_ttl());
 
-        let states: Vec<Signal> = s.snapshot().sessions.iter().map(|v| v.state).collect();
+        let states: Vec<Signal> = sessions(&s.snapshot()).iter().map(|v| v.state).collect();
         assert!(states.contains(&Signal::Stale), "{states:?}");
         assert!(states.contains(&Signal::Idle), "{states:?}");
         assert_eq!(s.aggregate(), Signal::Idle, "活着的那一路优先");
@@ -641,25 +747,21 @@ mod tests {
         let ttl = Signal::Working.default_ttl();
 
         // 非 stale 会话没有这个值
-        assert_eq!(s.snapshot_at(t).sessions[0].stale_progress, None);
+        assert_eq!(sessions(&s.snapshot_at(t))[0].stale_progress, None);
 
         // 刚转 stale：还剩满额宽限
         s.expire(t + ttl);
-        let fresh = s.snapshot_at(t + ttl).sessions[0].stale_progress.unwrap();
+        let fresh = sessions(&s.snapshot_at(t + ttl))[0].stale_progress.unwrap();
         assert!(fresh > 0.98, "刚转 stale 应接近 1.0，实际 {fresh}");
 
         // 宽限期过半
-        let half = s
-            .snapshot_at(t + ttl + Duration::from_secs(150))
-            .sessions[0]
+        let half = sessions(&s.snapshot_at(t + ttl + Duration::from_secs(150)))[0]
             .stale_progress
             .unwrap();
         assert!((0.4..0.6).contains(&half), "过半时应接近 0.5，实际 {half}");
 
         // 到点：归零
-        let gone = s
-            .snapshot_at(t + ttl + Duration::from_secs(300))
-            .sessions[0]
+        let gone = sessions(&s.snapshot_at(t + ttl + Duration::from_secs(300)))[0]
             .stale_progress
             .unwrap();
         assert!(gone < 0.02, "宽限用尽应接近 0.0，实际 {gone}");
@@ -714,7 +816,7 @@ mod tests {
         let (mut s, t) = (Store::default(), Instant::now());
         rep(&mut s, t, "a", Signal::Error);
         assert!(rep(&mut s, t, "a", Signal::Off), "清除应报告变化");
-        assert!(s.snapshot().sessions.is_empty());
+        assert!(sessions(&s.snapshot()).is_empty());
         assert_eq!(s.aggregate(), Signal::Offline);
     }
 

@@ -132,7 +132,8 @@ async fn read_state(State(ctx): State<Ctx>) -> Json<Snapshot> {
 }
 
 async fn list_sessions(State(ctx): State<Ctx>) -> Json<Value> {
-    let sessions = ctx.store.lock().expect("state store poisoned").snapshot().sessions;
+    let snapshot = ctx.store.lock().expect("state store poisoned").snapshot();
+    let sessions: Vec<_> = snapshot.all_sessions().cloned().collect();
     Json(json!({ "sessions": sessions }))
 }
 
@@ -207,7 +208,8 @@ fn apply(ctx: &Ctx, path_session: Option<String>, mut report: Report) -> Result<
     Ok(Json(json!({
         "ok": true,
         "aggregate": snapshot.aggregate,
-        "sessions": snapshot.sessions.len(),
+        "sessions": snapshot.all_sessions().count(),
+        "groups": snapshot.groups.len(),
         "changed": changed,
     })))
 }
@@ -512,9 +514,36 @@ mod tests {
         assert_eq!(parsed["paused"], false);
         assert_eq!(parsed["message"], "需要授权");
         assert!(parsed["since_ms"].is_number());
-        assert_eq!(parsed["sessions"][0]["id"], "a");
-        assert_eq!(parsed["sessions"][0]["state"], "permission");
-        assert!(parsed["sessions"][0]["age_ms"].is_number());
+
+        // 会话挂在组下面 —— 灯球上每组一块牌
+        let group = &parsed["groups"][0];
+        assert_eq!(group["name"], "default", "没指定组时归 default");
+        assert_eq!(group["aggregate"], "permission");
+        assert!(group["since_ms"].is_number(), "牌上的「已持续」用它");
+        assert_eq!(group["sessions"][0]["id"], "a");
+        assert_eq!(group["sessions"][0]["state"], "permission");
+        assert!(group["sessions"][0]["age_ms"].is_number());
+    }
+
+    #[tokio::test]
+    async fn sessions_can_be_split_into_groups() {
+        let server = start().await;
+        post_state(&server, r#"{"state":"working","session":"a","group":"work"}"#).await;
+        post_state(&server, r#"{"state":"error","session":"b","group":"ci"}"#).await;
+
+        let (_, body) = call(&server, "GET", "/v1/state", Some(&server.token), false, None).await;
+        let parsed: Value = serde_json::from_str(&body).unwrap();
+
+        assert_eq!(parsed["aggregate"], "error", "全局取各组里最高的");
+        let names: Vec<&str> = parsed["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|g| g["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["ci", "work"], "最紧急的组排在最前");
+        assert_eq!(parsed["groups"][0]["aggregate"], "error");
+        assert_eq!(parsed["groups"][1]["aggregate"], "working");
     }
 
     #[tokio::test]

@@ -1,14 +1,24 @@
 /*
- * 悬浮灯球样式。
+ * 悬浮牌样式。
  *
- * 朴素简约路线：纯色圆点，没有发光、没有渐变、没有阴影。
- * 状态靠颜色 + 明暗节奏表达，另有两处非颜色编码：
- *   - permission / error 用圆角方形（色盲友好，见下）
- *   - stale 用细环显示还剩多少宽限期
+ * 形态是「交通牌」：一块深色圆角牌，里面一颗彩点 + 组名 + 状态 + 已持续，
+ * 有消息时多一行。深色牌面是刻意和**应用图标**同一套语言（深色圆角方块 +
+ * 彩点），这样悬浮灯和图标看起来是一个东西。
+ *
+ * 朴素简约仍然成立：没有阴影、没有渐变、没有发光。要的是**结构**（外框、
+ * 底色、文字位），不是装饰。
  *
  * 两条硬性约束：
  * 1) html/body/#root 必须完全透明，否则 webview 会画出白底，透明窗口就白做了。
  * 2) 动画只动 opacity，交给 GPU 合成，避免这个常驻窗口烧 CPU。
+ *
+ * 几何必须和 Rust 的 config.rs 严格对齐：
+ *   牌宽   = size × 7                  (sign_width)
+ *   牌高   = size × 3/2（一行）        (sign_height(size, false))
+ *          = size × 5/2（带消息两行）   (sign_height(size, true))
+ *   牌间距 = size / 2                  (window_size 里的 gap)
+ *   留白   = 10px 一侧                  (LAMP_MARGIN 总量 20)
+ * 任何一处改了都要同步改那边，否则窗口会裁掉最后一块牌、或者底下留一条缝。
  */
 
 html,
@@ -25,15 +35,15 @@ body,
 .lamp-root {
   --size: 22px;
 
+  box-sizing: border-box;
   width: 100%;
   height: 100%;
+  padding: 10px;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  /* 与 Rust 侧 config::Settings::window_size 的 gap = size / 3 对齐。
-     浏览器算出的是小数、Rust 是整数除法，最多差 0.67px；留白有 10px 一侧，
-     这点误差看不出来，所以不值得把几何再往上传一遍。 */
-  gap: calc(var(--size) / 3);
+  gap: calc(var(--size) / 2);
   cursor: grab;
   /* 拖窗口时不要顺手选中文本，也不要触发原生文本拖拽 */
   user-select: none;
@@ -44,29 +54,98 @@ body,
   cursor: grabbing;
 }
 
-.dot {
-  position: relative;
-  flex: none;
+/* ---- 一块牌 -------------------------------------------------------------- */
+
+.sign {
+  /* 深色牌面，和图标同一套语言。半透明是为了在任何桌面上都不突兀。 */
+  --sign-bg: rgba(28, 28, 32, 0.86);
+  --sign-line: rgba(255, 255, 255, 0.14);
+  --sign-fg: #ececef;
+  --sign-muted: #9b9ba3;
+
   box-sizing: border-box;
-  width: var(--size);
-  height: var(--size);
+  width: calc(var(--size) * 7);
+  height: calc(var(--size) * 3 / 2);
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: calc(var(--size) * 0.27);
+  padding: 0 calc(var(--size) * 0.36);
+  border: 1px solid var(--sign-line);
+  border-radius: calc(var(--size) * 0.32);
+  background: var(--sign-bg);
+  color: var(--sign-fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: calc(var(--size) * 0.5);
+  line-height: 1.15;
+  overflow: hidden;
+}
+
+/* 有消息就多一行 —— 那块牌变高，正好是个「有东西可读」的提示 */
+.sign[data-has-message="true"] {
+  height: calc(var(--size) * 5 / 2);
+}
+
+.sign-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.sign-line {
+  display: flex;
+  align-items: baseline;
+  gap: calc(var(--size) * 0.27);
+}
+
+.sign-name {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sign-state {
+  flex: none;
+  color: var(--sign-muted);
+  font-size: calc(var(--size) * 0.45);
+}
+
+.sign-message {
+  overflow: hidden;
+  color: var(--sign-muted);
+  font-size: calc(var(--size) * 0.45);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 已持续多久。靠右、不参与省略 —— 「卡住多久了」是要能一眼看到的 */
+.sign-age {
+  flex: none;
+  color: var(--sign-muted);
+  font-size: calc(var(--size) * 0.45);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- 牌里那颗灯 ---------------------------------------------------------- */
+
+.dot {
+  --dot: calc(var(--size) * 0.55);
+
+  box-sizing: border-box;
+  width: var(--dot);
+  height: var(--dot);
+  flex: none;
+  border-radius: 50%;
+  background: var(--state);
   /* 兜底用 --state：万一 color-mix 不被支持（很老的 WebKitGTK），--edge 会
      退化成「保证无效」，于是描边变成和填充同色（看不见），布局不受影响。 */
   border: 1px solid var(--edge, var(--state));
-  border-radius: 50%;
-  background: var(--state);
-  transition:
-    background-color 180ms ease,
-    border-color 180ms ease,
-    opacity 220ms ease;
+  transition: background-color 180ms ease;
   will-change: opacity;
 }
 
-/* ---- 形状 ---------------------------------------------------------------- */
-
-/* 全局形状设置。默认 circle 时不动，permission / error 会额外画成圆角方 ——
-   那是给色盲用的形状区分（红绿是红绿色盲最难分的一对）。用户把形状改成别的，
-   这个区分就失效了，设置面板里会说明。 */
+/* 形状：全局设置。默认 circle 时 permission / error 会额外画成圆角方 ——
+   那是给色盲用的形状区分（红绿是红绿色盲最难分的一对）。 */
 [data-shape="rounded"] .dot {
   border-radius: 28%;
 }
@@ -79,7 +158,7 @@ body,
 /* 空心圆环：用 mask 把圆环切出来。弧长同时承载「沉默进度」—— 沉默时环
    逐渐缩短，所以这一种形状不需要额外的细环。 */
 [data-shape="ring"] .dot {
-  --thickness: max(3px, calc(var(--size) / 4));
+  --thickness: max(3px, calc(var(--dot) / 3.4));
 
   border: none;
   background: conic-gradient(
@@ -102,127 +181,100 @@ body,
   display: none;
 }
 
-/* ---- 外壳 ---------------------------------------------------------------- */
-
-/* 一圈中性细环，中间留一点空隙 —— 读起来像「灰壳里的一颗灯」，
-   也就是实体指示灯的样子，而不是一个可以和别的 UI 元素混淆的色块。
- *
- * 用 ::before 画而不是 box-shadow：box-shadow 会被 dot 上的 mask 裁掉
- * （环形状用 mask），而且这里要的是实心色环，不是阴影。
- * 环形状自带轮廓，所以不套外壳。 */
-[data-bezel="true"] .dot::before {
-  content: "";
-  position: absolute;
-  inset: calc(-1 * var(--bezel-gap) - var(--bezel-width));
-  border: var(--bezel-width) solid var(--bezel-color);
-  border-radius: inherit;
-  pointer-events: none;
-}
-
-[data-shape="ring"] .dot::before {
-  display: none;
-}
-
-.dot {
-  --bezel-width: 1.5px;
-  --bezel-gap: 1.5px;
-  /* 中灰带透明度：在浅色和深色桌面上都看得见。
-     固定成某个浅灰或深灰只会在一种背景上消失。 */
-  --bezel-color: rgba(120, 124, 132, 0.7);
-}
-
-/* ---- 沉默：细环显示还剩多少宽限期 -------------------------------------- */
-
-/* --progress 由前端按服务端给的 stale_progress 设成 1.0 → 0.0。
-   环逐渐缩短，比一个纯灰点信息量大得多，而且仍然只有一个元素。 */
-.dot[data-state="stale"]::after {
-  content: "";
-  position: absolute;
-  inset: -1px;
-  border-radius: inherit;
-  background: conic-gradient(
-    var(--ring) calc(var(--progress, 1) * 360deg),
-    transparent 0
-  );
-  -webkit-mask: radial-gradient(
-    farthest-side,
-    transparent calc(100% - 2px),
-    #000 calc(100% - 2px)
-  );
-  mask: radial-gradient(
-    farthest-side,
-    transparent calc(100% - 2px),
-    #000 calc(100% - 2px)
-  );
-}
-
-/* ---- 节奏 -------------------------------------------------------------- */
+/* ---- 节奏 ---------------------------------------------------------------- */
 
 /* 推理：快闪，读起来像「在转」 */
-.dot[data-state="thinking"] {
+.sign[data-state="thinking"] .dot {
   animation: pulse 640ms ease-in-out infinite;
 }
 
 /* 执行：慢闪 */
-.dot[data-state="working"] {
+.sign[data-state="working"] .dot {
   animation: pulse 1600ms ease-in-out infinite;
 }
 
-/* 完成：常亮 + 一次入场脉冲。颜色与 idle 相同，靠这一下闪动区分，
-   30s TTL 到期后该会话消失。 */
-.dot[data-state="done"] {
+/* 完成：常亮 + 一次入场脉冲 */
+.sign[data-state="done"] .dot {
   animation: pop 380ms ease-out 1;
 }
 
-.dot[data-state="attention"] {
+.sign[data-state="attention"] .dot {
   animation: pulse 1000ms ease-in-out infinite;
 }
 
 /* 需授权：红，平滑闪烁 */
-.dot[data-state="permission"] {
+.sign[data-state="permission"] .dot {
   animation: pulse 900ms ease-in-out infinite;
 }
 
 /* 出错：红 + steps() 硬切做频闪，一眼与 permission 的平滑闪烁区分开 */
-.dot[data-state="error"] {
+.sign[data-state="error"] .dot {
   animation: pulse 340ms steps(2, end) infinite;
 }
 
 /* 三档「不在工作」都不闪，靠不透明度区分：
    stale 常亮（有会话，只是不说话了），offline / off 更淡。 */
-.dot[data-state="stale"] {
+.sign[data-state="stale"] .dot {
   opacity: 1;
 }
 
-.dot[data-state="offline"],
-.dot[data-state="off"] {
+.sign[data-state="offline"] .dot,
+.sign[data-state="off"] .dot {
   opacity: 0.45;
 }
 
-/* ---- 安静模式：有事才显形 ---------------------------------------------- */
+/* ---- 安静模式：有事才显形 ------------------------------------------------ */
 
-/* 没事时压到几乎看不见，只有真正有活动或需要你注意时才完全显形。
-   从「一个常驻圆点」变成「只在有事时存在的圆点」。
+/* 没事时把牌压到几乎看不见，只有真正有活动或需要你注意时才完全显形。
+   从「一个常驻的牌子」变成「只在有事时存在的牌子」。
    done 也算「有事」—— 它是任务完成的确认，压暗就失去意义了。 */
-[data-quiet="true"][data-aggregate="idle"] .dot,
-[data-quiet="true"][data-aggregate="stale"] .dot,
-[data-quiet="true"][data-aggregate="offline"] .dot,
-[data-quiet="true"][data-aggregate="off"] .dot {
+[data-quiet="true"][data-aggregate="idle"] .sign,
+[data-quiet="true"][data-aggregate="stale"] .sign,
+[data-quiet="true"][data-aggregate="offline"] .sign,
+[data-quiet="true"][data-aggregate="off"] .sign {
   opacity: 0.15;
 }
 
 /* 悬停恢复，否则压暗之后找不到它来拖。规则放在压暗规则之后：两者特异性
    相同，靠源码顺序决定胜负。 */
-.lamp-root:hover .dot {
+.lamp-root:hover .sign {
   opacity: 1;
 }
 
-/* ---- 展开面板（点击圆点展开的会话列表）-------------------------------- */
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+
+@keyframes pop {
+  0% {
+    transform: scale(0.6);
+  }
+  60% {
+    transform: scale(1.12);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* 无障碍：系统开了「减少动态效果」时，闪烁一律降级为常亮，由颜色承载语义 */
+@media (prefers-reduced-motion: reduce) {
+  .dot {
+    animation: none !important;
+  }
+}
+
+/* ---- 展开面板（点击牌子展开的会话列表）-------------------------------- */
 
 /* 几何必须和 Rust 的 config.rs 严格对齐：
      高度 = PANEL_CHROME(56) + 行数 × PANEL_ROW(38)
-   56 = 上下内边距 10+10 + 头部 26 + 头部下间距 10。
-   任何一处改了都要同步改那边，否则窗口会裁掉最后一行、或者底下留一条缝。 */
+   56 = 上下内边距 10+10 + 头部 26 + 头部下间距 10。 */
 
 .lamp-panel-root {
   padding: 0;
@@ -276,12 +328,17 @@ body,
   background: var(--state);
 }
 
-/* 与灯球上一致：需要你注意的两个状态用方角，不依赖颜色也能区分 */
+/* 与牌上一致：需要你注意的两个状态用方角，不依赖颜色也能区分 */
 .lamp-panel-head[data-state="permission"] .lamp-head-dot,
 .lamp-panel-head[data-state="error"] .lamp-head-dot,
 .lamp-row[data-state="permission"] .lamp-row-dot,
 .lamp-row[data-state="error"] .lamp-row-dot {
   border-radius: 28%;
+}
+
+.lamp-empty {
+  margin: 0;
+  color: var(--muted);
 }
 
 .lamp-rows {
@@ -330,33 +387,4 @@ body,
   font-size: 11.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-@keyframes pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.25;
-  }
-}
-
-@keyframes pop {
-  0% {
-    transform: scale(0.6);
-  }
-  60% {
-    transform: scale(1.12);
-  }
-  100% {
-    transform: scale(1);
-  }
-}
-
-/* 无障碍：系统开了「减少动态效果」时，闪烁一律降级为常亮，由颜色承载语义 */
-@media (prefers-reduced-motion: reduce) {
-  .dot {
-    animation: none !important;
-  }
 }

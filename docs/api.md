@@ -88,6 +88,7 @@ Authorization: Bearer <token>
 {
   "state":   "working",
   "session": "abc123",
+  "group":   "work",
   "agent":   "claude-code",
   "cwd":     "/Users/me/proj",
   "message": "Bash: npm test",
@@ -99,15 +100,16 @@ Authorization: Bearer <token>
 |---|---|---|---|---|
 | `state` | string | ✅ | — | 见 §1。`off` 等价于清除该会话 |
 | `session` | string | | `"default"` | 会话标识。多智能体并行时用来区分 |
+| `group` | string | | `"default"` | **归属的组**。灯球上每组一块牌（见 §2.9）。不传就归 `default`，单组用户完全不用管 |
 | `agent` | string | | `"unknown"` | 上报方名字，用于 UI 归因 |
 | `cwd` | string | | `null` | 项目路径，UI 显示成项目名 |
-| `message` | string | | `null` | 悬停 tooltip 显示 |
+| `message` | string | | `null` | 牌上显示的一行说明 |
 | `ttl_ms` | number | | 按状态默认 | 覆盖默认过期时间；长任务显式传大值 |
 
 响应 `200`：
 
 ```json
-{ "ok": true, "aggregate": "working", "sessions": 2, "changed": true }
+{ "ok": true, "aggregate": "working", "sessions": 2, "groups": 2, "changed": true }
 ```
 
 返回聚合结果而非简单 `{"ok":true}`，好处是**一次 `curl` 调用就能看到全局状态**，调试体验显著更好。
@@ -120,23 +122,35 @@ Authorization: Bearer <token>
   "paused": false,
   "since_ms": 1697030400000,
   "message": "需要批准: rm -rf build",
-  "sessions": [
+  "groups": [
     {
-      "id": "abc123",
-      "state": "permission",
-      "agent": "claude-code",
-      "cwd": "/Users/me/proj",
+      "name": "work",
+      "aggregate": "permission",
       "message": "需要批准: rm -rf build",
-      "age_ms": 4200,
-      "stale_progress": null
+      "since_ms": 1697030400000,
+      "sessions": [
+        {
+          "id": "abc123",
+          "state": "permission",
+          "agent": "claude-code",
+          "cwd": "/Users/me/proj",
+          "message": "需要批准: rm -rf build",
+          "age_ms": 4200,
+          "stale_progress": null
+        }
+      ]
     }
   ]
 }
 ```
 
-`aggregate` 就是灯球当前显示的状态；`message` 来自聚合胜出的那个会话。
+顶层的 `aggregate` 是**所有组里最高的那个**——通知、钩子、托盘都用它，与分组无关。`message` 来自决定它的那个会话。
 
-`stale_progress` 只有 `stale` 会话有值（0.0–1.0，1.0 = 刚转 `stale`，0.0 = 即将被删除），灯球用它在圆点上画细环。**它由服务端算好**，客户端不必复刻 TTL 常量——`age_ms` 是「距上次状态变化」，并不等于「沉默多久」。
+**`groups` 由服务端按优先级排好（最紧急在最前，平局按组名）。客户端不要再排** —— 灯球的窗口高度取决于「哪几块牌可见」，两边必须算出同一批。
+
+每组自己的 `aggregate` 是组内取最高优先级；`since_ms` 是该组进入当前状态的时间，牌上的「已持续」由它算。
+
+`stale_progress` 只有 `stale` 会话有值（0.0–1.0，1.0 = 刚转 `stale`，0.0 = 即将被删除），灯球用它在灯上画细环。**它由服务端算好**，客户端不必复刻 TTL 常量——`age_ms` 是「距上次状态变化」，并不等于「沉默多久」。
 
 ### 2.5 `POST /v1/monitor`
 
@@ -160,7 +174,23 @@ Authorization: Bearer <token>
 
 `POST /v1/sessions/{session}/state` 的路径参数会**覆盖**请求体里的 `session` 字段，避免两处不一致时行为难以预测。
 
-### 2.7 错误码
+### 2.7 分组
+
+上报时带一个 `group` 就是**一块牌**：
+
+```bash
+curl -s -X POST ... -d '{"state":"working","session":"a","group":"work"}'
+curl -s -X POST ... -d '{"state":"error","session":"b","group":"ci"}'
+```
+
+于是灯球上出现两块牌（`ci` 在上，因为它更紧急），全局 `aggregate` 取两者里最高的 `error`。
+
+- 不传 `group` 归 `default`，行为与不分组的版本完全一样。
+- 组名由上报方自己定。**同一组的会话会一起聚合**，所以别把不同项目的会话塞进同一个组。
+- 同一个会话换个组上报会把它挪过去（和状态一样是后写覆盖）。
+- 组是**临时**的：组里最后一个会话消失（TTL 过期或 `DELETE`），这块牌就消失。没有「建组」这一步。
+
+### 2.8 错误码
 
 | 码 | 场景 |
 |---|---|
@@ -170,7 +200,7 @@ Authorization: Bearer <token>
 
 错误体统一为 `{"error": "<原因>"}`。
 
-### 2.8 curl 示例
+### 2.9 curl 示例
 
 ```bash
 PORT=$(cat ~/.signalhub/port)

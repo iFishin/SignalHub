@@ -46,11 +46,27 @@ export interface SessionView {
   stale_progress: number | null;
 }
 
+/**
+ * 一个组在灯球上的样子：一块牌。
+ *
+ * `groups` 由服务端按优先级排好（最紧急在最前），前端**不要再排** ——
+ * 窗口高度取决于「哪几块牌可见」，两边必须算出同一批。
+ */
+export interface GroupView {
+  name: string;
+  aggregate: SignalState;
+  message: string | null;
+  /** 这一组进入当前状态的时间（epoch 毫秒），牌上的「已持续」由它算 */
+  since_ms: number;
+  sessions: SessionView[];
+}
+
 /** 与 Rust 侧 state::Snapshot 对应。 */
 export interface Snapshot {
+  /** 所有组里最高的那个 —— 与分组无关，通知和钩子用它 */
   aggregate: SignalState;
   paused: boolean;
   since_ms: number;
   message: string | null;
-  sessions: SessionView[];
+  groups: GroupView[];
 }

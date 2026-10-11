@@ -5,19 +5,19 @@ import { inTauri } from "../lib/env";
 import { SIGNAL_LABEL } from "../lib/signals";
 import { colorVars } from "../lib/palettes";
 import type { Settings } from "../lib/useSettings";
-import type { SessionView, SignalState } from "../lib/types";
+import type { GroupView, SessionView, SignalState } from "../lib/types";
 
-/** 与 Rust 侧 `config::MAX_DOTS` 一致。 */
-const MAX_DOTS = 3;
+/** 与 Rust 侧 `config::MAX_SIGNS` 一致。超出的牌服务端已经截断。 */
+const MAX_SIGNS = 4;
 /** 超过这个位移就算拖窗口，否则算点击。 */
 const DRAG_THRESHOLD_PX = 4;
 
 interface Props {
   aggregate: SignalState;
-  sessions: SessionView[];
+  groups: GroupView[];
   /**
    * 整份设置都传进来，而不是拆成一堆 prop。
-   * 外观（大小 / 形状 / 外壳 / 安静）和配色都要用，拆开传只会越来越长。
+   * 外观（大小 / 形状 / 安静）和配色都要用，拆开传只会越来越长。
    */
   settings: Settings;
 }
@@ -30,19 +30,34 @@ function projectName(session: SessionView): string {
   return parts.length > 0 ? parts[parts.length - 1] : session.id;
 }
 
-function tooltip(aggregate: SignalState, sessions: SessionView[]): string {
-  if (sessions.length === 0) return SIGNAL_LABEL[aggregate];
-  if (sessions.length === 1) {
-    const only = sessions[0];
-    return only.message
-      ? `${SIGNAL_LABEL[only.state]} — ${only.message}`
-      : SIGNAL_LABEL[only.state];
+/** 「已持续多久」。牌上那一段短文本，所以只给一个单位、不写秒。 */
+function formatAge(sinceMs: number): string {
+  if (!sinceMs) return "";
+  const seconds = Math.max(0, Math.round((Date.now() - sinceMs) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
+}
+
+function tooltip(aggregate: SignalState, groups: GroupView[]): string {
+  if (groups.length === 0) return SIGNAL_LABEL[aggregate];
+
+  if (groups.length === 1) {
+    const only = groups[0];
+    const head = `${only.name} · ${SIGNAL_LABEL[only.aggregate]}`;
+    return only.message ? `${head} — ${only.message}` : head;
   }
-  const lines = sessions.map((session) => {
-    const detail = session.message ? ` — ${session.message}` : "";
-    return `${projectName(session)} · ${SIGNAL_LABEL[session.state]}${detail}`;
-  });
-  return [`${SIGNAL_LABEL[aggregate]}（${sessions.length} 个会话）`, ...lines].join("\n");
+
+  // 多组时把「哪个组在什么状态」列出来 —— 这是多块牌想回答的问题
+  return [
+    `${SIGNAL_LABEL[aggregate]}（${groups.length} 组）`,
+    ...groups.map((group) => {
+      const detail = group.message ? ` — ${group.message}` : "";
+      return `${group.name} · ${SIGNAL_LABEL[group.aggregate]}${detail}`;
+    }),
+  ].join("\n");
 }
 
 /**
@@ -83,14 +98,14 @@ function useDragOrClick(onClick: () => void) {
   };
 }
 
-export function SignalLamp({ aggregate, sessions, settings }: Props) {
-  const { size, quiet, shape, bezel } = settings;
+export function SignalLamp({ aggregate, groups, settings }: Props) {
+  const { size, quiet, shape } = settings;
   const [expanded, setExpanded] = useState(false);
 
   const toggle = () => {
     const next = !expanded;
     setExpanded(next);
-    // 窗口尺寸由 Rust 算（它才知道会话数和设置），前端只负责「点了一下」
+    // 窗口尺寸由 Rust 算（它才知道可见牌的高度和设置），前端只负责「点了一下」
     if (inTauri) {
       invoke("set_lamp_expanded", { expanded: next }).catch(console.error);
     }
@@ -98,42 +113,30 @@ export function SignalLamp({ aggregate, sessions, settings }: Props) {
 
   const drag = useDragOrClick(toggle);
 
-  // 会话列表已按优先级排序，所以截断后剩下的恰好是最紧急的那几个
-  const visible = sessions.slice(0, MAX_DOTS);
-  const dots: { key: string; state: SignalState; progress: number | null }[] =
-    visible.length > 0
-      ? visible.map((session) => ({
-          key: session.id,
-          state: session.state,
-          progress: session.stale_progress,
-        }))
-      : [{ key: "none", state: aggregate, progress: null }];
+  // 服务端已按优先级排好并截断，这里**不要再排** —— 窗口高度按「哪几块可见」算，
+  // 两边必须算出同一批牌
+  const signs = groups.slice(0, MAX_SIGNS);
+  const shown: GroupView[] =
+    signs.length > 0
+      ? signs
+      : [
+          {
+            name: SIGNAL_LABEL[aggregate],
+            aggregate,
+            message: null,
+            since_ms: 0,
+            sessions: [],
+          },
+        ];
 
   if (expanded) {
-    // 展开时不再压暗 —— 用户正主动看着它
-    const rows =
-      sessions.length > 0
-        ? sessions
-        : [
-            {
-              id: "",
-              state: aggregate,
-              agent: null,
-              cwd: null,
-              message: null,
-              age_ms: 0,
-              stale_progress: null,
-            } satisfies SessionView,
-          ];
-
+    const sessions = groups.flatMap((group) => group.sessions);
+    const rows = sessions.length > 0 ? sessions : [];
     return (
       <div
         className="lamp-root lamp-panel-root"
         style={colorVars(settings)}
-        data-aggregate={aggregate}
         data-quiet="false"
-        data-shape={shape}
-        data-bezel={bezel}
         title="点击收起"
         onClick={toggle}
       >
@@ -141,29 +144,37 @@ export function SignalLamp({ aggregate, sessions, settings }: Props) {
           <div className="lamp-panel-head" data-state={aggregate}>
             <span className="lamp-head-dot" />
             <span className="lamp-panel-title">{SIGNAL_LABEL[aggregate]}</span>
-            {sessions.length > 0 && (
-              <span className="lamp-panel-count">{sessions.length} 个会话</span>
-            )}
+            <span className="lamp-panel-count">
+              {groups.length} 组 · {sessions.length} 个会话
+            </span>
           </div>
-          <ul className="lamp-rows">
-            {rows.map((session) => {
-              const name = projectName(session);
-              return (
-                <li key={session.id || "none"} className="lamp-row" data-state={session.state}>
+          {rows.length === 0 ? (
+            <p className="lamp-empty">暂无会话。</p>
+          ) : (
+            <ul className="lamp-rows">
+              {rows.map((session) => (
+                <li
+                  key={session.id}
+                  className="lamp-row"
+                  data-state={session.state}
+                >
                   <span className="lamp-row-dot" />
                   <div className="lamp-row-body">
                     <div className="lamp-row-line">
-                      {name && <span className="lamp-row-id">{name}</span>}
-                      <span className="lamp-row-meta">{SIGNAL_LABEL[session.state]}</span>
+                      <span className="lamp-row-id">{projectName(session)}</span>
+                      <span className="lamp-row-meta">
+                        {SIGNAL_LABEL[session.state]}
+                        {session.agent ? ` · ${session.agent}` : ""}
+                      </span>
                     </div>
                     {session.message && (
                       <div className="lamp-row-message">{session.message}</div>
                     )}
                   </div>
                 </li>
-              );
-            })}
-          </ul>
+              ))}
+            </ul>
+          )}
         </div>
       </div>
     );
@@ -172,28 +183,30 @@ export function SignalLamp({ aggregate, sessions, settings }: Props) {
   return (
     <div
       className="lamp-root"
-      style={
-        { "--size": `${size}px`, ...colorVars(settings) } as React.CSSProperties
-      }
+      style={{ "--size": `${size}px`, ...colorVars(settings) } as React.CSSProperties}
       data-aggregate={aggregate}
       data-quiet={quiet}
       data-shape={shape}
-      data-bezel={bezel}
-      title={tooltip(aggregate, sessions)}
+      title={tooltip(aggregate, groups)}
       {...drag}
     >
-      {dots.map((dot) => (
-        <span
-          key={dot.key}
-          className="dot"
-          data-state={dot.state}
-          // stale 的细环按剩余宽限期缩短，值由服务端算好（前端不必复刻 TTL）
-          style={
-            dot.progress === null
-              ? undefined
-              : ({ "--progress": dot.progress } as React.CSSProperties)
-          }
-        />
+      {shown.map((group, index) => (
+        <div
+          key={group.name || index}
+          className="sign"
+          data-state={group.aggregate}
+          data-has-message={group.message ? "true" : "false"}
+        >
+          <span className="dot" />
+          <div className="sign-body">
+            <div className="sign-line">
+              <span className="sign-name">{group.name}</span>
+              <span className="sign-state">{SIGNAL_LABEL[group.aggregate]}</span>
+            </div>
+            {group.message && <div className="sign-message">{group.message}</div>}
+          </div>
+          <span className="sign-age">{formatAge(group.since_ms)}</span>
+        </div>
       ))}
     </div>
   );

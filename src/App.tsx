@@ -62,7 +62,7 @@ export default function App() {
   return (
     <SignalLamp
       aggregate={snapshot.aggregate}
-      sessions={snapshot.sessions}
+      groups={snapshot.groups}
       settings={settings}
     />
   );
