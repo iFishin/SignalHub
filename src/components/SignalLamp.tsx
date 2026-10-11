@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { inTauri } from "../lib/env";
@@ -6,6 +6,7 @@ import { signalLabel } from "../lib/signals";
 import { useLang, useMessages, type Messages, type Lang } from "../lib/i18n";
 import { lampVars, resolveShapes } from "../lib/lampStyle";
 import { useNow } from "../lib/useNow";
+import { useToggles } from "../lib/useToggles";
 import type { GroupMeta, Settings } from "../lib/useSettings";
 import type { GroupView, SignalState } from "../lib/types";
 
@@ -22,6 +23,8 @@ interface Props {
    * 外观（大小 / 形态 / 形状 / 安静 / 透明度 / 节奏）和配色都要用，拆开传只会越来越长。
    */
   settings: Settings;
+  /** 监控暂停中。灯上要给一个持续可见的提示 —— 颜色上 `off` 和 `offline` 太近。 */
+  paused: boolean;
 }
 
 /**
@@ -71,26 +74,48 @@ function tooltip(
   aggregate: SignalState,
   groups: GroupView[],
   meta: Record<string, GroupMeta>,
+  extra: string[],
 ): string {
-  if (groups.length === 0) return signalLabel(lang, aggregate);
-
   const hint = m.lampHint;
-  if (groups.length === 1) {
+
+  // 没有组时 tooltip 只剩一句状态。Hints 仍然拼上 —— 空灯球正需要「右键能进设置」。
+  if (groups.length === 0) return [signalLabel(lang, aggregate), hint, ...extra].join("\n");
+
+  if (groups.length === 1 && extra.length === 0) {
     const only = groups[0];
     const head = `${labelOf(only, meta)} · ${signalLabel(lang, only.aggregate)}`;
     const detail = only.message ? ` — ${only.message}` : "";
     return `${head}${detail}\n${hint}`;
   }
 
-  // 多组时把「哪个组在什么状态」列出来 —— 这是多块牌想回答的问题
+  // 多组时把「哪个组在什么状态」列出来 —— 这是多块牌想回答的问题。
+  // 被 `+N` 收起来的组也列在这儿：牌上看不见，tooltip 是全窗口唯一能容纳它的地方，
+  // 否则那块标记只说得出「有更多」，说不出是什么。
+  const listed = groups.map((group) => {
+    const detail = group.message ? ` — ${group.message}` : "";
+    return `${labelOf(group, meta)} · ${signalLabel(lang, group.aggregate)}${detail}`;
+  });
+
   return [
-    `${signalLabel(lang, aggregate)}${m.groupsCount(groups.length)}`,
-    ...groups.map((group) => {
-      const detail = group.message ? ` — ${group.message}` : "";
-      return `${labelOf(group, meta)} · ${signalLabel(lang, group.aggregate)}${detail}`;
-    }),
+    ...(groups.length > 1 ? [`${signalLabel(lang, aggregate)}${m.groupsCount(groups.length)}`] : []),
+    ...listed,
+    ...extra,
     hint,
   ].join("\n");
+}
+
+/** 「+N」标记的 tooltip：只说得出「还有几组」，说不出是哪几组。
+ *
+ *  单独摘出来是因为它和 `tooltip` 的用途不同（后者是全窗口的悬停说明，
+ *  这里是那一枚小标记自己的）—— 复用一个字符串会让语义糊掉。 */
+function moreGroupsTip(
+  m: Messages,
+  hidden: GroupView[],
+  meta: Record<string, GroupMeta>,
+): string {
+  return [m.moreGroups(hidden.length), m.moreGroupsLead + hidden.map((g) => labelOf(g, meta)).join(", ")].join(
+    "\n",
+  );
 }
 
 /**
@@ -160,15 +185,49 @@ function openLampMenu(event: React.MouseEvent) {
   invoke("open_lamp_menu").catch(console.error);
 }
 
-export function SignalLamp({ aggregate, groups, settings }: Props) {
+export function SignalLamp({ aggregate, groups, settings, paused }: Props) {
   const { size, quiet, collapsed, show, sign_opacity, hidden_groups } = settings;
   const m = useMessages();
   const lang = useLang();
+  // 穿透也能从托盘和全局快捷键改，所以订阅而不是读一次 —— 灯上那枚角标必须跟着变。
+  const toggles = useToggles();
 
   // 形状是逐状态的（一个窗口里多块牌可以不一样），所以先整份算出来，再按每块牌
-  // 的状态取。颜色和动画走 lampVars 的 CSS 变量，形状走元素属性 —— 形状不是
+  // 的状态取。颜色和动画走 lampVars 的 CSS 变量，shape走元素属性 —— 形状不是
   // 「一个值」，没法塞进一个根变量里。
   const shapes = resolveShapes(settings);
+
+  const [flash, setFlash] = useState(false);
+  const flashTimer = useRef<number | null>(null);
+  const firstRun = useRef(true);
+
+  // 折叠切换的一次性反馈。**只动 opacity**（见 P3：transform 会让这个常驻窗口
+  // 每帧重排）。单组时切完连窗口尺寸都不变，没这点反馈等于点了没反应。
+  //
+  // **开场那一次不闪**：`useEffect` 在挂载时也会跑，不挡掉的话每次启动都白闪一下，
+  // 而用户根本没点过 —— 那会读成「应用自己抖了一下」。
+  useEffect(() => {
+    if (firstRun.current) {
+      firstRun.current = false;
+      return;
+    }
+    setFlash(true);
+    if (flashTimer.current !== null) window.clearTimeout(flashTimer.current);
+    flashTimer.current = window.setTimeout(() => setFlash(false), 420);
+    return () => {
+      if (flashTimer.current !== null) window.clearTimeout(flashTimer.current);
+    };
+  }, [collapsed]);
+
+  // 穿透优先于暂停：那个状态下窗口点不动、拖不动，用户得先知道自己在里面。
+  const flag = paused || toggles.pass_through;
+  const flagTitle = toggles.pass_through
+    ? [m.lampPassThrough, toggles.pass_through_shortcut]
+        .filter((line) => line !== "")
+        .join("\n")
+    : paused
+      ? m.lampPaused
+      : "";
 
   // 「已持续」是算出来的，所以得有东西让它随时间重绘 —— 否则它永远停在状态刚变化
   // 那一刻，也就是 0s。折叠形态和关掉这一格的牌上没有这个数字，不起定时器。
@@ -189,14 +248,18 @@ export function SignalLamp({ aggregate, groups, settings }: Props) {
   const visible = groups
     .filter((group) => !hidden_groups.includes(group.name))
     // 稳定排序：没置顶的保持服务端给的紧急度顺序，置顶的按权重排前面
-    .sort((a, b) => comparePinned(a, b, settings.group_meta))
-    .slice(0, MAX_SIGNS);
+    .sort((a, b) => comparePinned(a, b, settings.group_meta));
+
+  const shown = visible.slice(0, MAX_SIGNS);
+  // 被 `+N` 收起来的组。**必须按同样的规则算** —— 牌数和窗口尺寸都依赖「哪几块可见」，
+  // 两边算出不同的组就会裁掉最后一块牌。工具提示里要把这些组列出来。
+  const hidden = visible.slice(shown.length);
 
   // 一组都看不见时也留一块，否则窗口会塌成一条缝 —— 那样既看不见状态，也没法拖它。
   // 名字留空：它不对应任何一个真实的组，右键菜单对它没有意义。
-  const shown: GroupView[] =
-    visible.length > 0
-      ? visible
+  const rows: GroupView[] =
+    shown.length > 0
+      ? shown
       : [{ name: "", aggregate, message: null, since_ms: 0, sessions: [] }];
 
   return (
@@ -210,15 +273,21 @@ export function SignalLamp({ aggregate, groups, settings }: Props) {
         } as React.CSSProperties
       }
       data-aggregate={aggregate}
-      data-quiet={quiet}
+      data-quiet={quiet && !toggles.pass_through}
+      data-paused={paused || undefined}
+      data-pass-through={toggles.pass_through || undefined}
       data-collapsed={collapsed}
-      title={tooltip(m, lang, aggregate, groups, settings.group_meta)}
+      data-flash={flash || undefined}
+      title={tooltip(m, lang, aggregate, groups, settings.group_meta, [
+        paused ? m.lampPaused : "",
+        toggles.pass_through ? m.lampPassThrough : "",
+      ].filter((line) => line !== ""))}
       // 空白处（牌之间、留白）也要吃掉右键，否则会冒出 webview 自己的菜单；
       // 顺手弹的是灯自己那张（进设置 / 暂停 / 折叠 / 退出）
       onContextMenu={openLampMenu}
       {...drag}
     >
-      {shown.map((group, index) =>
+      {rows.map((group, index) =>
         collapsed ? (
           <span
             // 折叠后只有点，没有可读的文字，所以 key 用下标；组名可能为空（占位那块）
@@ -250,8 +319,31 @@ export function SignalLamp({ aggregate, groups, settings }: Props) {
               )}
             </div>
             {show.age && <span className="sign-age">{formatAge(group.since_ms, now)}</span>}
+            {flag && index === rows.length - 1 && (
+              <span
+                className="sign-flag"
+                // 挂上 data-state 才能从 state.css 拿到 `--state`（当前状态色）。
+                // 不带这个属性的话描边落回 --sign-line 那圈中性灰，穿透时就不显眼了。
+                data-state={aggregate}
+                title={flagTitle}
+              >
+                {toggles.pass_through ? "⇥" : "⏸"}
+              </span>
+            )}
+            {hidden.length > 0 && index === rows.length - 1 && (
+              <span className="sign-more" title={moreGroupsTip(m, hidden, settings.group_meta)}>
+                +{hidden.length}
+              </span>
+            )}
           </div>
         ),
+      )}
+      {/* 折叠态没有牌面可寄住，角标单独占一个点的位置（见 CSS 的 .lamp-dot-flag）。
+          Rust 的 `collapsed_window_size` 因此要为此多留一个点。 */}
+      {collapsed && flag && (
+        <span className="lamp-dot-flag" data-state={aggregate} title={flagTitle}>
+          {toggles.pass_through ? "⇥" : "⏸"}
+        </span>
       )}
     </div>
   );

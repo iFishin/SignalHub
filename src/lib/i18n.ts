@@ -225,6 +225,16 @@ export interface Messages {
   // 灯球 tooltip
   lampHint: string;
   groupsCount: (n: number) => string;
+  /** 截断标记的 tooltip：「+3」指的是哪几组 */
+  moreGroups: (n: number) => string;
+  /** 折叠切换的一次性反馈 */
+  expandNow: string;
+  collapseNow: string;
+  /** 持续可见的状态指示 */
+  lampPaused: string;
+  lampPassThrough: string;
+  /** 「+N」截断后，tooltip 里列出被收起来的组之前的引导 */
+  moreGroupsLead: string;
 
   // 外观预设
   presetLight: string;
@@ -480,6 +490,12 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
 
     lampHint: "左键折叠 / 展开 · 右键单组菜单",
     groupsCount: (n) => `（${n} 组）`,
+    moreGroups: (n) => `还有 ${n} 组`,
+    expandNow: "已展开",
+    collapseNow: "已折叠",
+    lampPaused: "已暂停监控",
+    lampPassThrough: "点击穿透",
+    moreGroupsLead: "被收起来的组：",
 
     presetLight: "单灯",
     presetLightHint: "折叠成一颗灯，只有颜色，最不打扰",
@@ -734,6 +750,12 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
 
     lampHint: "Left-click to collapse / expand · right-click for a group menu",
     groupsCount: (n) => ` (${plural(n, "group", "groups")})`,
+    moreGroups: (n) => `+${n} more`,
+    expandNow: "Expanded",
+    collapseNow: "Collapsed",
+    lampPaused: "Monitoring paused",
+    lampPassThrough: "Click-through",
+    moreGroupsLead: "Hidden groups: ",
 
     presetLight: "Single light",
     presetLightHint: "Folds to one light, colour only, least intrusive",

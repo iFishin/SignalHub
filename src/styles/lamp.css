@@ -21,6 +21,7 @@
  *   牌间距   = size / 2                (window_size 里的 gap)
  *   折叠点径 = size                    (collapsed_window_size)
  *   折叠点距 = size / 3
+ *   折叠点数 = 组数 + 角标数            (collapsed_window_size 的 dots + flags)
  *   留白     = 10px 一侧                (LAMP_MARGIN 总量 20)
  * 任何一处改了都要同步改那边，否则窗口会裁掉最后一块牌、或者底下留一条缝。
  */
@@ -137,6 +138,108 @@ body,
   color: var(--sign-muted);
   font-size: calc(var(--size) * 0.45);
   font-variant-numeric: tabular-nums;
+}
+
+/* ---- 牌尾的两枚小角标 ---------------------------------------------------- */
+
+/* 两枚都是 `flex: none`，寄住在已有的那块牌里 —— 不加新元素、不改展开态的窗口尺寸。
+   被挤掉的是 `.sign-body`（`flex: 1; min-width: 0`），也就是组名 / 状态先开始省略。
+   这样窗口高度仍然只由牌的条数决定，Rust 那边一个字都不用改。 */
+
+/* `+N`：`MAX_SIGNS` 之外还有几组。
+   牌上看不出服务端截断了，于是灯上能显示出来的比内部状态少 —— 而灯是全局唯一
+   的真相来源，少显示等于说谎。 */
+.sign-more {
+  flex: none;
+  padding: 0 calc(var(--size) * 0.16);
+  border-radius: calc(var(--size) * 0.16);
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--sign-muted);
+  font-size: calc(var(--size) * 0.42);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 全局状态（暂停监控 / 点击穿透）的**持续可见**提示。
+   **必须是持续的**：只看颜色的话 `off`（暂停）和 `offline` 是两个都很淡的灰，
+   根本分不出来；而穿透时鼠标点不到那个窗口，开启时那条一次性通知早就忘光了。
+   做成文字而不是又一个色块 —— 文案才说得出「这是穿透，快捷键是这个」。
+   一次只显示一个（穿透优先），另一个在 tooltip 里。 */
+.sign-flag {
+  flex: none;
+  padding: 0 calc(var(--size) * 0.16);
+  border: 1px solid var(--sign-line);
+  border-radius: calc(var(--size) * 0.16);
+  color: var(--sign-fg);
+  font-size: calc(var(--size) * 0.42);
+  white-space: nowrap;
+}
+
+/* 穿透那枚更显眼一点：那个状态下窗口点不动、拖不动，用户得先知道自己在里面 */
+.lamp-root[data-pass-through] .sign-flag {
+  border-color: var(--state, var(--sign-line));
+}
+
+/* 穿透 + 安静模式的死锁：安静模式靠 `:hover` 把自己救回来，而穿透时窗口收不到
+   指针事件，hover 永不成立 —— 于是灯变成一颗永远压暗、点不到也拖不动的点。
+   前端已经把 `data-quiet` 一起收掉了（见 SignalLamp.tsx），这里再留一道 CSS 兜底：
+   万一将来有别的路径把它设成 true，压暗仍然不该发生。 */
+.lamp-root[data-quiet][data-pass-through] .sign,
+.lamp-root[data-quiet][data-pass-through] .lamp-dot {
+  opacity: 1;
+}
+
+/* ---- 折叠态的一枚角标 ---------------------------------------------------- */
+
+/* 折叠态没有牌面可寄住，所以角标单独占**一个点的位置** —— 和一个点同样大，
+   同样占一个点距，`collapsed_window_size` 因此只要把点数 +1 就够。
+   ⚠️ 这条宽高和 Rust 的 `collapsed_window_size(size, dots, flag)` 是两处真值。 */
+.lamp-dot-flag {
+  box-sizing: border-box;
+  flex: none;
+  width: var(--size);
+  height: var(--size);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--sign-line);
+  border-radius: 50%;
+  background: var(--sign-bg);
+  color: var(--sign-fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: calc(var(--size) * 0.5);
+  font-weight: 600;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 穿透的折叠角标：描边取当前状态色，和展开态那枚呼应 */
+.lamp-root[data-pass-through] .lamp-dot-flag {
+  border-color: var(--state, var(--sign-line));
+}
+
+/* ---- 折叠 / 展开的一次性反馈 --------------------------------------------- */
+
+/* 单组时切完连窗口尺寸都不变，没这点反馈就等于「点了没反应」。
+   **只动 opacity**：本项目对这个常驻窗口有一条硬约束是「动画只动 opacity，
+   交给 GPU 合成」（见文件头第 2 条），动 transform 会让它每帧重排。
+   `data-flash` 由前端在形态变化时挂上、420ms 后摘掉。 */
+.lamp-root[data-flash] .sign,
+.lamp-root[data-flash] .lamp-dot,
+.lamp-root[data-flash] .lamp-dot-flag {
+  animation: flash 420ms ease-out 1;
+}
+
+@keyframes flash {
+  0% {
+    opacity: 1;
+  }
+  40% {
+    opacity: 0.35;
+  }
+  100% {
+    opacity: 1;
+  }
 }
 
 /* ---- 灯珠 ---------------------------------------------------------------- */

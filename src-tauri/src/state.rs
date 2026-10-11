@@ -423,6 +423,11 @@ impl Store {
         self.settle(before)
     }
 
+    /// 监控是否暂停中。灯上那枚持续可见的角标和折叠态的窗口尺寸都要读它。
+    pub fn paused(&self) -> bool {
+        self.paused
+    }
+
     /// 处理静默超时的会话：转入 `stale`，而不是直接删掉。
     ///
     /// 由 sweep 任务定期调用。这是「智能体消失后灯还会错多久」的唯一闸门。

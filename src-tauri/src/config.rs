@@ -47,8 +47,20 @@ pub const MAX_DOTS: usize = MAX_SIGNS;
 ///
 /// 这套几何比展开态小得多 —— 折叠的意义就是让出地方。一个组一个点，
 /// 所以点数和组数一样；一个组都没有时也要有一个点（表示 offline）。
-pub fn collapsed_window_size(size: u16, dots: usize) -> (u16, u16) {
-    let dots = dots.clamp(1, MAX_DOTS) as u16;
+///
+/// `flags` 是**额外的角标数**（暂停 / 穿透那一枚，见 `lib.rs` 的 `ui_flag_count`）。
+/// 角标也占一个点的位置，所以点数要加上它 —— 忘了加的话那一枚会把窗口撑出界，
+/// 而折叠态的意义正是「让出地方」，撑出去就白让了。
+///
+/// ⚠️ 点径、点距、留白和 CSS 的 `.lamp-dot` / `.lamp-dot-flag` / `.lamp-root` 是
+/// 两处真值（见本文件头），改一处必须同步另一处。
+pub fn collapsed_window_size(size: u16, dots: usize, flags: usize) -> (u16, u16) {
+    // 分别封顶再相加，而不是封顶它们的和：封住和的话「多枚角标」会被当成
+    // 「少几个组」，于是牌少了一块 —— 那正是截断要避免的那种谎。
+    let dots = dots.clamp(0, MAX_DOTS);
+    // 暂停 / 穿透共用同一枚角标（同时开着时穿透优先），所以最多 1
+    let flags = flags.min(1);
+    let dots = (dots + flags).max(1) as u16;
     let gap = size / 3;
     (dots * size + (dots - 1) * gap + LAMP_MARGIN, size + LAMP_MARGIN)
 }
@@ -1359,28 +1371,58 @@ mod tests {
     fn collapsed_window_holds_one_dot_per_group() {
         let size = Settings::default().size;
 
-        let (w1, h1) = collapsed_window_size(size, 1);
+        let (w1, h1) = collapsed_window_size(size, 1, 0);
         assert_eq!(w1, size + LAMP_MARGIN, "一个点：方窗");
         assert_eq!(h1, size + LAMP_MARGIN);
 
-        let (w3, h3) = collapsed_window_size(size, 3);
+        let (w3, h3) = collapsed_window_size(size, 3, 0);
         assert!(w3 > w1, "多点横着排，所以变宽");
         assert_eq!(h3, h1, "高度只和点的大小有关");
 
         // 一个组都没有时也要有一个点（表示 offline）
-        assert_eq!(collapsed_window_size(size, 0), collapsed_window_size(size, 1));
+        assert_eq!(collapsed_window_size(size, 0, 0), collapsed_window_size(size, 1, 0));
         // 超出上限按上限算
         assert_eq!(
-            collapsed_window_size(size, MAX_DOTS + 5),
-            collapsed_window_size(size, MAX_DOTS)
+            collapsed_window_size(size, MAX_DOTS + 5, 0),
+            collapsed_window_size(size, MAX_DOTS, 0)
         );
+    }
+
+    /// 暂停 / 穿透那枚角标也占一个点的位置 —— 忘了算它，那一枚会把折叠态的
+    /// 窗口撑出去一截，而折叠态的意义正是让出地方。
+    #[test]
+    fn the_flag_badge_takes_a_dot_of_its_own() {
+        let size = Settings::default().size;
+
+        let (bare, _) = collapsed_window_size(size, 2, 0);
+        let (flagged, _) = collapsed_window_size(size, 2, 1);
+        assert_eq!(flagged - bare, size + size / 3, "多一个点加一个点距");
+
+        // 两枚角标不会同时出现（它们共用同一处，穿透优先），所以入参 0/1 之外
+        // 的取值是防御性的；但上限仍然要封住，否则窗口会无限变宽。
+        let (crazy, _) = collapsed_window_size(size, MAX_DOTS, 9);
+        let (capped, _) = collapsed_window_size(size, MAX_DOTS, 1);
+        assert_eq!(crazy, capped, "角标再多也只按一枚算");
+
+        // 角标上限是**单独**封的，不侵占组的份额：组数按 MAX_DOTS 截断，
+        // 角标再占一枚，两者相加才是最终的点数。
+        let (few, _) = collapsed_window_size(size, 2, 0);
+        let (few_flagged, _) = collapsed_window_size(size, 2, 1);
+        assert_eq!(
+            few_flagged - few,
+            size + size / 3,
+            "空列表时角标也照样占一枚"
+        );
+        let (full, _) = collapsed_window_size(size, MAX_DOTS, 0);
+        let (full_flagged, _) = collapsed_window_size(size, MAX_DOTS, 1);
+        assert_eq!(full_flagged - full, size + size / 3, "满屏也不该挤掉角标");
     }
 
     /// 折叠态必须比展开态小 —— 「折叠」的意义就是让出地方
     #[test]
     fn collapsed_is_much_smaller_than_expanded() {
         let settings = Settings::default();
-        let (cw, ch) = collapsed_window_size(settings.size, 1);
+        let (cw, ch) = collapsed_window_size(settings.size, 1, 0);
         let (ew, eh) = settings.window_size(&[sign_height(settings.size, false)]);
         assert!(cw < ew, "折叠态更窄: {cw} vs {ew}");
         assert!(ch < eh, "折叠态更矮: {ch} vs {eh}");

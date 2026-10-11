@@ -72,6 +72,9 @@ export default function App() {
       aggregate={snapshot.aggregate}
       groups={snapshot.groups}
       settings={settings}
+      // 暂停是**灯上**要持续可见的状态，而 `off`（暂停时的聚合值）和 `offline`
+      // 都是很淡的灰，只靠颜色分不出来。
+      paused={snapshot.paused}
     />
   );
 }

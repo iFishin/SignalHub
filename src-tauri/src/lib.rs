@@ -388,6 +388,22 @@ fn set_pass_through_impl(app: &tauri::AppHandle, enabled: bool) -> Result<(), St
         .set_ignore_cursor_events(enabled)
         .map_err(|err| format!("切换点击穿透失败: {err}"))?;
 
+    // 折叠态那枚角标跟着这个开关出现 / 消失，所以窗口要重新算一次尺寸。
+    // 不改这一句的表现是：穿透开启时角标把窗口撑出去一截（或者退出时留着一截空白）。
+    {
+        let snapshot = app
+            .state::<SharedStore>()
+            .lock()
+            .expect("store poisoned")
+            .snapshot();
+        let settings = app
+            .state::<SharedSettings>()
+            .lock()
+            .expect("settings poisoned")
+            .clone();
+        apply_window_size(app, &settings, &snapshot);
+    }
+
     // 开启时发一条通知说明怎么退出。**不再顺手把外形收起来**：穿透下窗口本来
     // 就点不动，而外形是用户自己选的、存在设置里的，替用户改掉反而是越权。
     if enabled {
@@ -744,6 +760,28 @@ fn sign_heights(settings: &Settings, groups: &[&GroupView]) -> Vec<u16> {
     }
 }
 
+/// 折叠态末尾那枚全局状态角标算几个点。
+///
+/// 「暂停监控」和「点击穿透」共用同一枚角标（同时开着时穿透优先，见
+/// `SignalLamp.tsx` 的 `flagTitle`），所以**最多 1**。
+///
+/// 单独摘一个函数而不是在 `apply_window_size` 里现算：这里要读两个互不相干的
+/// 状态桶（`Store::paused` 和 `UiFlags::pass_through`），而调用点只关心「几枚」。
+fn ui_flag_count(app: &tauri::AppHandle) -> usize {
+    let paused = app
+        .state::<SharedStore>()
+        .lock()
+        .expect("store poisoned")
+        .paused();
+    let pass_through = app
+        .state::<SharedUi>()
+        .lock()
+        .expect("ui poisoned")
+        .pass_through;
+
+    usize::from(paused || pass_through)
+}
+
 /// 按可见牌的个数（折叠时是点的个数）调整窗口尺寸。
 ///
 /// 只在尺寸真的变了才 `set_size`：状态变化一秒可能好几次，每次都 resize
@@ -756,7 +794,8 @@ fn apply_window_size(app: &tauri::AppHandle, settings: &Settings, snapshot: &Sna
     // 展开态是一叠牌，折叠态是一排点 —— 两套几何，见 config.rs
     let groups = visible_groups(settings, snapshot);
     let (width, height) = if settings.collapsed {
-        config::collapsed_window_size(settings.size, groups.len())
+        // 折叠态那枚全局状态角标单独占一个点的位置，所以点数要加上它
+        config::collapsed_window_size(settings.size, groups.len(), ui_flag_count(app))
     } else {
         settings.window_size(&sign_heights(settings, &groups))
     };
