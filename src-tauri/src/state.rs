@@ -77,6 +77,24 @@ impl Signal {
         }
     }
 
+    /// 规范的小写状态名。与 `serde` 序列化出来的字符串一致 ——
+    /// 有单测盯着这一点，免得两处漂移（钩子的 `when` 过滤、配置里的颜色键
+    /// 都按这个名字匹配）。
+    pub fn name(self) -> &'static str {
+        match self {
+            Signal::Offline => "offline",
+            Signal::Off => "off",
+            Signal::Stale => "stale",
+            Signal::Idle => "idle",
+            Signal::Done => "done",
+            Signal::Thinking => "thinking",
+            Signal::Working => "working",
+            Signal::Attention => "attention",
+            Signal::Permission => "permission",
+            Signal::Error => "error",
+        }
+    }
+
     /// 中文名。**只用于系统通知的文案** —— 界面上的文案在前端的 `signals.ts`。
     ///
     /// 在这里重复一份是因为通知由 Rust 侧发出（比前端可靠：webview 出问题也
@@ -767,6 +785,34 @@ mod tests {
         // 派生状态也要能序列化出去（前端的灯球与设置面板都按这个值取色）
         assert_eq!(serde_json::to_string(&Signal::Stale).unwrap(), r#""stale""#);
         assert_eq!(serde_json::to_string(&Signal::Offline).unwrap(), r#""offline""#);
+    }
+
+    /// `name()` 必须和 serde 的序列化结果、以及 ALL_NAMES 完全一致 ——
+    /// 钩子的 when 过滤和配置里的颜色键都按名字匹配，漂移了会静默失配。
+    #[test]
+    fn names_agree_across_name_serde_and_all_names() {
+        let mut from_names: Vec<&str> = Vec::new();
+        for state in [
+            Signal::Offline,
+            Signal::Off,
+            Signal::Stale,
+            Signal::Idle,
+            Signal::Done,
+            Signal::Thinking,
+            Signal::Working,
+            Signal::Attention,
+            Signal::Permission,
+            Signal::Error,
+        ] {
+            let serialized = serde_json::to_string(&state).unwrap();
+            assert_eq!(serialized, format!("\"{}\"", state.name()), "{state:?} 不一致");
+            assert!(Signal::is_known_name(state.name()), "{state:?} 不在 ALL_NAMES 里");
+            from_names.push(state.name());
+        }
+        assert_eq!(from_names.len(), Signal::ALL_NAMES.len(), "ALL_NAMES 数量对不上");
+        for name in Signal::ALL_NAMES {
+            assert!(from_names.contains(&name), "ALL_NAMES 里的 {name} 没有对应变体");
+        }
     }
 
     #[test]

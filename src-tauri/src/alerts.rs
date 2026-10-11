@@ -5,7 +5,6 @@
 
 use crate::config::Settings;
 use crate::state::{Signal, Snapshot};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri_plugin_notification::NotificationExt;
 
 /// 只在聚合**新变成**需要注意的状态时通知一次。
@@ -66,69 +65,7 @@ pub fn send_message(app: &tauri::AppHandle, title: &str, body: &str) {
     }
 }
 
-/// 出站转发的 URL 是否可用。
-///
-/// 用户输入属于系统边界，所以要校验 —— 但只做最基本的判断（协议 + 有主机名），
-/// 不试图猜目标服务是 ntfy 还是 Slack。带空格的会被 trim 掉。
-pub fn valid_webhook_url(url: &str) -> bool {
-    let url = url.trim();
-    let rest = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))
-        .unwrap_or("");
-    // 至少要有一个主机名字符，且不能以点或斜杠开头
-    !rest.is_empty() && !rest.starts_with(['.', '/'])
-}
-
-/// 往 webhook 目标 POST 一份快照。
-///
-/// **必须异步**：这个函数是在状态变更路径上被调用的（HTTP 上报和 sweep 都会
-/// 触发），同步发一个网络请求会把状态机卡住。所以丢进 `spawn_blocking`，
-/// 并带上超时 —— 目标服务挂掉不该拖累灯球。
-pub fn forward(url: &str, snapshot: &Snapshot) {
-    let url = url.trim().to_string();
-    if !valid_webhook_url(&url) {
-        eprintln!("[signalhub] webhook 地址不合法，已跳过: {url:?}");
-        return;
-    }
-
-    #[derive(serde::Serialize)]
-    struct Payload<'a> {
-        snapshot: &'a Snapshot,
-        /// 发送时刻（epoch 毫秒）。接收方多半要记时间，而 since_ms 是状态起点。
-        at_ms: u64,
-    }
-
-    let payload = match serde_json::to_string(&Payload { snapshot, at_ms: now_ms() }) {
-        Ok(payload) => payload,
-        Err(err) => {
-            eprintln!("[signalhub] 序列化 webhook 载荷失败: {err}");
-            return;
-        }
-    };
-
-    tauri::async_runtime::spawn_blocking(move || {
-        let config = ureq::Agent::config_builder()
-            .timeout_connect(Some(Duration::from_secs(3)))
-            .timeout_per_call(Some(Duration::from_secs(8)))
-            .build();
-        let result = ureq::Agent::new_with_config(config)
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .send(payload);
-
-        if let Err(err) = result {
-            eprintln!("[signalhub] webhook 转发失败（{url}）: {err}");
-        }
-    });
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
+/// 出站转发已搬到 `outbound.rs`（钩子列表），这里只负责系统通知。
 
 /// 首次启动时申请通知权限。
 ///
@@ -243,19 +180,5 @@ mod tests {
         assert_eq!(project_name("/Users/me/proj/"), "proj");
         assert_eq!(project_name(r"C:\work\api"), "api");
         assert_eq!(project_name("proj"), "proj");
-    }
-
-    #[test]
-    fn webhook_urls_are_checked_at_the_boundary() {
-        for good in [
-            "https://ntfy.sh/my-topic",
-            "http://127.0.0.1:8080/hook",
-            "  https://hooks.slack.com/services/x  ",
-        ] {
-            assert!(valid_webhook_url(good), "{good} 应被接受");
-        }
-        for bad in ["", "ntfy.sh/topic", "ftp://x/y", "https://", "https:///path", "  "] {
-            assert!(!valid_webhook_url(bad), "{bad:?} 应被拒绝");
-        }
     }
 }

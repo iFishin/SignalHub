@@ -164,6 +164,49 @@ impl Default for Palette {
     }
 }
 
+/// 一条出站钩子：聚合变成 `when` 里的某个状态时，执行 `action`。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hook {
+    /// 哪些状态变化时触发。**空 = 任何变化都触发。**
+    ///
+    /// 值是状态名，含 `stale` / `offline` 这类派生状态 —— 和 `colors` 一样
+    /// 单独用 `Signal::ALL_NAMES` 校验，因为 `Signal::parse` 不接受派生状态。
+    #[serde(default)]
+    pub when: Vec<String>,
+    #[serde(flatten)]
+    pub action: HookAction,
+}
+
+/// 钩子能做的事。
+///
+/// `Command` 会执行本地命令。信任模型和 git hooks / npm scripts 一样：配置文件
+/// 是用户自己的，能改它就能执行任何东西。所以不额外加开关 —— 多一个开关只会
+/// 给人一种「关掉就安全」的错觉，而配置文件本来就在用户手里。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum HookAction {
+    Http { url: String },
+    Command { command: String },
+}
+
+impl Hook {
+    /// 这次聚合变化该不该触发它。
+    pub fn matches(&self, aggregate: &str) -> bool {
+        self.when.is_empty() || self.when.iter().any(|name| name == aggregate)
+    }
+}
+
+impl HookAction {
+    /// 目标填了吗。没填的钩子不触发、也不报错 —— 编辑时必然要经过
+    /// 「刚添加、还没填目标」这个中间态，那时候报错就没法编辑了。
+    pub fn is_configured(&self) -> bool {
+        match self {
+            HookAction::Http { url } => !url.trim().is_empty(),
+            HookAction::Command { command } => !command.trim().is_empty(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -175,9 +218,13 @@ pub struct Settings {
     pub quiet: bool,
     /// 需要你注意（授权 / 关注 / 出错）时弹系统通知。
     pub notify: bool,
-    /// 出站转发目标。填了就说明「不止本地想知道」，聚合进入需要注意的状态时
-    /// 会往这里 POST 一段 JSON（ntfy / Slack / 自建接口都行）。
+    /// **已废弃**，只为读得懂旧配置。启动时会搬成一条 `hooks` 条目
+    /// （见 `migrate_legacy_webhook`），并且**永不写回** —— 出口只有一条路，
+    /// 不让「单条 webhook」和「钩子列表」两种表达并存。
+    #[serde(skip_serializing)]
     pub webhook_url: Option<String>,
+    /// 出站钩子。聚合变化时按 `when` 过滤后依次触发。
+    pub hooks: Vec<Hook>,
     /// 圆点形状
     pub shape: Shape,
     /// 给圆点套一圈中性细环。
@@ -201,6 +248,35 @@ pub fn is_hex_color(value: &str) -> bool {
     matches!(hex.len(), 3 | 6) && hex.chars().all(|c| c.is_ascii_hexdigit())
 }
 
+/// 只做最基本的判断（协议 + 有主机名），不试图猜目标是 ntfy 还是 Slack。
+pub fn is_http_url(url: &str) -> bool {
+    let url = url.trim();
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or("");
+    !rest.is_empty() && !rest.starts_with(['.', '/'])
+}
+
+/// 一条钩子是否可用。校验和 `clamped()` 的清理都用它，免得两处规则漂移。
+pub fn hook_problem(hook: &Hook) -> Option<String> {
+    for name in &hook.when {
+        if !crate::state::Signal::is_known_name(name) {
+            return Some(format!(
+                "未知的状态名 {name:?}；可用: {}",
+                crate::state::Signal::ALL_NAMES.join(" ")
+            ));
+        }
+    }
+    // 空目标不算错（见 is_configured）；填了但填错才算
+    match &hook.action {
+        HookAction::Http { url } if !url.trim().is_empty() && !is_http_url(url) => {
+            Some(format!("钩子地址不合法：{url:?}（需要以 http:// 或 https:// 开头）"))
+        }
+        _ => None,
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -209,6 +285,7 @@ impl Default for Settings {
             quiet: true,
             notify: true,
             webhook_url: None,
+            hooks: Vec::new(),
             shape: Shape::default(),
             bezel: true,
             palette: Palette::default(),
@@ -234,6 +311,8 @@ impl Settings {
         for color in self.colors.values_mut() {
             *color = color.to_ascii_lowercase();
         }
+        // 同样地，写坏的钩子只丢掉那一条，不让整份设置失效
+        self.hooks.retain(|hook| hook_problem(hook).is_none());
         self
     }
 
@@ -271,12 +350,31 @@ pub fn load_settings() -> Settings {
         return Settings::default();
     };
     match serde_json::from_str::<Settings>(&raw) {
-        Ok(settings) => settings.clamped(),
+        Ok(settings) => migrate_legacy_webhook(settings).clamped(),
         Err(err) => {
             eprintln!("[signalhub] {} 无法解析（{err}），使用默认设置", path.display());
             Settings::default()
         }
     }
+}
+
+/// 把旧版的单条 `webhook_url` 搬成一条钩子。
+///
+/// 旧版本只支持「一条 webhook，只在需要注意时转发」，正好等价于一条
+/// `when = [permission, attention, error]` 的 HTTP 钩子。不搬的话用户已经配好的
+/// 转发会在升级后静默失效 —— 而那正是最难发现的一类回归。
+fn migrate_legacy_webhook(mut settings: Settings) -> Settings {
+    if let Some(url) = settings.webhook_url.take() {
+        let url = url.trim().to_string();
+        if !url.is_empty() {
+            eprintln!("[signalhub] 把旧的 webhook 地址搬成了一条钩子：{url}");
+            settings.hooks.push(Hook {
+                when: vec!["permission".into(), "attention".into(), "error".into()],
+                action: HookAction::Http { url },
+            });
+        }
+    }
+    settings
 }
 
 pub fn save_settings(settings: &Settings) -> io::Result<()> {
@@ -344,6 +442,113 @@ mod tests {
         for bad in ["16a34a", "#12345", "#gggggg", "", "#", "red"] {
             assert!(!is_hex_color(bad), "{bad:?} 应被拒绝");
         }
+    }
+
+    #[test]
+    fn hook_urls_are_checked_at_the_boundary() {
+        for good in [
+            "https://ntfy.sh/my-topic",
+            "http://127.0.0.1:8080/hook",
+            "  https://hooks.slack.com/services/x  ",
+        ] {
+            assert!(is_http_url(good), "{good} 应被接受");
+        }
+        for bad in ["", "ntfy.sh/topic", "ftp://x/y", "https://", "https:///path", "  "] {
+            assert!(!is_http_url(bad), "{bad:?} 应被拒绝");
+        }
+    }
+
+    fn http_hook(when: &[&str], url: &str) -> Hook {
+        Hook {
+            when: when.iter().map(|s| s.to_string()).collect(),
+            action: HookAction::Http { url: url.to_string() },
+        }
+    }
+
+    #[test]
+    fn hook_problems_are_named_precisely() {
+        assert!(hook_problem(&http_hook(&["permission"], "https://x/y")).is_none());
+        // 空 when 是合法的：任何变化都触发
+        assert!(hook_problem(&http_hook(&[], "https://x/y")).is_none());
+
+        let bad_state = http_hook(&["nonsense"], "https://x/y");
+        assert!(hook_problem(&bad_state).unwrap().contains("未知的状态名"));
+
+        let bad_url = http_hook(&["idle"], "not-a-url");
+        assert!(hook_problem(&bad_url).unwrap().contains("不合法"));
+
+        // 空目标是「还没配好」，不算错 —— 否则编辑器里刚点「添加」就报错
+        assert!(hook_problem(&http_hook(&[], "")).is_none());
+        let empty_command = Hook {
+            when: vec![],
+            action: HookAction::Command { command: "   ".into() },
+        };
+        assert!(hook_problem(&empty_command).is_none());
+        assert!(!empty_command.action.is_configured(), "空命令不触发");
+    }
+
+    #[test]
+    fn an_empty_hook_target_is_not_configured() {
+        assert!(!http_hook(&[], "").action.is_configured());
+        assert!(http_hook(&[], "https://x/y").action.is_configured());
+        assert!(!HookAction::Command { command: "  ".into() }.is_configured());
+        assert!(HookAction::Command { command: "say hi".into() }.is_configured());
+    }
+
+    /// 派生状态也能作为过滤条件 —— 用户可能只想知道「会话沉默了」
+    #[test]
+    fn hooks_may_filter_on_derived_states() {
+        assert!(hook_problem(&http_hook(&["stale", "offline"], "https://x/y")).is_none());
+    }
+
+    /// 旧版本只有一条 webhook 地址，升级后不能让它静默失效
+    #[test]
+    fn a_legacy_webhook_becomes_a_hook() {
+        let legacy = r##"{"webhook_url": "https://ntfy.sh/x"}"##;
+        let settings = migrate_legacy_webhook(serde_json::from_str::<Settings>(legacy).unwrap());
+
+        assert_eq!(settings.hooks.len(), 1, "应搬成一条钩子");
+        assert_eq!(
+            settings.hooks[0].when,
+            vec!["permission", "attention", "error"],
+            "触发条件要和旧行为一致（只在需要注意时转发）"
+        );
+        assert_eq!(
+            settings.hooks[0].action,
+            HookAction::Http { url: "https://ntfy.sh/x".into() }
+        );
+
+        // 空白的旧值不该凭空造出一条钩子
+        let blank = migrate_legacy_webhook(
+            serde_json::from_str::<Settings>(r##"{"webhook_url": "  "}"##).unwrap(),
+        );
+        assert!(blank.hooks.is_empty());
+    }
+
+    /// 废弃字段永不写回 —— 出口只有一条路
+    #[test]
+    fn the_legacy_webhook_field_is_never_written_back() {
+        let mut settings = Settings::default();
+        settings.webhook_url = Some("https://x/y".into());
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(!json.contains("webhook_url"), "不该写回废弃字段: {json}");
+    }
+
+    /// 手改配置文件时写坏的钩子只丢掉那一条
+    #[test]
+    fn clamping_drops_bad_hooks_but_keeps_the_rest() {
+        let raw = r##"{"size": 24, "hooks": [
+            {"when": ["error"], "type": "http", "url": "https://x/y"},
+            {"when": ["nope"], "type": "http", "url": "https://x/y"},
+            {"when": [], "type": "http", "url": "not-a-url"},
+            {"when": [], "type": "command", "command": ""}
+        ]}"##;
+        let settings = serde_json::from_str::<Settings>(raw).unwrap().clamped();
+
+        assert_eq!(settings.size, 24, "其余设置不受影响");
+        assert_eq!(settings.hooks.len(), 2, "未知状态名和坏地址应被丢掉，空命令留下");
+        assert_eq!(settings.hooks[0].when, vec!["error"]);
+        assert!(!settings.hooks[1].action.is_configured(), "空命令那条还在，但不触发");
     }
 
     /// 手改的配置文件里颜色写坏了不该让整份设置失效 —— 只丢掉那一条

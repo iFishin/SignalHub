@@ -1,4 +1,5 @@
 use crate::alerts;
+use crate::outbound;
 use crate::{SharedSettings, SharedStats};
 use crate::state::{Signal, Snapshot};
 use std::sync::{Arc, Mutex};
@@ -27,7 +28,7 @@ pub type Notifier = Arc<dyn Fn(&Snapshot) + Send + Sync>;
 /// HTTP。表现是「通知和 webhook 从来不发」，但两边都不报错，极难发现。
 /// 只有一个入口就不会再出现这种事。
 pub fn compose(app: tauri::AppHandle) -> Notifier {
-    let last_alerted: Arc<Mutex<Option<Signal>>> = Arc::new(Mutex::new(None));
+    let last_aggregate: Arc<Mutex<Option<Signal>>> = Arc::new(Mutex::new(None));
 
     Arc::new(move |snapshot: &Snapshot| {
         let settings = app
@@ -42,24 +43,25 @@ pub fn compose(app: tauri::AppHandle) -> Notifier {
             .expect("stats poisoned")
             .record(Instant::now(), snapshot.aggregate);
 
-        // 通知和出站转发共用同一个触发判断，所以要记住上一次的聚合。
-        // previous 无论是否真的发出去都要更新 —— 否则用户重新打开开关时
-        // 会立刻收到一条关于「早就发生过的」状态的通知。
-        let alerting = {
-            let mut previous = last_alerted.lock().expect("alert state poisoned");
+        // 通知和出站钩子都要知道「聚合是不是真的变了」，所以要记住上一次的值。
+        // previous 无论是否真的发出去都要更新 —— 否则用户重新打开开关时会立刻
+        // 收到一条关于「早就发生过的」状态的通知。
+        let (transitioned, alerting) = {
+            let mut previous = last_aggregate.lock().expect("alert state poisoned");
+            let transitioned = *previous != Some(snapshot.aggregate);
             let alerting = alerts::should_alert(*previous, snapshot.aggregate);
             *previous = Some(snapshot.aggregate);
-            alerting
+            (transitioned, alerting)
         };
 
-        // 两件事都在锁外做：发通知和发网络请求都不该占着状态
+        // 两件事都在锁外做：发通知和跑钩子都不该占着状态
+        if transitioned {
+            // 钩子自带过滤条件（`when`），所以只按「聚合跃迁了」触发，
+            // 不像通知那样限定在需要注意的状态 —— 用户可以配「done 时跑个脚本」。
+            outbound::fire(&settings.hooks, snapshot);
+        }
         if alerting && settings.notify {
             alerts::send(&app, snapshot);
-        }
-        if alerting {
-            if let Some(url) = settings.webhook_url.as_deref() {
-                alerts::forward(url, snapshot);
-            }
         }
 
         emit(&app, snapshot);

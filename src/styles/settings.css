@@ -374,6 +374,78 @@ html[data-window="settings"] #root {
   background: transparent;
 }
 
+/* ---- 钩子页 ---- */
+
+.hook {
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+
+.hook:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.hook-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.hook-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* 目标还没填的钩子不会触发，得让它看得见 */
+.hook-warn {
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--hover);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 400;
+}
+
+.btn-tiny {
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+/* 状态过滤条件：10 个短标签，窄面板里会折成两三行 */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.chip {
+  padding: 2px 7px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.chip:hover {
+  background: var(--hover);
+}
+
+.chip[data-active="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
 /* ---- 会话列表 ---- */
 
 .sessions {

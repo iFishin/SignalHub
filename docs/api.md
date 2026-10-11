@@ -495,13 +495,32 @@ hook 模式会把每次调用追加到 `~/.signalhub/hooks.log`：
 
 日志超过 512KB 会轮转一次（`hooks.log.1`），只保留一代。写日志失败一律忽略——为了记日志而弄坏智能体的 hook 是本末倒置。
 
-### 4.9 出站转发（SignalHub 往外发）
+### 4.9 出站钩子（SignalHub 往外发）
 
-这是唯一一个方向相反的接口：设置里填一个 URL，SignalHub 就会在聚合**新变成** `permission` / `attention` / `error` 时往它 POST 一段 JSON。用于手机推送（ntfy）、团队频道（Slack）、或自建服务。
+这是唯一一个方向相反的接口：配置若干条**钩子**，聚合变化时按条件触发。用于手机推送（ntfy）、团队频道（Slack）、跑脚本、或接进自建服务。
 
-触发时机与系统通知**完全相同**（`should_alert`），但开关独立——有人只想要手机推送、不想要系统弹窗，反之亦然。
+在设置面板的「钩子」页配置，也可以直接写 `~/.signalhub/config.json`：
 
-**请求**：`POST <你填的 URL>`，`Content-Type: application/json`
+```json
+{
+  "hooks": [
+    { "when": ["permission", "error"], "type": "http",    "url": "https://ntfy.sh/my-topic" },
+    { "when": ["done"],               "type": "command", "command": "say 完成" },
+    { "when": [],                     "type": "http",    "url": "http://localhost:9000/ingest" }
+  ]
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `when` | 哪些状态**变成**时触发。空数组 = 任何变化都触发。值是状态名，**含 `stale` / `offline` 这类派生状态**（你可能只想知道「会话沉默了」） |
+| `type` | `"http"` 或 `"command"` |
+| `url` | `type: "http"` 时的目标，必须 `http://` 或 `https://` 开头 |
+| `command` | `type: "command"` 时执行的命令，通过 `sh -c`（Windows 上是 `cmd /C`）执行 |
+
+**触发语义**：只在聚合**发生跃迁**时触发（同一个状态内的变化不算，例如某个会话的说明文本改了）。这一点和系统通知一致——一轮工具调用会触发几十次状态推送，按「每次变化」触发就成了骚扰。
+
+**请求体**（`type: "http"`）：
 
 ```json
 {
@@ -510,33 +529,25 @@ hook 模式会把每次调用追加到 `~/.signalhub/hooks.log`：
     "paused": false,
     "since_ms": 1791683689000,
     "message": "需要批准: rm -rf build",
-    "sessions": [
-      {
-        "id": "abc123",
-        "state": "permission",
-        "agent": "claude-code",
-        "cwd": "/Users/me/proj",
-        "message": "需要批准: rm -rf build",
-        "age_ms": 4200,
-        "stale_progress": null
-      }
-    ]
+    "sessions": [ /* 与 GET /v1/state 的结构完全一致 */ ]
   },
   "at_ms": 1791683690537
 }
 ```
 
-`snapshot` 与 `GET /v1/state` 的结构完全一致；`at_ms` 是发送时刻（epoch 毫秒）——接收方多半要记时间，而 `since_ms` 是状态起点。
+`at_ms` 是触发时刻（epoch 毫秒）——接收方多半要记时间，而 `since_ms` 是状态起点。
 
 **行为约定**：
 
-- 只在新跃迁时发一次，不是每次状态变化都发。一轮工具调用会触发几十次推送。
-- 异步发送，带 3s 连接 / 8s 总超时。**目标服务挂掉不会影响 SignalHub 的状态机**。
-- 失败只写 stderr（`[signalhub] webhook 转发失败（<url>）: …`），不重试。本地状态灯不该因为远端不可达而变复杂。
-- URL 在保存时就校验（必须 `http://` 或 `https://` 开头），不合格会拒绝保存并说明原因——否则会变成「每次转发都静默失败一次」。
-- 留空 = 关闭转发。
+- **异步**执行，每条钩子独立。一条失败不影响其它钩子，也不影响状态机。
+- HTTP 有 3 秒连接 / 10 秒总超时；命令有 10 秒超时，超时会被终止（挂死的钩子不该把 tokio 的阻塞线程池占满）。
+- 命令的 stdout / stderr 全部丢弃——钩子是拿来触发副作用的，它的输出没地方去。
+- 失败只写 stderr（`[signalhub] 钩子执行失败: …`），不重试。本地状态灯不该因为远端不可达而变复杂。
+- **目标留空的钩子不触发也不报错**：那是编辑器里的中间态（刚点「添加」还没填），面板上会标「未填目标」。
 
-**ntfy 示例**：地址填 `https://ntfy.sh/<你的主题>` 即可，ntfy 会忽略 JSON body 里不认识的字段并显示一条通知。
+> **关于 `type: "command"` 的安全性**：它会执行本地命令。信任模型和 git hooks / npm scripts 一样——配置文件在你自己的主目录里，能改它就能执行任何东西。所以**没有**额外的开关：多一个开关只会给人一种「关掉就安全」的错觉，而配置文件本来就在你手里。不要把别人的 `config.json` 直接拿来用。
+
+**ntfy 示例**：`url` 填 `https://ntfy.sh/<你的主题>` 即可，ntfy 会忽略 JSON body 里不认识的字段并显示一条通知。
 
 ### 4.10 不用 CLI 的最小接入
 

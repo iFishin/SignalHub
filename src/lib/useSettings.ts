@@ -9,6 +9,22 @@ export type Shape = "circle" | "rounded" | "ring";
 /** 配色预设。给预设而不是任意取色 —— 红=危险、黄=注意是有语义的。 */
 export type Palette = "default" | "colorblind" | "vivid";
 
+/** 钩子能做的事。`command` 会执行本地命令，见 docs/api.md 里的安全说明。 */
+export type HookAction =
+  | { type: "http"; url: string }
+  | { type: "command"; command: string };
+
+/**
+ * 一条出站钩子：聚合变成 `when` 里的某个状态时执行 `action`。
+ *
+ * `when` 为空 = 任何变化都触发。值是状态名，含 `stale` / `offline` 这类
+ * 派生状态（用户可能只想知道「会话沉默了」）。
+ *
+ * Rust 侧用 `#[serde(flatten)]`，所以 `type` 是和 `when` 平级的字段，
+ * 而不是嵌在 `action` 对象里。
+ */
+export type Hook = { when: string[] } & HookAction;
+
 /** 与 Rust 侧 `config::Settings` 对应（JSON 字段名保持 snake_case）。 */
 export interface Settings {
   size: number;
@@ -17,8 +33,8 @@ export interface Settings {
   quiet: boolean;
   /** 需要你注意时弹系统通知。 */
   notify: boolean;
-  /** 出站转发目标；null 表示不转发。 */
-  webhook_url: string | null;
+  /** 出站钩子。 */
+  hooks: Hook[];
   shape: Shape;
   /** 给圆点套一圈中性细环，让它读起来像指示灯而不是 UI 色块。 */
   bezel: boolean;
@@ -33,7 +49,7 @@ const DEFAULTS: Settings = {
   always_on_top: true,
   quiet: true,
   notify: true,
-  webhook_url: null,
+  hooks: [],
   shape: "circle",
   bezel: true,
   palette: "default",

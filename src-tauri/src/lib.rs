@@ -1,5 +1,6 @@
 mod alerts;
 mod notify;
+mod outbound;
 mod server;
 mod state;
 mod stats;
@@ -110,13 +111,10 @@ fn validate_settings(settings: &Settings) -> Result<(), String> {
         }
     }
 
-    // webhook 地址是用户输入，在系统边界上校验一次。存进去的必须是可用的，
-    // 否则会变成「每次转发都静默失败一次」，而失败只写 stderr，很难发现。
-    if let Some(url) = settings.webhook_url.as_deref() {
-        if !alerts::valid_webhook_url(url) {
-            return Err(format!(
-                "webhook 地址不合法：{url:?}（需要以 http:// 或 https:// 开头）"
-            ));
+    // 钩子自己带过滤条件，所以这里逐条校验，报错要能指出是哪一条
+    for hook in &settings.hooks {
+        if let Some(problem) = config::hook_problem(hook) {
+            return Err(format!("钩子不合法：{problem}"));
         }
     }
 

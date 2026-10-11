@@ -245,14 +245,11 @@ width = dots * size + (dots - 1) * (size / 3) + LAMP_MARGIN
 
 > **dev 模式的限制**：`tauri dev` 跑的是未打包的裸二进制，而 macOS 的 `UNUserNotificationCenter` 需要 bundle identifier。所以通知在 dev 下可能**不显示**（调用本身会成功、不报错）。要确认真的能弹，得 `npm run tauri build` 出真正的 .app。这一点没在 dev 下验证过，不要当成已验证。
 
-**出站转发**用同一个触发判断（`should_alert`），但**独立开关**：设置里填一个 URL，就会把快照 POST 过去（ntfy / Slack / 自建接口都行）。两个设计点：
+**出站钩子**见 §3.10 —— 它和系统通知共用「只在聚合跃迁时触发」这个语义，但钩子自带过滤条件（`when`），所以不受「只在需要注意的状态」限制：用户可以配「done 时跑个脚本」。
 
-1. **必须异步。** 转发是在状态变更路径上被调用的（HTTP 上报和 sweep 都会触发），同步发一个网络请求会把状态机卡住。所以走 `spawn_blocking`，并带 3s/8s 超时——目标服务挂掉不该拖累灯球。
-2. **URL 在 `set_settings` 里校验。** 存进去的必须是可用的，否则会变成「每次转发都静默失败一次」，而失败只写 stderr，很难发现。
+`ureq` 因此**必须带 rustls**（钩子目标都是 HTTPS）。选 rustls 而不是 native-tls，是因为后者在 Linux 上要系统 libssl，跨平台构建会多一道坎。
 
-`ureq` 因此**必须带 rustls**（webhook 目标都是 HTTPS）。选 rustls 而不是 native-tls，是因为后者在 Linux 上要系统 libssl，跨平台构建会多一道坎。
-
-### 3.15 一个把三个功能同时静默废掉的接线 bug
+### 3.9 一个把三个功能同时静默废掉的接线 bug
 
 这一条值得单独记，因为它的形态很典型。
 
@@ -266,7 +263,30 @@ width = dots * size + (dots - 1) * (size / 3) + LAMP_MARGIN
 
 教训：**当一个功能有多条入口路径（HTTP / sweep / 命令 / 托盘）时，共享的那层逻辑必须只有一个构造点**。否则漏掉一条路径的表现不是报错，而是「功能静默不生效」。
 
-### 3.16 今日状态时长统计
+### 3.10 出站钩子：让 SignalHub 成为信号中枢
+
+入口本来就是通用的（HTTP + CLI，任何程序都能报，8 个状态词是共享词汇表），但出口最初只有**一条 webhook**，而且只转发「需要注意」的三种状态。要做成信号中枢，出口必须是**多条带过滤的钩子**：
+
+```json
+{ "when": ["permission", "error"], "type": "http",    "url": "https://ntfy.sh/x" }
+{ "when": ["done"],               "type": "command", "command": "say 完成" }
+{ "when": [],                     "type": "http",    "url": "http://localhost:9000/ingest" }
+```
+
+`when` 空数组 = 任何变化都触发。模型和触发在 `outbound.rs`（注意和 `hooks.rs` 方向相反：那个是入站，把智能体的 hook 装进它们的配置文件）。
+
+**四条设计约束：**
+
+1. **必须异步。** 触发点在状态变更路径上（HTTP 上报和 sweep 都会走到），同步发网络请求或等命令结束会把状态机卡住。每条钩子丢进 `spawn_blocking`，互不影响。
+2. **命令必须带超时。** 走 `sh -c`（Windows 上 `cmd /C`），用户因此能写管道和重定向 —— 这正是钩子有用的地方。但挂死的命令会把 tokio 的阻塞线程池占满，所以轮询 `try_wait` 到 10 秒就杀掉。输出全部丢弃：钩子是用来触发副作用的。
+3. **只在聚合跃迁时触发**，不是每次快照变化。同一个状态内的变化（某个会话的说明文本改了）不算。语义和系统通知一致。
+4. **空目标不算错。** 目标留空的钩子不触发也不报错 —— 编辑时必然要经过「刚点添加、还没填目标」这个中间态，那时候报错就没法编辑了。面板上会标「未填目标」，所以它不会静默失效。
+
+**安全性：`type: "command"` 会执行本地命令，没有额外开关。** 信任模型和 git hooks / npm scripts 一样——配置文件在用户自己的主目录里，能改它就能执行任何东西。加一个开关只会给人一种「关掉就安全」的错觉，而文件本来就在用户手里。文档里写明了这一点，并提醒不要把别人的 `config.json` 直接拿来用。
+
+**一次迁移：** 旧的单条 `webhook_url` 在启动时会被搬成一条 `when = [permission, attention, error]` 的 HTTP 钩子，字段本身标了 `skip_serializing` 永不写回。不搬的话，用户已经配好的转发会在升级后静默失效——而那正是最难发现的一类回归。出口只保留一种表达，不让「单条 webhook」和「钩子列表」并存。
+
+### 3.11 今日状态时长统计
 
 按「前端给的本地日期」分桶——**本地日期只有前端知道**（Rust 这边没有时区数据，`SystemTime` 只给 UTC），所以由前端在查询时带过来（`new Date().toLocaleDateString("sv")` 给的就是本地时区的 ISO 日期）；日期一变就重置。这样不必引入时区依赖。
 
@@ -278,7 +298,7 @@ width = dots * size + (dots - 1) * (size / 3) + LAMP_MARGIN
 
 时长平局时按优先级排——否则顺序取决于 `HashMap` 的迭代顺序，界面每次刷新都可能换个次序。
 
-### 3.9 窗口位置记忆
+### 3.12 窗口位置记忆
 
 用 `tauri-plugin-window-state`，但**只让它记位置，不记尺寸**：
 
@@ -290,13 +310,13 @@ width = dots * size + (dots - 1) * (size / 3) + LAMP_MARGIN
 
 插件的默认存储位置是 app 配置目录下的 `.window-state.json`（macOS 上是 `~/Library/Application Support/<identifier>/`）。它在**正常退出**时写入，所以 dev 下反复重建期间看不到这个文件是正常的。
 
-### 3.10 设置文件的向前兼容
+### 3.13 设置文件的向前兼容
 
 `Settings` 带 `#[serde(default)]`。这是用户可手改、也会跨版本留存的文件，缺字段时应该退回**该字段**的默认值，而不是整份解析失败——否则每新增一个设置项，都会把用户已经调好的其他设置一起重置。
 
 这个坑是真实踩到的：加 `notify` 字段之后，已有的 `config.json`（里面存着用户调过的 `size: 32`）直接解析失败，圆点尺寸会被静默重置回 22。日志里那行 `config.json 无法解析（missing field notify），使用默认设置` 就是它。
 
-### 3.11 展开面板，以及拖拽与点击的冲突
+### 3.14 展开面板，以及拖拽与点击的冲突
 
 点击圆点把窗口就地放大成一张会话列表（再点一次收起）。窗口尺寸仍由 Rust 算：`Settings::panel_size(行数)`，几何常量（`PANEL_CHROME` / `PANEL_ROW`）在 `config.rs`，**CSS 里的高度必须与之严格对齐**，否则会裁掉最后一行或留一条缝。这是与 §3.7 的 gap 同一类的耦合，只是这里更严——差了 1px 就会被 `overflow: hidden` 切掉。
 
@@ -308,7 +328,7 @@ width = dots * size + (dots - 1) * (size / 3) + LAMP_MARGIN
 
 推论：**展开态不能再可拖拽**（否则点击收不起来），所以展开时整块都是可点的「点击收起」区域。
 
-### 3.12 单实例、穿透、自启
+### 3.15 单实例、穿透、自启
 
 **单实例**（`tauri-plugin-single-instance`）要**最先注册**。多开会让两个进程抢同一个端口文件、互相覆盖状态，表现出来是「灯球偶尔不动」这类极难排查的现象。第二个实例起来时把灯球亮出来——用户多半是没找到它才又点了一次图标。
 
@@ -321,7 +341,7 @@ width = dots * size + (dots - 1) * (size / 3) + LAMP_MARGIN
 
 托盘里的「切换点击穿透」刻意**不显示开关状态**：快捷键也能切换它，菜单里的状态会漂移。准确状态在设置面板里（`get_toggles`），并且 Rust 在每次变更后都会发 `signalhub://toggles` 事件——不发的话面板会一直显示过时的状态。
 
-### 3.13 设置面板的组织：四个页签
+### 3.16 设置面板的组织：四个页签
 
 设置面板拆成四页 —— **状态 / 外观 / 接入 / 系统**。理由是它曾经是一列 5 个小节、7 个开关、1 个输入框、4 段说明加一张会话列表全堆在一起，**总高约 1000px，比很多 13 寸笔记本的可用高度还大**。需要靠窗口跟着内容长来迁就，本身就是设计有问题的信号。
 
@@ -485,12 +505,16 @@ SignalHub/
       ├─ sweep.rs                TTL 清扫 + 聚合重算
       ├─ notify.rs               通知出口（Notifier）— 让 HTTP 层能脱离 AppHandle 单测
       ├─ alerts.rs               需要你注意时弹系统通知
+      ├─ outbound.rs             出站钩子：按 when 过滤后 POST 或跑命令
       ├─ config.rs               ~/.signalhub 路径、token、端口文件、用户设置
-      ├─ hooks.rs                智能体 hook 的安装/卸载（app 与 CLI 共用）
+      ├─ hooks.rs                智能体 hook 的安装/卸载（入站；与 outbound.rs 方向相反）
       ├─ server.rs               axum 路由 + 鉴权 + 端口发现，含 12 个 HTTP 层单测
+      ├─ stats.rs                今日状态时长统计
       ├─ tray.rs                 托盘菜单
       └─ bin/signalhub.rs        CLI ← 用户实际调用的 `signalhub` 命令
 ```
+
+**`hooks.rs` 和 `outbound.rs` 名字里都有 hook，但方向相反：** 前者是**入站**（把 SignalHub 的 hook 装进智能体的配置文件，让它们能上报进来），后者是**出站**（状态变化时 SignalHub 主动往外 POST 或执行命令）。两个文件顶部都写了这句区分。
 
 **关于 `hooks.rs` 为什么不是 `integration/{claude_code,codex,cursor}.rs`：** 原计划按智能体拆三个文件，实际写下来发现三者的差异只在「配置路径 + 事件名清单 + handler 形状」这张表里，而**安装逻辑（保留无关键、幂等、备份、解析失败中止、精确摘除自己的 handler）三家完全一样且是最需要谨慎的部分**。拆成三个文件会把这段逻辑抄三遍，或者抽出一层反而更绕。所以是一个 `hooks.rs`，内部用一个小 `Agent` 枚举和一张事件表区分差异。
 
@@ -553,7 +577,9 @@ SignalHub/
 | 7a | `signalhub watch`：终端跟随 / CI 里等状态 | ✅ 已完成 |
 | 7b | 出站 webhook 转发 | ✅ 已完成 |
 | 7c | 今日状态时长统计 | ✅ 已完成 |
-| 7d | 把 CLI 作为 sidecar 打进 app bundle | ⏳ 待做（分发才需要） |
+| 7d | 每个状态的颜色可单独调 | ✅ 已完成 |
+| 7e | 出站钩子列表（多条、可过滤、支持本地命令） | ✅ 已完成 |
+| 7f | 把 CLI 作为 sidecar 打进 app bundle | ⏳ 待做（分发才需要） |
 
 三处偏离原计划的地方，都记在这里以免以后当成疏漏：
 
@@ -579,11 +605,11 @@ getrandom = "0.3"             # 已在 Tauri 依赖树里，复用版本即免�
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 #   ↑ CLI 连本机明文端口用不上 TLS，但 app 侧的出站 webhook 目标
 #     （ntfy / Slack）都是 HTTPS，所以必须带 rustls
-tauri-plugin-window-state = "2"   # 只用来记窗口位置，见 §3.9
+tauri-plugin-window-state = "2"   # 只用来记窗口位置，见 §3.12
 tauri-plugin-notification = "2"   # 需要你注意时弹通知，见 §3.8
-tauri-plugin-single-instance = "2"  # 多开会抢端口和状态文件，见 §3.12
+tauri-plugin-single-instance = "2"  # 多开会抢端口和状态文件，见 §3.15
 tauri-plugin-autostart = "2"
-tauri-plugin-global-shortcut = "2"  # 点击穿透的逃生通道，见 §3.12
+tauri-plugin-global-shortcut = "2"  # 点击穿透的逃生通道，见 §3.15
 ```
 
 几点取舍：

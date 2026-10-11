@@ -22,6 +22,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 // 直接包含源码，而不是 `use signalhub_lib::config`：lib.rs 是 Tauri 应用，
 // 链接它会把整个 Tauri 拖进这个本该只有几 MB 的 CLI 二进制。
 // config.rs / hooks.rs 里有些函数只有 app 侧用得到，CLI 只用其中一部分。
+//
+// state.rs 是**被动**带上的：config.rs 校验钩子的状态名时要问它有哪些状态。
+// 它本身是纯逻辑（只有 serde + std），不引入任何额外依赖。
 #[allow(dead_code)]
 #[path = "../config.rs"]
 mod config;
@@ -29,6 +32,10 @@ mod config;
 #[allow(dead_code)]
 #[path = "../hooks.rs"]
 mod hooks;
+
+#[allow(dead_code)]
+#[path = "../state.rs"]
+mod state;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(800);
 const CALL_TIMEOUT: Duration = Duration::from_millis(1500);

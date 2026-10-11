@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { inTauri } from "../lib/env";
 import { SIGNAL_LABEL } from "../lib/signals";
-import { useSettings, updateSettings, type Settings, type Shape, type Palette } from "../lib/useSettings";
+import { useSettings, updateSettings, type Settings, type Shape, type Palette, type Hook } from "../lib/useSettings";
 import {
   useToggles,
   setAutostart,
@@ -33,15 +33,30 @@ const PALETTES: { label: string; value: Palette }[] = [
   { label: "高饱和", value: "vivid" },
 ];
 
-type Tab = "status" | "look" | "colors" | "connect" | "system";
+type Tab = "status" | "look" | "colors" | "connect" | "hooks" | "system";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "status", label: "状态" },
   { id: "look", label: "外观" },
   { id: "colors", label: "颜色" },
   { id: "connect", label: "接入" },
+  { id: "hooks", label: "钩子" },
   { id: "system", label: "系统" },
 ];
+
+/** 状态名的短标签，给钩子过滤条件的那些小按钮用（10 个要挤在一行里换行）。 */
+const SHORT_LABEL: Record<string, string> = {
+  idle: "空闲",
+  thinking: "推理",
+  working: "执行",
+  done: "完成",
+  attention: "关注",
+  permission: "授权",
+  error: "出错",
+  stale: "沉默",
+  offline: "离线",
+  off: "暂停",
+};
 
 interface Endpoint {
   port: number | null;
@@ -103,21 +118,41 @@ export function SettingsPanel({ snapshot }: Props) {
 
   const reported = (err: unknown) => setError(String(err));
 
-  // 转发地址的编辑草稿。null 表示「没在编辑」，显示已保存的值。
-  const [webhookDraft, setWebhookDraft] = useState<string | null>(null);
-
-  const commitWebhook = () => {
-    if (webhookDraft === null) return;
-    const next = webhookDraft.trim();
-    setWebhookDraft(null);
-    if (next === (settings.webhook_url ?? "")) return; // 没改就别白存一次
-    setError(null);
-    updateSettings({ ...settings, webhook_url: next || null }).catch(reported);
-  };
-
   const patch = (next: Partial<Settings>) => {
     setError(null);
     updateSettings({ ...settings, ...next }).catch(reported);
+  };
+
+  // 钩子的文本输入用「草稿 + 失焦提交」：每敲一个字就存一次会把半截 URL
+  // 写进配置（而且会被校验拒掉）。颜色不一样 —— 取色器要的就是即时反馈。
+  const [hookDraft, setHookDraft] = useState<{ index: number; value: string } | null>(null);
+
+  const setHooks = (hooks: Hook[]) => patch({ hooks });
+
+  const updateHook = (index: number, next: Partial<Hook>) =>
+    setHooks(
+      settings.hooks.map((hook, i) =>
+        i === index ? ({ ...hook, ...next } as Hook) : hook,
+      ),
+    );
+
+  const addHook = () =>
+    setHooks([
+      ...settings.hooks,
+      // 目标先留空：空目标不算错（不触发），用户填了才开始工作
+      { when: ["permission", "attention", "error"], type: "http", url: "" },
+    ]);
+
+  const commitHookDraft = () => {
+    if (!hookDraft) return;
+    const { index, value } = hookDraft;
+    setHookDraft(null);
+    const hook = settings.hooks[index];
+    if (!hook) return;
+    const next = value.trim();
+    const current = hook.type === "http" ? hook.url : hook.command;
+    if (next === (current ?? "").trim()) return; // 没改就别白存一次
+    updateHook(index, hook.type === "http" ? { url: next } : { command: next });
   };
 
   const setPaused = (paused: boolean) => {
@@ -285,27 +320,15 @@ export function SettingsPanel({ snapshot }: Props) {
               需要授权、需要关注或出错时弹一条系统通知。
             </p>
 
-            {/* 转发地址只在失焦或回车时提交 —— 每敲一个字就存盘和发 IPC 太浪费，
-                而且中间态（还没敲完的 URL）会被校验拒绝。 */}
-            <div className="field">
-              <label htmlFor="webhook">转发到</label>
-              <input
-                id="webhook"
-                className="input"
-                type="url"
-                spellCheck={false}
-                placeholder="https://ntfy.sh/my-topic"
-                value={webhookDraft ?? settings.webhook_url ?? ""}
-                onChange={(event) => setWebhookDraft(event.target.value)}
-                onBlur={commitWebhook}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") event.currentTarget.blur();
-                }}
-              />
+            {/* 转发搬到了「钩子」页（多条、可过滤、支持命令），这里只留入口 */}
+            <div className="row">
+              <span>出站钩子</span>
+              <button type="button" className="btn" onClick={() => setTab("hooks")}>
+                去配置
+              </button>
             </div>
             <p className="hint">
-              填了就把需要注意的状态 POST 到该地址，与系统通知同一个触发时机。
-              留空则不转发。
+              状态变化时可以 POST 到某个地址或跑一条命令 —— 在「钩子」页配置。
             </p>
 
             <div className="kv">
@@ -319,6 +342,107 @@ export function SettingsPanel({ snapshot }: Props) {
               </span>
             </div>
             {curlExample && <div className="hint mono">{curlExample}</div>}
+          </>
+        );
+
+      case "hooks":
+        return (
+          <>
+            {settings.hooks.length === 0 && (
+              <p className="empty">
+                还没有钩子。加一条，就能在状态变化时 POST 到某个地址或跑一条命令。
+              </p>
+            )}
+
+            {settings.hooks.map((hook, index) => {
+              const target = hook.type === "http" ? hook.url : hook.command;
+              const shown =
+                hookDraft?.index === index ? hookDraft.value : (target ?? "");
+              const configured = (target ?? "").trim().length > 0;
+
+              return (
+                <div className="hook" key={index}>
+                  <div className="hook-head">
+                    <span className="hook-title">
+                      钩子 {index + 1}
+                      {!configured && <span className="hook-warn">未填目标</span>}
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn-tiny"
+                      onClick={() =>
+                        setHooks(settings.hooks.filter((_, i) => i !== index))
+                      }
+                    >
+                      删除
+                    </button>
+                  </div>
+
+                  <div className="chips">
+                    {SIGNALS.map((state) => (
+                      <button
+                        key={state}
+                        type="button"
+                        className="chip"
+                        data-active={hook.when.includes(state)}
+                        onClick={() =>
+                          updateHook(index, {
+                            when: hook.when.includes(state)
+                              ? hook.when.filter((name) => name !== state)
+                              : [...hook.when, state],
+                          })
+                        }
+                      >
+                        {SHORT_LABEL[state] ?? state}
+                      </button>
+                    ))}
+                  </div>
+
+                  <Row label="类型">
+                    <div className="seg">
+                      <button
+                        type="button"
+                        data-active={hook.type === "http"}
+                        onClick={() => updateHook(index, { type: "http", url: "" })}
+                      >
+                        HTTP
+                      </button>
+                      <button
+                        type="button"
+                        data-active={hook.type === "command"}
+                        onClick={() => updateHook(index, { type: "command", command: "" })}
+                      >
+                        命令
+                      </button>
+                    </div>
+                  </Row>
+
+                  <input
+                    className={hook.type === "http" ? "input" : "input mono"}
+                    spellCheck={false}
+                    placeholder={
+                      hook.type === "http" ? "https://ntfy.sh/my-topic" : "say 完成"
+                    }
+                    value={shown}
+                    onChange={(event) =>
+                      setHookDraft({ index, value: event.target.value })
+                    }
+                    onBlur={commitHookDraft}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") event.currentTarget.blur();
+                    }}
+                  />
+                </div>
+              );
+            })}
+
+            <button type="button" className="btn" onClick={addHook}>
+              + 添加钩子
+            </button>
+            <p className="hint">
+              状态全不选 = 任何变化都触发。命令通过 sh -c 执行，超时 10 秒 ——
+              配置文件在你手里，所以这里没有额外的开关。
+            </p>
           </>
         );
 
