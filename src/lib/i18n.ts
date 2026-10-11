@@ -52,6 +52,10 @@ export interface Messages {
   hiddenBadgeHint: string;
   mutedBadgeHint: string;
   muteHint: string;
+  displayName: string;
+  displayNamePlaceholder: (raw: string) => string;
+  pin: string;
+  pinHint: string;
 
   // 外观页
   presets: string;
@@ -220,6 +224,10 @@ export const MESSAGES: Record<Lang, Messages> = {
     hiddenBadgeHint: "点一下让它在灯上重新显示",
     mutedBadgeHint: "点一下取消静音",
     muteHint: "不再因为这一组弹通知 / 出声",
+    displayName: "显示名",
+    displayNamePlaceholder: (raw) => `留空就用 ${raw}`,
+    pin: "置顶",
+    pinHint: "置顶的组永远排在灯上最前面；没置顶的仍按紧急程度排",
 
     presets: "预设",
     form: "形态",
@@ -382,6 +390,10 @@ export const MESSAGES: Record<Lang, Messages> = {
     hiddenBadgeHint: "Click to show it on the lamp again",
     mutedBadgeHint: "Click to unmute",
     muteHint: "Stop notifications and sound for this group",
+    displayName: "Display name",
+    displayNamePlaceholder: (raw) => `Empty uses ${raw}`,
+    pin: "Pin",
+    pinHint: "Pinned groups always come first on the lamp; the rest stay in urgency order",
 
     presets: "Presets",
     form: "Form",

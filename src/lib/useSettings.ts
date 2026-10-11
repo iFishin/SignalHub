@@ -54,6 +54,25 @@ export interface StateStyle {
 }
 
 /**
+ * 某一组的显示偏好。
+ *
+ * **只影响灯上怎么显示**，不影响聚合、通知和钩子 —— 组名是上报方给的标识
+ * （`build-1`、`ci`），这里改的是「怎么称呼它、排在第几位」。隐藏 / 静音的匹配
+ * 也仍然按**原始组名**，不按显示名。
+ */
+export interface GroupMeta {
+  /** 显示名。没写就用上报方给的原始组名。 */
+  name?: string | null;
+  /**
+   * 置顶权重。`number` = 置顶，越小越靠前；`null`/缺省 = 不置顶，按紧急程度排。
+   *
+   * 用权重而不是一个布尔：置顶的组之间也要有确定的顺序，而「先置顶的排前面」
+   * 正是用户按下开关的顺序。
+   */
+  order?: number | null;
+}
+
+/**
  * 勿扰时段。这段时间里不弹通知、不出声，但灯照常显示。
  *
  * 起止都按**本地时间**，只有小时没有分钟。本地时区只有前端知道，所以由前端把
@@ -110,6 +129,8 @@ export interface Settings {
   tray_follows_state: boolean;
   /** 界面语言。"auto" = 跟随系统。 */
   locale: "auto" | "zh" | "en";
+  /** 逐组的显示偏好（显示名 / 置顶）。键是**上报方给的原始组名**。 */
+  group_meta: Record<string, GroupMeta>;
 }
 
 /** 与 Rust 侧 `config::Settings::default()` 一致。 */
@@ -133,6 +154,7 @@ const DEFAULTS: Settings = {
   alert_after_secs: 5,
   tray_follows_state: true,
   locale: "auto",
+  group_meta: {},
 };
 
 const SETTINGS_EVENT = "signalhub://settings";

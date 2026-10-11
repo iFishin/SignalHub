@@ -346,6 +346,30 @@ pub enum Locale {
     En,
 }
 
+/// 某一组的显示偏好。
+///
+/// **只影响灯上怎么显示**，不影响聚合、通知和钩子 —— 组名是上报方给的标识
+/// （`build-1`、`ci`），这里改的是「怎么称呼它、排在第几位」，不是「它是什么」。
+/// 隐藏 / 静音的匹配也仍然按**原始组名**，不按显示名。
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GroupMeta {
+    /// 显示名。没写就用上报方给的原始组名。
+    pub name: Option<String>,
+    /// 置顶权重。`Some(n)` = 置顶，越小越靠前；`None` = 不置顶，按紧急程度排。
+    ///
+    /// 用 `Option<i16>` 而不是 `pinned: bool`：置顶的组之间也要有确定的顺序，
+    /// 而「先置顶的排前面」正是用户按下开关的顺序 —— 那就不必再做一个拖拽界面。
+    pub order: Option<i16>,
+}
+
+impl GroupMeta {
+    /// 两样都没写。这种条目没有任何作用，`clamped()` 会把它们丢掉。
+    pub fn is_empty(&self) -> bool {
+        self.name.is_none() && self.order.is_none()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -370,6 +394,11 @@ pub struct Settings {
     pub palette: Palette,
     /// 界面语言偏好。`Auto` 由**前端**解析成具体语言 —— Rust 不知道系统语言。
     pub locale: Locale,
+    /// 逐组的显示偏好（显示名 / 置顶）。键是**上报方给的原始组名**。
+    ///
+    /// 与 `hidden_groups` / `muted_groups` 是两回事：那两个管「显不显示 / 要不要
+    /// 吵我」，这个管「怎么称呼它、排第几位」。
+    pub group_meta: BTreeMap<String, GroupMeta>,
     /// 逐个状态的外观覆盖（颜色 / 形状 / 节奏）。没写的项跟随全局。
     ///
     /// 键是状态名，**含 `stale` / `offline` 这类派生状态** —— `Signal::parse`
@@ -505,6 +534,7 @@ impl Default for Settings {
             shape: Shape::default(),
             palette: Palette::default(),
             locale: Locale::default(),
+            group_meta: BTreeMap::new(),
             styles: BTreeMap::new(),
             colors: BTreeMap::new(),
             collapsed: false,
@@ -560,6 +590,14 @@ impl Settings {
         }
         // 三样都没写的条目没有任何作用，留着只会让「预设是否还生效」的判断无谓失败
         self.styles.retain(|_, style| !style.is_empty());
+        // 显示名去空白、空串归一成 None；两样都没写的条目同样丢掉
+        for meta in self.group_meta.values_mut() {
+            if let Some(name) = meta.name.take() {
+                let name = name.trim().to_string();
+                meta.name = (!name.is_empty()).then_some(name);
+            }
+        }
+        self.group_meta.retain(|_, meta| !meta.is_empty());
         // 同样地，写坏的钩子只丢掉那一条，不让整份设置失效
         self.hooks.retain(|hook| hook_problem(hook).is_none());
         self
@@ -569,6 +607,21 @@ impl Settings {
     /// 两边算出不同的组，窗口就会裁掉最后一块牌，或者底下空一条。
     pub fn shows_group(&self, name: &str) -> bool {
         !self.hidden_groups.iter().any(|hidden| hidden == name)
+    }
+
+    /// 这一组在灯上叫什么。没设显示名就用上报方给的原始组名。
+    ///
+    /// 注意**只是显示**：隐藏 / 静音的匹配、`/v1/state` 里的组名都仍然是原始名。
+    pub fn group_label<'a>(&'a self, name: &'a str) -> &'a str {
+        self.group_meta
+            .get(name)
+            .and_then(|meta| meta.name.as_deref())
+            .unwrap_or(name)
+    }
+
+    /// 置顶权重。`None` = 不置顶，按紧急程度排。
+    pub fn group_order(&self, name: &str) -> Option<i16> {
+        self.group_meta.get(name).and_then(|meta| meta.order)
     }
 
     /// 窗口尺寸。`signs` 是可见牌的高度列表（Rust 侧算好，见 `sign_height`）。
@@ -971,6 +1024,48 @@ mod tests {
         let raw = r#"{"alert_after_secs": 60000}"#;
         let settings = serde_json::from_str::<Settings>(raw).unwrap().clamped();
         assert_eq!(settings.alert_after_secs, MAX_ALERT_DELAY_SECS);
+    }
+
+    // ---- 逐组显示偏好 ---------------------------------------------------------
+
+    #[test]
+    fn group_names_are_trimmed_and_empty_entries_are_dropped() {
+        let raw = r#"{"group_meta": {
+            "ci":   {"name": "  构建  ", "order": 0},
+            "work": {"name": "   "},
+            "docs": {},
+            "x":    {"order": 2}
+        }}"#;
+        let settings = serde_json::from_str::<Settings>(raw).unwrap().clamped();
+
+        assert_eq!(settings.group_label("ci"), "构建", "两头空白要去掉");
+        assert!(!settings.group_meta.contains_key("work"), "全空白的名字等于没设");
+        assert!(!settings.group_meta.contains_key("docs"), "空条目没有作用，丢掉");
+        assert_eq!(settings.group_label("x"), "x", "只有置顶、没设名字的条目要留着");
+        assert_eq!(settings.group_order("x"), Some(2));
+    }
+
+    /// 显示名只是显示：没设就回落到上报方给的原始组名
+    #[test]
+    fn the_group_label_falls_back_to_the_raw_id() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.group_label("build-1"), "build-1", "没设就该原样显示");
+
+        settings
+            .group_meta
+            .insert("build-1".into(), GroupMeta { name: Some("构建".into()), order: None });
+        assert_eq!(settings.group_label("build-1"), "构建");
+    }
+
+    #[test]
+    fn a_group_is_pinned_only_when_it_has_an_order() {
+        let settings = Settings::default();
+        assert_eq!(settings.group_order("ci"), None, "默认不置顶");
+
+        let raw = r#"{"group_meta": {"ci": {"order": 0}, "work": {"name": "工作"}}}"#;
+        let settings = serde_json::from_str::<Settings>(raw).unwrap().clamped();
+        assert_eq!(settings.group_order("ci"), Some(0), "0 也是有效的置顶权重");
+        assert_eq!(settings.group_order("work"), None, "只有显示名不算置顶");
     }
 
     #[test]

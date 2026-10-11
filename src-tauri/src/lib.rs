@@ -465,12 +465,25 @@ fn apply_settings(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapsh
 /// **前端渲染和窗口高度都依赖同一个判断。** 两边算出不同的组，窗口要么裁掉最后
 /// 一块牌，要么底下空一条。
 fn visible_groups<'a>(settings: &Settings, snapshot: &'a Snapshot) -> Vec<&'a GroupView> {
-    snapshot
+    let mut groups: Vec<&GroupView> = snapshot
         .groups
         .iter()
         .filter(|group| settings.shows_group(&group.name))
-        .take(config::MAX_SIGNS)
-        .collect()
+        .collect();
+
+    // 置顶的排前面。**用稳定排序**：没置顶的组保持 `snapshot.groups` 原有的紧急度
+    // 顺序，置顶组之间按权重、同权重时也保持原顺序 —— 一条规则说清两件事。
+    //
+    // 顺序为什么在这里算而不是在 `Store` 里：`snapshot.groups` 的顺序是**紧急度**，
+    // 那是状态语义（`/v1/state` 也按它返回）；而置顶是**显示偏好**。混进 Store 就得
+    // 让 Store 知道 Settings，而它们是分开的两块状态。
+    groups.sort_by_key(|group| match settings.group_order(&group.name) {
+        Some(order) => (0, order),
+        None => (1, 0),
+    });
+
+    groups.truncate(config::MAX_SIGNS);
+    groups
 }
 
 /// 这些组在展开态各占多高。有东西可读的牌多占一行，正好是个提示。
@@ -786,7 +799,11 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::clamp_to_area;
+    use super::{clamp_to_area, visible_groups};
+    use crate::config::{GroupMeta, Settings};
+    use crate::state::{GroupView, Signal, Snapshot};
+
+    // ---- 把窗口夹回工作区 -----------------------------------------------------
 
     /// 一块 1920×1080、任务栏占掉底部 40px 的屏幕
     const SCREEN: ((i32, i32), (i32, i32)) = ((0, 0), (1920, 1040));
@@ -835,5 +852,102 @@ mod tests {
         let area = ((-1920, -200), (0, 880));
         assert_eq!(clamp_to_area((-1900, 700), WINDOW, area), (-1900, 700), "区内不动");
         assert_eq!(clamp_to_area((-2000, 900), WINDOW, area), (-1920, 720), "越界拉回");
+    }
+
+    // ---- 置顶排序 -------------------------------------------------------------
+
+    fn group(name: &str, aggregate: Signal) -> GroupView {
+        GroupView {
+            name: name.to_string(),
+            aggregate,
+            message: None,
+            since_ms: 0,
+            sessions: Vec::new(),
+        }
+    }
+
+    /// 快照里各组的顺序就是**紧急度**顺序（`Store::snapshot_at` 排好的）
+    fn snapshot(groups: Vec<GroupView>) -> Snapshot {
+        Snapshot {
+            aggregate: Signal::Error,
+            paused: false,
+            since_ms: 0,
+            message: None,
+            groups,
+        }
+    }
+
+    fn names(settings: &Settings, snapshot: &Snapshot) -> Vec<String> {
+        visible_groups(settings, snapshot)
+            .iter()
+            .map(|group| group.name.clone())
+            .collect()
+    }
+
+    /// 置顶的组排最前，**其余保持紧急度顺序** —— 那才是灯的本职，不该被排序偏好
+    /// 整个盖掉
+    #[test]
+    fn pinned_groups_come_first_and_the_rest_keep_urgency_order() {
+        let snapshot = snapshot(vec![
+            group("ci", Signal::Error),
+            group("work", Signal::Working),
+            group("docs", Signal::Idle),
+        ]);
+
+        assert_eq!(names(&Settings::default(), &snapshot), ["ci", "work", "docs"]);
+
+        let mut settings = Settings::default();
+        settings
+            .group_meta
+            .insert("docs".into(), GroupMeta { name: None, order: Some(0) });
+        assert_eq!(
+            names(&settings, &snapshot),
+            ["docs", "ci", "work"],
+            "置顶的排最前，另外两组相对顺序不变"
+        );
+    }
+
+    /// 多个置顶组按权重排；权重相同时**保持原顺序**（稳定排序）
+    #[test]
+    fn pinned_groups_sort_by_weight_and_ties_keep_their_order() {
+        let snapshot = snapshot(vec![
+            group("a", Signal::Error),
+            group("b", Signal::Working),
+            group("c", Signal::Idle),
+        ]);
+        let mut settings = Settings::default();
+        for (name, order) in [("c", 1), ("b", 0), ("a", 0)] {
+            settings
+                .group_meta
+                .insert(name.into(), GroupMeta { name: None, order: Some(order) });
+        }
+
+        assert_eq!(names(&settings, &snapshot), ["a", "b", "c"], "权重小的在前，平局保持原顺序");
+    }
+
+    /// 置顶不越过别的规则：它能让一组挤进可见名单，但仍然只留 `MAX_SIGNS` 块；
+    /// 而**隐藏优先于置顶** —— 藏起来的组不显示，哪怕置顶了
+    #[test]
+    fn pinning_does_not_bypass_hiding_or_the_limit() {
+        let snapshot = snapshot(vec![
+            group("a", Signal::Error),
+            group("b", Signal::Working),
+            group("c", Signal::Idle),
+            group("d", Signal::Idle),
+            group("e", Signal::Idle),
+        ]);
+        let mut settings = Settings::default();
+        settings
+            .group_meta
+            .insert("e".into(), GroupMeta { name: None, order: Some(0) });
+
+        assert_eq!(
+            names(&settings, &snapshot),
+            ["e", "a", "b", "c"],
+            "置顶能让它挤进可见名单，但上限仍是 4"
+        );
+
+        settings.hidden_groups = vec!["e".into()];
+        assert_eq!(names(&settings, &snapshot), ["a", "b", "c", "d"], "隐藏优先于置顶");
     }
 }

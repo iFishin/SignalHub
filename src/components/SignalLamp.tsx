@@ -5,7 +5,7 @@ import { inTauri } from "../lib/env";
 import { signalLabel } from "../lib/signals";
 import { useLang, useMessages, type Messages, type Lang } from "../lib/i18n";
 import { lampVars, resolveShapes } from "../lib/lampStyle";
-import type { Settings } from "../lib/useSettings";
+import type { GroupMeta, Settings } from "../lib/useSettings";
 import type { GroupView, SignalState } from "../lib/types";
 
 /** 与 Rust 侧 `config::MAX_SIGNS` 一致。超出的牌服务端已经截断。 */
@@ -34,13 +34,44 @@ function formatAge(sinceMs: number): string {
   return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
 }
 
-function tooltip(m: Messages, lang: Lang, aggregate: SignalState, groups: GroupView[]): string {
+/**
+ * 置顶排序的比较器。**必须是稳定的**（JS 的 `Array.prototype.sort` 从 ES2019 起
+ * 保证稳定）：没置顶的组要原样保持服务端给的紧急度顺序。
+ *
+ * 与 Rust 的 `visible_groups` 里那个 `sort_by_key` 是同一条规则的两份实现 ——
+ * 两边算出的可见牌必须一致，否则窗口高度会对不上。
+ */
+function comparePinned(
+  a: GroupView,
+  b: GroupView,
+  meta: Record<string, GroupMeta>,
+): number {
+  const left = meta[a.name]?.order ?? null;
+  const right = meta[b.name]?.order ?? null;
+  if (left === right) return 0;
+  if (left === null) return 1; // 没置顶的排到所有置顶组之后
+  if (right === null) return -1;
+  return left - right;
+}
+
+/** 这一组在灯上叫什么。没设显示名就用上报方给的原始组名。 */
+function labelOf(group: GroupView, meta: Record<string, GroupMeta>): string {
+  return meta[group.name]?.name ?? group.name;
+}
+
+function tooltip(
+  m: Messages,
+  lang: Lang,
+  aggregate: SignalState,
+  groups: GroupView[],
+  meta: Record<string, GroupMeta>,
+): string {
   if (groups.length === 0) return signalLabel(lang, aggregate);
 
   const hint = m.lampHint;
   if (groups.length === 1) {
     const only = groups[0];
-    const head = `${only.name} · ${signalLabel(lang, only.aggregate)}`;
+    const head = `${labelOf(only, meta)} · ${signalLabel(lang, only.aggregate)}`;
     const detail = only.message ? ` — ${only.message}` : "";
     return `${head}${detail}\n${hint}`;
   }
@@ -50,7 +81,7 @@ function tooltip(m: Messages, lang: Lang, aggregate: SignalState, groups: GroupV
     `${signalLabel(lang, aggregate)}${m.groupsCount(groups.length)}`,
     ...groups.map((group) => {
       const detail = group.message ? ` — ${group.message}` : "";
-      return `${group.name} · ${signalLabel(lang, group.aggregate)}${detail}`;
+      return `${labelOf(group, meta)} · ${signalLabel(lang, group.aggregate)}${detail}`;
     }),
     hint,
   ].join("\n");
@@ -130,10 +161,13 @@ export function SignalLamp({ aggregate, groups, settings }: Props) {
 
   const drag = useDragOrClick(toggle);
 
-  // 服务端已按优先级排好并截断，这里**不要再排** —— 窗口高度按「哪几块可见」算，
-  // 两边必须算出同一批牌。隐藏掉的和截断规则两边也要一致（见 Rust 侧 visible_groups）。
+  // 服务端已按**紧急度**排好，这里只叠一层用户的置顶偏好，规则必须和 Rust 侧的
+  // `visible_groups` 逐字一致（窗口高度按「哪几块可见」算，两边算出不同的组就会
+  // 裁掉最后一块牌）。隐藏的过滤和 `MAX_SIGNS` 截断同理。
   const visible = groups
     .filter((group) => !hidden_groups.includes(group.name))
+    // 稳定排序：没置顶的保持服务端给的紧急度顺序，置顶的按权重排前面
+    .sort((a, b) => comparePinned(a, b, settings.group_meta))
     .slice(0, MAX_SIGNS);
 
   // 一组都看不见时也留一块，否则窗口会塌成一条缝 —— 那样既看不见状态，也没法拖它。
@@ -156,7 +190,7 @@ export function SignalLamp({ aggregate, groups, settings }: Props) {
       data-aggregate={aggregate}
       data-quiet={quiet}
       data-collapsed={collapsed}
-      title={tooltip(m, lang, aggregate, groups)}
+      title={tooltip(m, lang, aggregate, groups, settings.group_meta)}
       // 空白处（牌之间、留白）也要吃掉右键，否则会冒出 webview 自己的菜单
       onContextMenu={(event) => event.preventDefault()}
       {...drag}
@@ -182,7 +216,7 @@ export function SignalLamp({ aggregate, groups, settings }: Props) {
             <div className="sign-body">
               <div className="sign-line">
                 {show.name && group.name && (
-                  <span className="sign-name">{group.name}</span>
+                  <span className="sign-name">{labelOf(group, settings.group_meta)}</span>
                 )}
                 {show.state && (
                   <span className="sign-state">{signalLabel(lang, group.aggregate)}</span>

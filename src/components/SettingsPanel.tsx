@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { inTauri } from "../lib/env";
 import { signalLabel } from "../lib/signals";
 import { useLang, useMessages, type Lang, type Messages } from "../lib/i18n";
-import { useSettings, updateSettings, type Settings, type Shape, type Palette, type Hook, type StateStyle } from "../lib/useSettings";
+import { useSettings, updateSettings, type Settings, type Shape, type Palette, type Hook, type StateStyle, type GroupMeta } from "../lib/useSettings";
 import {
   useToggles,
   setAutostart,
@@ -282,6 +282,49 @@ export function SettingsPanel({ snapshot }: Props) {
         : settings.muted_groups.filter((name) => name !== group),
     });
 
+  /** 改某一组的显示偏好。两样都清空就把整条删掉 —— 空条目没有任何作用。 */
+  const setGroupMeta = (group: string, next: GroupMeta) => {
+    const group_meta = { ...settings.group_meta };
+    const empty = (next.name ?? null) === null && (next.order ?? null) === null;
+    if (empty) delete group_meta[group];
+    else group_meta[group] = next;
+    patch({ group_meta });
+  };
+
+  /** 清空显示名 = 回到「跟随上报方给的原始组名」。 */
+  const setGroupName = (group: string, name: string) =>
+    setGroupMeta(group, { ...settings.group_meta[group], name: name || null });
+
+  /**
+   * 置顶 / 取消置顶。
+   *
+   * 权重取「现有最大值 + 1」，于是置顶组之间的顺序就是用户按下开关的顺序 ——
+   * 不必再做一个拖拽界面，而用户心里本来也是「先钉的先看」。
+   */
+  const setPinned = (group: string, pinned: boolean) => {
+    const highest = Math.max(
+      -1,
+      ...Object.values(settings.group_meta).map((meta) => meta.order ?? -1),
+    );
+    setGroupMeta(group, {
+      ...settings.group_meta[group],
+      order: pinned ? highest + 1 : null,
+    });
+  };
+
+  // 显示名也用「草稿 + 失焦提交」，理由同钩子的输入框：每敲一个字就存一次会把
+  // 半截名字写进配置。
+  const [nameDraft, setNameDraft] = useState<{ group: string; value: string } | null>(null);
+
+  const commitNameDraft = () => {
+    if (!nameDraft) return;
+    const { group, value } = nameDraft;
+    setNameDraft(null);
+    const current = settings.group_meta[group]?.name ?? "";
+    if (value.trim() === current) return;
+    setGroupName(group, value.trim());
+  };
+
   // 钩子的文本输入用「草稿 + 失焦提交」：每敲一个字就存一次会把半截 URL
   // 写进配置（而且会被校验拒掉）。颜色不一样 —— 取色器要的就是即时反馈。
   const [hookDraft, setHookDraft] = useState<{ index: number; value: string } | null>(null);
@@ -365,7 +408,14 @@ export function SettingsPanel({ snapshot }: Props) {
                   <div className="group" key={group.name} data-hidden={hidden}>
                     <div className="group-head" data-state={group.aggregate}>
                       <span className="state-dot" />
-                      <span className="group-name">{group.name}</span>
+                      <span className="group-name">
+                        {settings.group_meta[group.name]?.name ?? group.name}
+                      </span>
+                      {/* 改过名就把原始组名也标出来 —— 用户得知道它对应的是
+                          哪一路上报，否则灯上那个「构建」到底是谁就说不清了 */}
+                      {settings.group_meta[group.name]?.name && (
+                        <span className="group-raw">{group.name}</span>
+                      )}
                       {/* 两个标记本身就是开关：点一下恢复。做成按钮而不是纯标签，
                           是因为恢复这件事必须在这里做得到 —— 灯上右键固然也行，
                           但那个组可能已经被藏起来、根本右键不到。 */}
@@ -403,6 +453,35 @@ export function SettingsPanel({ snapshot }: Props) {
                           {m.mute}
                         </button>
                       )}
+                    </div>
+                    {/* 显示偏好：显示名 + 置顶。放在组头下面单独一行，而不是塞进
+                        组头 —— 那里已经有状态点、两个标记、会话数和静音按钮了。 */}
+                    <div className="group-edit">
+                      <span className="muted-text">{m.displayName}</span>
+                      <input
+                        className="input input-tiny"
+                        spellCheck={false}
+                        placeholder={m.displayNamePlaceholder(group.name)}
+                        value={
+                          nameDraft?.group === group.name
+                            ? nameDraft.value
+                            : (settings.group_meta[group.name]?.name ?? "")
+                        }
+                        onChange={(event) =>
+                          setNameDraft({ group: group.name, value: event.target.value })
+                        }
+                        onBlur={commitNameDraft}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") event.currentTarget.blur();
+                        }}
+                      />
+                      <label className="pin" title={m.pinHint}>
+                        <span className="muted-text">{m.pin}</span>
+                        <Switch
+                          on={settings.group_meta[group.name]?.order != null}
+                          onChange={(on) => setPinned(group.name, on)}
+                        />
+                      </label>
                     </div>
                     <ul className="sessions">
                       {group.sessions.map((session) => (
