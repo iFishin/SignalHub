@@ -169,6 +169,8 @@ $user = [Environment]::GetEnvironmentVariable('Path', 'User')
 
 待做：签名与公证（步骤位置留在 [.github/workflows/release.yml](.github/workflows/release.yml) 里，拿到证书就能填）；CLI 的 `--help` 和报错还是中文，没跟着界面语言走。
 
+**自动更新还没接** —— 不是没时间，是有一条查不到确切答案、必须真机验的东西：未签名的 macOS 应用替换 bundle 之后，Gatekeeper 会不会拦。接线步骤（含密钥怎么生成、公钥为什么填内容而不是路径）已经写在 [.github/workflows/release.yml](.github/workflows/release.yml) 顶部，验证通过了就能打开。
+
 ## 许可证
 
 MIT，见 [LICENSE](LICENSE)。

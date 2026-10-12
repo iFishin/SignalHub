@@ -12,6 +12,32 @@ name: Release
 # 那份说明会被塞进发布页，用户看得到。
 # 以后拿到证书，在下面 `tauri-action` 那一步前面补 codesign / notarytool / signtool
 # 三步即可，其余不用动。
+#
+# ---- 自动更新：管道没接，但步骤查清了（2026-10）----------------------------
+#
+# **刻意没接。** 有一条查不到确切答案、必须真机验的东西：**未签名的 macOS 应用能不能
+# 真的装上更新**。签名校验本身没问题（那是 Tauri 自己的密钥对，和 Apple 证书是两回事
+# —— 所以**现在没有证书也能做自动更新**），但替换 bundle 之后 Gatekeeper 会不会拦，
+# Tauri 官方文档通篇没提。**在真机验证通过之前不要对外说自动更新可用。**
+#
+# 要接的时候，五步，都在这几个文件里：
+#
+#   1. `npm run tauri signer generate`（或 `cargo tauri signer generate`）生成密钥对。
+#      **它和 Apple / Windows 代码签名证书是两套完全独立的东西。**
+#   2. `src-tauri/tauri.conf.json` 加 `bundle.createUpdaterArtifacts: true`。
+#   3. 同文件加 `plugins.updater`：`pubkey` 填**公钥的内容本身**（**不是文件路径** ——
+#      这是最容易填错的一处），`endpoints` 填
+#      `https://github.com/iFishin/SignalHub/releases/latest/download/latest.json`。
+#   4. `src-tauri/capabilities/default.json` 的 permissions 加 `updater:default`；
+#      同时把 `tauri-plugin-updater` 加进 `src-tauri/Cargo.toml` 并在 builder 里 init
+#      —— **`plugins.updater` 这个配置键在插件没装时是无效的**，顺序反了会先报配置错。
+#   5. 本仓库 Settings → Secrets 加 `TAURI_SIGNING_PRIVATE_KEY`（私钥内容）与
+#      `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（生成时设了密码才需要）。
+#
+# `latest.json` **不用手工准备**：`tauri-action` 在 `createUpdaterArtifacts` 打开之后
+# 会自动生成并随着产物一起传上去。
+#
+# 私钥**绝不要提交进仓库**，也不要贴进任何对话里 —— 只放 GitHub Secret。
 
 on:
   push:

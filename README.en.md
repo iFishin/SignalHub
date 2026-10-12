@@ -169,6 +169,8 @@ Done: the floating lamp, state aggregation and TTL, the HTTP reporting API, the 
 
 To do: code signing and notarization (the steps have a place reserved in [.github/workflows/release.yml](.github/workflows/release.yml) — fill them in once you have certificates); the CLI's `--help` and error messages are still Chinese and don't follow the UI language.
 
+**Auto-update is not wired up yet** — not for lack of time, but because there is one thing I could not find an answer to and that needs testing on a real machine: whether Gatekeeper blocks an *unsigned* macOS app from installing an update after its bundle is replaced. The wiring steps (how to generate the key, and why the public key goes in as contents rather than a path) are written at the top of [.github/workflows/release.yml](.github/workflows/release.yml), ready to switch on once that has been verified.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
