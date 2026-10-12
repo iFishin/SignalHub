@@ -190,6 +190,9 @@ export interface Messages {
   /** 「只支持命令行上报的智能体」那一节 —— 它们没有能写 hook 的配置文件 */
   cliAgentsTitle: string;
   cliAgentsHint: string;
+  /** 「试一下」那一节 */
+  tryItTitle: string;
+  tryItHint: string;
   hookResult: (change: HookResult) => string;
 
   // 通知转发页
@@ -475,6 +478,9 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     cliAgentsTitle: "只用命令行上报的智能体",
     cliAgentsHint:
       "这些智能体没有能写 hook 的配置文件，所以没有「接入」按钮 —— 在它们自己的脚本 / 钩子里调一次 signalhub 就行。会话 id 用它们给你的那个，这样并行开几个会话时每个都会各占一块牌（设置面板 →「接入」→「分组方式」选「按会话」）。",
+    tryItTitle: "试一下",
+    tryItHint:
+      "点一下，灯上立刻出现那个状态。它走的是和 HTTP 上报完全相同的链路（聚合、窗口尺寸、今日统计、推送），所以能回答「灯到底通没通」—— 但不验证 HTTP 那一层（服务起没起来、token 对不对），那要用「指南」页那条 curl。牌上会显示 test 组，20 秒后自己走掉，不会留下东西。",
     hookResult: ({ added, updated, already, removed }) => {
       const parts: string[] = [];
       if (added > 0) parts.push(`新增 ${added} 个事件`);
@@ -756,6 +762,9 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     cliAgentsTitle: "Agents that report from the command line only",
     cliAgentsHint:
       "These have no config file to write hooks into, so there is no Connect button — just call signalhub once from their own script or hook. Use whatever session id they give you: that way several parallel sessions each get their own sign (Settings → Connect → Group signs by → Session).",
+    tryItTitle: "Try it",
+    tryItHint:
+      "Click one and the state appears on the lamp immediately. It takes exactly the same path as an HTTP report (aggregation, window sizing, today's stats, pushing to the lamp), so it answers \"is the lamp working at all\" — but it does not exercise the HTTP layer (whether the server is up, whether the token is right), and for that you want the curl on the Guide tab. It shows up as the test group and clears itself after 20 seconds, leaving nothing behind.",
     hookResult: ({ added, updated, already, removed }) => {
       const parts: string[] = [];
       if (added > 0) parts.push(`${plural(added, "event", "events")} added`);

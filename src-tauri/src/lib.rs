@@ -192,6 +192,46 @@ fn set_state(
     Ok(mutate(&app, &store, |guard, now| guard.apply(now, req)))
 }
 
+/// 测试上报的存活时间。
+///
+/// **必须短。** 这个按钮的用途是「试一下，看灯有没有反应」—— 留一块要等五到十分钟
+/// 才走的牌，比不试还让人困惑：用户会以为那是某个真实项目在报，还会怀疑是不是卡住了。
+/// 20 秒够看清灯上发生了什么（换色、闪、窗口变高），又短到转过头就没了。
+const TEST_REPORT_TTL_MS: u64 = 20_000;
+
+/// 上限写死成**编译期断言**而不是单测：`const` 比字面量本来就是编译期求值的，
+/// 写成 `assert!` 的话 clippy 会说「这个断言是常量」（它等于什么都没测）。
+/// 这样写，谁把这个值调过头就是**编译不过**，比跑一次测试才红更早也更硬。
+const _: () = assert!(TEST_REPORT_TTL_MS <= 60_000);
+
+/// 从设置面板发一条**测试上报**，用来回答「灯到底通没通」。
+///
+/// 和 `set_state`（dev 快捷键用的那个）分开，因为两件事的诉求不一样：那个要的是
+/// 「立刻切到某个状态」，这个是「试一下就收工」—— 所以 TTL 走上面那个短值。
+///
+/// 走的是和 HTTP 上报**完全相同的 Store 路径**（`mutate` → `notify`），所以它验证的是
+/// 真实链路：聚合、窗口尺寸、今日统计、推给灯球窗口。它**不**验证 HTTP 那一层
+/// （服务起没起来、token 对不对）—— 那得用「接入」页给的那条 curl。
+#[tauri::command]
+fn send_test_report(
+    app: tauri::AppHandle,
+    store: tauri::State<'_, SharedStore>,
+    state: String,
+) -> Result<Snapshot, String> {
+    let req = Report {
+        state: Signal::parse(&state)?,
+        session: Some("test".into()),
+        // 组名也留成 `test`：灯上会显示「test · 需要授权」，一眼看得出这是试出来的，
+        // 而不是某个真实项目在报
+        group: Some("test".into()),
+        agent: Some("test".into()),
+        cwd: None,
+        message: None,
+        ttl_ms: Some(TEST_REPORT_TTL_MS),
+    };
+    Ok(mutate(&app, &store, |guard, now| guard.apply(now, req)))
+}
+
 #[tauri::command]
 fn set_paused(
     app: tauri::AppHandle,
@@ -1105,6 +1145,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_state,
             set_state,
+            send_test_report,
             set_paused,
             get_settings,
             set_settings,
@@ -1229,10 +1270,53 @@ mod tests {
     use super::{
         clamp_to_area, pass_through_shortcut_label, shortcut_label, shortcut_label_for,
         validate_settings, visible_groups, KeyStyle, PASS_THROUGH_SHORTCUT,
+        TEST_REPORT_TTL_MS,
     };
     use crate::config::{GroupMeta, Settings, StateStyle};
-    use crate::state::{GroupView, Signal, Snapshot};
+    use crate::state::{GroupView, Report, Signal, Snapshot, Store};
+    use std::time::{Duration, Instant};
     use tauri_plugin_global_shortcut::{Code, Modifiers};
+
+    // ---- 测试上报 -------------------------------------------------------------
+
+    /// 测试上报**不能留下**：点完「试一下」之后，那块牌要在半分钟量级自己走掉，
+    /// 而不是拖五到十分钟。
+    ///
+    /// 钉的是 `TEST_REPORT_TTL_MS` 那个值 —— 谁把它随手调大，这个按钮就从
+    /// 「试一下」变成了「留下一块看不懂的牌」。同时钉住「它自己占一组」，
+    /// 因为用户要靠组名看出那是试出来的、不是某个真实项目在报。
+    #[test]
+    fn a_test_report_gets_its_own_group_and_expires_quickly() {
+        let mut store = Store::default();
+        let t = Instant::now();
+        store.apply(
+            t,
+            Report {
+                state: Signal::Permission,
+                session: Some("test".into()),
+                group: Some("test".into()),
+                agent: Some("test".into()),
+                cwd: None,
+                message: None,
+                ttl_ms: Some(TEST_REPORT_TTL_MS),
+            },
+        );
+
+        let snapshot = store.snapshot_at(t);
+        assert_eq!(snapshot.groups.len(), 1);
+        assert_eq!(snapshot.groups[0].name, "test", "自己占一组，一眼看得出");
+        assert_eq!(snapshot.groups[0].aggregate, Signal::Permission);
+
+        // 半分钟后就不该还在报 permission 了。**要显式跑一次 `expire`** ——
+        // 快照只是读，超时是 sweep 那条心跳做的事。
+        store.expire(t + Duration::from_secs(30));
+        let later = store.snapshot_at(t + Duration::from_secs(30));
+        assert_eq!(
+            later.groups[0].aggregate,
+            Signal::Stale,
+            "测试上报要很快过期，否则它会变成一块看不懂的牌"
+        );
+    }
 
     // ---- 导入的校验 -----------------------------------------------------------
 

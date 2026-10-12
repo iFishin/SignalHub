@@ -13,12 +13,19 @@ pub fn spawn(notify: Notifier, store: Arc<Mutex<Store>>) {
         let mut tick = tokio::time::interval(TICK);
         loop {
             tick.tick().await;
-            let (changed, snapshot) = {
+            // **只在真的变了之后才建快照，而且仍在同一把锁里。**
+            //
+            // 快照要给每个组克隆名字和消息、还要排两次序；而空闲时这个循环每秒跑
+            // 四次，每次都白建一份没人要的 —— 灯球是常驻的，那点开销会一直跑下去。
+            //
+            // **不能写成「先解锁、变了再重新加锁」**：两次加锁之间别的线程可以改
+            // store，那样推出去的快照和「什么东西变了」这个判断就对不上了。
+            let snapshot = {
                 let mut guard = store.lock().expect("state store poisoned");
                 let changed = guard.expire(std::time::Instant::now());
-                (changed, guard.snapshot())
+                if changed { Some(guard.snapshot()) } else { None }
             };
-            if changed {
+            if let Some(snapshot) = snapshot {
                 notify(&snapshot);
             }
         }

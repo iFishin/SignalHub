@@ -27,6 +27,18 @@ import { SIGNALS, REPORTABLE_SIGNALS, type SignalState, type Snapshot } from "..
  */
 const PI_AGENT_COMMAND = 'signalhub working --agent pi --session "<session-id>"';
 
+/**
+ * 「试一下」那一排按钮发哪几个状态。
+ *
+ * 挑的是**视觉上各不相同**的四个：绿闪（在干活）、红闪（等你授权）、红频闪
+ * （出错了）、一次性脉冲 + 常亮（完成了）。四种节奏和两种颜色各出现一次，
+ * 所以点完这一排，用户对「灯长什么样」就有了完整的印象 —— 比只发一个
+ * `working` 有用得多。
+ *
+ * 顺序按「从没事到有事」排，和状态码表里的优先级大体一致。
+ */
+const TRY_STATES = ["working", "done", "permission", "error"] as const;
+
 /** 与 Rust 侧 config.rs 的 MIN_SIZE / MAX_SIZE / DEFAULT_SIZE 保持一致。 */
 function sizeOptions(m: Messages): { label: string; value: number }[] {
   return [
@@ -1351,6 +1363,33 @@ export function SettingsPanel({ snapshot }: Props) {
                   {copyLabel("pi")}
                 </button>
               </div>
+            </div>
+
+            {/* ---- 试一下 ----
+                放在「配好之后怎么验证」的位置：上面是「怎么接」，下面是「接完怎么
+                分」，而这一节回答的是两者之间那个问题 —— 灯到底通没通。
+
+                它跑的是和 HTTP 上报完全相同的 Store 链路，所以看到灯亮了就说明
+                聚合、窗口尺寸、推送这几段都是活的。**但 HTTP 那一层它测不到**，
+                所以说明里明确指向「指南」页那条 curl，免得有人以为这就等于测通了。 */}
+            <div className="section">
+              <div className="section-title">{m.tryItTitle}</div>
+              <div className="row-start">
+                {TRY_STATES.map((state) => (
+                  <button
+                    key={state}
+                    type="button"
+                    className="btn btn-tiny"
+                    onClick={() => {
+                      setError(null);
+                      invoke("send_test_report", { state }).catch(reported);
+                    }}
+                  >
+                    {signalLabel(lang, state)}
+                  </button>
+                ))}
+              </div>
+              <p className="hint">{m.tryItHint}</p>
             </div>
 
             {/* ---- 分组 ----
