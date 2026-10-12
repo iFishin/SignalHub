@@ -949,7 +949,12 @@ SignalHub/
 
 **这条 CI 已经真的救过一次命**：`shortcut_label` 在非 macOS 上把 Super 写成了 `Alt+Super+S`，而那条测试当初是 `if cfg!(target_os = "macos")` 分叉的 —— 开发机是 macOS，永远走不到出问题的那一支。Linux 和 Windows 两个 job 连红了三次才被发现。修的时候把平台写法抽成了 `KeyStyle` 枚举 + `shortcut_label_for(mods, key, style)`，**两套写法在任何平台上都能被测到**，这个 bug 类别才算关上。
 
-**前端也终于有单测了**（vitest，`npm test`）。目前只覆盖**与 Rust / CSS 有「必须逐字一致」契约**的那几个纯函数 —— 典型是 `lib/lampSort.ts` 的置顶排序：它和 Rust 的 `visible_groups` 是同一条规则的两份实现，两边算出的可见牌不一致，窗口高度就对不上（多算一块是底下空一条，少算一块是最后一块被切掉）。这类逻辑**类型系统盯不住**，只能靠断言。它原本埋在 `SignalLamp.tsx` 里，摘出来单独放一个文件就是为了让它有地方被测。
+**前端也终于有单测了**（vitest，`npm test`）。目前只覆盖**与 Rust / CSS 有「必须逐字一致」契约**的那几个纯函数：
+
+- `lib/lampSort.ts` —— 置顶排序，和 Rust 的 `visible_groups` 是同一条规则的两份实现。两边算出的可见牌不一致，窗口高度就对不上（多算一块是底下空一条，少算一块是最后一块被切掉）。它原本埋在 `SignalLamp.tsx` 里，摘出来单独放一个文件就是为了让它有地方被测。
+- `lib/lampStyle.ts` —— 形状特判（全局是圆时 permission / error 画圆角方）和动画时长。时长是从 `lamp.css` **抄**过来的，所以那组断言同时也是「两份抄本还一致吗」的警报。
+
+这类逻辑**类型系统盯不住**，只能靠断言。测试用的设置来自 `useSettings.ts` 导出的 `DEFAULTS`，不手抄 —— 抄一份会随着真值演进悄悄漂移。
 
 ---
 

@@ -152,8 +152,14 @@ export interface Settings {
   lan_access: boolean;
 }
 
-/** 与 Rust 侧 `config::Settings::default()` 一致。 */
-const DEFAULTS: Settings = {
+/**
+ * 与 Rust 侧 `config::Settings::default()` 一致。
+ *
+ * **导出给单测用**：`lampStyle` / `lampSort` 那些纯函数要一份设置当输入，而手抄一份
+ * 默认值会随着真值演进悄悄漂移 —— 那正是这个仓库反复在防的那类 bug（见
+ * `config.rs` 里「两个常量漂移」的注释）。测试里用 `{...DEFAULTS, ...覆盖}` 就够了。
+ */
+export const DEFAULTS: Settings = {
   size: 22,
   always_on_top: true,
   quiet: true,

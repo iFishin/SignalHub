@@ -53,9 +53,9 @@ jobs:
       - name: 前端类型检查与构建
         run: npm run build
 
-      # 前端单测。目前只覆盖**与 Rust / CSS 有「必须逐字一致」契约**的那几个纯函数
-      # （`lib/lampSort.ts` 的置顶排序就是典型：两边算出的可见牌不一致，窗口高度
-      # 就对不上）。这类逻辑靠类型系统盯不住，只能靠断言。
+      # 前端单测。目前只覆盖**与 Rust / CSS 有「必须逐字一致」契约**的纯函数：
+      # `lib/lampSort.ts`（置顶排序，对 Rust 的 `visible_groups`）和 `lib/lampStyle.ts`
+      # （形状特判、动画时长，对 `lamp.css`）。这类逻辑靠类型系统盯不住，只能靠断言。
       - name: 前端单测
         run: npm test
 
