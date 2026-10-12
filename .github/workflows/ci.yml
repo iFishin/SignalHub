@@ -53,6 +53,12 @@ jobs:
       - name: 前端类型检查与构建
         run: npm run build
 
+      # 前端单测。目前只覆盖**与 Rust / CSS 有「必须逐字一致」契约**的那几个纯函数
+      # （`lib/lampSort.ts` 的置顶排序就是典型：两边算出的可见牌不一致，窗口高度
+      # 就对不上）。这类逻辑靠类型系统盯不住，只能靠断言。
+      - name: 前端单测
+        run: npm test
+
       # `tauri-build` 在**构建脚本阶段**就校验 `bundle.externalBin` 里的文件在不在，
       # 所以 `cargo test` 之前必须先把 sidecar 放好 —— 哪怕测试根本不碰它。
       #
@@ -63,3 +69,15 @@ jobs:
 
       - name: Rust 测试（lib + CLI）
         run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      # clippy **三平台都跑**，理由和 `cargo test` 一字不差：`#[cfg(windows)]` /
+      # `#[cfg(unix)]` 的代码在开发机上根本编不进去，只在 macOS 上跑等于没覆盖。
+      #
+      # `-D warnings` 而不是「看一眼输出」：不清零的话，下一个真正的问题会被淹没在
+      # 已有的噪音里 —— 这个仓库攒了 4 处警告很久没人管，正是这么来的。
+      #
+      # **基线是 0**：加这条之前先把那 4 处清掉了（两个手写的 `Default` 改成
+      # `#[default]`、一处文档注释后面多空了一行、一处测试里的字段赋值），
+      # 所以任何新警告都会让 CI 立刻变红，而不是等到某天有人想起来数一遍。
+      - name: Clippy（警告即失败）
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings

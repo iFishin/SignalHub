@@ -811,6 +811,7 @@ SignalHub/
 │  │  ├─ palettes.ts             配色解析（预设 + 逐个覆盖）+ 把颜色表推给 Rust
 │  │  ├─ presets.ts              外观预设 + 灯效预设
 │  │  ├─ lampStyle.ts            逐状态的形状 / 动画解析（含色盲特判）
+│  │  ├─ lampSort.ts             可见牌的过滤 + 置顶排序（与 Rust 的 visible_groups 对齐，有单测）
 │  │  ├─ useSignal.ts            订阅 signalhub://state + 拉取初始值
 │  │  ├─ useSettings.ts          订阅 signalhub://settings + 读写设置
 │  │  ├─ useStats.ts             今日时长
@@ -917,9 +918,13 @@ SignalHub/
 
 平台相关的代码（`#[cfg(windows)]`、`#[cfg(unix)]`）**在开发机上根本编不进去**。macOS 上 `cargo test` 全绿，完全不能说明 Windows 上能编过 —— 上面那张表里的两个 Windows 缺陷（托盘纯黑、`.exe` 没试）都是这么漏掉的，而且第二个是**编译期就该发现**的那一类。
 
-所以 `.github/workflows/ci.yml` 在 macOS / Windows / Linux 三个 runner 上各跑一遍 `cargo test` 和前端构建。Linux 那个 job 要装 webkit2gtk / gtk，否则连 `cargo test` 都链不过。
+所以 `.github/workflows/ci.yml` 在 macOS / Windows / Linux 三个 runner 上各跑一遍 `cargo test`、`cargo clippy`、前端构建和前端单测。Linux 那个 job 要装 webkit2gtk / gtk，否则连 `cargo test` 都链不过。
 
-**这份 CI 本身还没跑过**（是刚加的），第一次 push 之后要去看三个 job 的结果。
+**clippy 也用 `-D warnings` 跑，而且必须三平台都跑** —— 理由和 `cargo test` 一字不差。加它之前先清了那 4 处积压的警告（两个手写的 `Default` 改成 `#[default]`、一处文档注释后面多空了一行、一处测试里的字段赋值），所以基线是 0，任何新警告立刻变红。
+
+**这条 CI 已经真的救过一次命**：`shortcut_label` 在非 macOS 上把 Super 写成了 `Alt+Super+S`，而那条测试当初是 `if cfg!(target_os = "macos")` 分叉的 —— 开发机是 macOS，永远走不到出问题的那一支。Linux 和 Windows 两个 job 连红了三次才被发现。修的时候把平台写法抽成了 `KeyStyle` 枚举 + `shortcut_label_for(mods, key, style)`，**两套写法在任何平台上都能被测到**，这个 bug 类别才算关上。
+
+**前端也终于有单测了**（vitest，`npm test`）。目前只覆盖**与 Rust / CSS 有「必须逐字一致」契约**的那几个纯函数 —— 典型是 `lib/lampSort.ts` 的置顶排序：它和 Rust 的 `visible_groups` 是同一条规则的两份实现，两边算出的可见牌不一致，窗口高度就对不上（多算一块是底下空一条，少算一块是最后一块被切掉）。这类逻辑**类型系统盯不住**，只能靠断言。它原本埋在 `SignalLamp.tsx` 里，摘出来单独放一个文件就是为了让它有地方被测。
 
 ---
 
@@ -972,6 +977,8 @@ SignalHub/
 | 8g | 放宽「忙碌」状态的静默超时，沉默后留 30 分钟（见 §3.3） | ✅ 已完成 |
 | 8h | 按会话分组，一个会话一块牌（见 §3.7） | ✅ 已完成 |
 | 8i | Pi Agent 命令行接入（见 §5） | ✅ 已完成 |
+| 8j | clippy 进 CI（`-D warnings`，先清零基线）+ 声明 MSRV（见 §7.1） | ✅ 已完成 |
+| 8k | 前端引入 vitest，先覆盖与 Rust 有契约的排序（见 §7.1） | ✅ 已完成 |
 
 三处偏离原计划的地方，都记在这里以免以后当成疏漏：
 

@@ -217,40 +217,30 @@ pub fn append_hook_log(line: &str) {
 /// 默认是圆；此时 `permission` / `error` 会额外画成**圆角方**，那是给色盲用的
 /// 形状区分（红绿是红绿色盲最难分的一对）。用户若把形状改成别的，这个区分就
 /// 失效了 —— 设置面板里会说明这一点。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Shape {
+    #[default]
     Circle,
     Rounded,
     /// 空心圆环。桌面上几乎没有别的东西长这样，最好认。
     Ring,
 }
 
-impl Default for Shape {
-    fn default() -> Self {
-        Shape::Circle
-    }
-}
-
 /// 配色方案。
 ///
 /// 给的是**预设而不是任意取色**：红 = 危险、黄 = 注意是有语义的，
 /// 让用户随便改会把这层含义弄没。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Palette {
     /// 默认：绿 / 黄 / 红，颜色压暗一档以便在浅色桌面上站得住
+    #[default]
     Default,
     /// 色盲友好：Okabe-Ito 的蓝 / 橙 / 朱红
     Colorblind,
     /// 高饱和：在花哨或深色的桌面上更容易看清
     Vivid,
-}
-
-impl Default for Palette {
-    fn default() -> Self {
-        Palette::Default
-    }
 }
 
 /// 一条出站钩子：聚合变成 `when` 里的某个状态时，执行 `action`。
@@ -1311,8 +1301,10 @@ mod tests {
     /// 废弃字段永不写回 —— 出口只有一条路
     #[test]
     fn the_legacy_webhook_field_is_never_written_back() {
-        let mut settings = Settings::default();
-        settings.webhook_url = Some("https://x/y".into());
+        let settings = Settings {
+            webhook_url: Some("https://x/y".into()),
+            ..Settings::default()
+        };
         let json = serde_json::to_string(&settings).unwrap();
         assert!(!json.contains("webhook_url"), "不该写回废弃字段: {json}");
     }
