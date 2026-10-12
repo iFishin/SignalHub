@@ -71,7 +71,28 @@ const PASS_THROUGH_SHORTCUT: (Modifiers, Code) =
 const PASS_THROUGH_SHORTCUT: (Modifiers, Code) =
     (Modifiers::CONTROL.union(Modifiers::ALT), Code::KeyS);
 
-/// 快捷键的人话写法：macOS 上是「⌥⌘S」，别处是「Ctrl+Alt+S」。
+/// 快捷键写法的两种平台习惯。
+///
+/// **做成显式参数、而不是在函数体里直接 `cfg!`**，是为了让两套写法在**任何平台
+/// 上都能被单测走到**。起因是一次真实的漏网：`efc8f16` 把 macOS 的修饰键顺序照抄
+/// 进了 Windows / Linux 那一支，写出来的标签是 `Alt+Super+S`（哪个平台都不这么写），
+/// 而本地是 macOS、`cfg!` 永远走不到那一支 —— CI 上 Linux 连红三次才被发现。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyStyle {
+    /// macOS：按 Apple HIG 的 ⌃⌥⇧⌘，Command 紧贴键名。
+    Mac,
+    /// Windows / Linux：Super 打头 —— 微软文档里 Win 键一律写最前
+    /// （`Win+Shift+S` 截图、`Win+Ctrl+Shift+B` 重启显卡驱动），
+    /// Linux 的快捷键语法也是 `<Super><Alt>s`。
+    Other,
+}
+
+/// 当前平台用哪种写法。
+fn key_style() -> KeyStyle {
+    if cfg!(target_os = "macos") { KeyStyle::Mac } else { KeyStyle::Other }
+}
+
+/// 快捷键的人话写法：macOS 上是「⌥⌘S」，别处是「Super+Alt+S」。
 ///
 /// **从 `PASS_THROUGH_SHORTCUT` 派生，不另立常量。** 这里原来有一份独立的
 /// label 常量，结果和真正注册的组合漂移了 —— 而且漂移了也没人会发现，因为
@@ -86,35 +107,42 @@ fn shortcut_label(mods: Modifiers, code: Code) -> String {
         .or_else(|| w3c.strip_prefix("Numpad"))
         .unwrap_or(&w3c);
 
-    if cfg!(target_os = "macos") {
-        // 按 macOS 的书写习惯排列：⌃⌥⇧⌘
-        let mut out = String::new();
-        for (flag, glyph) in [
-            (Modifiers::CONTROL, '⌃'),
-            (Modifiers::ALT, '⌥'),
-            (Modifiers::SHIFT, '⇧'),
-            (Modifiers::SUPER, '⌘'),
-        ] {
-            if mods.contains(flag) {
-                out.push(glyph);
+    shortcut_label_for(mods, key, key_style())
+}
+
+/// 指定写法的版本。单测用它把**两套**都跑一遍，不受当前平台限制。
+fn shortcut_label_for(mods: Modifiers, key: &str, style: KeyStyle) -> String {
+    match style {
+        KeyStyle::Mac => {
+            let mut out = String::new();
+            for (flag, glyph) in [
+                (Modifiers::CONTROL, '⌃'),
+                (Modifiers::ALT, '⌥'),
+                (Modifiers::SHIFT, '⇧'),
+                (Modifiers::SUPER, '⌘'),
+            ] {
+                if mods.contains(flag) {
+                    out.push(glyph);
+                }
             }
+            out.push_str(key);
+            out
         }
-        out.push_str(key);
-        out
-    } else {
-        let mut parts: Vec<&str> = Vec::new();
-        for (flag, name) in [
-            (Modifiers::CONTROL, "Ctrl"),
-            (Modifiers::ALT, "Alt"),
-            (Modifiers::SHIFT, "Shift"),
-            (Modifiers::SUPER, "Super"),
-        ] {
-            if mods.contains(flag) {
-                parts.push(name);
+        KeyStyle::Other => {
+            let mut parts: Vec<&str> = Vec::new();
+            for (flag, name) in [
+                (Modifiers::SUPER, "Super"),
+                (Modifiers::CONTROL, "Ctrl"),
+                (Modifiers::ALT, "Alt"),
+                (Modifiers::SHIFT, "Shift"),
+            ] {
+                if mods.contains(flag) {
+                    parts.push(name);
+                }
             }
+            parts.push(key);
+            parts.join("+")
         }
-        parts.push(key);
-        parts.join("+")
     }
 }
 
@@ -1089,8 +1117,8 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        clamp_to_area, pass_through_shortcut_label, shortcut_label, visible_groups,
-        PASS_THROUGH_SHORTCUT,
+        clamp_to_area, pass_through_shortcut_label, shortcut_label, shortcut_label_for,
+        visible_groups, KeyStyle, PASS_THROUGH_SHORTCUT,
     };
     use crate::config::{GroupMeta, Settings};
     use crate::state::{GroupView, Signal, Snapshot};
@@ -1135,21 +1163,29 @@ mod tests {
     }
 
     /// 格式化函数本身：W3C 名字要去掉前缀，修饰键要按平台习惯写。
-    /// macOS 的顺序是 Apple 定的 ⌃⌥⇧⌘ —— Command 紧贴着键名。
+    ///
+    /// **两套写法都断言，不管跑在哪个平台。** 用 `shortcut_label_for` 显式指定
+    /// 写法，而不是靠 `cfg!` 只走到当前平台那一支 —— 这个测试原来正是那么写的，
+    /// 于是「Windows / Linux 那一支照抄了 macOS 的顺序」在 macOS 开发机上永远
+    /// 测不出来，CI 上 Linux 连红三次。
     #[test]
     fn shortcut_labels_read_like_keyboards() {
-        let word = shortcut_label(Modifiers::CONTROL.union(Modifiers::ALT), Code::KeyS);
-        let command = shortcut_label(Modifiers::SUPER.union(Modifiers::ALT), Code::KeyS);
+        let word = Modifiers::CONTROL.union(Modifiers::ALT);
+        let command = Modifiers::SUPER.union(Modifiers::ALT);
 
-        if cfg!(target_os = "macos") {
-            assert_eq!(word, "⌃⌥S");
-            assert_eq!(command, "⌥⌘S");
-        } else {
-            assert_eq!(word, "Ctrl+Alt+S");
-            assert_eq!(command, "Super+Alt+S");
-        }
+        // macOS：Apple HIG 的 ⌃⌥⇧⌘，Command 紧贴键名
+        assert_eq!(shortcut_label_for(word, "S", KeyStyle::Mac), "⌃⌥S");
+        assert_eq!(shortcut_label_for(command, "S", KeyStyle::Mac), "⌥⌘S");
 
-        // 数字键同样要去掉 `Digit` 前缀，否则会写出「Ctrl+Digit1」这种东西
+        // Windows / Linux：Super 打头，别把上面那套照抄下来
+        assert_eq!(shortcut_label_for(word, "S", KeyStyle::Other), "Ctrl+Alt+S");
+        assert_eq!(
+            shortcut_label_for(command, "S", KeyStyle::Other),
+            "Super+Alt+S"
+        );
+
+        // 数字键同样要去掉 `Digit` 前缀，否则会写出「Ctrl+Digit1」这种东西。
+        // 走公开入口（`shortcut_label`），顺带覆盖「当前平台是哪种写法」那一层
         let digit = shortcut_label(Modifiers::CONTROL, Code::Digit1);
         assert!(digit.ends_with('1'), "{digit}");
         assert!(!digit.contains("Digit"), "{digit} 里还留着 W3C 前缀");
