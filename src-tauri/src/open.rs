@@ -75,8 +75,11 @@ mod tests {
     /// 跑一次测试打断人一次。用一个什么都不做的命令来测同一条路径。
     #[test]
     fn a_detached_process_is_spawned_and_reaped() {
+        // 外层**不能**写 `mut`：`spawn_detached` 按值拿走它，而 `args()` 要的那份
+        // `mut` 在里面的那个块里。这一条只有 Windows 编得到（整句是 `cfg(windows)`），
+        // 所以是 clippy 门禁在 CI 上抓出来的 —— 加门禁之前它一直躺在那儿没人知道。
         #[cfg(windows)]
-        let mut command = {
+        let command = {
             let mut command = Command::new("cmd");
             command.args(["/C", "exit 0"]);
             command
