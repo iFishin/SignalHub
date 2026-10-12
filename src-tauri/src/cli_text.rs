@@ -125,6 +125,19 @@ pub struct CliText {
     /// hook 里那个「失败: …」，写进 hooks.log
     pub hook_failed: &'static str,
 
+    // ---- 牌上的「正在做什么」 ----
+    //
+    // 由工具事件 payload 里的 `tool_name` / `tool_input` 生成，见 `tool_summary`。
+    // 动词单独一条、拼接模板单独一条，是为了让中英能并停放 —— 英文要
+    // 「Running cargo」这种动名词形式，中文是「执行 cargo」，模板都是「{} {}」。
+    pub tool_v_exec: &'static str,
+    pub tool_v_edit: &'static str,
+    pub tool_v_read: &'static str,
+    pub tool_v_search: &'static str,
+    pub tool_v_net: &'static str,
+    /// 两个 `{}`：动词、目标（文件名 / 命令名 / 主机名）
+    pub tool_doing: &'static str,
+
     // ---- 帮助 ----
     /// 两个 `{}`：版本号、智能体名单
     pub help: &'static str,
@@ -206,6 +219,13 @@ pub const ZH: CliText = CliText {
     read_stdin_failed: "读取 stdin 失败: {}",
     stdin_not_json: "stdin 不是合法 JSON: {}",
     hook_failed: "失败: {}",
+
+    tool_v_exec: "执行",
+    tool_v_edit: "改",
+    tool_v_read: "读",
+    tool_v_search: "找",
+    tool_v_net: "访问",
+    tool_doing: "{} {}",
 
     help: "\
 signalhub {} —— 桌面悬浮状态灯的上报客户端
@@ -346,6 +366,13 @@ pub const EN: CliText = CliText {
     read_stdin_failed: "Could not read stdin: {}",
     stdin_not_json: "stdin is not valid JSON: {}",
     hook_failed: "failed: {}",
+
+    tool_v_exec: "Running",
+    tool_v_edit: "Editing",
+    tool_v_read: "Reading",
+    tool_v_search: "Searching",
+    tool_v_net: "Fetching",
+    tool_doing: "{} {}",
 
     help: "\
 signalhub {} — reporting client for the desktop status lamp

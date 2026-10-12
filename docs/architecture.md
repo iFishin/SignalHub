@@ -233,6 +233,10 @@ impl Store {
 
 **`show.message` 不是纯外观。** 牌有没有消息那一行决定了窗口高度：`lib.rs` 的 `visible_groups` / `sign_heights` 必须和前端 `data-has-message` 算出**同一个**布尔值（消息存在**且**用户没关掉那一段），否则窗口会裁掉最后一块牌。
 
+**而这一行以前对 hook 用户永远是空的** —— 值得记一笔，因为它是「一个功能做完了但没接上」的典型。`hook` 模式组装请求体时只发 `state` / `session` / `agent` / `cwd`，从来不填 `message`；唯一能填的是命令行上的 `--message`，而装出来的 hook 命令是 `{program} hook {agent}`，一个选项都不带。于是：`show.message` 默认开着、窗口高度也为它留了第二档，**而走 hook 接入的人（绝大多数）永远看不到那一行**。`tool_name` / `tool_input` 却一直躺在 payload 里没人用。
+
+现在由 CLI 从工具事件压成一句话（`tool_summary`，见 api.md §4.14）。三条设计约束写在那儿了，其中两条是这个仓库反复踩过的坑：**绝不把整条命令打出去**（它会进灯的状态、通知正文和消息流，而 `command` 可能带密钥），以及**认不出来就显示工具原名、不猜动词**（`TodoWrite` 里有 "write"，关键字匹配会一路认错）。第三约束是形态上的：服务端**每次上报整体替换** `message`，所以 `PreToolUse` 和 `PostToolUse` 都得带 —— 只带一个的话，牌上那行会在两步之间闪一下空。
+
 **`show.age`（已持续）反过来不碰几何，但有一个别处没有的依赖。** 它是同一行里靠右的一段（`flex: none`），不占额外的行，所以 `sign_heights` 不管它。但这个数字是**算出来的**（`now - since`），而灯球只在状态变化时重绘、`sweep` 也只在会话真的过期时才推事件 —— 于是没有任何东西会让它随时间重绘，它会永远停在状态刚变化那一刻算出的 **0s**（`formatAge` 里的 `Date.now()` 只在重绘那一刻被求值，而那一刻的答案恰好就是 0）。所以灯球里挂了一个 `useNow`（`src/lib/useNow.ts`），每秒推一次「现在」。**加任何「算出来的时间显示」之前，先想清楚谁让它重绘。**
 
 **逐个状态：颜色 + 形状 + 节奏。** 全局的 `palette` / `shape` / `blink_speed` 是**默认值**，「灯效」页可以逐个状态覆盖，存在 `Settings.styles: BTreeMap<String, StateStyle>` 里：

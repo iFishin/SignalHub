@@ -854,6 +854,148 @@ fn uninstall_hooks(agent: &str, flags: &Flags) -> Result<(), Failure> {
 
 // ---- hook ------------------------------------------------------------------
 
+/// 把一次 hook 上报拼成请求体。
+///
+/// **单独摘出来是为了能单测**：这段以前直接写在 `hook()` 里，而它最容易出错的一
+/// 项（`message`）恰好没有任何测试够得着 —— 于是它空了不知道多久也没人发现。
+///
+/// `message` 走的是「工具事件顺手生成一句正在做什么」，见 [`tool_summary`]。
+/// 注意服务端是**每次上报整体替换** message 的（`state.rs` 里那句「message 是
+/// 事件细节，每次替换」），所以 PreToolUse 和 PostToolUse 都得带 —— 只带一个的话
+/// 牌上那行会在两步之间闪一下空。
+fn hook_body(
+    text: &CliText,
+    state: &str,
+    session: &str,
+    agent: &str,
+    payload: &Value,
+    flags: &Flags,
+) -> Value {
+    let mut body = json!({ "state": state, "session": session, "agent": agent });
+    if let Some(cwd) = cwd_of(payload) {
+        body["cwd"] = json!(cwd);
+    }
+    if let Some(summary) = tool_summary(text, payload) {
+        body["message"] = json!(summary);
+    }
+    // payload 里的 cwd / session 是准的；但用户在命令行上显式写的选项优先 ——
+    // 装出来的 hook 命令本来一个选项都不带，所以这条只在手改过命令时才会生效。
+    apply_flag_extras(&mut body, flags);
+    body
+}
+
+/// 这一行本来就窄，再长也会被 CSS 截断；在源头截短是为了让**消息流**和通知正文
+/// 也别被一条长命令撑开。
+const TARGET_MAX: usize = 32;
+const TOOL_NAME_MAX: usize = 24;
+
+/// 从工具事件生成一句「正在做什么」，填进上报的 `message`。
+///
+/// **它补的是一个洞**：`hook` 模式此前从不发 `message`，而牌上「消息」那一行默认
+/// 是开的（窗口高度也为此留了第二档）—— 也就是说走 hook 接入的人（绝大多数）
+/// 永远看不到那一行，`tool_name` / `tool_input` 却一直躺在 payload 里没人用。
+///
+/// **只取一个词，绝不整条打出去。** `tool_input.command` 可能带密钥
+/// （`API_KEY=xxx curl ...`），也可能是一长串参数，而这句话会进灯的状态、系统通知
+/// 正文和消息流 —— 那不是它该去的地方。所以：命令只取第一个不是 `KEY=value` 的
+/// 词、路径只取末段、URL 只取主机名，一律截断。
+///
+/// **认不出来就回落到工具原名，不猜动词。** 各家的工具名不一样、还会随版本变，
+/// 与其按关键字猜一个（`TodoWrite` 里也有 "write"），不如把原名显示出来 ——
+/// 那至少是真的。这条兜底也让上面那张表可以随时补，补漏了只是少一点可读性。
+fn tool_summary(text: &CliText, payload: &Value) -> Option<String> {
+    let name = payload["tool_name"].as_str()?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    match (tool_verb(text, name), tool_target(&payload["tool_input"])) {
+        (Some(verb), Some(target)) => Some(fill(text.tool_doing, &[verb, &target])),
+        (Some(verb), None) => Some(verb.to_string()),
+        (None, _) => Some(clip(name, TOOL_NAME_MAX)),
+    }
+}
+
+/// 工具名 → 动词。**用精确匹配而不是包含关键字**：`TodoWrite` 里有 "write"、
+/// `ExitPlanMode` 里有 "plan"，按关键字来会一路认错，而认错比认不出来更糟。
+///
+/// 表里的名字是按各家文档和实际事件收的；漏了哪个只会让那个工具显示成原名。
+fn tool_verb(text: &CliText, name: &str) -> Option<&'static str> {
+    // `run-terminal-cmd` / `Run Terminal Cmd` 都归一到下划线小写
+    let normalized = name.to_ascii_lowercase().replace(['-', ' '], "_");
+    match normalized.as_str() {
+        "bash" | "bashoutput" | "killshell" | "killbash" | "shell" | "localshell" | "exec"
+        | "run_terminal_cmd" | "execute_command" | "run_command" | "run_shell_command" => {
+            Some(text.tool_v_exec)
+        }
+        "edit" | "write" | "multiedit" | "notebookedit" | "str_replace" | "str_replace_editor"
+        | "apply_patch" | "edit_file" | "create_file" | "write_file" | "replace" => {
+            Some(text.tool_v_edit)
+        }
+        "read" | "read_file" | "view" | "cat" | "readfile" => Some(text.tool_v_read),
+        "grep" | "grep_search" | "glob" | "search" | "search_files" | "search_file_content"
+        | "codebase_search" | "list_dir" | "ls" | "find" => Some(text.tool_v_search),
+        "webfetch" | "web_fetch" | "websearch" | "web_search" | "fetch" => Some(text.tool_v_net),
+        _ => None,
+    }
+}
+
+/// 从 `tool_input` 里挑一个能代表「在干嘛」的短词。按可信度排：路径和搜索词最稳定，
+/// 命令要清洗，URL 要拆主机名。
+fn tool_target(input: &Value) -> Option<String> {
+    // 路径：只取末段 —— 整条路径又长又会把牌上别的信息挤掉，而末段才是有区分度的
+    for key in ["file_path", "filePath", "path", "target_file", "notebook_path"] {
+        if let Some(raw) = input[key].as_str() {
+            let name = config::project_name(raw.trim());
+            if !name.is_empty() && name != "/" && name != "\\" {
+                return Some(clip(&name, TARGET_MAX));
+            }
+        }
+    }
+    for key in ["pattern", "query", "regex"] {
+        if let Some(raw) = input[key].as_str() {
+            let text = raw.trim();
+            if !text.is_empty() {
+                return Some(clip(text, TARGET_MAX));
+            }
+        }
+    }
+    for key in ["command", "cmd"] {
+        if let Some(word) = input[key].as_str().and_then(first_word) {
+            return Some(clip(&word, TARGET_MAX));
+        }
+    }
+    input["url"].as_str().and_then(host_of).map(|host| clip(&host, TARGET_MAX))
+}
+
+/// 一条命令的「第一个实词」：跳过 `A=1` 这类环境变量赋值，只留可执行文件名。
+///
+/// 这是那条**不把整条命令打出去**的规则的落点 —— `API_KEY=xxx curl ...` 里
+/// 有意义的只是 `curl`。
+fn first_word(command: &str) -> Option<String> {
+    command
+        .split_whitespace()
+        .find(|word| !word.contains('='))
+        .map(config::project_name)
+        .filter(|word| !word.is_empty())
+}
+
+/// URL 的主机名。`https://docs.rs/tauri/latest` → `docs.rs`。
+fn host_of(url: &str) -> Option<String> {
+    let rest = url.split("://").nth(1).unwrap_or(url);
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("").trim();
+    (!host.is_empty()).then(|| host.to_string())
+}
+
+/// 截断。**按字符而不是字节** —— 按字节切会把一个汉字切成半个，那是无效 UTF-8。
+fn clip(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(max).collect();
+    out.push('…');
+    out
+}
+
 /// hook 路径上**不允许**出现任何 `println!`。见文件头的约束 1。
 fn hook(agent: &str, flags: &Flags) -> Result<(), Failure> {
     // **约束 1 的唯一例外，而且是有理由的。** Gemini 明确要求 hook 的 stdout 是
@@ -903,14 +1045,7 @@ fn hook(agent: &str, flags: &Flags) -> Result<(), Failure> {
         Err(err) => Err(err),
         Ok(endpoint) => match action {
             Action::Report(state) => {
-                let mut body = json!({ "state": state, "session": session, "agent": agent });
-                if let Some(cwd) = cwd_of(&payload) {
-                    body["cwd"] = json!(cwd);
-                }
-                // payload 里的 cwd / session 是准的；但用户在命令行上显式写的
-                // 选项优先 —— 装出来的 hook 命令本来一个选项都不带，所以这条
-                // 只在手改过命令时才会生效。
-                apply_flag_extras(&mut body, flags);
+                let body = hook_body(t(), state, &session, agent, &payload, flags);
                 let (status, text) = read_response!(client()
                     .post(&endpoint.url("/state"))
                     .header("Authorization", &endpoint.auth())
@@ -1515,6 +1650,171 @@ mod tests {
         assert_eq!(report.cwd.as_deref(), Some("/proj"));
         assert_eq!(report.message.as_deref(), Some("compiling"));
         assert_eq!(report.ttl_ms, Some(30_000));
+    }
+
+    // ---- 牌上的「正在做什么」 --------------------------------------------------
+
+    /// 工具事件都该变成一句人话，中英两套都对。
+    ///
+    /// 语言是**注入**的（直接传文案表），不是走 `t()` —— 后者背后是进程级的
+    /// `OnceLock`，测试里改不了它，那这条就只能按机器上的语言碰运气。
+    #[test]
+    fn a_tool_event_becomes_a_readable_line() {
+        let cases: [(Value, &str, &str); 6] = [
+            (
+                json!({"tool_name": "Bash", "tool_input": {"command": "cargo test --all"}}),
+                "执行 cargo",
+                "Running cargo",
+            ),
+            (
+                json!({"tool_name": "Edit", "tool_input": {"file_path": "/a/b/server.rs"}}),
+                "改 server.rs",
+                "Editing server.rs",
+            ),
+            (
+                json!({"tool_name": "Read", "tool_input": {"file_path": "/a/b/README.md"}}),
+                "读 README.md",
+                "Reading README.md",
+            ),
+            (
+                json!({"tool_name": "Grep", "tool_input": {"pattern": "resolve_group"}}),
+                "找 resolve_group",
+                "Searching resolve_group",
+            ),
+            (
+                json!({"tool_name": "WebFetch", "tool_input": {"url": "https://docs.rs/tauri/latest"}}),
+                "访问 docs.rs",
+                "Fetching docs.rs",
+            ),
+            // 只有工具名、没有可用参数时也给一句，只是没有目标
+            (
+                json!({"tool_name": "Write", "tool_input": {}}),
+                "改",
+                "Editing",
+            ),
+        ];
+
+        for (payload, zh, en) in cases {
+            assert_eq!(tool_summary(&cli_text::ZH, &payload).as_deref(), Some(zh), "{payload}");
+            assert_eq!(tool_summary(&cli_text::EN, &payload).as_deref(), Some(en), "{payload}");
+        }
+    }
+
+    /// **命令只取第一个不是赋值的词。**
+    ///
+    /// 整条 `tool_input.command` 可能带密钥（`API_KEY=xxx curl ...`）或者一长串
+    /// 参数，而这句话会进灯的状态、系统通知正文和消息流 —— 那不是它该去的地方。
+    /// 这条测试就是「不把整条命令打出去」那条规则的落点。
+    #[test]
+    fn a_shell_command_is_reduced_to_its_program() {
+        let get = |cmd: &str| {
+            tool_summary(
+                &cli_text::ZH,
+                &json!({"tool_name": "Bash", "tool_input": {"command": cmd}}),
+            )
+        };
+
+        assert_eq!(get("cargo test --features=a=b").as_deref(), Some("执行 cargo"));
+        assert_eq!(get("API_KEY=sk-live-123 curl https://x").as_deref(), Some("执行 curl"));
+        assert_eq!(get("/usr/local/bin/npx vite").as_deref(), Some("执行 npx"));
+        // 参数里的 `=` 不该让整条命令被跳过
+        assert_eq!(get("npm run build -- --mode=prod").as_deref(), Some("执行 npm"));
+        // 最后一道：密钥绝不能出现在结果里
+        assert!(!get("TOKEN=abcd1234 curl x").unwrap().contains("abcd1234"));
+    }
+
+    /// 认不出来的工具名**原样显示**，不按关键字猜。
+    ///
+    /// `TodoWrite` 里有 "write"、`ExitPlanMode` 里有 "plan" —— 按关键字来会一路
+    /// 认错，而认错比认不出来更糟。漏一个名字只是少一点可读性。
+    #[test]
+    fn an_unknown_tool_keeps_its_own_name() {
+        for name in ["TodoWrite", "ExitPlanMode", "Task", "some_new_tool"] {
+            let payload = json!({"tool_name": name, "tool_input": {}});
+            assert_eq!(
+                tool_summary(&cli_text::ZH, &payload).as_deref(),
+                Some(name),
+                "{name} 不该被猜成别的动词"
+            );
+        }
+    }
+
+    /// 工具名的大小写和连字符写法都要认 —— 各家不一致，还会随版本变。
+    #[test]
+    fn tool_names_are_matched_loosely() {
+        for name in ["Bash", "bash", "run_terminal_cmd", "run-terminal-cmd", "Shell"] {
+            let payload = json!({"tool_name": name, "tool_input": {}});
+            assert_eq!(tool_summary(&cli_text::ZH, &payload).as_deref(), Some("执行"), "{name}");
+        }
+    }
+
+    /// 没有工具名的事件（`SessionStart` / `Stop` / `UserPromptSubmit` 之类）
+    /// **不生成 message** —— 那时没有任何「正在做什么」可说，硬编一句是撒谎。
+    #[test]
+    fn events_without_a_tool_produce_no_message() {
+        assert_eq!(tool_summary(&cli_text::ZH, &json!({"session_id": "s-1"})), None);
+        assert_eq!(tool_summary(&cli_text::ZH, &json!({"tool_name": "   "})), None);
+        // 工具名不是字符串（版本差异下可能给成 null）
+        assert_eq!(tool_summary(&cli_text::ZH, &json!({"tool_name": null})), None);
+    }
+
+    /// 一律截断，而且**按字符截**。
+    ///
+    /// 按字节切会把一个汉字切成半个 —— 那不只是难看，是无效 UTF-8，而这句话要
+    /// 经过 HTTP 和 JSON 两层，出问题的地方会离这里很远。
+    #[test]
+    fn long_targets_are_clipped_on_character_boundaries() {
+        let ascii = "a".repeat(200);
+        let out = tool_summary(
+            &cli_text::ZH,
+            &json!({"tool_name": "Read", "tool_input": {"file_path": format!("/x/{ascii}")}}),
+        )
+        .unwrap();
+        assert!(out.ends_with('…'), "{out}");
+        // 上限 = 动词 + 空格 + 目标上限 + 省略号。写成算式而不是一个魔数：
+        // 英文的动词比中文长（"Reading" vs "读"），换个语言这个界限就得跟着变。
+        let budget = cli_text::ZH.tool_v_read.chars().count() + 1 + TARGET_MAX + 1;
+        assert!(out.chars().count() <= budget, "截得不够: {out}（上限 {budget}）");
+
+        // 全中文：不能 panic，也不能切出半个字（`chars()` 会替我们保证）
+        let han = "中文文件名".repeat(20);
+        let out = tool_summary(
+            &cli_text::ZH,
+            &json!({"tool_name": "Read", "tool_input": {"file_path": format!("/x/{han}")}}),
+        )
+        .unwrap();
+        assert!(out.starts_with("读 中文文件名"), "{out}");
+        assert_eq!(out.chars().last(), Some('…'), "{out}");
+    }
+
+    /// 走一遍请求体组装：工具事件要带上 message，而且**服务端得认得这个键**。
+    ///
+    /// 最后那步反序列化不是形式主义：服务端没有 `deny_unknown_fields`，键名拼错
+    /// 只会被静默丢掉 —— 多分组以前正是这么栽的（见 `apply_flag_extras` 的注释）。
+    #[test]
+    fn the_hook_body_carries_the_tool_summary_in_its_message_field() {
+        let payload = json!({
+            "hook_event_name": "PreToolUse",
+            "session_id": "s-1",
+            "cwd": "/proj",
+            "tool_name": "Edit",
+            "tool_input": {"file_path": "/proj/src/state.rs"},
+        });
+        let flags = Flags::default();
+
+        let body = hook_body(&cli_text::ZH, "working", "s-1", "claude-code", &payload, &flags);
+        assert_eq!(body["message"], "改 state.rs");
+
+        let report: state::Report =
+            serde_json::from_value(body).expect("服务端应能解析 hook 构造的请求体");
+        assert_eq!(report.message.as_deref(), Some("改 state.rs"));
+        assert_eq!(report.session_id(), "s-1");
+        assert_eq!(report.cwd.as_deref(), Some("/proj"));
+
+        // 没有工具名的事件：这个键**根本不出现**，而不是发个空串
+        let plain = json!({"hook_event_name": "Stop", "session_id": "s-1"});
+        let body = hook_body(&cli_text::ZH, "done", "s-1", "claude-code", &plain, &flags);
+        assert!(body.get("message").is_none(), "{body}");
     }
 
     /// 不传 `--group` 时这个键**根本不出现**，而不是发一个空串。

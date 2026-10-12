@@ -103,7 +103,7 @@ Authorization: Bearer <token>
 | `group` | string | | `"default"` | **归属的组**。灯球上每组一块牌（见 §2.9）。不传就归 `default`，单组用户完全不用管 |
 | `agent` | string | | `"unknown"` | 上报方名字，用于 UI 归因 |
 | `cwd` | string | | `null` | 项目路径，UI 显示成项目名 |
-| `message` | string | | `null` | 牌上显示的一行说明 |
+| `message` | string | | `null` | 牌上显示的一行说明。**走 `signalhub hook` 时不用你给** —— 工具事件会自动生成一句，见 §4.14 |
 | `ttl_ms` | number | | 按状态默认 | 覆盖默认过期时间；长任务显式传大值 |
 
 响应 `200`：
@@ -743,6 +743,45 @@ signalhub run --agent aider -- aider --model sonnet
 
 - **Ctrl-C 掉包装器**时收尾那段跑不到，所以不会报 `done` —— 会话会在 TTL（60 秒）之后转 `stale`，再过宽限期消失。这是刻意的兜底，不是 bug。
 - 心跳是 HTTP 请求，所以**命令跑多久就发多久的请求**（每 20 秒一次，本机回环）。跑一整天的任务会发几千次，但每次都是几字节的本地回环。
+
+### 4.14 牌上的「正在做什么」
+
+`hook` 这条路上，`message` **不用你提供**：工具事件（payload 里带 `tool_name`）会被
+自动压成一句话，填进上报的 `message`。
+
+```
+PreToolUse  tool_name=Edit  tool_input={file_path: "/proj/src/state.rs"}
+            → message = "改 state.rs"
+
+PreToolUse  tool_name=Bash  tool_input={command: "cargo test --all"}
+            → message = "执行 cargo"
+```
+
+牌上的「消息」那一行默认是开的（窗口高度也为此留着第二档），所以这条让 hook 用户
+**开箱就能看到「卡在哪一步」**，不需要每个 agent 都去配一句 `--message`。
+
+**只取一个词，绝不整条打出去。** 这是有意的：`command` 可能带密钥
+（`API_KEY=xxx curl ...`），而这句话会进灯的状态、系统通知正文和消息流。所以规则是：
+
+| 来源 | 取什么 | 例 |
+|---|---|---|
+| 路径类字段（`file_path` / `path` / …） | 末段 | `/a/b/server.rs` → `server.rs` |
+| 搜索类字段（`pattern` / `query`） | 原样，截断 | `resolve_group` |
+| `command` / `cmd` | **第一个不是 `KEY=value` 的词**，再去掉目录 | `API_KEY=sk-1 npx vite` → `npx` |
+| `url` | 只留主机名 | `https://docs.rs/tauri/latest` → `docs.rs` |
+
+一律截断到 32 个字符（按**字符**截，中文不会被切成半个字）。
+
+**认不出来的工具名原样显示**，不按关键字猜动词 —— `TodoWrite` 里有 "write"、
+`ExitPlanMode` 里有 "plan"，按关键字来会一路认错，而认错比认不出来更糟。
+所以看到 `message` 是 `TodoWrite` 这种，是预期行为，不是 bug。
+
+**没有 `tool_name` 的事件（`SessionStart` / `Stop` / `UserPromptSubmit` …）
+根本不发 `message` 这个键。** 服务端是**每次上报整体替换** `message` 的，所以
+`PreToolUse` 和 `PostToolUse` 都会带上同一句（这两步的 payload 都有 `tool_name`）；
+只带一个的话，牌上那行会在两步之间闪一下空。
+
+要自己给一句话，仍然用 `--message`；命令行上显式给的**优先于**自动生成的这句。
 
 ---
 
