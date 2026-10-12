@@ -275,18 +275,28 @@ fn run(args: &[String]) -> Result<(), Failure> {
         "monitor" => match rest.first().map(String::as_str) {
             Some("on") => monitor(true, &flags),
             Some("off") => monitor(false, &flags),
-            other => Err(Failure::other(fill(t().monitor_needs_on_off, &[&format!("{other:?}")]))),
+            // 没给值时别把 `None` 打给用户看 —— 那是 Rust 的 Debug 输出
+            other => Err(Failure::other(fill(
+                t().monitor_needs_on_off,
+                &[other.unwrap_or(t().nothing)],
+            ))),
         },
         // signalhub on / off 是 monitor 的简写
         "on" => monitor(true, &flags),
         "off" => monitor(false, &flags),
         "install" => match rest.first().map(String::as_str) {
             Some("hooks") => install_hooks(required_agent(rest, "install hooks")?, &flags),
-            other => Err(Failure::other(fill(t().only_hooks, &["install", &format!("{other:?}")]))),
+            other => Err(Failure::other(fill(
+                t().only_hooks,
+                &["install", other.unwrap_or(t().nothing)],
+            ))),
         },
         "uninstall" => match rest.first().map(String::as_str) {
             Some("hooks") => uninstall_hooks(required_agent(rest, "uninstall hooks")?, &flags),
-            other => Err(Failure::other(fill(t().only_hooks, &["uninstall", &format!("{other:?}")]))),
+            other => Err(Failure::other(fill(
+                t().only_hooks,
+                &["uninstall", other.unwrap_or(t().nothing)],
+            ))),
         },
         state => {
             if !rest.is_empty() {

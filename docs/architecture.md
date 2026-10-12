@@ -894,7 +894,9 @@ SignalHub/
 
 **关于 CLI 的 crate 组织**：CLI 用 `#[path = "../config.rs"] mod config;` 直接包含源码，而不是 `use signalhub_lib::config`——后者会把整个 Tauri 拖进这个本该很小的二进制（实测 3.1MB 且不链接 Tauri）。同样的原因，它不校验状态名，只把状态字符串原样转发给服务端，避免出现两张别名表。将来若构建时间或体积成为问题，再抽成 cargo workspace 里的 `crates/signalhub-cli`。
 
-**state.rs 是关键**：它是纯逻辑、无 I/O、时间可注入（`apply(now, …)`），因此可以完整单测而不需要跑起 Tauri 或等待真实时间流逝。整个仓库的单测：`cargo test` 跑出 lib 184 + CLI 134（CLI 通过 `#[path]` 复用了 config / hooks / state 三个模块，所以两边有一部分是同一批用例）。
+**state.rs 是关键**：它是纯逻辑、无 I/O、时间可注入（`apply(now, …)`），因此可以完整单测而不需要跑起 Tauri 或等待真实时间流逝。整个仓库的单测：`cargo test` 跑出 **lib 231 + CLI 161**，外加前端 `npm test` 的 11 条（CLI 通过 `#[path]` 复用了 config / hooks / state 三个模块，所以两边有一部分是同一批用例）。
+
+> 这个数字**只在写下时准**——每个功能提交都会加几条。看个量级就好，别拿它当断言；要准数就直接跑上面那两条命令。
 
 ---
 

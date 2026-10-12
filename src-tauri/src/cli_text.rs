@@ -31,6 +31,8 @@ pub struct CliText {
     /// 两个 `{}`：子命令名（出现两次）
     pub agent_needed: &'static str,
     pub monitor_needs_on_off: &'static str,
+    /// 「什么都没给」时的占位。写 `None` 会把 Rust 的 Debug 输出漏给用户看
+    pub nothing: &'static str,
     /// 两个 `{}`：子命令名、收到的值
     pub only_hooks: &'static str,
     pub too_many_args: &'static str,
@@ -138,6 +140,7 @@ pub const ZH: CliText = CliText {
     hook_needs_agent: "hook 需要智能体名，例如 signalhub hook claude-code",
     agent_needed: "{} 需要智能体名，例如 signalhub {} claude-code",
     monitor_needs_on_off: "monitor 需要 on 或 off，收到 {}",
+    nothing: "（没给）",
     only_hooks: "{} 只支持 hooks，收到 {}",
     too_many_args: "多余的参数: {}",
 
@@ -277,6 +280,7 @@ pub const EN: CliText = CliText {
     hook_needs_agent: "hook needs an agent name, e.g. signalhub hook claude-code",
     agent_needed: "{} needs an agent name, e.g. signalhub {} claude-code",
     monitor_needs_on_off: "monitor needs on or off, got {}",
+    nothing: "(none)",
     only_hooks: "{} only supports hooks, got {}",
     too_many_args: "Unexpected extra arguments: {}",
 
@@ -502,6 +506,7 @@ mod tests {
             ("hook_needs_agent", t.hook_needs_agent),
             ("agent_needed", t.agent_needed),
             ("monitor_needs_on_off", t.monitor_needs_on_off),
+            ("nothing", t.nothing),
             ("only_hooks", t.only_hooks),
             ("too_many_args", t.too_many_args),
             ("app_not_running", t.app_not_running),
