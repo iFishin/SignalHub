@@ -342,11 +342,20 @@ export function SignalLamp({ aggregate, groups, settings, paused }: Props) {
           </div>
         ),
       )}
-      {/* 折叠态没有牌面可寄住，角标单独占一个点的位置（见 CSS 的 .lamp-dot-flag）。
-          Rust 的 `collapsed_window_size` 因此要为此多留一个点。 */}
+      {/* 折叠态没有牌面可寄住，角标只能自己占一个点的位置（见 CSS 的
+          .lamp-dot-flag / .lamp-dot-more），Rust 的 `collapsed_window_size`
+          因此要按「点数 + 角标数」算宽 —— 少留一个点位那枚角标就被裁掉了。 */}
       {collapsed && flag && (
         <span className="lamp-dot-flag" data-state={aggregate} title={flagTitle}>
           {toggles.pass_through ? "⇥" : "⏸"}
+        </span>
+      )}
+      {/* 展开态那条同样的提示挂在最后一块牌上；折叠态看不到牌面，**不留这一枚
+          就等于「还有几个智能体在跑」被悄悄抹掉了** —— 而那正是这盏灯要回答的。
+          条件与 Rust 的 `config::more_badge` 是同一个。 */}
+      {collapsed && hidden.length > 0 && (
+        <span className="lamp-dot-more" title={moreGroupsTip(m, hidden, settings.group_meta)}>
+          +{hidden.length}
         </span>
       )}
     </div>

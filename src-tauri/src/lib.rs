@@ -930,8 +930,11 @@ fn apply_window_size(app: &tauri::AppHandle, settings: &Settings, snapshot: &Sna
     // 展开态是一叠牌，折叠态是一排点 —— 两套几何，见 config.rs
     let groups = visible_groups(settings, snapshot);
     let (width, height) = if settings.collapsed {
-        // 折叠态那枚全局状态角标单独占一个点的位置，所以点数要加上它
-        config::collapsed_window_size(settings.size, groups.len(), ui_flag_count(app))
+        // 折叠态里没有牌面，全局状态角标和「还有几组」的 `+N` 都得自己占一个点位。
+        // 少算一枚，那枚角标就落在窗口外面 —— 而折叠态最不该出的就是这种错：
+        // 看不见的东西，人不会想到去查。
+        let badges = ui_flag_count(app) + config::more_badge(groups.len());
+        config::collapsed_window_size(settings.size, groups.len(), badges)
     } else {
         settings.window_size(&sign_heights(settings, &groups))
     };

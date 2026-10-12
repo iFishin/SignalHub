@@ -40,6 +40,16 @@ body,
 .lamp-root {
   --size: 22px;
 
+  /* 深色牌面，和图标同一套语言。不透明度由用户调（外观页），默认 0.86 ——
+     够看清内容，又能透出一点桌面。
+     **定义在根上，不是 `.sign` 上**：折叠态一个 `.sign` 都没有，只有一排点，
+     而角标正好寄在那儿 —— 挂在牌上的话那两枚取不到 `--sign-line` / `--sign-muted`，
+     `var()` 失效后描边退回 currentColor、底色变透明，在透明窗口上一枚都看不清。 */
+  --sign-bg: rgba(28, 28, 32, var(--sign-alpha, 0.86));
+  --sign-line: rgba(255, 255, 255, 0.14);
+  --sign-fg: #ececef;
+  --sign-muted: #9b9ba3;
+
   box-sizing: border-box;
   width: 100%;
   height: 100%;
@@ -68,13 +78,6 @@ body,
 /* ---- 一块牌 -------------------------------------------------------------- */
 
 .sign {
-  /* 深色牌面，和图标同一套语言。不透明度由用户调（外观页），默认 0.86 ——
-     够看清内容，又能透出一点桌面。 */
-  --sign-bg: rgba(28, 28, 32, var(--sign-alpha, 0.86));
-  --sign-line: rgba(255, 255, 255, 0.14);
-  --sign-fg: #ececef;
-  --sign-muted: #9b9ba3;
-
   box-sizing: border-box;
   width: calc(var(--size) * 7);
   height: calc(var(--size) * 3 / 2);
@@ -192,9 +195,12 @@ body,
 /* ---- 折叠态的一枚角标 ---------------------------------------------------- */
 
 /* 折叠态没有牌面可寄住，所以角标单独占**一个点的位置** —— 和一个点同样大，
-   同样占一个点距，`collapsed_window_size` 因此只要把点数 +1 就够。
-   ⚠️ 这条宽高和 Rust 的 `collapsed_window_size(size, dots, flag)` 是两处真值。 */
-.lamp-dot-flag {
+   同样占一个点距，`collapsed_window_size` 因此只要把点数加上角标数就够。
+   ⚠️ 这条宽高和 Rust 的 `collapsed_window_size(size, dots, badges)` 是两处真值。
+   两种角标（暂停 / 穿透、`+N`）共用这条：Rust 那边只知道**有几枚**、分不出是
+   哪一种，所以两者的外框必须严格同尺寸。 */
+.lamp-dot-flag,
+.lamp-dot-more {
   box-sizing: border-box;
   flex: none;
   width: var(--size);
@@ -213,6 +219,17 @@ body,
   -webkit-user-select: none;
 }
 
+/* `+N` 是「还有几组没画出来」——**信息，不是状态**，所以不取状态色，
+   跟展开态那枚 `.sign-more` 走同一档中性外观。外框留着（尺寸必须和上一枚一样），
+   只是画成透明 —— 不然在浅色主题下会和刚画好的圆点混成一片。 */
+.lamp-dot-more {
+  border-color: transparent;
+  background: transparent;
+  color: var(--sign-muted);
+  font-size: calc(var(--size) * 0.42);
+  font-variant-numeric: tabular-nums;
+}
+
 /* 穿透的折叠角标：描边取当前状态色，和展开态那枚呼应 */
 .lamp-root[data-pass-through] .lamp-dot-flag {
   border-color: var(--state, var(--sign-line));
@@ -226,7 +243,8 @@ body,
    `data-flash` 由前端在形态变化时挂上、420ms 后摘掉。 */
 .lamp-root[data-flash] .sign,
 .lamp-root[data-flash] .lamp-dot,
-.lamp-root[data-flash] .lamp-dot-flag {
+.lamp-root[data-flash] .lamp-dot-flag,
+.lamp-root[data-flash] .lamp-dot-more {
   animation: flash 420ms ease-out 1;
 }
 
