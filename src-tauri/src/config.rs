@@ -159,6 +159,15 @@ pub fn hook_log_path() -> io::Result<PathBuf> {
     Ok(data_dir()?.join("hooks.log"))
 }
 
+/// 每日状态时长的落盘位置。
+///
+/// 单独一个文件而不是塞进 `config.json`：那份是**用户手改的偏好**（改了要能一眼
+/// 看懂、甚至能直接编辑），而这个是机器攒的运行数据 —— 混在一起会让配置文件里
+/// 冒出一大坨没人看得懂、又不敢删的东西。
+pub fn stats_file() -> io::Result<PathBuf> {
+    Ok(data_dir()?.join("stats.json"))
+}
+
 /// 日志时间戳。用 UTC 并在值上标 `Z`：不引入时区数据依赖，且不会含糊。
 pub fn utc_hms() -> String {
     let secs = std::time::SystemTime::now()

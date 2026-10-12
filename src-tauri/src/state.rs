@@ -108,6 +108,27 @@ impl Signal {
         Self::ALL_NAMES.contains(&name)
     }
 
+    /// `name()` 的反向，**接受全部状态名**（含派生状态）。
+    ///
+    /// 和 `parse` 的区别正是这一点：`parse` 是给**外部上报**用的，刻意拒绝
+    /// `stale` / `offline`（它们是聚合产物，不该被外部声称）；这个读的是
+    /// **自己落盘的数据** —— 统计里那两个恰恰要有，灯灰着的那段时间也是时间。
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "offline" => Signal::Offline,
+            "off" => Signal::Off,
+            "stale" => Signal::Stale,
+            "idle" => Signal::Idle,
+            "done" => Signal::Done,
+            "thinking" => Signal::Thinking,
+            "working" => Signal::Working,
+            "attention" => Signal::Attention,
+            "permission" => Signal::Permission,
+            "error" => Signal::Error,
+            _ => return None,
+        })
+    }
+
     /// 静默多久后该状态视为过期。
     ///
     /// 现在**每个状态都有 TTL**（早先 `idle` 没有，导致一个忘关的会话能一直
@@ -1287,12 +1308,20 @@ mod tests {
             let serialized = serde_json::to_string(&state).unwrap();
             assert_eq!(serialized, format!("\"{}\"", state.name()), "{state:?} 不一致");
             assert!(Signal::is_known_name(state.name()), "{state:?} 不在 ALL_NAMES 里");
+            // `from_name` 必须能把每个名字读回同一个变体 —— 统计落盘走的就是这条路
+            assert_eq!(
+                Signal::from_name(state.name()),
+                Some(state),
+                "{state:?} 的名字读不回来"
+            );
             from_names.push(state.name());
         }
         assert_eq!(from_names.len(), Signal::ALL_NAMES.len(), "ALL_NAMES 数量对不上");
         for name in Signal::ALL_NAMES {
             assert!(from_names.contains(&name), "ALL_NAMES 里的 {name} 没有对应变体");
         }
+        // 认不出来的名字要返回 None，而不是悄悄落回某个默认值
+        assert_eq!(Signal::from_name("nonsense"), None);
     }
 
     #[test]

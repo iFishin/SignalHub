@@ -1,24 +1,100 @@
 //! 状态时长统计。
 //!
 //! 按「前端给的本地日期」分桶 —— **本地日期只有前端知道**（Rust 这边没有
-//! 时区数据，`SystemTime` 只给 UTC），所以由前端在查询时带过来；日期一变
-//! 就重置。这样不必引入时区依赖，也不用猜用户在哪一天。
+//! 时区数据，`SystemTime` 只给 UTC），所以由前端推过来；日期一变就结算。
+//! 这样不必引入时区依赖，也不用猜用户在哪一天。
+//!
+//! **每日合计会落盘**（`~/.signalhub/stats.json`）。灯球是常驻应用，但「常驻」
+//! 不等于「永不重启」：改了设置、升级、崩溃重来，一天里那些「等授权等了多久」
+//! 是用户会想跨重启看的东西。
+//!
+//! 内存里的当前这段用的是 `Instant`（单调钟，不受系统时钟调整影响），而落盘
+//! 必须用**墙上时钟的日期** —— `Instant` 存不下来，跨重启也没有意义。所以文件
+//! 里只有「某天某状态多少秒」，当前这一段是**存的时候现折算**的。
 
 use crate::state::Signal;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io;
 use std::time::{Duration, Instant};
 
 /// 时间线最多记住多少次状态变化。超过就丢最旧的 —— 常驻应用跑一周也不该
 /// 无限增长。
 const TIMELINE_CAPACITY: usize = 512;
 
+/// 每日合计保留多少天。够了（能回答「这周和上周比」），又不会让文件无限长。
+const KEEP_DAYS: usize = 30;
+
+/// 落盘的样子。
+///
+/// 键是**状态名的字符串**，不是 `Signal` 本身。这不是图省事：`Signal` 的
+/// `Deserialize` 是给外部上报用的，**刻意拒绝 `stale` / `offline`**（派生状态不该
+/// 被外部声称）—— 而统计里那两个恰恰要有，灯灰着的那段时间也是时间。用字符串键
+/// 走 `Signal::from_name`（它接受全部名字）就绕开了那个属于**上报**的约束。
+#[derive(Serialize, Deserialize, Default)]
+struct Stored {
+    days: HashMap<String, HashMap<String, u64>>,
+}
+
+impl Stored {
+    fn from_stats(stats: &Stats, now: Instant) -> Self {
+        let mut days: HashMap<String, HashMap<String, u64>> = stats
+            .history
+            .iter()
+            .map(|(day, totals)| (day.clone(), by_name(totals)))
+            .collect();
+
+        let today = by_name(&stats.snapshot_today(now));
+        if !today.is_empty() {
+            days.insert(stats.day.clone(), today);
+        }
+        Self { days }
+    }
+
+    fn into_stats(self) -> Stats {
+        let history: HashMap<String, HashMap<Signal, u64>> = self
+            .days
+            .into_iter()
+            .map(|(day, totals)| (day, to_states(&totals)))
+            .collect();
+        let mut stats = Stats {
+            history,
+            ..Default::default()
+        };
+        stats.trim_history();
+        stats
+    }
+}
+
+/// `Signal` → 名字。走 `name()`，所以文件和线上用的是同一套拼写。
+fn by_name(totals: &HashMap<Signal, u64>) -> HashMap<String, u64> {
+    totals
+        .iter()
+        .filter(|(_, secs)| **secs > 0)
+        .map(|(state, secs)| (state.name().to_string(), *secs))
+        .collect()
+}
+
+/// 名字 → `Signal`。认不出来的名字**直接丢掉**而不是报错：文件可能是旧版本写的，
+/// 里面有一个已经不存在的状态名，为此把整份统计判死不值得。
+fn to_states(totals: &HashMap<String, u64>) -> HashMap<Signal, u64> {
+    totals
+        .iter()
+        .filter_map(|(name, secs)| Signal::from_name(name).map(|state| (state, *secs)))
+        .collect()
+}
+
 #[derive(Debug, Default)]
 pub struct Stats {
     /// 前端上次给的本地日期，用来判断是否跨天
     day: String,
-    /// 已结算的各状态累计时长
+    /// **今天**已结算的各状态累计时长
     totals: HashMap<Signal, Duration>,
+    /// 过去几天（键是本地日期，值是各状态的**秒数**）。落盘的就是这个 + 今天。
+    ///
+    /// 存秒数而不是 `Duration`：文件是给人看也给人改的，`{"working": 3600}` 比
+    /// 一个带纳秒的结构好读得多，而且秒是够用的精度。
+    history: HashMap<String, HashMap<Signal, u64>>,
     /// 当前这一段的起点
     segment_start: Option<Instant>,
     /// 当前正在累计的状态
@@ -56,7 +132,7 @@ impl Stats {
         }
     }
 
-    /// 跨天就结清：累计清零，当前这一段重新起算。返回是否真的跨了天。
+    /// 跨天就结算：把昨天归档、清零，新的一天重新起算。返回是否真的跨了天。
     ///
     /// **从 `report` 里摘出来，是为了让「不查询」的那条路径也能调它。** 原先跨天只在
     /// `report` 里判，而那只在设置面板开着时发生 —— 灯球是常驻应用，整天不开面板是
@@ -67,20 +143,124 @@ impl Stats {
             return false;
         }
         let first = self.day.is_empty();
+
+        if !first {
+            // **先把当前这段结算掉再归档。** 不做这一步的话，一天里最后那一整段
+            // ——从上次状态变化到跨天，可能几小时——会整个丢掉：它在 `segment_start`
+            // 里，还没进 `totals`。
+            self.close_segment(now);
+
+            // 空的一天不记 —— 应用没开的日子在文件里留一条全零的记录，只会让
+            // 「哪几天真的在用」这件事看不出来。
+            let archived: HashMap<Signal, u64> = self
+                .totals
+                .iter()
+                .filter(|(_, total)| !total.is_zero())
+                .map(|(state, total)| (*state, total.as_secs()))
+                .collect();
+            if !archived.is_empty() {
+                self.history.insert(self.day.clone(), archived);
+            }
+            self.totals.clear();
+            // 跨天时当前这段也重新起算，否则会把昨天那段算进今天
+            if self.current.is_some() {
+                self.segment_start = Some(now);
+            }
+        }
+
         self.day = today.to_string();
 
-        // 第一次拿到日期只记下来，**不清空** —— 否则从启动到第一次拿到日期之间累计的
-        // 时间会被白扔，而那段可能相当长（启动到前端第一次推时钟之间）
-        if first {
-            return false;
+        // 这一天盘上可能已经有记录 —— 重启之后接着算，或者应用关了一夜再开。
+        // **取出来就用、并从 history 里删掉**，这样「今天」只在一处：`totals`。
+        // 留着的话，落盘时 `history + 今天的 totals` 会把今天算两遍。
+        if let Some(restored) = self.history.remove(today) {
+            self.totals = restored
+                .into_iter()
+                .map(|(state, secs)| (state, Duration::from_secs(secs)))
+                .collect();
         }
 
-        self.totals.clear();
-        // 跨天时当前这段也重新起算，否则会把昨天那段算进今天
-        if self.current.is_some() {
-            self.segment_start = Some(now);
+        self.trim_history();
+        !first
+    }
+
+    /// 只留最近 `KEEP_DAYS` 天。按日期字符串排序即可 —— 本地日期是 `YYYY-MM-DD`，
+    /// 字典序就是时间序（这也是让前端用 `toLocaleDateString("sv")` 的原因之一）。
+    fn trim_history(&mut self) {
+        while self.history.len() > KEEP_DAYS {
+            let Some(oldest) = self.history.keys().min().cloned() else {
+                break;
+            };
+            self.history.remove(&oldest);
         }
-        true
+    }
+
+    /// 落盘。`now` 用来把**正在进行的那一段**也折算进去 —— 不折算的话，崩掉时
+    /// 正在跑的那一段（可能已经几十分钟）会整个丢掉。
+    ///
+    /// 写的是「历史 + 今天」的完整快照，不是增量：文件小、逻辑简单，而且坏掉时
+    /// 最多丢一次刷新的量。
+    pub fn save(&self, now: Instant) -> io::Result<()> {
+        let Ok(path) = crate::config::stats_file() else {
+            return Ok(());
+        };
+        self.save_to(&path, now)
+    }
+
+    /// 指定路径的版本 —— 单测用它写进临时目录，不必碰用户真实的 `~/.signalhub`。
+    pub fn save_to(&self, path: &std::path::Path, now: Instant) -> io::Result<()> {
+        if self.day.is_empty() {
+            // 还不知道「今天」是哪天（前端还没推过时钟），这时候写下去只会把
+            // 当前这段记到一个空日期上
+            return Ok(());
+        }
+
+        let json = serde_json::to_string_pretty(&Stored::from_stats(self, now))
+            .map_err(|err| io::Error::other(format!("序列化统计失败: {err}")))?;
+        crate::config::atomic_write(path, &json, None)
+    }
+
+    /// 今天的合计，含**正在进行的那一段**（按 `now` 现折算，不改动自身）。
+    fn snapshot_today(&self, now: Instant) -> HashMap<Signal, u64> {
+        let mut totals: HashMap<Signal, u64> = self
+            .totals
+            .iter()
+            .filter(|(_, total)| !total.is_zero())
+            .map(|(state, total)| (*state, total.as_secs()))
+            .collect();
+
+        // 正在跑的那一段要按 `now` 现算进来，而不是只算已结算的部分
+        if let (Some(state), Some(start)) = (self.current, self.segment_start)
+            && let Some(elapsed) = now.checked_duration_since(start)
+        {
+            *totals.entry(state).or_default() += elapsed.as_secs();
+        }
+        totals
+    }
+
+    /// 从盘上读回来。**任何问题都退回空统计**，和 `load_settings` 的兜底一致 ——
+    /// 为一份统计文件读不出来而拒绝启动，代价远大于收益。
+    pub fn load() -> Self {
+        let Ok(path) = crate::config::stats_file() else {
+            return Self::default();
+        };
+        Self::load_from(&path)
+    }
+
+    pub fn load_from(path: &std::path::Path) -> Self {
+        let Ok(raw) = std::fs::read_to_string(path) else {
+            return Self::default();
+        };
+        match serde_json::from_str::<Stored>(&raw) {
+            Ok(stored) => stored.into_stats(),
+            Err(err) => {
+                eprintln!(
+                    "[signalhub] {} 无法解析（{err}），统计从零开始",
+                    path.display()
+                );
+                Self::default()
+            }
+        }
     }
 
     /// 取统计，按时长从多到少。
@@ -172,6 +352,182 @@ impl Stats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 每个用例一个独立目录，避免相互干扰，也不必碰用户真实的 `~/.signalhub`
+    fn temp_path(name: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "signalhub-stats-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join(name)
+    }
+
+    /// 存了能读回来：今天已累计的部分，重启之后接着算。
+    #[test]
+    fn today_survives_a_restart() {
+        let path = temp_path("stats.json");
+        let (mut stats, t) = (Stats::default(), Instant::now());
+
+        stats.record(t, Signal::Working);
+        stats.rollover(t, "2026-10-12");
+        // 跑 40 秒
+        stats.record(t + Duration::from_secs(40), Signal::Idle);
+        stats.save_to(&path, t + Duration::from_secs(40)).unwrap();
+
+        // 「重启」：读回来，再推一次同一个日期
+        let mut restored = Stats::load_from(&path);
+        let t2 = Instant::now();
+        restored.record(t2, Signal::Idle);
+        restored.rollover(t2, "2026-10-12");
+
+        let rows = restored.report(t2 + Duration::from_secs(5), "2026-10-12");
+        assert!(
+            rows.contains(&(Signal::Working, Duration::from_secs(40))),
+            "昨天（其实是今天）那 40 秒要还在：{rows:?}"
+        );
+        // 重启后新攒的 5 秒要加在原来那 40 秒上，而不是另起一段
+        assert!(
+            rows.contains(&(Signal::Idle, Duration::from_secs(5))),
+            "{rows:?}"
+        );
+    }
+
+    /// 过完的一天要归档，而且**下一个新日子从零开始**。
+    #[test]
+    fn a_finished_day_is_archived_and_the_next_one_starts_clean() {
+        let path = temp_path("stats.json");
+        let (mut stats, t) = (Stats::default(), Instant::now());
+
+        stats.record(t, Signal::Working);
+        stats.rollover(t, "2026-10-12");
+        stats.record(t + Duration::from_secs(40), Signal::Idle);
+        // 跨天：40 秒的 working 归档到 10-12
+        stats.rollover(t + Duration::from_secs(40), "2026-10-13");
+        stats.save_to(&path, t + Duration::from_secs(40)).unwrap();
+
+        let mut restored = Stats::load_from(&path);
+        let t2 = Instant::now();
+        restored.rollover(t2, "2026-10-13");
+        let rows = restored.report(t2, "2026-10-13");
+        assert!(rows.is_empty(), "新的一天不该带着昨天的时长：{rows:?}");
+
+        // 但昨天那份还在（落盘时写进去了）—— 这是「历史」的意义
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("2026-10-12"), "{raw}");
+        assert!(raw.contains("\"working\": 40"), "{raw}");
+    }
+
+    /// **正在跑的那一段也要存进去。** 不折算的话，崩掉时正在跑的那一段
+    /// （可能已经几十分钟）会整个丢掉。
+    #[test]
+    fn the_open_segment_is_folded_in_at_save_time() {
+        let path = temp_path("stats.json");
+        let (mut stats, t) = (Stats::default(), Instant::now());
+
+        stats.record(t, Signal::Working);
+        stats.rollover(t, "2026-10-12");
+        // 刻意**不**再 record —— 那一段还在跑
+        stats.save_to(&path, t + Duration::from_secs(90)).unwrap();
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("\"working\": 90"), "在跑的那 90 秒要算进去：{raw}");
+    }
+
+    /// 还不知道今天是哪天时**不写盘** —— 否则会把当前这段记到一个空日期上。
+    #[test]
+    fn nothing_is_written_before_the_date_is_known() {
+        let path = temp_path("stats.json");
+        let (stats, t) = (Stats::default(), Instant::now());
+        stats.save_to(&path, t).unwrap();
+        assert!(!path.exists(), "没日期就不该落盘");
+    }
+
+    /// 认不出来的状态名直接丢掉，不把整份统计判死（文件可能是旧版本写的）。
+    #[test]
+    fn an_unknown_state_name_is_dropped_not_fatal() {
+        let path = temp_path("stats.json");
+        std::fs::write(
+            &path,
+            r#"{"days":{"2026-10-12":{"working":60,"teleporting":99}}}"#,
+        )
+        .unwrap();
+
+        let mut stats = Stats::load_from(&path);
+        let t = Instant::now();
+        stats.rollover(t, "2026-10-12");
+        let rows = stats.report(t, "2026-10-12");
+        assert_eq!(rows, vec![(Signal::Working, Duration::from_secs(60))], "{rows:?}");
+    }
+
+    /// 坏文件退回空统计，而不是让应用起不来。
+    #[test]
+    fn a_corrupt_file_falls_back_to_empty() {
+        let path = temp_path("stats.json");
+        std::fs::write(&path, "{ 这不是 json").unwrap();
+        let stats = Stats::load_from(&path);
+        assert!(stats.history.is_empty());
+    }
+
+    /// 只留最近 `KEEP_DAYS` 天。
+    #[test]
+    fn old_days_are_trimmed() {
+        let (mut stats, t) = (Stats::default(), Instant::now());
+        // 40 个连续日期（跨两个月），比 KEEP_DAYS 多
+        let dates: Vec<String> = (0..40)
+            .map(|i| {
+                let (month, day) = if i < 31 { (1, i + 1) } else { (2, i - 30) };
+                format!("2026-{month:02}-{day:02}")
+            })
+            .collect();
+
+        let mut clock = t;
+        stats.rollover(clock, &dates[0]);
+        for date in &dates[1..] {
+            stats.record(clock, Signal::Working);
+            clock += Duration::from_secs(10);
+            stats.rollover(clock, date);
+        }
+
+        assert_eq!(stats.history.len(), KEEP_DAYS, "只留最近 {KEEP_DAYS} 天");
+        assert!(!stats.history.contains_key(&dates[0]), "最老的那天要被挤掉");
+        assert!(
+            stats.history.contains_key(&dates[38]),
+            "最新归档的那天要在"
+        );
+        // 最后那个是**今天**，它在 `totals` 里而不是 history —— 这条也顺手锁住
+        // 「今天只存一处」这个不变量，免得落盘时把今天算两遍
+        assert!(
+            !stats.history.contains_key(&dates[39]),
+            "今天不该出现在历史里"
+        );
+    }
+
+    /// **跨天时要先把正在跑的那一段结算掉再归档。**
+    ///
+    /// 不结算的话，一天里最后那一段（从上次状态变化到跨天，可能几小时）整个丢掉
+    /// —— 它在 `segment_start` 里，还没进 `totals`。
+    #[test]
+    fn the_open_segment_is_archived_on_rollover() {
+        let path = temp_path("stats.json");
+        let (mut stats, t) = (Stats::default(), Instant::now());
+
+        stats.record(t, Signal::Working);
+        stats.rollover(t, "2026-10-12");
+        // 整整跑了 3 小时没换过状态 —— 这段全程都在 segment_start 里
+        let three_hours = Duration::from_secs(3 * 3600);
+        stats.rollover(t + three_hours, "2026-10-13");
+        stats.save_to(&path, t + three_hours).unwrap();
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            raw.contains(&format!("\"working\": {}", 3 * 3600)),
+            "在跑的那 3 小时必须归档，不能丢：{raw}"
+        );
+    }
 
     /// **不查询也能跨天。** 原先跨天只在 `report` 里判，而那只在有人查统计
     /// （设置面板开着）时发生 —— 灯球是常驻应用，整天不开面板是常态，于是

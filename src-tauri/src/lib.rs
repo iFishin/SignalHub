@@ -702,13 +702,23 @@ fn set_palette_colors(app: tauri::AppHandle, colors: BTreeMap<String, String>) {
 /// **日期也要推（而不只是在 `get_stats` 时带过来）**，是为了让统计能及时跨天结算：
 /// 那条查询只在设置面板开着时才发生，而灯球是常驻应用 —— 整天不开面板是常态，
 /// 于是「今日时长」会横跨多天一路累加。前端每分钟推一次，跨天因此在分钟级被发现。
+///
+/// **顺手落盘**：这条心跳是「应用还活着」的现成节拍，拿它当统计的保存点，不必再
+/// 起一个定时器。代价是崩掉最多丢一分钟的时长 —— 对一个「今天等了多久」的数字
+/// 完全够用。（两个窗口都在推，所以实际是每分钟写两次；文件几百字节，无妨。）
 #[tauri::command]
 fn set_local_clock(app: tauri::AppHandle, hour: u8, today: String) {
     app.state::<alerts::LocalHour>().set(hour.min(23));
-    app.state::<SharedStats>()
-        .lock()
-        .expect("stats poisoned")
-        .rollover(Instant::now(), &today);
+
+    // 先把 `State` 句柄绑出来：`app.state::<T>()` 返回的是个临时值，直接接 `.lock()`
+    // 会让那个临时值在这一句结束时就被释放，而锁还借着它 —— 借用检查过不了。
+    let handle = app.state::<SharedStats>();
+    let mut stats = handle.lock().expect("stats poisoned");
+    let now = Instant::now();
+    stats.rollover(now, &today);
+    if let Err(err) = stats.save(now) {
+        eprintln!("[signalhub] 保存统计失败: {err}");
+    }
 }
 
 /// 按当前状态重画托盘图标。
@@ -1033,7 +1043,9 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(SharedStore::new(Mutex::new(Store::default())))
         .manage(SharedUi::default())
-        .manage(SharedStats::default())
+        // 统计从盘上读回来：灯球是常驻的，但「常驻」不等于「永不重启」——
+        // 改设置、升级、崩了重来，用户对「今天等了多久」的期待是跨重启的。
+        .manage(Arc::new(Mutex::new(stats::Stats::load())))
         .manage(SharedOutbound::default())
         .manage(SharedPalette::default())
         .manage(alerts::LocalHour::default())
