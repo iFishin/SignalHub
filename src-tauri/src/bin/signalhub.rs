@@ -15,7 +15,8 @@
 
 use serde_json::{json, Value};
 use std::io::Read;
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 // 直接包含源码，而不是 `use signalhub_lib::config`：lib.rs 是 Tauri 应用，
@@ -55,7 +56,11 @@ fn main() -> ExitCode {
     let code = match run(&args) {
         Ok(()) => EXIT_OK,
         Err(failure) => {
-            eprintln!("signalhub: {}", failure.message);
+            // 空 message = 这是 `run` 传出来的被包命令退出码，不是我们的错误 ——
+            // 被包命令自己的输出已经说明了一切，不该再补一句「signalhub: 」
+            if !failure.message.is_empty() {
+                eprintln!("signalhub: {}", failure.message);
+            }
             failure.code()
         }
     };
@@ -67,18 +72,32 @@ fn main() -> ExitCode {
 struct Failure {
     message: String,
     not_running: bool,
+    /// 直接给定的退出码，**跳过 message / not_running 那套映射**。
+    ///
+    /// `run` 用它把被包命令的退出码原样传出去。这时 `message` 是空的：那不是
+    /// 「signalhub 出错了」，而是「被包的命令失败了」—— 它自己的输出已经说明了一切，
+    /// 我们再补一句只会让人以为是包装器的问题。
+    passthrough: Option<u8>,
 }
 
 impl Failure {
     fn other(message: impl Into<String>) -> Self {
-        Self { message: message.into(), not_running: false }
+        Self { message: message.into(), not_running: false, passthrough: None }
     }
 
     fn not_running(message: impl Into<String>) -> Self {
-        Self { message: message.into(), not_running: true }
+        Self { message: message.into(), not_running: true, passthrough: None }
+    }
+
+    /// 把退出码原样传出去（见字段注释）。
+    fn passthrough(code: u8) -> Self {
+        Self { message: String::new(), not_running: false, passthrough: Some(code) }
     }
 
     fn code(&self) -> u8 {
+        if let Some(code) = self.passthrough {
+            return code;
+        }
         if self.not_running {
             EXIT_NOT_RUNNING
         } else {
@@ -105,6 +124,12 @@ struct Flags {
     interval_ms: Option<u64>,
     until: Option<String>,
     timeout_ms: Option<u64>,
+    /// `--` 之后**原样收下**的命令（`run` 用）。
+    ///
+    /// 单独存一个字段而不是塞进 positional：那样 `signalhub run foo -- bar` 里
+    /// 的 `foo` 会和被包的命令混在一起，分不出哪个是哪个。`--` 的语义就是
+    /// 「这之后不是我的参数了」，那就该有个地方把它原封不动放着。
+    command: Vec<String>,
 }
 
 fn take_value(args: &[String], index: &mut usize, name: &str) -> Result<String, Failure> {
@@ -151,6 +176,13 @@ impl Flags {
                 }
                 "--until" => flags.until = Some(take_value(args, &mut index, "--until")?),
                 "--never-fail" => {} // main 已经从原始参数里处理过了
+                // `--` 之后**原样收下、不再解析** —— `run` 用它把命令和我们的选项
+                // 分开。**这条必须在下面那个兜底分支之前**：`--` 自己也以 `--` 开头，
+                // 落到兜底里会被当成「未知选项 --」。
+                "--" => {
+                    flags.command = args[index + 1..].to_vec();
+                    break;
+                }
                 other if other.starts_with("--") => {
                     return Err(Failure::other(format!("未知选项 {other}，用 --help 看用法")));
                 }
@@ -223,6 +255,7 @@ fn run(args: &[String]) -> Result<(), Failure> {
         }
         "status" => status(&flags),
         "watch" => watch(&flags),
+        "run" => run_command(&flags),
         "clear" => clear(&flags),
         "monitor" => match rest.first().map(String::as_str) {
             Some("on") => monitor(true, &flags),
@@ -401,8 +434,128 @@ fn report(state: &str, flags: &Flags) -> Result<(), Failure> {
     Ok(())
 }
 
-fn clear(flags: &Flags) -> Result<(), Failure> {
-    let endpoint = Endpoint::discover(flags)?;
+/// 发一次上报，**什么都不打印**。
+///
+/// 心跳和「收尾」用它：一轮 `run` 会发很多次，每次都打一行会把被包命令自己的输出
+/// 淹掉 —— 而那个输出才是用户要看的东西。
+///
+/// `ttl_ms` 由调用方**强制指定**，覆盖命令行上的 `--ttl`：包装器的心跳必须知道
+/// 自己留给下一次续期多少时间，让用户随手写的 `--ttl 1h` 打乱它只会制造「命令还
+/// 在跑、灯已经沉默」这种怪现象。
+fn post_state_quiet(
+    endpoint: &Endpoint,
+    state: &str,
+    flags: &Flags,
+    ttl_ms: u64,
+) -> Result<(), Failure> {
+    let mut body = json!({ "state": state });
+    apply_flag_extras(&mut body, flags);
+    body["ttl_ms"] = json!(ttl_ms);
+
+    let (status, text) = read_response!(client()
+        .post(&endpoint.url("/state"))
+        .header("Authorization", &endpoint.auth())
+        .header("Content-Type", "application/json")
+        .send(body.to_string()));
+    expect_success(status, &text).map(|_| ())
+}
+
+/// 心跳间隔，以及它对应的 TTL。
+///
+/// TTL 给到心跳的 3 倍：连丢两次才转沉默 —— 本机回环丢包极罕见，这点余量是为了
+/// 「机器正好忙了一下」不至于让灯闪成沉默。反过来，**这个值决定了「包装器被杀掉
+/// 之后灯还会显示在跑多久」**，所以不能给太长。
+const RUN_HEARTBEAT: Duration = Duration::from_secs(20);
+const RUN_TTL_MS: u64 = 60_000;
+
+/// 把一条命令包起来上报 —— **通用适配器**。
+///
+/// 任何跑在终端里的工具都能这么接，**不需要知道它自己的 hook 格式**：开始前报
+/// `working`，跑的过程中按心跳续期，退出后按退出码报 `done` / `error`。
+/// VS Code 的任务（`tasks.json`）里也用它，见 api.md §4.13。
+///
+/// 四条要守住的，少一条都会把「集成」变成「添乱」：
+///
+/// 1. **退出码原样传出去。** 包一层不能改被包命令的语义 —— 否则 CI 里
+///    `signalhub run -- make test` 会永远是绿的，那是最坏的一种集成。
+/// 2. **stdout / stderr 原样透传**（继承父进程），所以管道、重定向、颜色都照旧。
+/// 3. **上报失败绝不影响被包的命令。** 灯没开、端口读不到 —— 命令照跑。用户是来
+///    干活还是来点灯的，这个顺序不能颠倒。
+/// 4. **起不来要如实报错**：命令名写错是调用方的错，那时报 `error` 并返回非零。
+fn run_command(flags: &Flags) -> Result<(), Failure> {
+    let Some((program, args)) = flags.command.split_first() else {
+        return Err(Failure::other(
+            "run 需要一条命令，写在 -- 之后，例如 signalhub run --agent aider -- aider",
+        ));
+    };
+
+    // 端点只解析一次。**读不到就直接不报**（见第 3 条），而不是让整个命令失败。
+    //
+    // 上报失败**只提醒一次**：说一次「灯没通」就够，每次心跳都说会把被包命令的输出
+    // 淹掉；而一声不吭又会让「灯为什么不亮」无从查起 —— 尤其是端口文件还在、进程
+    // 却已经关了的时候，那时 `discover` 是成功的，失败要到真正发请求才暴露。
+    let endpoint = Endpoint::discover(flags).ok();
+    let mut warned = false;
+    let mut report = |state: &str| {
+        let Some(endpoint) = &endpoint else {
+            return;
+        };
+        if let Err(err) = post_state_quiet(endpoint, state, flags, RUN_TTL_MS)
+            && !warned
+        {
+            warned = true;
+            eprintln!("signalhub: 上报失败（{}）；命令照跑", err.message);
+        }
+    };
+
+    // 先报一次，让灯在命令启动**之前**就亮起来 —— 否则启动慢的工具会有几秒钟
+    // 是「什么都没发生」的样子
+    report("working");
+
+    let mut child = match Command::new(program).args(args).spawn() {
+        Ok(child) => child,
+        Err(err) => {
+            report("error");
+            return Err(Failure::other(format!("起不了 {program:?}：{err}")));
+        }
+    };
+
+    // **用一个线程等它。** 主线程要腾出来按心跳续期，而 `recv_timeout` 让「子进程
+    // 结束」**立刻**被看到 —— 不用轮询，也就不会出现「命令早就跑完了，灯还亮着
+    // 最多一个心跳」。
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait());
+    });
+
+    let status = loop {
+        match rx.recv_timeout(RUN_HEARTBEAT) {
+            Ok(Ok(status)) => break status,
+            Ok(Err(err)) => {
+                return Err(Failure::other(format!("等 {program:?} 结束失败：{err}")));
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => report("working"),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(Failure::other("等待子进程的线程意外结束了"));
+            }
+        }
+    };
+
+    // 非零退出报 `error`：对被包的命令来说那就是出错了，和它自己会怎么表达无关。
+    // 「包装器被 Ctrl-C 掉、收尾没跑到」那种情况由 `stale` 兜住。
+    report(if status.success() { "done" } else { "error" });
+
+    if status.success() {
+        return Ok(());
+    }
+    // 被信号杀掉时 `code()` 是 `None`（Unix 上）—— 那时没有可传递的码，按我们的
+    // 通用错误码走，但**仍然不打任何东西**（见 `Failure::passthrough`）
+    Err(Failure::passthrough(
+        status.code().map_or(EXIT_ERROR, |code| (code & 0xff) as u8),
+    ))
+}
+
+fn clear(flags: &Flags) -> Result<(), Failure> {    let endpoint = Endpoint::discover(flags)?;
     let session = flags.session.as_deref().unwrap_or("default");
 
     let (status, text) = read_response!(client()
@@ -914,6 +1067,7 @@ signalhub {version} —— 桌面悬浮状态灯的上报客户端
   signalhub hook <智能体>            从 stdin 读智能体 hook 的 JSON 并上报
   signalhub status [--json]          查询当前聚合状态
   signalhub watch [选项]             跟随状态变化（终端里盯着，或 CI 里等状态）
+  signalhub run [选项] -- <命令>     把一条命令包起来上报（通用适配，见下）
   signalhub clear --session <id>     清除某个会话
   signalhub monitor on|off           全局暂停 / 恢复监控
   signalhub on | off                 monitor 的简写
@@ -946,6 +1100,20 @@ signalhub {version} —— 桌面悬浮状态灯的上报客户端
   0  成功
   1  参数错误或服务端返回错误
   3  SignalHub 没有在运行
+
+  run 是**唯一例外**：它把被包命令的退出码原样传出去。包一层不能改被包命令的语义，
+  否则 CI 里 `signalhub run -- make test` 会永远是绿的。
+
+通用适配（signalhub run）:
+  任何跑在终端里的工具都能这么接，**不需要知道它自己的 hook 格式**：
+
+    signalhub run --agent aider -- aider --model sonnet
+
+  开始前报 working，跑的过程中每 20 秒续期一次，退出后报 done（退出码 0）
+  或 error（非零）。stdout / stderr 原样透传；灯没开的时候命令照跑。
+
+  被包命令自己的选项写在 `--` 之后 —— 那之后的一切都原样交给它，不会被当成
+  我们的选项解析。
 
 智能体: {agents}
   install hooks 会改动它们的配置文件，写之前自动备份，且只动 hooks 这一个键。
@@ -1241,6 +1409,57 @@ mod tests {
         Flags::parse(&owned)
     }
 
+    /// `--` 之后的一切**原样**进 `command`，一个都不解析。
+    ///
+    /// 这条是 `run` 的地基：被包命令自己的选项（`--message`、`--ttl`…）很可能和我们
+    /// 的重名，不隔开的话就会被我们吃掉 —— 而那种错**不会报错**，只会让被包的命令
+    /// 莫名其妙少了个参数。
+    #[test]
+    fn everything_after_a_double_dash_is_handed_over_untouched() {
+        let (flags, _) = parse(&[
+            "run", "--agent", "aider", "--",
+            "aider", "--model", "sonnet", "--ttl", "1h", "-x",
+        ])
+        .unwrap();
+
+        // 我们自己的选项照常解析
+        assert_eq!(flags.agent.as_deref(), Some("aider"));
+        // 但 `--` 之后的 `--ttl` 是**被包命令**的，不该被我们吃掉
+        assert_eq!(flags.ttl_ms, None, "-- 之后的选项不该被我们解析");
+        assert_eq!(
+            flags.command,
+            vec!["aider", "--model", "sonnet", "--ttl", "1h", "-x"]
+        );
+    }
+
+    /// 没有 `--` 就没有命令 —— `run` 要因此报错，而不是静默跑一个空命令。
+    #[test]
+    fn a_run_without_a_command_has_nothing_to_run() {
+        let (flags, _) = parse(&["run", "--agent", "aider"]).unwrap();
+        assert!(flags.command.is_empty());
+    }
+
+    /// `--` 单独出现（后面什么都没有）也要能解析，而不是被当成「未知选项」。
+    #[test]
+    fn a_bare_double_dash_is_not_an_unknown_option() {
+        let (flags, _) = parse(&["run", "--"]).unwrap();
+        assert!(flags.command.is_empty());
+    }
+
+    /// `run` 把被包命令的退出码**原样**传出去，而且不补一句我们自己的话。
+    ///
+    /// 这是「包一层不能改语义」那条约束的落点：CI 里
+    /// `signalhub run -- make test` 必须让 make 的失败仍然是失败。
+    #[test]
+    fn a_passthrough_failure_carries_the_childs_code_and_says_nothing() {
+        let failure = Failure::passthrough(7);
+        assert_eq!(failure.code(), 7);
+        assert!(failure.message.is_empty(), "不该补我们自己的话");
+        // 边界：0 也能原样传（虽然实践中不会走到，`run` 对 0 直接返回 Ok）
+        assert_eq!(Failure::passthrough(0).code(), 0);
+        assert_eq!(Failure::passthrough(255).code(), 255);
+    }
+
     #[test]
     fn flags_are_parsed_with_their_values() {
         let (flags, positional) = parse(&[
@@ -1422,7 +1641,7 @@ mod tests {
     fn help_documents_every_exit_code_and_command() {
         let text = help();
         for expected in [
-            "hook", "status", "watch", "clear", "monitor", "install", "uninstall",
+            "hook", "status", "watch", "run", "clear", "monitor", "install", "uninstall",
             "claude-code", "codex", "cursor", "--never-fail", "--ttl", "--dry-run",
             "--until", "--timeout", "--interval", "--group", "退出码",
         ] {

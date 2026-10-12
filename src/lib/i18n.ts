@@ -187,11 +187,11 @@ export interface Messages {
   agentMissing: string;
   agentConnect: string;
   agentDisconnect: string;
-  /** 「其他工具：命令行上报」那一节 —— 它们没有能写 hook 的配置文件 */
+  /** 「其他工具」那一节 —— 它们没有能写 hook 的配置文件 */
   cliAgentsTitle: string;
   cliAgentsHint: string;
-  /** 那一节里「任何其他工具」那一行的名字 */
-  cliAgentsAny: string;
+  /** 那一节里「包一条命令」那一行 */
+  cliAgentsWrap: string;
   /** 「试一下」那一节 */
   tryItTitle: string;
   tryItHint: string;
@@ -477,10 +477,10 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     agentMissing: "未检测到",
     agentConnect: "接入",
     agentDisconnect: "卸载",
-    cliAgentsTitle: "其他工具：命令行上报",
+    cliAgentsTitle: "其他工具",
     cliAgentsHint:
-      "这一类没有能写 hook 的配置文件，所以没有「接入」按钮 —— 在它们自己的脚本或事件钩子里调一次 signalhub 就行。任何能跑命令的工具都能这么接：--agent 的名字随便填（它只是上报体里的一个标识），--session 用那个工具给你的会话 id，这样并行开几个会话时每个各占一块牌（下面的「分组方式」选「按会话」）。只能发 HTTP、跑不了命令的，用「指南」页那条 curl。",
-    cliAgentsAny: "任何其他工具",
+      "两条路，按对方的情况挑。包一条命令：不管对方是什么，只要能跑命令就行 —— 跑起来报「执行中」，退出后按退出码报「已完成 / 出错」，不用它有任何 hook 支持。在它自己的事件钩子里调：对方有事件钩子时更精细（能区分「需要授权」和「出错」），Pi Agent 用这条。VS Code 系里跑在集成终端（含任务）的用第一条；只活在侧边栏面板里的扩展（Cline / Roo Code / Continue 这类）接不了 —— 它既没有可包的进程，也没有可写的 hook 配置。",
+    cliAgentsWrap: "包一条命令",
     tryItTitle: "试一下",
     tryItHint:
       "点一下，灯上立刻出现那个状态。它走的是和 HTTP 上报完全相同的链路（聚合、窗口尺寸、今日统计、推送），所以能回答「灯到底通没通」—— 但不验证 HTTP 那一层（服务起没起来、token 对不对），那要用「指南」页那条 curl。牌上会显示 test 组，20 秒后自己走掉，不会留下东西。",
@@ -762,10 +762,10 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     agentMissing: "Not detected",
     agentConnect: "Connect",
     agentDisconnect: "Disconnect",
-    cliAgentsTitle: "Other tools: reporting from the command line",
+    cliAgentsTitle: "Other tools",
     cliAgentsHint:
-      "These have no config file to write hooks into, so there is no Connect button — just call signalhub once from their own script or event hook. Any tool that can run a command works this way: put whatever you like in --agent (it is just a label carried in the report), and pass the session id that tool gives you in --session, so that parallel sessions each get their own sign (pick Session under Group signs by below). If a tool can only make HTTP requests and not run commands, use the curl on the Guide tab.",
-    cliAgentsAny: "Any other tool",
+      "Two ways; pick by what the tool gives you. Wrap a command: it does not matter what the tool is, as long as it can run a command — it reports Working while it runs and Done / Error by exit code when it finishes, and the tool needs no hook support at all. Call it from its own event hooks: finer-grained when the tool has them (it can tell Needs permission from Error apart), and that is what Pi Agent uses. For VS Code: anything running in the integrated terminal (tasks included) uses the first way; extensions that live only in a side panel (Cline, Roo Code, Continue and the like) cannot be hooked at all — they offer neither a process to wrap nor a config file to write.",
+    cliAgentsWrap: "Wrap a command",
     tryItTitle: "Try it",
     tryItHint:
       "Click one and the state appears on the lamp immediately. It takes exactly the same path as an HTTP report (aggregation, window sizing, today's stats, pushing to the lamp), so it answers \"is the lamp working at all\" — but it does not exercise the HTTP layer (whether the server is up, whether the token is right), and for that you want the curl on the Guide tab. It shows up as the test group and clears itself after 20 seconds, leaving nothing behind.",

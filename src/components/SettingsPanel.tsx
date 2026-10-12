@@ -28,13 +28,12 @@ import { SIGNALS, REPORTABLE_SIGNALS, type SignalState, type Snapshot } from "..
 const PI_AGENT_COMMAND = 'signalhub working --agent pi --session "<session-id>"';
 
 /**
- * 给「任何其他工具」抄的那条命令。
+ * 「包一条命令」那条 —— **通用适配**，见 api.md §4.13。
  *
- * 和上面那条只差 `--agent` 的名字 —— 分开列出来是有用的：**用户看到「任何其他工具」
- * 那一行才会相信自己的工具也能接**，而只列一个 Pi Agent 会让人以为这是个白名单。
- * 尖括号里是占位符，不是字面量。
+ * 它和上面那条的区别值得摆在界面上：这条**不需要对方有任何 hook 支持**，只要它是个
+ * 能跑的命令。对「市场上那些没听说过的工具」来说，这是唯一一条确定能走通的路。
  */
-const GENERIC_COMMAND = 'signalhub working --agent <name> --session "<id>"';
+const WRAP_COMMAND = 'signalhub run --agent <name> -- <命令>';
 
 /**
  * 「试一下」那一排按钮发哪几个状态。
@@ -1355,13 +1354,30 @@ export function SettingsPanel({ snapshot }: Props) {
             <div className="section">
               <div className="section-title">{m.cliAgentsTitle}</div>
               <p className="hint">{m.cliAgentsHint}</p>
+              {/* 「包一条命令」放在 Pi Agent 上面：它是**通用**那条，而 Pi Agent 是
+                  具体的一个例子。用户先看到「任何工具都能这么接」，再看到例子，
+                  顺序才顺。 */}
+              <div className="agent">
+                <div className="agent-info">
+                  <div className="agent-line">
+                    <span className="agent-name">{m.cliAgentsWrap}</span>
+                  </div>
+                  <span className="agent-config mono">{WRAP_COMMAND}</span>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-tiny"
+                  onClick={() => copy("wrap", WRAP_COMMAND)}
+                >
+                  {copyLabel("wrap")}
+                </button>
+              </div>
+              {/* Pi Agent 点名放在下面：它是「在事件钩子里调」那一类的具体例子 */}
               <div className="agent">
                 <div className="agent-info">
                   <div className="agent-line">
                     <span className="agent-name">Pi Agent</span>
                   </div>
-                  {/* 命令本身就说明了一切 —— 不给「接入」按钮，给一条能直接
-                      抄走的东西 */}
                   <span className="agent-config mono">{PI_AGENT_COMMAND}</span>
                 </div>
                 <button
@@ -1372,23 +1388,7 @@ export function SettingsPanel({ snapshot }: Props) {
                   {copyLabel("pi")}
                 </button>
               </div>
-              {/* 「任何其他工具」单独一行而不是只写在说明里：只列一个 Pi Agent
-                  会让人以为一份白名单 —— 而实际上任何能跑命令的工具都能接。 */}
-              <div className="agent">
-                <div className="agent-info">
-                  <div className="agent-line">
-                    <span className="agent-name">{m.cliAgentsAny}</span>
-                  </div>
-                  <span className="agent-config mono">{GENERIC_COMMAND}</span>
-                </div>
-                <button
-                  type="button"
-                  className="btn btn-tiny"
-                  onClick={() => copy("any", GENERIC_COMMAND)}
-                >
-                  {copyLabel("any")}
-                </button>
-              </div>
+              <p className="hint">{m.cliAgentsHint}</p>
             </div>
 
             {/* ---- 试一下 ----
