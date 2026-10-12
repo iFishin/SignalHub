@@ -28,7 +28,7 @@ struct Ctx {
     started: Instant,
 }
 
-/// 绑定 127.0.0.1 并开始服务。返回后不阻塞调用方。
+/// 绑定并开始服务。返回后不阻塞调用方。
 ///
 /// 接收 `Notifier` 而不是 `AppHandle`：**必须用 app 里 manage 的那个组合版
 /// 通知器**，它除了推事件给前端，还要核对窗口尺寸、记统计、发通知和转发。
@@ -38,18 +38,24 @@ pub fn spawn(
     notify: Notifier,
     store: Arc<Mutex<Store>>,
     settings: crate::SharedSettings,
+    bind: crate::SharedBind,
     token: String,
 ) {
+    // 监听地址**在启动时定一次**。设置里那个开关改了要重启才生效 —— 理由见
+    // `Settings::lan_access`：运行中重绑会让端口变化，表现为「灯突然收不到上报」。
+    let lan = settings.lock().expect("settings poisoned").lan_access;
+    let host = bind_host(lan);
+
     let ctx = Ctx { store, notify, settings, token, started: Instant::now() };
 
     tauri::async_runtime::spawn(async move {
-        let listener = match tokio::net::TcpListener::bind(("127.0.0.1", PREFERRED_PORT)).await {
+        let listener = match tokio::net::TcpListener::bind((host, PREFERRED_PORT)).await {
             Ok(listener) => listener,
             Err(err) => {
                 eprintln!(
                     "[signalhub] 端口 {PREFERRED_PORT} 不可用（{err}），改用系统分配端口"
                 );
-                tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                tokio::net::TcpListener::bind((host, 0))
                     .await
                     .expect("无法绑定本地端口")
             }
@@ -59,12 +65,47 @@ pub fn spawn(
         if let Err(err) = config::write_port(port) {
             eprintln!("[signalhub] 写入端口文件失败: {err}（CLI 将无法自动发现端口）");
         }
-        println!("[signalhub] HTTP 服务监听 127.0.0.1:{port}");
+        // 记下「实际绑到哪了」。**在真的 bind 成功之后记** —— 界面上那句
+        // 「重启才生效」靠它判断，记早了会说谎。
+        *bind.lock().expect("bind poisoned") = lan;
+        if lan {
+            // 这条要显眼：开了局域网访问之后，网内任何人拿到 token 就能上报
+            match local_ip() {
+                Some(ip) => println!("[signalhub] HTTP 服务监听 0.0.0.0:{port}（局域网 {ip}:{port}）"),
+                None => println!("[signalhub] HTTP 服务监听 0.0.0.0:{port}（已暴露到局域网）"),
+            }
+        } else {
+            println!("[signalhub] HTTP 服务监听 127.0.0.1:{port}");
+        }
 
         if let Err(err) = axum::serve(listener, router(ctx)).await {
             eprintln!("[signalhub] HTTP 服务退出: {err}");
         }
     });
+}
+
+/// 该绑哪个地址。
+///
+/// 摘成纯函数是为了能单测 —— 这是整个「局域网访问」里**唯一真正决定安全模型**的
+/// 一行：绑 `127.0.0.1` 时别的机器连不上，绑 `0.0.0.0` 时网内任何人都能连。
+/// 写成内联的三元表达式就只能靠跑起来看。
+fn bind_host(lan: bool) -> &'static str {
+    if lan { "0.0.0.0" } else { "127.0.0.1" }
+}
+
+/// 本机在局域网里的地址，取不到就 `None`。
+///
+/// 用「连一个 UDP socket 再看自己的 local_addr」这个经典办法：UDP 的 `connect`
+/// **不发任何包**，只做一次路由查找，所以不引入依赖、也不产生流量。查不到路由
+/// （完全离线、只有回环）时会失败，那时返回 `None` —— 这个值只是用来显示给人看，
+/// 取不到就不显示，不该因此报错。
+pub fn local_ip() -> Option<String> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    // 8.8.8.8 只是个「挑一条出网路由」的靶子，不会真的发东西过去
+    socket.connect("8.8.8.8:80").ok()?;
+    let ip = socket.local_addr().ok()?.ip();
+    // 万一查出回环（没有别的路由时可能），那对局域网没有意义
+    (!ip.is_loopback()).then(|| ip.to_string())
 }
 
 fn router(ctx: Ctx) -> Router {
@@ -270,6 +311,21 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// 监听地址是这一整个功能里**唯一真正决定安全模型**的一行。
+    ///
+    /// 绑回环时别的机器连不上（默认）；绑 `0.0.0.0` 时网内任何人都能连 —— 而那时
+    /// 唯一的防线只剩 token。所以这两条各钉一个断言：将来谁把它改成「默认开」，
+    /// 或者把两个分支写反，都会在这里红。
+    #[test]
+    fn the_bind_host_is_loopback_unless_lan_access_is_on() {
+        assert_eq!(bind_host(false), "127.0.0.1", "默认必须只绑本机");
+        assert_eq!(bind_host(true), "0.0.0.0");
+        assert!(
+            !crate::config::Settings::default().lan_access,
+            "默认值必须是关的 —— 见 Settings::lan_access"
+        );
+    }
 
     struct TestServer {
         port: u16,

@@ -54,6 +54,16 @@ type SharedPalette = Mutex<BTreeMap<String, String>>;
 /// 状态时长统计。按前端给的本地日期分桶，见 stats.rs。
 type SharedStats = Arc<Mutex<stats::Stats>>;
 
+/// HTTP 服务**实际**绑到了哪里（`true` = 0.0.0.0，暴露到局域网）。
+///
+/// 单独记一份而不是直接读设置：设置是「用户想要什么」，这个是「现在到底是什么」。
+/// 监听地址只在启动时绑一次（见 `Settings::lan_access`），所以两者在用户改完开关
+/// 之后、重启之前**必然不一致** —— 界面靠这个差值决定要不要提示「重启才生效」，
+/// 而不是无条件挂一句让人以为一直没生效的说明。
+///
+/// 和 `SharedStore` 一样是 `Arc`：`server::spawn` 要拿到一个能活过它自己的句柄。
+type SharedBind = Arc<Mutex<bool>>;
+
 /// 最近几次出站钩子的执行结果。界面上要能回答「我的服务器到底收到没有」——
 /// 光看 stderr 是查不出来的（从 Dock 启动的话根本没地方看）。
 type SharedOutbound = outbound::OutboundLog;
@@ -307,13 +317,19 @@ pub(crate) fn current_settings(app: &tauri::AppHandle) -> Settings {
 /// 而且它就是 `~/.signalhub/token` 那个文件的内容，能打开设置面板的人本来就能
 /// 读到它 —— 只显示前几位换来的是「看起来安全」而不是安全。
 #[tauri::command]
-fn get_endpoint() -> serde_json::Value {
+fn get_endpoint(app: tauri::AppHandle) -> serde_json::Value {
     serde_json::json!({
         "port": config::read_port().ok(),
         "token": config::read_token().ok(),
         "dir": config::data_dir()
             .ok()
             .map(|path| path.to_string_lossy().into_owned()),
+        // 局域网那几样是给「接入」页显示用的。**`bound_lan` 是「现在真的绑到哪了」
+        // 而不是设置里的值** —— 两者在用户改完开关、重启之前必然不一致，界面靠
+        // 这个差值决定要不要提示「重启才生效」。
+        "lan_access": current_settings(&app).lan_access,
+        "bound_lan": *app.state::<SharedBind>().lock().expect("bind poisoned"),
+        "lan_ip": server::local_ip(),
     })
 }
 
@@ -1074,6 +1090,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(SharedStore::new(Mutex::new(Store::default())))
         .manage(SharedUi::default())
+        .manage(SharedBind::default())
         // 统计从盘上读回来：灯球是常驻的，但「常驻」不等于「永不重启」——
         // 改设置、升级、崩了重来，用户对「今天等了多久」的期待是跨重启的。
         .manage(Arc::new(Mutex::new(stats::Stats::load())))
@@ -1196,6 +1213,8 @@ pub fn run() {
                 // 上报路径要读 `group_by`，所以设置也共享给它，而不是让它自己
                 // 从盘上再读一份 —— 两份真值迟早会漂移。
                 app.state::<SharedSettings>().inner().clone(),
+                // 实际绑到哪了，回填给界面判断「那个开关生效了没有」
+                app.state::<SharedBind>().inner().clone(),
                 token,
             );
 

@@ -231,6 +231,12 @@ export interface Messages {
   configImportTitle: string;
   configFilterName: string;
 
+  // 局域网访问
+  lanAccess: string;
+  lanAccessHint: string;
+  lanAddress: string;
+  lanRestart: string;
+
   quit: string;
 
   // 灯球 tooltip
@@ -508,6 +514,12 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     configImportTitle: "导入设置",
     configFilterName: "SignalHub 设置",
 
+    lanAccess: "允许局域网访问",
+    lanAccessHint:
+      "关着的时候只有本机能上报。打开后，别的机器 / 容器 / WSL 里的智能体也能连进来 —— 代价是「同一网段里任何人只要拿到 token 就能上报」：那道拒绝带 Origin 请求的防线挡的是网页偷偷打本机端口，对 curl 这类客户端无效。所以要开的话，请确认这个网络是你信得过的（家里的、公司内网），别开在公共 WiFi 上。",
+    lanAddress: "局域网地址",
+    lanRestart: "改完要重启应用才生效。",
+
     quit: "退出 SignalHub",
 
     lampHint: "左键折叠 / 展开 · 右键单组菜单",
@@ -778,6 +790,12 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     configExportTitle: "Export settings",
     configImportTitle: "Import settings",
     configFilterName: "SignalHub settings",
+
+    lanAccess: "Allow LAN access",
+    lanAccessHint:
+      "Turned off, only this machine can report. Turned on, agents on other machines, in containers, or under WSL can reach it — at the cost that anyone on the same network who has the token can report. The \"reject requests carrying Origin\" defence stops a web page poking the local port, not a client like curl. So only turn it on for a network you trust (home, an office intranet) — never on public WiFi.",
+    lanAddress: "LAN address",
+    lanRestart: "Takes effect after restarting the app.",
 
     quit: "Quit SignalHub",
 

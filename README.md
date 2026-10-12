@@ -97,7 +97,7 @@ npm run tauri dev
 
 ## 上报状态
 
-HTTP 接口（默认 `127.0.0.1:41320`，端口以 `~/.signalhub/port` 为准）：
+HTTP 接口（默认 `127.0.0.1:41320`，端口以 `~/.signalhub/port` 为准）。**默认只监听本机** —— 别的机器连不进来，这是它默认的安全边界：
 
 ```bash
 curl -s -X POST "http://127.0.0.1:$(cat ~/.signalhub/port)/v1/state" \
@@ -117,6 +117,8 @@ Invoke-RestMethod -Method Post "http://127.0.0.1:$port/v1/state" `
   -ContentType 'application/json' `
   -Body '{"state":"permission","session":"demo","message":"需要批准"}'
 ```
+
+**别的机器上报**：设置面板 →「接入」里有个「允许局域网访问」的开关（默认关）。打开后服务改绑 `0.0.0.0`，同网段的机器 / 容器 / WSL 就能连进来 —— 代价是**网内任何人拿到 token 就能上报**，所以别在公共 WiFi 上开。改完要重启应用才生效。
 
 或者用 CLI：
 
@@ -163,7 +165,7 @@ $user = [Environment]::GetEnvironmentVariable('Path', 'User')
 
 ## 进度
 
-已完成：悬浮灯球、状态聚合与 TTL、HTTP 上报接口、CLI（含 `watch`）、设置面板、hook 自动接线（Claude Code / Codex / Cursor / Gemini CLI / Goose）、系统通知与提示音、通知动作按钮、窗口位置记忆、展开 / 折叠两种形态、每组右键菜单、今日时长统计与近 30 分钟时间线、出站钩子转发、每个状态的颜色 / 形状 / 节奏可单独调、按组静音、勿扰时段、持续多久才提醒、卡住了一直提醒（5 / 15 / 30 分钟各再提一次，正文带上已经等了多久）、托盘图标跟随状态、单实例、开机自启、全局快捷键、多分组（上报带 `group` 或 `--group`，也可以按工作目录自动兜底）、点击穿透。
+已完成：悬浮灯球、状态聚合与 TTL、HTTP 上报接口、CLI（含 `watch`）、设置面板、hook 自动接线（Claude Code / Codex / Cursor / Gemini CLI / Goose）、系统通知与提示音、通知动作按钮、窗口位置记忆、展开 / 折叠两种形态、每组右键菜单、今日时长统计与近 30 分钟时间线、出站钩子转发、每个状态的颜色 / 形状 / 节奏可单独调、按组静音、勿扰时段、持续多久才提醒、卡住了一直提醒（5 / 15 / 30 分钟各再提一次，正文带上已经等了多久）、托盘图标跟随状态、单实例、开机自启、全局快捷键、多分组（上报带 `group` 或 `--group`，也可以按工作目录自动兜底）、今日时长的每日落盘（保留 30 天）、配置导出 / 导入、局域网访问开关（默认关）、点击穿透。
 
 待做：签名与公证（步骤位置留在 [.github/workflows/release.yml](.github/workflows/release.yml) 里，拿到证书就能填）；CLI 的 `--help` 和报错还是中文，没跟着界面语言走。
 

@@ -122,6 +122,18 @@ interface Endpoint {
   token: string | null;
   /** `~/.signalhub`，token / port / config.json / hooks.log 都在里面。 */
   dir: string | null;
+  /** 「允许局域网访问」这个开关的当前值。 */
+  lan_access: boolean;
+  /**
+   * HTTP 服务**实际**绑到了哪里（`true` = 0.0.0.0）。
+   *
+   * 和 `lan_access` 分开：监听地址只在启动时绑一次，所以用户改完开关、还没重启
+   * 时两者不一致 —— 界面靠这个差值提示「重启才生效」。取不到（服务还没起来）
+   * 就是 null，那时不提示。
+   */
+  bound_lan: boolean | null;
+  /** 本机在局域网里的地址。取不到就是 null（完全离线 / 只有回环）。 */
+  lan_ip: string | null;
 }
 
 interface Props {
@@ -1320,6 +1332,45 @@ export function SettingsPanel({ snapshot }: Props) {
                 />
               </div>
               <p className="hint">{m.groupByCwdHint}</p>
+            </div>
+
+            {/* ---- 局域网访问 ----
+                和「分组」同页、紧挨着它：两者都是「上报进来这一侧」的事 ——
+                一个管怎么解读，一个管从哪能报进来。
+
+                独立一节而不再缩进一层：这是一个**改变安全模型**的开关，混在
+                别的行里会被划过去。说明分成两段也是这个原因 —— 代价那一段得
+                单独成句，不能藏在操作说明的尾巴上。
+
+                「重启才生效」只在**真的不一致**时才说：`bound_lan` 是服务实际
+                绑到哪了，无条件挂一句会让人以为一直没生效。 */}
+            <div className="section">
+              <div className="row">
+                <span>{m.lanAccess}</span>
+                <Switch
+                  on={settings.lan_access}
+                  onChange={(on) => patch({ lan_access: on })}
+                />
+              </div>
+              {endpoint !== null && endpoint.bound_lan !== settings.lan_access && (
+                <p className="hint">{m.lanRestart}</p>
+              )}
+              {settings.lan_access && endpoint?.lan_ip && (
+                <div className="kv">
+                  <span className="k">{m.lanAddress}</span>
+                  <span className="mono">{`http://${endpoint.lan_ip}:${endpoint.port ?? "—"}`}</span>
+                  <button
+                    type="button"
+                    className="btn btn-tiny kv-copy"
+                    onClick={() =>
+                      copy("lan", `http://${endpoint.lan_ip}:${endpoint.port ?? ""}`)
+                    }
+                  >
+                    {copyLabel("lan")}
+                  </button>
+                </div>
+              )}
+              <p className="hint">{m.lanAccessHint}</p>
             </div>
 
             {/* ---- 通知转发入口 ----

@@ -139,6 +139,14 @@ export interface Settings {
    * 所以默认是 `"none"`。
    */
   group_by: "none" | "cwd";
+  /**
+   * 把 HTTP 服务暴露到局域网，让别的机器 / 容器 / WSL 里的智能体也能上报。
+   *
+   * **默认关**。打开后网内任何人拿到 token 就能上报 —— 「拒绝带 Origin 的请求」
+   * 那道防线挡的是网页偷偷打本机端口，对 curl 这类非浏览器客户端无效。
+   * **改完要重启应用才生效**：监听地址只在启动时绑定一次。
+   */
+  lan_access: boolean;
 }
 
 /** 与 Rust 侧 `config::Settings::default()` 一致。 */
@@ -164,6 +172,7 @@ const DEFAULTS: Settings = {
   locale: "auto",
   group_meta: {},
   group_by: "none",
+  lan_access: false,
 };
 
 const SETTINGS_EVENT = "signalhub://settings";

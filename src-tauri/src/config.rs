@@ -562,6 +562,17 @@ pub struct Settings {
     /// 所有现有用户的灯会从一块牌变成若干块、窗口尺寸跟着变，而他们没配过的
     /// 每一组的显示名都是原始路径 —— 属于无声改变既有行为。
     pub group_by: GroupBy,
+    /// 把 HTTP 服务暴露到局域网，让别的机器 / 容器 / WSL 里的智能体也能上报。
+    ///
+    /// **默认必须是关的**，这条比看着重要：开了之后网内任何人只要拿到 token 就能
+    /// 上报，而「带 Origin 头一律拒绝」那道防线对 curl 这类**非浏览器**客户端无效
+    /// —— 它挡的是「你正在浏览的网页偷偷打本地端口」，挡不住同一网段里的另一台机器。
+    /// 换句话说开了之后唯一的防线就是 token 本身。所以这是个显式开关，不悄悄放宽。
+    ///
+    /// **改完要重启应用才生效**：监听地址在启动时绑定一次，运行中重绑会让端口变化
+    /// （CLI 的自动发现跟着断一下），出问题时表现为「灯突然收不到上报」这种很难
+    /// 归因的现象。与其在运行中做这件事，不如写明「下次启动生效」。
+    pub lan_access: bool,
 }
 
 /// 兜底分组的依据。
@@ -687,6 +698,8 @@ impl Default for Settings {
             alert_after_secs: DEFAULT_ALERT_DELAY_SECS,
             tray_follows_state: true,
             group_by: GroupBy::default(),
+            // 默认只监听本机。见字段注释：开了之后唯一的防线就是 token
+            lan_access: false,
         }
     }
 }
@@ -1144,6 +1157,7 @@ mod tests {
             alert_after_secs: 30,
             tray_follows_state: false,
             group_by: GroupBy::Cwd,
+            lan_access: true,
             webhook_url: None,
             colors: BTreeMap::new(),
         };

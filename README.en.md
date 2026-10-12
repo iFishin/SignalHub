@@ -99,7 +99,7 @@ On first launch it creates `port` and `token` under `~/.signalhub/` (`%USERPROFI
 
 ## Reporting state
 
-HTTP API (defaults to `127.0.0.1:41320`; the real port is in `~/.signalhub/port`):
+HTTP API (defaults to `127.0.0.1:41320`; the real port is in `~/.signalhub/port`). **It only listens on this machine by default** — other machines cannot reach it, and that is its default security boundary:
 
 ```bash
 curl -s -X POST "http://127.0.0.1:$(cat ~/.signalhub/port)/v1/state" \
@@ -119,6 +119,8 @@ Invoke-RestMethod -Method Post "http://127.0.0.1:$port/v1/state" `
   -ContentType 'application/json' `
   -Body '{"state":"permission","session":"demo","message":"needs approval"}'
 ```
+
+**Reporting from another machine**: Settings → Connect has an **Allow LAN access** switch (off by default). Turned on, the server binds `0.0.0.0` and machines, containers or WSL on the same network can reach it — at the cost that **anyone on that network who has the token can report**, so do not turn it on over public WiFi. It takes effect after restarting the app.
 
 Or use the CLI:
 
@@ -163,7 +165,7 @@ An absolute path works too, but the moment you move the binary the hooks silentl
 
 ## Status
 
-Done: the floating lamp, state aggregation and TTL, the HTTP reporting API, the CLI (including `watch`), the settings panel, automatic hook installation (Claude Code / Codex / Cursor / Gemini CLI / Goose), system notifications with sound and action buttons, window position memory, the expanded/collapsed shapes, per-group right-click menus, today's duration stats and a 30-minute timeline, outbound hooks, per-state colour / shape / rhythm, per-group mute, quiet hours, a persistence threshold before alerting, repeat reminders while something stays stuck (again at 5 / 15 / 30 minutes, saying how long it has been waiting), a tray icon that follows the state, single-instance, launch at login, a global shortcut, grouping (an explicit `group` or `--group`, or an automatic fallback per working directory), and click-through mode.
+Done: the floating lamp, state aggregation and TTL, the HTTP reporting API, the CLI (including `watch`), the settings panel, automatic hook installation (Claude Code / Codex / Cursor / Gemini CLI / Goose), system notifications with sound and action buttons, window position memory, the expanded/collapsed shapes, per-group right-click menus, today's duration stats and a 30-minute timeline, outbound hooks, per-state colour / shape / rhythm, per-group mute, quiet hours, a persistence threshold before alerting, repeat reminders while something stays stuck (again at 5 / 15 / 30 minutes, saying how long it has been waiting), a tray icon that follows the state, single-instance, launch at login, a global shortcut, grouping (an explicit `group` or `--group`, or an automatic fallback per working directory), per-day stats persisted to disk (kept for 30 days), configuration export / import, an opt-in LAN access switch (off by default), and click-through mode.
 
 To do: code signing and notarization (the steps have a place reserved in [.github/workflows/release.yml](.github/workflows/release.yml) — fill them in once you have certificates); the CLI's `--help` and error messages are still Chinese and don't follow the UI language.
 
