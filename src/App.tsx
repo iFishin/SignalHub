@@ -5,7 +5,7 @@ import { SettingsPanel } from "./components/SettingsPanel";
 import { useSignal } from "./lib/useSignal";
 import { useSettings } from "./lib/useSettings";
 import { usePalettePush } from "./lib/palettes";
-import { useLocalHour } from "./lib/useLocalHour";
+import { useLocalClock } from "./lib/useLocalClock";
 import { useLangPush } from "./lib/i18n";
 import { inTauri, windowKind } from "./lib/env";
 import { REPORTABLE_SIGNALS } from "./lib/types";
@@ -55,9 +55,9 @@ export default function App() {
   // 两个窗口共用这套订阅；hook 必须无条件调用，所以放在分支之前。
   const snapshot = useSignal();
   const settings = useSettings();
-  // 两件「只有前端才知道的事实」推给 Rust：现在几点（勿扰时段要用）、
-  // 每个状态解析出来的颜色（托盘图标要用）。见各自的注释。
-  useLocalHour();
+  // 三件「只有前端才知道的事实」推给 Rust：现在几点 + 今天几号（勿扰时段和统计
+  // 跨天要用）、每个状态解析出来的颜色（托盘图标要用）。见各自的注释。
+  useLocalClock();
   usePalettePush(settings);
   useLangPush();
   useDevKeys();

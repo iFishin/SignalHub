@@ -693,14 +693,22 @@ fn set_palette_colors(app: tauri::AppHandle, colors: BTreeMap<String, String>) {
     refresh_tray(&app);
 }
 
-/// 前端推过来的「现在是几点（本地时间）」。
+/// 前端推过来的「现在几点 + 今天几号（本地时间）」。
 ///
-/// Rust 只有 UTC，没有时区数据，所以这个**事实**只能由前端提供；但「在不在勿扰
+/// Rust 只有 UTC，没有时区数据，所以这两个**事实**只能由前端提供；但「在不在勿扰
 /// 窗口内」的判断留在 Rust（`config::QuietHours::covers`），跨午夜那种边界逻辑
 /// 只有一处实现才敢信，而且那边能单测。
+///
+/// **日期也要推（而不只是在 `get_stats` 时带过来）**，是为了让统计能及时跨天结算：
+/// 那条查询只在设置面板开着时才发生，而灯球是常驻应用 —— 整天不开面板是常态，
+/// 于是「今日时长」会横跨多天一路累加。前端每分钟推一次，跨天因此在分钟级被发现。
 #[tauri::command]
-fn set_local_hour(app: tauri::AppHandle, hour: u8) {
+fn set_local_clock(app: tauri::AppHandle, hour: u8, today: String) {
     app.state::<alerts::LocalHour>().set(hour.min(23));
+    app.state::<SharedStats>()
+        .lock()
+        .expect("stats poisoned")
+        .rollover(Instant::now(), &today);
 }
 
 /// 按当前状态重画托盘图标。
@@ -960,8 +968,46 @@ fn wire_settings_window(app: &tauri::App) {
     });
 }
 
+/// 崩了要留下一条记录。
+///
+/// **为什么需要**：release 用 `panic = "abort"`（理由见 Cargo.toml），进程会直接
+/// 消失 —— 而灯球没有 Dock 图标、也没有窗口，用户看到的只是圆点不见了。没有这条
+/// 记录的话，「应用为什么自己退了」就完全查不出来；而它是常驻应用，静默退出是
+/// 最容易被当成「我没注意到」的那类故障。
+///
+/// `panic = "abort"` 下 hook **照样会跑**，跑完才 abort，所以这里来得及落盘。
+///
+/// 写进 `~/.signalhub/hooks.log`（和 hook 事件共用那份带轮转的日志）—— 那是用来
+/// 排查的地方，多一种条目比多一个文件好找。同时打一份到 stderr，从终端启动时
+/// 一眼能看见。
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        // hook 里**绝不能再 panic**（双 panic 直接 abort，且什么都来不及记），
+        // 所以全程 `let _ =` / `unwrap_or_else`，不给它第二次出错的机会。
+        let message = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|text| (*text).to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "（读不出 panic 信息）".to_string());
+        let place = info
+            .location()
+            .map(|location| format!("{}:{}", location.file(), location.line()))
+            .unwrap_or_else(|| "未知位置".to_string());
+
+        config::append_hook_log(&format!(
+            "{} [panic] {message} @ {place}\n",
+            config::utc_hms()
+        ));
+        eprintln!("[signalhub] 崩溃：{message} @ {place}");
+    }));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 第一件事就装它：后面任何一步崩了都要留下记录
+    install_panic_hook();
+
     tauri::Builder::default()
         // 单实例要最先注册：多开会让端口文件和状态互相打架，表现为「灯球
         // 偶尔不动」这种极难排查的现象。
@@ -1022,7 +1068,7 @@ pub fn run() {
             open_group_menu,
             open_lamp_menu,
             set_palette_colors,
-            set_local_hour,
+            set_local_clock,
             set_lang,
             quit
         ])

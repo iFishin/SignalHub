@@ -143,8 +143,11 @@ pub fn load_or_create_token() -> io::Result<String> {
 }
 
 /// 把实际监听端口写进文件，供 CLI 自动发现。
+///
+/// 也走原子写：端口文件被读到的时机是「CLI 刚启动、要连上去」，一个残缺的数字
+/// 会让它连到错的端口或者干脆解析失败 —— 而这个文件每次启动只写一次，代价可以忽略。
 pub fn write_port(port: u16) -> io::Result<()> {
-    fs::write(port_file()?, port.to_string())
+    atomic_write(&port_file()?, &port.to_string(), None)
 }
 
 /// hook 调用日志的路径。
@@ -166,10 +169,11 @@ pub fn utc_hms() -> String {
     format!("{:02}:{:02}:{:02}Z", secs / 3600, (secs % 3600) / 60, secs % 60)
 }
 
-/// 往 hook 日志追加一行。
+/// 往排查日志追加一行。
 ///
-/// **入站（智能体调 CLI）和出站（SignalHub 发钩子）共用这一个出口。** 两处各写
-/// 一遍轮转逻辑的话，迟早有一处忘了加，那个文件就会无界增长。
+/// **四个出口共用这一个。** 入站（智能体调 CLI）、出站（SignalHub 发钩子）、
+/// 崩溃记录（`install_panic_hook`）都写它 —— 各写一遍轮转逻辑的话，迟早有一处
+/// 忘了加，那个文件就会无界增长。
 ///
 /// 单代轮转：超过 512KB 就改名为 `.log.1`（覆盖上一次的）。日志是排查用的，不是
 /// 档案 —— 保留一代够回答「刚才到底发生了什么」。
@@ -858,27 +862,82 @@ pub fn save_settings(settings: &Settings) -> io::Result<()> {
     let settings = settings.clone().clamped();
     let json = serde_json::to_string_pretty(&settings)
         .map_err(|err| io::Error::other(format!("序列化设置失败: {err}")))?;
-    fs::write(settings_file()?, json)
+    atomic_write(&settings_file()?, &json, None)
 }
 
-/// 创建时就带上权限，避免出现「先 world-readable 再收紧」的窗口期。
-#[cfg(unix)]
-fn write_private(path: &Path, contents: &str) -> io::Result<()> {
+/// 原子地写一个文件：先写同目录的临时文件，再 `rename` 过去。
+///
+/// **为什么必须原子**：`load_settings` 的失败兜底是**静默退回全部默认值**。非原子写
+/// 写到一半崩溃（断电、强杀、磁盘满），留下的就是残缺的 JSON —— 用户调了一小时的
+/// 颜色、钩子、分组会一声不响地全没，而且没有任何地方会告诉他。`rename` 在同一个
+/// 文件系统内是原子的，所以读到的要么是旧的完整内容、要么是新的完整内容。
+///
+/// 三处要点，少一处都会出问题：
+///
+/// - 临时文件**必须和目标同目录**。`rename` 跨文件系统会失败（`EXDEV`），而放
+///   `/tmp` 正好就跨了 —— 配置在 `~/.signalhub`，`/tmp` 常常是另一个挂载点。
+/// - 权限在建临时文件时就设好，不是 `rename` 之后再 `chmod`。后者会留下一个
+///   「已经是正式文件、但还没收紧权限」的窗口期 —— 那正是 `write_private` 注释里
+///   说的那个窗口。
+/// - 目标是**符号链接**时写到它指向的地方。用 dotfiles 管配置的人常把
+///   `~/.claude/settings.json` 做成链接，而 `rename` 换的是目录项，会把链接替换成
+///   一个普通文件 —— 用户的仓库就此断掉，而且不会报错。
+pub(crate) fn atomic_write(path: &Path, contents: &str, mode: Option<u32>) -> io::Result<()> {
+    // symlink 要顺着写。canonicalize 对「存在但不是链接」也返回同一个路径（只是
+    // 顺带解了目录上的链接），对「还不存在」失败 —— 那时用原路径正是要的。
+    let path = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+
+    let dir = path
+        .parent()
+        .ok_or_else(|| io::Error::other("目标路径没有父目录"))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| io::Error::other("目标路径没有文件名"))?;
+    // 带上进程 id：两个实例同时写（托盘和设置窗各触发一次）时不至于互相踩同一个临时文件
+    let tmp = dir.join(format!(
+        ".{}.{}.tmp",
+        name.to_string_lossy(),
+        std::process::id()
+    ));
+
+    match write_then_rename(&tmp, &path, contents, mode) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            // 半截的临时文件留在配置目录里只会让下次困惑
+            let _ = fs::remove_file(&tmp);
+            Err(err)
+        }
+    }
+}
+
+fn write_then_rename(tmp: &Path, path: &Path, contents: &str, mode: Option<u32>) -> io::Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
-    file.write_all(contents.as_bytes())
+
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    if let Some(mode) = mode {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(mode);
+    }
+    // Windows 上文件默认继承用户目录的 ACL，`mode` 没有对应概念
+    #[cfg(not(unix))]
+    let _ = mode;
+
+    let mut file = options.open(tmp)?;
+    file.write_all(contents.as_bytes())?;
+    // 先把数据刷下去再改名。不 sync 的话，崩溃后可能出现「名字已经换了、内容还是空的」
+    // —— 那正是这个函数要防的那种残缺文件。
+    file.sync_all()?;
+    drop(file);
+
+    fs::rename(tmp, path)
 }
 
-/// Windows 上文件默认继承用户目录的 ACL，不需要额外处理。
-#[cfg(not(unix))]
+/// 只有它能读的东西（目前是 token）才用这个。分开命名是为了让调用点自己说清
+/// 「这个文件是私密的」，而不是靠传一个 `Some(0o600)` 让人猜。
 fn write_private(path: &Path, contents: &str) -> io::Result<()> {
-    fs::write(path, contents)
+    atomic_write(path, contents, Some(0o600))
 }
 
 #[cfg(unix)]
@@ -895,6 +954,111 @@ fn set_mode(_path: &Path, _mode: u32) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // ---- 原子写 ---------------------------------------------------------------
+
+    /// 每个用例一个独立目录，避免相互干扰（同 hooks.rs 的测试）
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            static COUNTER: AtomicUsize = AtomicUsize::new(0);
+            let unique = format!(
+                "signalhub-config-{}-{}",
+                std::process::id(),
+                COUNTER.fetch_add(1, Ordering::SeqCst)
+            );
+            let dir = std::env::temp_dir().join(unique);
+            fs::create_dir_all(&dir).unwrap();
+            TempDir(dir)
+        }
+
+        fn file(&self, name: &str) -> PathBuf {
+            self.0.join(name)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn atomic_write_creates_and_replaces() {
+        let dir = TempDir::new();
+        let path = dir.file("config.json");
+
+        atomic_write(&path, "first", None).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "first");
+
+        atomic_write(&path, "second", None).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "second", "覆盖要生效");
+    }
+
+    /// **不留临时文件。** 半截的 `.config.json.<pid>.tmp` 落在用户的 `~/.signalhub`
+    /// 里，下次只会让人困惑「这是什么、能不能删」。
+    #[test]
+    fn atomic_write_leaves_no_temp_file_behind() {
+        let dir = TempDir::new();
+        atomic_write(&dir.file("config.json"), "x", None).unwrap();
+
+        let mut names: Vec<String> = fs::read_dir(&dir.0)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["config.json"], "配置目录里只该有目标文件");
+    }
+
+    /// 目标是符号链接时写到**它指向的地方**，不能把链接本身替换掉。
+    ///
+    /// 用 dotfiles 管配置的人常把 `~/.claude/settings.json` 做成链接 —— 就地
+    /// `rename` 会把链接变成一个普通文件，用户的仓库就此断掉，而且不会报错。
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_follows_a_symlink_instead_of_replacing_it() {
+        let dir = TempDir::new();
+        let real = dir.file("real.json");
+        let link = dir.file("link.json");
+        fs::write(&real, "old").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        atomic_write(&link, "new", None).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&real).unwrap(),
+            "new",
+            "内容要落到链接指向的那个文件上"
+        );
+        assert!(
+            fs::symlink_metadata(&link).unwrap().file_type().is_symlink(),
+            "链接本身必须还在，否则 dotfiles 仓库就断了"
+        );
+    }
+
+    /// 私密文件建出来就该是 0600 —— 不能有「先 world-readable 再收紧」的窗口期。
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_applies_the_private_mode_up_front() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new();
+        let path = dir.file("token");
+        atomic_write(&path, "s3cret", Some(0o600)).unwrap();
+
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "实际 {mode:o}");
+    }
+
+    /// 目标目录不存在时给出错误，而不是 panic —— 调用点要把错误报给用户。
+    #[test]
+    fn atomic_write_reports_a_missing_directory() {
+        let dir = TempDir::new();
+        let missing = dir.file("nope").join("config.json");
+        assert!(atomic_write(&missing, "x", None).is_err());
+    }
 
     /// 真实踩到的坑：加了 `notify` 字段之后，旧版本写的 config.json 里没有它。
     /// 若不加 `serde(default)`，整份解析会失败、退回全默认 —— 用户已经调好的

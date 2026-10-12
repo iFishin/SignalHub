@@ -64,5 +64,17 @@ ureq = { version = "3", default-features = false, features = ["rustls"] }
 codegen-units = 1
 lto = true
 opt-level = 3
+# **别去掉这一行。** 它不只是省体积，还担着两件事：
+#
+# 1. 库里那 55 处 `.expect("... poisoned")` 全靠它成立。`abort` 不展开栈，所以
+#    锁**永远不会中毒** —— 那些「中毒了」的分支是构造上不可达的。改成 unwind
+#    之后它们会变成活的，而且真走到那一步时只会连环 panic（已经出过错了，后面
+#    每一次加锁都再炸一次），比直接退出更难查。
+# 2. wry / tao 会从 Objective-C 回调里调回 Rust。让 panic 展开着穿过那些 C 帧是
+#    UB，`abort` 从根上避免了这一类。
+#
+# 代价是**进程会静默消失**：灯球没有 Dock 图标、也没有窗口，用户只看到圆点没了。
+# 所以配套装了 `install_panic_hook`（见 lib.rs）—— 崩了要留下一条记录，让
+# 「为什么不见了」有得查。
 panic = "abort"
 strip = true

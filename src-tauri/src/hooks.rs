@@ -378,7 +378,12 @@ pub fn install(agent: Agent, dry_run: bool) -> Result<Report, String> {
             return Err("算不出 Goose 插件目录".to_string());
         };
         let manifest = dir.join("plugin.json");
-        if let Err(err) = fs::write(&manifest, GOOSE_MANIFEST) {
+        // 原子写 + 建目录：`atomic_write` 要往这个目录里放临时文件，目录不在会直接失败。
+        // 清单是插件的身份证，写坏了 Goose 会静默不加载这个插件。
+        if let Err(err) = fs::create_dir_all(&dir) {
+            return Err(format!("创建插件目录 {} 失败: {err}", dir.display()));
+        }
+        if let Err(err) = crate::config::atomic_write(&manifest, GOOSE_MANIFEST, None) {
             return Err(format!("写插件清单 {} 失败: {err}", manifest.display()));
         }
         report.manifest = Some(manifest);
@@ -774,7 +779,9 @@ fn write_backup(path: &Path, existing: Option<&str>) -> Result<Option<PathBuf>, 
         return Ok(None);
     };
     let backup = PathBuf::from(format!("{}.signalhub-backup", path.display()));
-    fs::write(&backup, existing)
+    // 备份也走原子写：它是在改原文件**之前**写的，写坏了就等于没有备份 ——
+    // 而它存在的全部意义就是「原文件改坏了还能救回来」。
+    crate::config::atomic_write(&backup, existing, None)
         .map_err(|err| format!("写备份 {} 失败: {err}", backup.display()))?;
     Ok(Some(backup))
 }
@@ -787,7 +794,11 @@ fn write_json(path: &Path, root: &Map<String, Value>) -> Result<(), String> {
     let mut text = serde_json::to_string_pretty(root)
         .map_err(|err| format!("序列化配置失败: {err}"))?;
     text.push('\n');
-    fs::write(path, text).map_err(|err| format!("写 {} 失败: {err}", path.display()))
+    // 原子写在这里尤其重要：写的是**用户自己的智能体配置文件**（`~/.claude/settings.json`
+    // 之类），就地写坏一份手写的配置，代价远大于这个功能本身。注释里那条安全底线
+    // 「解析失败就中止，绝不覆盖」防的是「内容错」，这一条防的是「写到一半」。
+    crate::config::atomic_write(path, &text, None)
+        .map_err(|err| format!("写 {} 失败: {err}", path.display()))
 }
 
 /// `signalhub` 是否已在 PATH 里。CLI 用它决定要不要提醒用户「现在写的是绝对路径」。

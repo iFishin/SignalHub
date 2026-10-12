@@ -56,23 +56,39 @@ impl Stats {
         }
     }
 
+    /// 跨天就结清：累计清零，当前这一段重新起算。返回是否真的跨了天。
+    ///
+    /// **从 `report` 里摘出来，是为了让「不查询」的那条路径也能调它。** 原先跨天只在
+    /// `report` 里判，而那只在设置面板开着时发生 —— 灯球是常驻应用，整天不开面板是
+    /// 常态，于是「今日时长」会横跨多天一路累加。日期现在由前端每分钟推一次
+    /// （见 `lib.rs` 的 `set_local_clock`），跨天因此能在分钟级被发现。
+    pub fn rollover(&mut self, now: Instant, today: &str) -> bool {
+        if self.day == today {
+            return false;
+        }
+        let first = self.day.is_empty();
+        self.day = today.to_string();
+
+        // 第一次拿到日期只记下来，**不清空** —— 否则从启动到第一次拿到日期之间累计的
+        // 时间会被白扔，而那段可能相当长（启动到前端第一次推时钟之间）
+        if first {
+            return false;
+        }
+
+        self.totals.clear();
+        // 跨天时当前这段也重新起算，否则会把昨天那段算进今天
+        if self.current.is_some() {
+            self.segment_start = Some(now);
+        }
+        true
+    }
+
     /// 取统计，按时长从多到少。
     ///
     /// `today` 是前端给的本地日期；和上次不同就重置（跨天了）。
     /// 会把**正在进行的那一段**也算进去，所以不必等状态变化就能看到当前进度。
     pub fn report(&mut self, now: Instant, today: &str) -> Vec<(Signal, Duration)> {
-        if self.day.is_empty() {
-            // 第一次拿到日期只记下来，**不清空** —— 否则从启动到第一次查询之间
-            // 累计的时间会被白扔（而第一次查询往往发生在用户打开设置窗时）
-            self.day = today.to_string();
-        } else if self.day != today {
-            self.day = today.to_string();
-            self.totals.clear();
-            // 跨天时当前这段也重新起算，否则会把昨天那段算进今天
-            if self.current.is_some() {
-                self.segment_start = Some(now);
-            }
-        }
+        self.rollover(now, today);
 
         self.close_segment(now);
         // 结算完立刻把当前这段重新打开，否则下一次查询会漏掉这段时间
@@ -156,6 +172,71 @@ impl Stats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **不查询也能跨天。** 原先跨天只在 `report` 里判，而那只在有人查统计
+    /// （设置面板开着）时发生 —— 灯球是常驻应用，整天不开面板是常态，于是
+    /// 「今日时长」会横跨多天一路累加。现在 `rollover` 可以被单独调用，
+    /// 跟着前端每分钟一次的时钟心跳走。
+    #[test]
+    fn rollover_clears_the_totals_without_being_asked_for_a_report() {
+        let (mut stats, t) = (Stats::default(), Instant::now());
+        stats.record(t, Signal::Working);
+        stats.rollover(t, "2026-10-11");
+
+        // 攒了 10 秒
+        assert_eq!(
+            stats.report(t + Duration::from_secs(10), "2026-10-11"),
+            vec![(Signal::Working, Duration::from_secs(10))]
+        );
+
+        // 跨天：不查统计，只推一次新日期
+        assert!(stats.rollover(t + Duration::from_secs(20), "2026-10-12"));
+
+        // 昨天的 10 秒不该还在。新的一天只从「发现跨天的那一刻」（t+20）起算 ——
+        // 前端每分钟推一次，所以午夜真正发生在 (t+10, t+20] 之间某一刻，两边都得
+        // 猜；猜「从现在开始」宁可少算，也好过把昨天的时段算进今天。
+        let rows = stats.report(t + Duration::from_secs(30), "2026-10-12");
+        assert_eq!(
+            rows,
+            vec![(Signal::Working, Duration::from_secs(10))],
+            "跨天要清零，只算发现跨天之后这一段：{rows:?}"
+        );
+    }
+
+    /// 第一次拿到日期**不清空** —— 从启动到前端第一次推时钟之间累计的时间
+    /// 不能被白扔。
+    #[test]
+    fn the_first_date_is_only_remembered() {
+        let (mut stats, t) = (Stats::default(), Instant::now());
+        stats.record(t, Signal::Working);
+
+        assert!(
+            !stats.rollover(t + Duration::from_secs(5), "2026-10-11"),
+            "第一次不算跨天"
+        );
+        assert_eq!(
+            stats.report(t + Duration::from_secs(5), "2026-10-11"),
+            vec![(Signal::Working, Duration::from_secs(5))],
+            "那 5 秒要留着"
+        );
+    }
+
+    /// 同一个日期反复推不该有任何副作用（前端每分钟推一次）。
+    #[test]
+    fn the_same_date_is_a_no_op() {
+        let (mut stats, t) = (Stats::default(), Instant::now());
+        stats.record(t, Signal::Working);
+        stats.rollover(t, "2026-10-11");
+
+        for _ in 0..5 {
+            assert!(!stats.rollover(t + Duration::from_secs(3), "2026-10-11"));
+        }
+        assert_eq!(
+            stats.report(t + Duration::from_secs(3), "2026-10-11"),
+            vec![(Signal::Working, Duration::from_secs(3))],
+            "反复推同一个日期不该把累计清掉"
+        );
+    }
 
     #[test]
     fn time_accumulates_into_the_state_that_was_active() {

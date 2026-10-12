@@ -807,7 +807,7 @@ export function useMessages(): Messages {
  * 为什么由前端推：Rust 那边判断不了系统语言（它连时区都没有），而「用户看到的是
  * 哪种语言」只有这里知道。所以由前端把 locale 解析成 zh / en，再推给 Rust。
  *
- * 与 useLocalHour 同构：只在语言真的变了的时候推一次（依赖是解析后的 lang，
+ * 与 useLocalClock 同构：只在语言真的变了的时候推一次（依赖是解析后的 lang，
  * 而不是整份 settings —— 后者每次渲染都是新对象）。
  */
 export function useLangPush(): void {
