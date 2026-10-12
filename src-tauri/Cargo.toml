@@ -4,7 +4,7 @@
 # 而我们要把 CLI 作为 sidecar 打进包里（见 tauri.conf.json 的 `externalBin`）。
 # 包名本身没有被任何二进制用上 —— 两个 bin 都是显式命名的。
 name = "signalhub-desktop"
-version = "0.1.0"
+version = "0.2.0"
 description = "Desktop floating status light for AI agents and any other program"
 authors = ["iFishin"]
 license = "MIT"
