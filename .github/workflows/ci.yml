@@ -26,7 +26,15 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      # v5 起这些 action 自己跑在 Node 24 上（v4 是 Node 20，GitHub 已经标了弃用并在
+      # 强行顶上 24 —— 与其等它哪天真的不兼容，不如写明白）。这里都取当前大版本，
+      # 也顺带拿到 v6 / v7 的安全改动（checkout 把凭据挪出 `.git/config`、
+      # 挡住 `pull_request_target` 下的 fork 检出）。
+      #
+      # 升级时逐个对过：我们没用 `registry-url`，所以 setup-node v7 去掉
+      # `NODE_AUTH_TOKEN` 那一下与我们无关；`package.json` 里也没有 `packageManager`
+      # 字段，所以 v5 起那个「自动开缓存」不会和我们显式写的 `cache: npm` 打架。
+      - uses: actions/checkout@v7
 
       # tauri 在 Linux 上要链 webkit2gtk / gtk，缺了连 `cargo test` 都编不过
       - name: 安装 Linux 上编译 tauri 需要的系统库
@@ -37,7 +45,7 @@ jobs:
             libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev \
             build-essential curl wget file
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
