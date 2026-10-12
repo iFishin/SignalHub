@@ -187,6 +187,9 @@ export interface Messages {
   agentMissing: string;
   agentConnect: string;
   agentDisconnect: string;
+  /** 「只支持命令行上报的智能体」那一节 —— 它们没有能写 hook 的配置文件 */
+  cliAgentsTitle: string;
+  cliAgentsHint: string;
   hookResult: (change: HookResult) => string;
 
   // 通知转发页
@@ -469,6 +472,9 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     agentMissing: "未检测到",
     agentConnect: "接入",
     agentDisconnect: "卸载",
+    cliAgentsTitle: "只用命令行上报的智能体",
+    cliAgentsHint:
+      "这些智能体没有能写 hook 的配置文件，所以没有「接入」按钮 —— 在它们自己的脚本 / 钩子里调一次 signalhub 就行。会话 id 用它们给你的那个，这样并行开几个会话时每个都会各占一块牌（设置面板 →「接入」→「分组方式」选「按会话」）。",
     hookResult: ({ added, updated, already, removed }) => {
       const parts: string[] = [];
       if (added > 0) parts.push(`新增 ${added} 个事件`);
@@ -747,6 +753,9 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     agentMissing: "Not detected",
     agentConnect: "Connect",
     agentDisconnect: "Disconnect",
+    cliAgentsTitle: "Agents that report from the command line only",
+    cliAgentsHint:
+      "These have no config file to write hooks into, so there is no Connect button — just call signalhub once from their own script or hook. Use whatever session id they give you: that way several parallel sessions each get their own sign (Settings → Connect → Group signs by → Session).",
     hookResult: ({ added, updated, already, removed }) => {
       const parts: string[] = [];
       if (added > 0) parts.push(`${plural(added, "event", "events")} added`);

@@ -19,6 +19,14 @@ import { colorVars, resolveColors } from "../lib/palettes";
 import { presets, isActivePreset, stylePresets, isActiveStylePreset } from "../lib/presets";
 import { SIGNALS, REPORTABLE_SIGNALS, type SignalState, type Snapshot } from "../lib/types";
 
+/**
+ * 给「只用命令行上报」的智能体抄的那条命令。
+ *
+ * **不进 i18n**：它就是一条 shell 命令，`--agent pi` 里的名字是给上报体用的标识，
+ * 翻成中文只会让人抄错。会话 id 留成占位符 —— 那个值只有 Pi Agent 自己知道。
+ */
+const PI_AGENT_COMMAND = 'signalhub working --agent pi --session "<session-id>"';
+
 /** 与 Rust 侧 config.rs 的 MIN_SIZE / MAX_SIZE / DEFAULT_SIZE 保持一致。 */
 function sizeOptions(m: Messages): { label: string; value: number }[] {
   return [
@@ -1317,6 +1325,32 @@ export function SettingsPanel({ snapshot }: Props) {
                   </div>
                 );
               })}
+            </div>
+
+            {/* ---- 只用命令行的智能体 ----
+                单独一节、不混进上面那个列表：那一排每一行都有「接入 / 卸载」
+                按钮，而这一类没有能写 hook 的配置文件，也就没有可接入、可卸载的
+                东西。混进去会让人以为按钮没渲染出来。 */}
+            <div className="section">
+              <div className="section-title">{m.cliAgentsTitle}</div>
+              <p className="hint">{m.cliAgentsHint}</p>
+              <div className="agent">
+                <div className="agent-info">
+                  <div className="agent-line">
+                    <span className="agent-name">Pi Agent</span>
+                  </div>
+                  {/* 命令本身就说明了一切 —— 不给「接入」按钮，给一条能直接
+                      抄走的东西 */}
+                  <span className="agent-config mono">{PI_AGENT_COMMAND}</span>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-tiny"
+                  onClick={() => copy("pi", PI_AGENT_COMMAND)}
+                >
+                  {copyLabel("pi")}
+                </button>
+              </div>
             </div>
 
             {/* ---- 分组 ----

@@ -853,6 +853,12 @@ SignalHub/
 
 这个判断后来被验证了两次：**加 Gemini CLI 和 Goose 各只花了不到一小时**，而且改的确实是那张表 —— 唯一的例外是 Goose，它走插件目录而不是共享配置，安装/卸载各多了一步（写清单、删目录），那也只在 `install`/`uninstall` 两个入口里各加了十来行，`install_at` 那条共用的核心逻辑一行没动。
 
+**Pi Agent 不走这条路，因为它没有能写 hook 的配置文件**（只有命令行上报）。这是那张表装不下的一类，所以它**不进 `Agent` 枚举、也没有 `install`/`uninstall`**：接了也没地方写。它的接入方式就是「在自己的脚本里调一次 `signalhub`」，所以界面上给的是一条可抄的命令而不是一个按钮 —— 「接入」页专门有一节放它。
+
+这一节单独列出来、而不是混进上面那个列表，是因为上面每一行都有「接入 / 卸载」按钮：把一个没有按钮的条目混进去，用户会以为按钮没渲染出来。**同一个列表里的条目形状必须一致**，不一致的东西该另起一节 —— 这比「少一节标题」重要。
+
+顺带一提，这也说明「支持一个智能体」有两种含义：**能自动接线的**（有配置文件可写）和**只能命令行上报的**（要用户自己接线）。前者是一条 `match` 分支，后者只需要文档和一条能抄的命令 —— 后者不该被硬塞进前者的形状里。
+
 **关于两个二进制。** 这个包里有两个 bin：app（`signalhub-app`，源自 `src/main.rs`）和 CLI（`signalhub`，源自 `src/bin/signalhub.rs`）。两者同名会冲突，而 app 的名字用户看不到（通过 .app 启动），CLI 的名字却要写进智能体的 hook 配置里，所以让给 CLI。`[package] default-run = "signalhub-app"` 让 `cargo run`（也就是 `tauri dev`）选 app 那个，`tauri.conf.json` 的 `mainBinaryName` 同步设为 `signalhub-app`。
 
 **Cargo 包名不叫 `signalhub`，叫 `signalhub-desktop`。** 纯粹是为了绕开一条 Tauri 的限制：sidecar 不允许和包同名（「Cannot define a sidecar with the same name as the Cargo package name」）。包名本身没有被任何二进制用上 —— 两个 bin 都是显式命名的，`[lib] name = "signalhub_lib"` 也是显式的。
@@ -965,6 +971,7 @@ SignalHub/
 | 8f | 局域网访问开关，默认关（见 §3.22） | ✅ 已完成 |
 | 8g | 放宽「忙碌」状态的静默超时，沉默后留 30 分钟（见 §3.3） | ✅ 已完成 |
 | 8h | 按会话分组，一个会话一块牌（见 §3.7） | ✅ 已完成 |
+| 8i | Pi Agent 命令行接入（见 §5） | ✅ 已完成 |
 
 三处偏离原计划的地方，都记在这里以免以后当成疏漏：
 
