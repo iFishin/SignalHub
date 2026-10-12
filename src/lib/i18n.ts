@@ -220,6 +220,17 @@ export interface Messages {
   langZh: string;
   langEn: string;
 
+  // 配置导入 / 导出
+  configBackup: string;
+  exportConfig: string;
+  importConfig: string;
+  configBackupHint: string;
+  exportDone: (path: string) => string;
+  importDone: string;
+  configExportTitle: string;
+  configImportTitle: string;
+  configFilterName: string;
+
   quit: string;
 
   // 灯球 tooltip
@@ -486,6 +497,17 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     langZh: "中文",
     langEn: "English",
 
+    configBackup: "配置备份",
+    exportConfig: "导出…",
+    importConfig: "导入…",
+    configBackupHint:
+      "导出成一份 JSON（颜色、形状、分组、勿扰、钩子、出站转发等全部偏好）。换机器或重装时导入回去就行。导入会先校验一遍：颜色格式不对或状态名不认识会明确报错，而超范围的值（比如尺寸填了 500）会被夹回合法区间，不会整份拒绝。",
+    exportDone: (path) => `已导出到 ${path}`,
+    importDone: "已导入，设置已生效",
+    configExportTitle: "导出设置",
+    configImportTitle: "导入设置",
+    configFilterName: "SignalHub 设置",
+
     quit: "退出 SignalHub",
 
     lampHint: "左键折叠 / 展开 · 右键单组菜单",
@@ -745,6 +767,17 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     langAuto: "System",
     langZh: "中文",
     langEn: "English",
+
+    configBackup: "Configuration backup",
+    exportConfig: "Export…",
+    importConfig: "Import…",
+    configBackupHint:
+      "Exports a JSON file with every preference (colours, shapes, groups, quiet hours, hooks, forwarding). Import it back on another machine or after a reinstall. Import validates first: a bad colour or an unknown state name is reported as an error, while out-of-range values (a size of 500, say) are clamped rather than rejecting the whole file.",
+    exportDone: (path) => `Exported to ${path}`,
+    importDone: "Imported — settings applied",
+    configExportTitle: "Export settings",
+    configImportTitle: "Import settings",
+    configFilterName: "SignalHub settings",
 
     quit: "Quit SignalHub",
 

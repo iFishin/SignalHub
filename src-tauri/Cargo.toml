@@ -37,6 +37,10 @@ tauri = { version = "2", features = ["tray-icon"] }
 # 记住悬浮窗位置；尺寸由程序自己管（见 lib.rs 的 apply_window_size），
 # 所以只用它存位置，不用它存尺寸。
 tauri-plugin-window-state = "2"
+# 配置的导入 / 导出要选文件。**只在 Rust 侧拿路径，读写和校验都在 Rust** ——
+# 导入必须过 `validate_settings` → `clamped()` 那条路，不能让前端拿到文件内容
+# 再自己塞进 `set_settings`。
+tauri-plugin-dialog = "2"
 # 需要你注意时弹原生通知 —— 灯是被动的，你不盯着屏幕它就白搭。
 tauri-plugin-notification = "2"
 # 多开会让端口和状态文件互相打架，所以只允许一个实例。

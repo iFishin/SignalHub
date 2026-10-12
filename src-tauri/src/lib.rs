@@ -233,6 +233,35 @@ fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<Settings, S
     persist_settings(&app, settings)
 }
 
+/// 导出：把当前设置写到用户选好的路径。
+///
+/// 路径由前端用 dialog 插件选（那是唯一需要插件的地方）—— **读写都在 Rust**，
+/// 前端不碰文件内容。
+#[tauri::command]
+fn export_settings(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let settings = current_settings(&app);
+    let json = serde_json::to_string_pretty(&settings)
+        .map_err(|err| format!("序列化设置失败: {err}"))?;
+    // 原子写：导出的文件用户多半会留着当备份，写了一半的备份比没有更糟
+    config::atomic_write(Path::new(&path), &json, None)
+        .map_err(|err| format!("写入 {path} 失败: {err}"))
+}
+
+/// 导入：从用户选的文件读设置。
+///
+/// **必须和设置面板改设置走完全同一条路**（`validate_settings` → `persist_settings`）。
+/// 绕过的话，一份手改坏了的文件能把内存里的设置弄成非法状态；而 `persist_settings`
+/// 里还有 `clamped()`，所以「超范围的值」是被夹回去、不是整份拒绝 —— 后者对
+/// 「从别处拷来的配置」太苛刻了。
+#[tauri::command]
+fn import_settings(app: tauri::AppHandle, path: String) -> Result<Settings, String> {
+    let raw = std::fs::read_to_string(&path).map_err(|err| format!("读取 {path} 失败: {err}"))?;
+    let settings: Settings = serde_json::from_str(&raw)
+        .map_err(|err| format!("{path} 不像一份设置文件: {err}"))?;
+    validate_settings(&settings)?;
+    persist_settings(&app, settings)
+}
+
 /// 设置变化的广播事件名。前端 `src/lib/useSettings.ts` 里的字面量必须与之一致。
 ///
 /// 改设置的路径有三条（设置面板、托盘、灯上右键菜单），而两个窗口都得跟着变 ——
@@ -1041,6 +1070,8 @@ pub fn run() {
             None,
         ))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        // 只用来选文件（拿路径）。读写和校验都在 Rust 侧的命令里。
+        .plugin(tauri_plugin_dialog::init())
         .manage(SharedStore::new(Mutex::new(Store::default())))
         .manage(SharedUi::default())
         // 统计从盘上读回来：灯球是常驻的，但「常驻」不等于「永不重启」——
@@ -1060,6 +1091,8 @@ pub fn run() {
             set_paused,
             get_settings,
             set_settings,
+            export_settings,
+            import_settings,
             get_endpoint,
             open_docs,
             open_app_dir,
@@ -1176,11 +1209,47 @@ pub fn run() {
 mod tests {
     use super::{
         clamp_to_area, pass_through_shortcut_label, shortcut_label, shortcut_label_for,
-        visible_groups, KeyStyle, PASS_THROUGH_SHORTCUT,
+        validate_settings, visible_groups, KeyStyle, PASS_THROUGH_SHORTCUT,
     };
-    use crate::config::{GroupMeta, Settings};
+    use crate::config::{GroupMeta, Settings, StateStyle};
     use crate::state::{GroupView, Signal, Snapshot};
     use tauri_plugin_global_shortcut::{Code, Modifiers};
+
+    // ---- 导入的校验 -----------------------------------------------------------
+
+    /// 导入走 `validate_settings`，所以**我们自己导出的文件必须过得了它** ——
+    /// 过不了的话，导出功能就是坏的：用户导出一份、在另一台机器导入，得到的是
+    /// 一条报错。
+    ///
+    /// 顺带锁住「两类错误会被明确报出来」：状态名不认识、颜色格式不对。这两条是
+    /// 用户手改配置文件时最可能犯的错，而它们的兜底（`clamped`）是**静默丢掉**、
+    /// 只在启动读配置时合适。
+    #[test]
+    fn import_validation_accepts_our_own_output_and_rejects_junk() {
+        assert!(
+            validate_settings(&Settings::default()).is_ok(),
+            "默认设置必须过得了校验"
+        );
+
+        let mut unknown_state = Settings::default();
+        unknown_state
+            .styles
+            .insert("teleporting".into(), StateStyle::default());
+        assert!(
+            validate_settings(&unknown_state).is_err(),
+            "不认识的状态名要报错"
+        );
+
+        let mut bad_color = Settings::default();
+        bad_color.styles.insert(
+            "error".into(),
+            StateStyle {
+                color: Some("red".into()),
+                ..Default::default()
+            },
+        );
+        assert!(validate_settings(&bad_color).is_err(), "非 #rrggbb 要报错");
+    }
 
     // ---- 穿透快捷键 -----------------------------------------------------------
 

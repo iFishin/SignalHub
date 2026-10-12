@@ -1069,6 +1069,100 @@ mod tests {
         assert!(atomic_write(&missing, "x", None).is_err());
     }
 
+    // ---- 导出 / 导入 ----------------------------------------------------------
+
+    /// 导出 → 导入的往返：序列化出来的必须能**一模一样**地读回来。
+    ///
+    /// 这是「换机器 / 重装后导入回去」的全部承诺。漏一个字段、类型对不上，用户的
+    /// 颜色 / 钩子 / 分组就白导了 —— 而且导入那边只会「成功」，不会有任何提示。
+    ///
+    /// **每一项都设成非默认值**：全用默认的话，漏掉哪个字段都看不出来。
+    /// 两个已在迁移里搬走的旧字段（`webhook_url` / `colors`）保持默认：它们标了
+    /// `skip_serializing`，本来就不落盘，设了反而会失败。
+    #[test]
+    fn settings_survive_an_export_import_round_trip() {
+        let settings = Settings {
+            size: 30,
+            always_on_top: false,
+            quiet: false,
+            notify: false,
+            hooks: vec![
+                Hook {
+                    when: vec!["permission".into(), "error".into()],
+                    groups: vec!["builds".into()],
+                    action: HookAction::Http {
+                        url: "https://example.test/hook".into(),
+                    },
+                },
+                Hook {
+                    when: vec![],
+                    groups: vec![],
+                    action: HookAction::Command {
+                        command: "notify-send hi".into(),
+                    },
+                },
+            ],
+            shape: Shape::Ring,
+            palette: Palette::Vivid,
+            locale: Locale::En,
+            group_meta: [(
+                "builds".to_string(),
+                GroupMeta {
+                    name: Some("构建".into()),
+                    order: Some(2),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            styles: [(
+                "error".to_string(),
+                StateStyle {
+                    color: Some("#ff0000".into()),
+                    shape: Some(Shape::Rounded),
+                    blink_ms: Some(0),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            collapsed: true,
+            show: SignFields {
+                name: false,
+                state: true,
+                age: false,
+                message: true,
+            },
+            sign_opacity: 40,
+            hidden_groups: vec!["noisy".into()],
+            blink_speed: 150,
+            sound: false,
+            quiet_hours: QuietHours {
+                enabled: true,
+                start: 23,
+                end: 7,
+            },
+            muted_groups: vec!["quiet".into()],
+            alert_after_secs: 30,
+            tray_follows_state: false,
+            group_by: GroupBy::Cwd,
+            webhook_url: None,
+            colors: BTreeMap::new(),
+        };
+
+        let json = serde_json::to_string_pretty(&settings).unwrap();
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, settings, "导出再导入必须一模一样：\n{json}");
+    }
+
+    /// 导入一个坏文件要**报错**（而不是静默套用默认值）。
+    ///
+    /// 静默退回默认值在「启动时读配置」那条路上是对的（总得起得来），但在
+    /// 「用户主动点导入」这条路上是错的 —— 用户以为导进去了，其实什么都没变。
+    #[test]
+    fn importing_a_broken_file_is_an_error_not_a_silent_default() {
+        let parsed = serde_json::from_str::<Settings>("{ 这不是 json");
+        assert!(parsed.is_err(), "坏文件必须报错");
+    }
+
     /// 真实踩到的坑：加了 `notify` 字段之后，旧版本写的 config.json 里没有它。
     /// 若不加 `serde(default)`，整份解析会失败、退回全默认 —— 用户已经调好的
     /// 圆点尺寸会被静默重置。这条测试锁住「缺字段只退回该字段的默认值」。

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { inTauri } from "../lib/env";
 import { signalLabel } from "../lib/signals";
 import { useLang, useMessages, type Lang, type Messages } from "../lib/i18n";
@@ -567,6 +568,8 @@ export function SettingsPanel({ snapshot }: Props) {
   // 每个智能体最近一次接入 / 卸载改了什么，就地显示一行结果 —— 这是用户唯一
   // 能看到「刚才那下到底做了什么」的地方。
   const [agentChanges, setAgentChanges] = useState<Record<string, HookChange>>({});
+  // 配置导出 / 导入的结果，就地显示在按钮下面
+  const [backupNotice, setBackupNotice] = useState<string | null>(null);
 
   useEffect(() => {
     if (!inTauri) return;
@@ -576,6 +579,52 @@ export function SettingsPanel({ snapshot }: Props) {
   }, []);
 
   const reported = (err: unknown) => setError(String(err));
+
+  /**
+   * 导出 / 导入设置。
+   *
+   * **选文件走 dialog 插件，读写和校验都在 Rust。** 前端只拿一个路径，不碰文件
+   * 内容 —— 导入必须过 Rust 的 `validate_settings` → `clamped()`，前端自己读文件
+   * 再塞进 `set_settings` 就绕过了那道检查。
+   *
+   * 用户点「取消」时插件返回 `null`，那不是错误，什么都不做。
+   */
+  const exportConfig = async () => {
+    setError(null);
+    setBackupNotice(null);
+    try {
+      const path = await save({
+        title: m.configExportTitle,
+        defaultPath: "signalhub-settings.json",
+        filters: [{ name: m.configFilterName, extensions: ["json"] }],
+      });
+      if (!path) return; // 取消
+      await invoke("export_settings", { path });
+      setBackupNotice(m.exportDone(path));
+    } catch (err) {
+      reported(err);
+    }
+  };
+
+  const importConfig = async () => {
+    setError(null);
+    setBackupNotice(null);
+    try {
+      const path = await open({
+        title: m.configImportTitle,
+        multiple: false,
+        directory: false,
+        filters: [{ name: m.configFilterName, extensions: ["json"] }],
+      });
+      if (!path) return; // 取消
+      // 导入成功后设置会经 `signalhub://settings` 广播回来，两个窗口一起更新，
+      // 所以这里不用手动 setSettings
+      await invoke("import_settings", { path });
+      setBackupNotice(m.importDone);
+    } catch (err) {
+      reported(err);
+    }
+  };
 
   /**
    * 给一个智能体接入 / 卸载 hook。
@@ -1679,6 +1728,20 @@ export function SettingsPanel({ snapshot }: Props) {
                   {m.openLogs}
                 </button>
               </div>
+            </div>
+
+            {/* 配置备份。和上面那节是同一类（文件层面的事），但单独一节 ——
+                它有一句要读的说明，而上面那两个只是两个诊断入口。 */}
+            <div className="section">
+              <div className="row-start">
+                <button type="button" className="btn btn-tiny" onClick={exportConfig}>
+                  {m.exportConfig}
+                </button>
+                <button type="button" className="btn btn-tiny" onClick={importConfig}>
+                  {m.importConfig}
+                </button>
+              </div>
+              <p className="hint">{backupNotice ?? m.configBackupHint}</p>
             </div>
           </>
         );
