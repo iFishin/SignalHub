@@ -163,6 +163,60 @@ fn config_has_our_hooks(text: &str) -> bool {
         })
 }
 
+/// 配置里**实际写着**的那条命令（不是我们现在会写的那条）。
+///
+/// 两者的差别正是最值得诊断的一件事：命令是某次装进去的，之后 app 被挪走、或者
+/// 那个 sidecar 被删掉，配置里就留下一条**跑不起来也看不出来**的命令 —— 智能体
+/// 不报错（它只是执行了一个不存在的程序，然后照常继续），灯也不亮。两边都很安静，
+/// 而 README 里恰好警告过这件事「二进制一挪动 hook 就会静默失效」。
+///
+/// 见 [`command_resolves`] 怎么判断它还跑不跑得起来。
+pub fn installed_command(agent: Agent) -> Option<String> {
+    let text = fs::read_to_string(config_path(agent).ok()?).ok()?;
+    installed_command_in(&text)
+}
+
+/// 从一份配置内容里摘出我们那条 handler 的 `command`。
+///
+/// 抽成纯函数是为了能单测 —— 理由和 `config_has_our_hooks` 一样（那一个的注释
+/// 写了：`is_installed` 依赖 `$HOME`，测试里改 `HOME` 是进程级的会打架）。
+fn installed_command_in(text: &str) -> Option<String> {
+    let root: Value = serde_json::from_str(text).ok()?;
+    let hooks = root.get("hooks")?.as_object()?;
+    for groups in hooks.values() {
+        let groups = groups.as_array()?;
+        let (group_index, handler_index) = locate_our_handler(groups)?;
+        // 两种形状：Claude Code 那种 `{hooks: [{hooks: [...]}]}` 和直接一层 handler
+        let handler = match handler_index {
+            Some(index) => groups.get(group_index)?.get("hooks")?.get(index)?,
+            None => groups.get(group_index)?,
+        };
+        if let Some(command) = handler.get("command").and_then(Value::as_str) {
+            return Some(command.to_string());
+        }
+    }
+    None
+}
+
+/// 一条 hook 命令里的程序**现在还解析得到吗**。
+///
+/// 只看程序那一段（第一个词，去掉引号）：带路径分隔符就按文件找，否则按 `PATH` 找。
+/// 参数不参与判断 —— 要回答的只是「这条命令还跑不跑得起来」。
+///
+/// 复用 [`first_token`] / [`binary_name`]：这两件事（怎么切第一个词、怎么从路径里
+/// 取出程序名）在「认不认得出是我们写的」那条路上已经各有一份了，再写一遍就会分叉。
+pub fn command_resolves(command: &str) -> bool {
+    let Some(program) = first_token(command).filter(|name| !name.is_empty()) else {
+        return false;
+    };
+    if program.contains(['/', '\\']) {
+        is_executable(Path::new(program))
+    } else {
+        // 剥掉 `.exe` 再交给 `on_path`：`candidates` 自己会把 `.exe` 补回去
+        on_path(binary_name(program)).is_some()
+    }
+}
+
 /// 事件名清单。[`须写 matcher`]: 只有 Claude Code 的 SessionStart 需要
 /// —— 不加限制的话，上下文压缩时触发的 SessionStart 会被当成「会话开始」，
 /// 在智能体仍工作时把灯报成 idle。
@@ -1056,6 +1110,74 @@ mod tests {
             ),
             "带引号的绝对路径也要认得出来"
         );
+    }
+
+    /// 从配置里读回**实际写着**的那条命令 —— 「装了却没反应」的第一个要查的东西。
+    #[test]
+    fn the_installed_command_can_be_read_back() {
+        assert_eq!(
+            installed_command_in(
+                r#"{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"/opt/x/signalhub hook claude-code"}]}]}}"#
+            )
+            .as_deref(),
+            Some("/opt/x/signalhub hook claude-code")
+        );
+        // 引号形式（带空格的路径）原样读回来，去掉引号是判断时的事
+        assert_eq!(
+            installed_command_in(
+                r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"\"/opt/x y/signalhub\" hook codex"}]}]}}"#
+            )
+            .as_deref(),
+            Some("\"/opt/x y/signalhub\" hook codex")
+        );
+    }
+
+    /// 只有**我们的** handler 才算数：读回来的必须是那条会真正跑起来的命令。
+    #[test]
+    fn a_foreign_handler_is_never_read_back_as_ours() {
+        assert_eq!(
+            installed_command_in(
+                r#"{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"someone-elses-tool hook x"}]}]}}"#
+            ),
+            None
+        );
+        assert_eq!(installed_command_in("{}"), None);
+        // 坏 JSON 不能 panic —— 用户在编辑配置时正好存了个半截的
+        assert_eq!(installed_command_in("not json"), None);
+        assert_eq!(installed_command_in(""), None);
+    }
+
+    /// 命令的第一个词。**引号里的带空格路径要整个取出来** —— 按空格切会切出一个
+    /// 不存在的 `/opt/x`，于是把一条好命令判成失效。
+    #[test]
+    fn the_first_token_of_a_command_handles_quotes() {
+        assert_eq!(first_token("signalhub hook claude-code"), Some("signalhub"));
+        assert_eq!(first_token("  /a/b/cli  hook  x  "), Some("/a/b/cli"));
+        assert_eq!(
+            first_token("\"/Users/me/My Apps/signalhub\" hook claude-code"),
+            Some("/Users/me/My Apps/signalhub")
+        );
+        assert_eq!(first_token("'/a b/cli' hook x"), Some("/a b/cli"));
+        assert_eq!(first_token("   "), None);
+        assert_eq!(first_token(""), None);
+    }
+
+    /// 「这条命令现在还跑得起来吗」：只看程序那一段，参数不参与判断。
+    #[test]
+    fn a_command_resolves_by_its_program_alone() {
+        // 一定存在的：跑这个测试的那个可执行文件自己
+        let me = std::env::current_exe().unwrap().display().to_string();
+        assert!(command_resolves(&format!("\"{me}\" hook claude-code")));
+        assert!(command_resolves(&format!("\"{me}\" --help")));
+
+        // PATH 上的裸名字（三平台都有：sh / cmd）
+        let bare = if cfg!(windows) { "cmd" } else { "sh" };
+        assert!(command_resolves(&format!("{bare} something")));
+
+        // 挪走的 app 留下的那条：文件没了，但配置里看不出来
+        assert!(!command_resolves("/definitely/not/here/signalhub hook claude-code"));
+        assert!(!command_resolves(""));
+        assert!(!command_resolves("\"\""), "空引号 = 空程序名");
     }
 
     /// 这是最重要的一条：settings.json 里往往还有别的东西

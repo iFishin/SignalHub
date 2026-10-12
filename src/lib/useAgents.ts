@@ -14,6 +14,20 @@ export interface AgentStatus {
   installed: boolean;
   /** 配置文件路径，界面上显示用 */
   config: string;
+  /**
+   * 配置里**实际写着**的那条命令。
+   *
+   * 注意不是「我们现在会写的那条」—— 两者不同正是问题所在：命令是某次装进去的，
+   * 之后 app 被挪走，配置里就留下一条跑不起来的命令。`null` = 没装或读不出来。
+   */
+  command: string | null;
+  /**
+   * 那条命令的程序现在还解析得到吗。
+   *
+   * **`installed && !command_ok` = 一次静默失效的接入**：智能体不报错（它只是执行了
+   * 一个不存在的程序），灯也不亮。这是最该主动指出来的一种「装了却没反应」。
+   */
+  command_ok: boolean;
 }
 
 /** 与 Rust 侧 lib.rs 的 HookChange 对应。 */
@@ -51,4 +65,26 @@ export function useAgents() {
   useEffect(refresh, [refresh]);
 
   return { agents, refresh };
+}
+
+/**
+ * 最近的 hook 调用记录，**最新的在后**。
+ *
+ * 只在挂载和手动 `refresh()` 时取：这个文件回答的是「我刚才那次接入到底有没有
+ * 生效」，是「点了按钮想看看」的场景 —— 定时轮询既没必要（它不由状态快照驱动），
+ * 也会让这个面板一直打 IPC。文件里每行自带时间，所以不刷新也不会误导。
+ */
+export function useHookLog(limit = 40) {
+  const [lines, setLines] = useState<string[]>([]);
+
+  const refresh = useCallback(() => {
+    if (!inTauri) return;
+    invoke<string[]>("get_hook_log", { limit })
+      .then(setLines)
+      .catch((err) => console.error("get_hook_log 失败", err));
+  }, [limit]);
+
+  useEffect(refresh, [refresh]);
+
+  return { lines, refresh };
 }

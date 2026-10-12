@@ -15,7 +15,7 @@ import { useStats } from "../lib/useStats";
 import { useTimeline, type TimelineSegment } from "../lib/useTimeline";
 import { useOutboundLog, lastAttemptFor, type Attempt } from "../lib/useOutboundLog";
 import { useNow } from "../lib/useNow";
-import { useAgents, type AgentStatus, type HookChange } from "../lib/useAgents";
+import { useAgents, useHookLog, type AgentStatus, type HookChange } from "../lib/useAgents";
 import { colorVars, resolveColors } from "../lib/palettes";
 import { presets, isActivePreset, stylePresets, isActiveStylePreset } from "../lib/presets";
 import { SIGNALS, REPORTABLE_SIGNALS, type SignalState, type Snapshot } from "../lib/types";
@@ -585,6 +585,7 @@ export function SettingsPanel({ snapshot }: Props) {
   const feed = useMessageFeed(snapshot.aggregate);
   const outboundLog = useOutboundLog(snapshot.aggregate);
   const { agents, refresh: refreshAgents } = useAgents();
+  const { lines: logLines, refresh: refreshLog } = useHookLog();
   const m = useMessages();
   const lang = useLang();
   const sizes = sizeOptions(m);
@@ -1340,6 +1341,16 @@ export function SettingsPanel({ snapshot }: Props) {
                       {agent.config && (
                         <span className="agent-config mono">{agent.config}</span>
                       )}
+                      {/* 装了、但配置里那条命令现在跑不起来了 —— 最该主动指出来的
+                          一种「装了却没反应」：智能体执行一个不存在的程序**不会报错**，
+                          灯也不会亮，两边都很安静。命令原文也摆出来，用户能自己看出
+                          它指向哪（多半是个已经被挪走的旧路径）。 */}
+                      {agent.installed && !agent.command_ok && (
+                        <span className="agent-broken">
+                          {m.agentCommandBroken}
+                          {agent.command && <code className="mono">{agent.command}</code>}
+                        </span>
+                      )}
                       {change && (
                         <span className="agent-result muted-text">
                           {m.hookResult({
@@ -1910,6 +1921,24 @@ export function SettingsPanel({ snapshot }: Props) {
                   {m.openLogs}
                 </button>
               </div>
+              {/* 把日志的尾巴直接摆出来，省掉「打开文件、拉到最后、找时间」那一串。
+                  它回答的是「接了但灯不亮」里最难自己查到的那一半：**事件到底有没有
+                  从智能体那边打过来**。
+                  和「接入」页那个「试一下」是互补的 —— 那个测的是 app 内部那一段
+                  （亮得起来就说明聚合、窗口、推送都是活的），这一段测的是智能体 →
+                  HTTP 那一段。两边都通才是真的通。 */}
+              <div className="row">
+                <span>{m.diagLogTitle}</span>
+                <button type="button" className="btn btn-tiny" onClick={refreshLog}>
+                  {m.diagRefresh}
+                </button>
+              </div>
+              <p className="hint">{m.diagLogHint}</p>
+              {logLines.length === 0 ? (
+                <p className="hint">{m.diagLogEmpty}</p>
+              ) : (
+                <pre className="hooklog mono">{logLines.join("\n")}</pre>
+              )}
             </div>
 
             {/* 配置备份。和上面那节是同一类（文件层面的事），但单独一节 ——

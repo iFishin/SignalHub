@@ -185,6 +185,13 @@ export interface Messages {
   agentInstalled: string;
   agentDetected: string;
   agentMissing: string;
+  /** 「已接入」但配置里那条命令现在跑不起来了 —— 静默失效，最该被看见的一种 */
+  agentCommandBroken: string;
+  /** 「系统」页：hook 调用记录的尾巴 */
+  diagLogTitle: string;
+  diagLogHint: string;
+  diagLogEmpty: string;
+  diagRefresh: string;
   agentConnect: string;
   agentDisconnect: string;
   /** 「其他工具」那一节 —— 它们没有能写 hook 的配置文件 */
@@ -475,6 +482,13 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     agentInstalled: "已接入",
     agentDetected: "检测到，未接入",
     agentMissing: "未检测到",
+    agentCommandBroken:
+      "接入是装上了，但配置里那条命令现在跑不起来 —— 智能体不会报错，灯也不会亮。多半是应用被挪走或删掉了，重新点一次「接入」就会改写成当前路径：",
+    diagLogTitle: "最近的 hook 调用",
+    diagLogHint:
+      "每次 hook 被调用都会记一行（也在这里记下调用失败）。所以：接了却完全不亮时先看这里 —— 一行都没有，说明事件根本没从智能体那边打过来（多半是那条命令跑不起来，见「接入」页的红色提示）；有行但都写着失败，说明打过来了、只是没送到应用。",
+    diagLogEmpty: "还没有记录 —— 一次 hook 都还没跑过。",
+    diagRefresh: "刷新",
     agentConnect: "接入",
     agentDisconnect: "卸载",
     cliAgentsTitle: "其他工具",
@@ -760,6 +774,13 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     agentInstalled: "Installed",
     agentDetected: "Detected, not installed",
     agentMissing: "Not detected",
+    agentCommandBroken:
+      "Installed, but the command in the config no longer runs — the agent will not complain and the lamp will not light. Usually the app was moved or deleted; clicking Install again rewrites it to the current path:",
+    diagLogTitle: "Recent hook calls",
+    diagLogHint:
+      "Every hook invocation is logged here, including failures. So when something is wired up but the lamp stays dark, look here first: no lines at all means the events never left the agent (usually that command does not run — see the red warning on the Connect page); lines that all say failed mean they did leave, but never arrived.",
+    diagLogEmpty: "Nothing yet — no hook has run so far.",
+    diagRefresh: "Refresh",
     agentConnect: "Connect",
     agentDisconnect: "Disconnect",
     cliAgentsTitle: "Other tools",

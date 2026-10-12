@@ -639,6 +639,15 @@ struct AgentStatus {
     installed: bool,
     /// 配置文件路径，界面上显示用
     config: String,
+    /// 配置里**实际写着**的那条命令（不是我们现在会写的那条）。
+    /// `None` = 没装，或者那个文件读不出来 / 认不出我们的 handler。
+    command: Option<String>,
+    /// 那条命令的程序现在还解析得到吗。
+    ///
+    /// **`installed && !command_ok` 就是一次静默失效的接入** —— 智能体不报错
+    /// （它只是执行了一个不存在的程序，然后照常继续），灯也不亮。这是「装了却没
+    /// 反应」里最值得主动指出的一种，所以把它算在服务端、摆到界面上。
+    command_ok: bool,
 }
 
 /// 扫一遍机器上有哪些智能体、我们接入了哪些。
@@ -652,16 +661,50 @@ fn detect_agents() -> Vec<AgentStatus> {
     hooks::ALL_NAMES
         .iter()
         .filter_map(|id| hooks::Agent::parse(id).ok().map(|agent| (*id, agent)))
-        .map(|(id, agent)| AgentStatus {
-            id,
-            name: agent.name(),
-            detected: hooks::detect(agent),
-            installed: hooks::is_installed(agent),
-            config: hooks::config_path(agent)
-                .map(|path| path.to_string_lossy().into_owned())
-                .unwrap_or_default(),
+        .map(|(id, agent)| {
+            // `installed_command` 要读一次配置文件，所以只算一次
+            let command = hooks::installed_command(agent);
+            let command_ok = command.as_deref().is_some_and(hooks::command_resolves);
+            AgentStatus {
+                id,
+                name: agent.name(),
+                detected: hooks::detect(agent),
+                installed: hooks::is_installed(agent),
+                config: hooks::config_path(agent)
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                command,
+                command_ok,
+            }
         })
         .collect()
+}
+
+/// 最近的 hook 调用记录，**最新的在后**。
+///
+/// 直接读那个文件的尾巴，不解析成结构体：它本来就是给人看的（`append_hook_log`
+/// 写的是定宽的人类可读行），解析一遍只会多出一处会跟格式漂移的地方 —— 而格式
+/// 一漂，界面上就会安静地少几行，比不显示更糟。文件本身有 512KB 的轮转上限。
+#[tauri::command]
+fn get_hook_log(limit: usize) -> Vec<String> {
+    /// 一次最多给这么多行：这个文件是给人扫一眼的，不是拿来做分析的
+    const MAX_LINES: usize = 200;
+
+    let Ok(path) = config::hook_log_path() else {
+        return Vec::new();
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        // 一次都没跑过 hook 时文件还不存在 —— 那是正常状态，不是错误
+        return Vec::new();
+    };
+    let mut lines: Vec<String> = text
+        .lines()
+        .rev()
+        .take(limit.min(MAX_LINES))
+        .map(str::to_string)
+        .collect();
+    lines.reverse();
+    lines
 }
 
 /// 一次接入 / 卸载改了什么。
@@ -1173,6 +1216,7 @@ pub fn run() {
             get_notify_permission,
             request_notify_permission,
             detect_agents,
+            get_hook_log,
             install_agent_hooks,
             uninstall_agent_hooks,
             toggle_collapsed,
