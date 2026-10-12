@@ -52,7 +52,11 @@ fn body(snapshot: &Snapshot, muted: &[String]) -> String {
         return String::new();
     };
 
-    let project = session.cwd.as_deref().map(project_name).unwrap_or_default();
+    let project = session
+        .cwd
+        .as_deref()
+        .map(crate::config::project_name)
+        .unwrap_or_default();
     match (project.is_empty(), session.message.as_deref()) {
         (false, Some(message)) => format!("{project} · {message}"),
         (false, None) => project,
@@ -80,14 +84,6 @@ fn alerting_session<'a>(
                 .map(move |session| (group.name.as_str(), session))
         })
         .max_by_key(|(_, session)| session.state.priority())
-}
-
-/// 取路径最后一段。两种分隔符都认，免得 Windows 上写的路径在别处解析错。
-fn project_name(cwd: &str) -> String {
-    cwd.rsplit(['/', '\\'])
-        .find(|segment| !segment.is_empty())
-        .unwrap_or(cwd)
-        .to_string()
 }
 
 /// 前端推过来的「现在是几点（本地时间）」。
@@ -558,6 +554,8 @@ mod tests {
     fn group(name: &str, aggregate: Signal, sessions: Vec<SessionView>) -> GroupView {
         GroupView {
             name: name.to_string(),
+            // 这些用例只关心优先级 / 静音 / 动作目标，不关心牌上显示成什么
+            default_label: None,
             aggregate,
             message: None,
             since_ms: 0,
@@ -982,14 +980,6 @@ mod tests {
         assert_eq!(with(None, None), "");
         // 没有会话时不该 panic
         assert_eq!(body(&snapshot(Signal::Offline, vec![]), &[]), "");
-    }
-
-    #[test]
-    fn project_name_handles_both_separators_and_trailing_slashes() {
-        assert_eq!(project_name("/Users/me/proj"), "proj");
-        assert_eq!(project_name("/Users/me/proj/"), "proj");
-        assert_eq!(project_name(r"C:\work\api"), "api");
-        assert_eq!(project_name("proj"), "proj");
     }
 
     /// 开关到声音名的映射是唯一能在无 AppHandle 下单测的部分，所以单独钉住它。

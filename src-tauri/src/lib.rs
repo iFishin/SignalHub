@@ -1485,6 +1485,8 @@ mod tests {
     fn group(name: &str, aggregate: Signal) -> GroupView {
         GroupView {
             name: name.to_string(),
+            // 这些用例只关心牌的**顺序**，不关心牌上显示成什么
+            default_label: None,
             aggregate,
             message: None,
             since_ms: 0,

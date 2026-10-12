@@ -756,6 +756,17 @@ fn group_from_cwd(cwd: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.to_string())
 }
 
+/// 取路径最后一段。两种分隔符都认，免得 Windows 上写的路径在别处解析错。
+///
+/// 通知正文（`alerts.rs`）和会话分组的默认显示名（`state.rs`）都用它 ——
+/// 两处各写一遍「最后一段怎么切」迟早会分叉，而它们要的显然是同一个东西。
+pub fn project_name(cwd: &str) -> String {
+    cwd.rsplit(['/', '\\'])
+        .find(|segment| !segment.is_empty())
+        .unwrap_or(cwd)
+        .to_string()
+}
+
 /// `#rrggbb` 或 `#rgb`。只做形状检查，不判断这个色值好不好看。
 pub fn is_hex_color(value: &str) -> bool {
     let hex = value.strip_prefix('#').unwrap_or("");
@@ -1738,6 +1749,18 @@ mod tests {
         assert_eq!(settings.resolve_group(Some("   "), Some("/proj"), "s-1").as_deref(), Some("/proj"));
         // 根目录去掉分隔符只剩空串 —— 那不是个能用的组名
         assert_eq!(settings.resolve_group(None, Some("/"), "s-1"), None);
+    }
+
+    /// 取路径最后一段。两种分隔符都认，免得 Windows 上写的路径在别处解析错。
+    ///
+    /// 通知正文和会话分组的默认显示名（「智能体 · 目录末段」）共用它，
+    /// 所以这条同时挡住「两处各写一遍、然后分叉」。
+    #[test]
+    fn project_name_is_the_last_path_segment() {
+        assert_eq!(project_name("/Users/me/proj"), "proj");
+        assert_eq!(project_name("/Users/me/proj/"), "proj");
+        assert_eq!(project_name(r"C:\work\api"), "api");
+        assert_eq!(project_name("proj"), "proj");
     }
 
     /// 按会话分组：**一个会话一块牌**。

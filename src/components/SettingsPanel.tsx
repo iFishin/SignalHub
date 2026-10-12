@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { inTauri } from "../lib/env";
 import { signalLabel } from "../lib/signals";
+import { labelOf } from "../lib/lampSort";
 import { useLang, useMessages, type Lang, type Messages } from "../lib/i18n";
 import { useSettings, updateSettings, type Settings, type Shape, type Palette, type Hook, type StateStyle, type GroupMeta } from "../lib/useSettings";
 import {
@@ -726,6 +727,17 @@ export function SettingsPanel({ snapshot }: Props) {
   ].sort();
 
   /**
+   * 组名 → 服务端给的默认显示名，给下面那一节用。
+   *
+   * `knownGroups` 只是名字（要并上已经不上报的组），而默认名在 `GroupView` 上，
+   * 所以这里单建一张表。不在表里的组没有默认名，退回原始组名 —— 那正是
+   * 「留空就用 X」该显示的东西。
+   */
+  const defaultLabels = new Map(
+    snapshot.groups.map((group) => [group.name, group.default_label]),
+  );
+
+  /**
    * 静音 / 取消静音某一组。
    *
    * 与「隐藏」是两件事：静音只让通知和提示音不再因为这一组响起，灯上照常显示；
@@ -871,16 +883,19 @@ export function SettingsPanel({ snapshot }: Props) {
             ) : (
               snapshot.groups.map((group) => {
                 const hidden = settings.hidden_groups.includes(group.name);
+                const label = labelOf(group, settings.group_meta);
                 return (
                   <div className="group" key={group.name} data-hidden={hidden}>
                     <div className="group-head" data-state={group.aggregate}>
                       <span className="state-dot" />
                       <span className="group-name" title={group.name}>
-                        {settings.group_meta[group.name]?.name ?? group.name}
+                        {label}
                       </span>
-                      {/* 改过名就把原始组名也标出来 —— 用户得知道它对应的是
-                          哪一路上报，否则灯上那个「构建」到底是谁就说不清了 */}
-                      {settings.group_meta[group.name]?.name && (
+                      {/* 显示名和原始组名不一样时就把原始组名也标出来 —— 用户得知道
+                          它对应的是哪一路上报，否则灯上那个名字到底是谁就说不清了。
+                          两种情况下会不一样：用户自己改过名，或者这是按会话分组
+                          自动起的默认名（原始名是个会话 id）。 */}
+                      {label !== group.name && (
                         <span className="group-raw" title={group.name}>
                           {group.name}
                         </span>
@@ -1113,14 +1128,16 @@ export function SettingsPanel({ snapshot }: Props) {
 
                   {knownGroups.map((name) => {
                     const meta = settings.group_meta[name];
+                    // 这一组在灯上实际会显示成什么 —— 用户得先看见它，才知道自己在改什么
+                    const label = meta?.name ?? defaultLabels.get(name) ?? name;
                     return (
                       <div className="group" key={name}>
                         <div className="group-head">
                           <span className="group-name" title={name}>
-                            {meta?.name ?? name}
+                            {label}
                           </span>
-                          {/* 改过名就把原始组名标出来，理由同状态页 */}
-                          {meta?.name && (
+                          {/* 显示名和原始组名不一样时就把原始组名标出来，理由同状态页 */}
+                          {label !== name && (
                             <span className="group-raw" title={name}>
                               {name}
                             </span>
@@ -1130,7 +1147,7 @@ export function SettingsPanel({ snapshot }: Props) {
                           <input
                             className="input input-tiny"
                             spellCheck={false}
-                            placeholder={m.displayNamePlaceholder(name)}
+                            placeholder={m.displayNamePlaceholder(label)}
                             value={
                               nameDraft?.group === name
                                 ? nameDraft.value

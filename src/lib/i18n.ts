@@ -445,7 +445,7 @@ export const MESSAGES: Record<Lang, Messages> = {
     groupByCwd: "按目录",
     groupBySession: "按会话",
     groupByHint:
-      "「不分组」：所有不带 group 的上报归到同一块牌。「按目录」：一个工作目录一块牌，每个项目各占一行。「按会话」：一个会话一块牌 —— 同一个智能体并行开几个窗口 / worktree 时，它们的状态各不相同的，只有按会话分才看得出来。三种都只是兜底：上报自己带了 group 的仍然听它的，也是改完从下一次上报开始生效。组名是那条路径或那个会话 id，嫌长可以去「外观 → 各组的显示」改名。",
+      "「不分组」：所有不带 group 的上报归到同一块牌。「按目录」：一个工作目录一块牌，每个项目各占一行。「按会话」：一个会话一块牌 —— 同一个智能体并行开几个窗口 / worktree 时，它们的状态各不相同的，只有按会话分才看得出来。三种都只是兜底：上报自己带了 group 的仍然听它的，也是改完从下一次上报开始生效。按目录时分组名就是那条路径；按会话时不会把会话 id 画在牌上，默认显示成「智能体 · 目录末段」，一眼能认出是哪个窗口。想换别的名字去「外观 → 各组的显示」。",
     port: "端口",
     apiTitle: "接口速查",
     apiToken: "Token",
@@ -730,7 +730,7 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     groupByCwd: "Directory",
     groupBySession: "Session",
     groupByHint:
-      "\"Nothing\": every report without a group lands on the same sign. \"Directory\": one sign per working directory — each project gets its own row. \"Session\": one sign per session — when a single agent has several windows or worktrees open their states differ, and only per-session grouping shows that. All three are just a fallback: a report that carries its own group still wins, and the change takes effect from the next report on. The group name is that path or session id; rename it under Appearance → Per-group display if it is too long.",
+      "\"Nothing\": every report without a group lands on the same sign. \"Directory\": one sign per working directory — each project gets its own row. \"Session\": one sign per session — when a single agent has several windows or worktrees open their states differ, and only per-session grouping shows that. All three are just a fallback: a report that carries its own group still wins, and the change takes effect from the next report on. Directory grouping shows that path; session grouping does not put the session id on the sign — it shows \"agent · last path segment\" by default, so the windows are tellable apart at a glance. Rename it under Appearance → Per-group display.",
     port: "Port",
     apiTitle: "API quick reference",
     apiToken: "Token",

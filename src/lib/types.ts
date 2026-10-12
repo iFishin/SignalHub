@@ -54,6 +54,14 @@ export interface SessionView {
  */
 export interface GroupView {
   name: string;
+  /**
+   * 默认显示名。**只有「按会话分组」出来的组才有** —— 那种组的 `name` 是一个
+   * 会话 id（多半是 UUID），直接画在牌上没法看，所以服务端给出「智能体 · 目录末段」。
+   *
+   * 优先级：用户在「外观 → 各组的显示」里改的名字 > 这个 > `name`。
+   * 见 `lib/lampSort.ts` 的 `labelOf`。
+   */
+  default_label: string | null;
   aggregate: SignalState;
   message: string | null;
   /** 这一组进入当前状态的时间（epoch 毫秒），牌上的「已持续」由它算 */

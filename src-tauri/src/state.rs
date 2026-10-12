@@ -286,6 +286,16 @@ pub struct SessionView {
 #[derive(Debug, Clone, Serialize)]
 pub struct GroupView {
     pub name: String,
+    /// 默认显示名。**只在「按会话分组」出来的组上有值** —— 那种组的组名是一个
+    /// 会话 id（多半是 UUID），直接画在牌上没法看。这里给出「智能体 · 目录末段」，
+    /// 一眼能认出是哪个窗口、在哪个项目里。见 [`session_label`]。
+    ///
+    /// **只是默认**：用户在「外观 → 各组的显示」里改的名字优先于它（见
+    /// `lampSort.ts` 的 `labelOf`）。而隐藏 / 静音 / 通知动作的目标匹配的仍然是
+    /// 原始的 `name` —— 和自定义显示名一样，这个字段不参与任何匹配。
+    ///
+    /// `None` = 这个组没有更好读的名字，前端退回 `name`。
+    pub default_label: Option<String>,
     /// 这一组自己的聚合（组内取最高优先级）
     pub aggregate: Signal,
     /// 这一组里决定聚合的那个会话的说明，用作牌上的消息行
@@ -556,14 +566,18 @@ impl Store {
             .into_iter()
             .map(|name| {
                 let winner = self.winner_in(&name);
+                let sessions = self.views_in(&name, now);
+                // 按会话分组时组名是个 UUID，牌上没法直接画（见 `session_label`）
+                let default_label = session_label(&name, &sessions);
                 GroupView {
+                    default_label,
                     aggregate: winner.map(|s| s.state).unwrap_or(Signal::Offline),
                     message: winner.and_then(|s| s.message.clone()),
                     // 这一组进入当前状态多久了 —— 牌上「已持续」那一段
                     since_ms: winner.map(|s| epoch_ms(s.since)).unwrap_or(0),
                     // 细环取的是**决定聚合那个会话**的进度（见字段注释）
                     stale_progress: winner.and_then(|s| stale_progress(s, now)),
-                    sessions: self.views_in(&name, now),
+                    sessions,
                     name,
                 }
             })
@@ -683,6 +697,39 @@ impl Store {
     }
 }
 
+/// 会话分组的默认显示名：「智能体 · 目录末段」。
+///
+/// **为什么需要**：按会话分组时组名就是会话 id，多半是一串 UUID。真拿它当牌子
+/// 上的字，一排牌全是 `9f3c1a2e-…`，等于没显示 —— 用户看不出哪个窗口是哪个。
+///
+/// **怎么知道这个组是按会话分出来的**：`Settings::resolve_group` 在按会话分组时
+/// 直接拿会话 id 当组名，所以只有那种情况下「组名 == 组内某个会话的 id」才成立。
+/// 显式给了 `group`、或者按目录分组时，组名是用户或路径给的字符串，不会恰好等于
+/// 一个会话 id。这里就靠这条判据区分，不需要额外的标志位。
+///
+/// `agent` / `cwd` 都拿不到时返回 `None`，前端退回原始组名 —— 那时能显示的只有
+/// 那个 id，不好读，但总比编一个假的强。
+fn session_label(name: &str, sessions: &[SessionView]) -> Option<String> {
+    let session = sessions.iter().find(|s| s.id == name)?;
+    let agent = session
+        .agent
+        .as_deref()
+        .map(str::trim)
+        .filter(|a| !a.is_empty());
+    let project = session
+        .cwd
+        .as_deref()
+        .map(crate::config::project_name)
+        .filter(|p| !p.is_empty());
+
+    match (agent, project) {
+        (Some(agent), Some(project)) => Some(format!("{agent} · {project}")),
+        (Some(agent), None) => Some(agent.to_string()),
+        (None, Some(project)) => Some(project),
+        (None, None) => None,
+    }
+}
+
 /// 静默进度分几档。
 ///
 /// **为什么要分档**：`stale_progress` 是个连续的 0.0–1.0，而 `sweep` 每 250ms
@@ -752,6 +799,79 @@ mod tests {
         req.session = Some(session.to_string());
         req.group = Some(group.to_string());
         s.apply(t, req)
+    }
+
+    /// 造一个会话视图 —— 这几个用例只看 `session_label` 关心的 `id` / `agent` / `cwd`。
+    fn session(id: &str, agent: Option<&str>, cwd: Option<&str>) -> SessionView {
+        SessionView {
+            id: id.to_string(),
+            state: Signal::Working,
+            agent: agent.map(str::to_string),
+            cwd: cwd.map(str::to_string),
+            message: None,
+            age_ms: 0,
+            stale_progress: None,
+        }
+    }
+
+    /// 按会话分组时，牌上显示「智能体 · 目录末段」，而不是那一串 UUID。
+    ///
+    /// 这是这个字段存在的全部理由：不这么写，一排牌全是 `9f3c1a2e-…`，
+    /// 「哪个窗口是哪个」等于没显示。
+    #[test]
+    fn a_session_group_is_labelled_by_agent_and_project() {
+        let s = [session(
+            "9f3c1a2e",
+            Some("claude-code"),
+            Some("/Users/me/code/SignalHub"),
+        )];
+        assert_eq!(
+            session_label("9f3c1a2e", &s).as_deref(),
+            Some("claude-code · SignalHub")
+        );
+    }
+
+    /// **组名不是会话 id 的组一律不动** —— 它们是显式 `group` 给的、或按目录分出来的，
+    /// 名字本来就是人给的字（或那条路径）。悄悄换掉等于推翻用户的命名。
+    ///
+    /// 这条同时也是那段判据的锚：`resolve_group` 只在按会话分组时拿会话 id 当组名，
+    /// 所以「组名 ≠ 会话 id」就等价于「不是会话分组出来的」。
+    #[test]
+    fn groups_named_by_hand_or_by_path_keep_their_name() {
+        let s = [session(
+            "uuid-1",
+            Some("claude-code"),
+            Some("/Users/me/code/SignalHub"),
+        )];
+        assert_eq!(session_label("builds", &s), None, "显式给的组名");
+        assert_eq!(
+            session_label("/Users/me/code/SignalHub", &s),
+            None,
+            "按目录分的组名"
+        );
+    }
+
+    /// 信息缺一半时给能给的：只有 agent 就显示 agent，只有目录就显示目录末段。
+    #[test]
+    fn a_partial_session_still_gets_a_readable_label() {
+        assert_eq!(
+            session_label("s1", &[session("s1", Some("claude-code"), None)]).as_deref(),
+            Some("claude-code")
+        );
+        assert_eq!(
+            session_label("s1", &[session("s1", None, Some("/code/api"))]).as_deref(),
+            Some("api")
+        );
+    }
+
+    /// 两样都拿不到时返回 `None`，让前端退回原始组名 —— 编一个假名字比显示 UUID 更糟。
+    #[test]
+    fn no_identity_at_all_falls_back_to_the_raw_name() {
+        assert_eq!(session_label("s1", &[session("s1", None, None)]), None);
+        // 空白串不算数，否则会拼出「 · api」这种开头缺一截的名字
+        assert_eq!(session_label("s1", &[session("s1", Some("   "), None)]), None);
+        // 组内没有会话（正常到不了，防御）
+        assert_eq!(session_label("s1", &[]), None);
     }
 
     /// 没有任何会话时是 Offline 而不是 Idle：后者会被读成「智能体在待命」

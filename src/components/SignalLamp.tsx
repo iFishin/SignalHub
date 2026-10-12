@@ -252,6 +252,8 @@ export function SignalLamp({ aggregate, groups, settings, paused }: Props) {
       : [
           {
             name: "",
+            // 占位那块没有对应任何真实分组，自然也没有默认显示名
+            default_label: null,
             aggregate,
             message: null,
             since_ms: 0,

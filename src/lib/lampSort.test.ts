@@ -3,10 +3,11 @@ import { comparePinned, labelOf, orderVisible } from "./lampSort";
 import type { GroupView } from "./types";
 import type { GroupMeta } from "./useSettings";
 
-/** 造一个组。`state` 只用来占位 —— 这个文件测的是排序，不是聚合。 */
-function group(name: string): GroupView {
+/** 造一个组。`state` 只用来占位 —— 这个文件测的是排序和显示名，不是聚合。 */
+function group(name: string, defaultLabel: string | null = null): GroupView {
   return {
     name,
+    default_label: defaultLabel,
     aggregate: "working",
     message: null,
     since_ms: 0,
@@ -150,5 +151,42 @@ describe("labelOf", () => {
    */
   it("passes an empty display name through (reachable only by hand-editing the config)", () => {
     expect(labelOf(group("build-1"), { "build-1": { name: "" } })).toBe("");
+  });
+
+  /**
+   * 服务端给的默认显示名排在原始组名**之前**。
+   *
+   * 这一级是为「按会话分组」加的：那种组的原始组名是个会话 id（多半是 UUID），
+   * 一排牌全是 `9f3c1a2e-…` 等于没显示。Rust 算好「智能体 · 目录末段」传过来。
+   */
+  it("prefers the server's default label over the raw group name", () => {
+    expect(labelOf(group("9f3c1a2e", "claude-code · SignalHub"), {})).toBe(
+      "claude-code · SignalHub",
+    );
+  });
+
+  /** 用户显式改的名字**压过**默认名 —— 那是明确的意图，不该被一个默认值盖掉。 */
+  it("lets a user-set name beat the server's default label", () => {
+    expect(
+      labelOf(group("9f3c1a2e", "claude-code · SignalHub"), {
+        "9f3c1a2e": { name: "重构" },
+      }),
+    ).toBe("重构");
+  });
+
+  /**
+   * 隐藏按**原始组名**匹配，不按显示名。
+   *
+   * 这条是「显示名只是显示」那句注释的落点。哪天有人图省事把隐藏改成按显示名匹配，
+   * 用户改一次名就会连带把隐藏规则改掉，而且不会有任何提示；按会话分组时更糟 ——
+   * 那个默认名是服务端算的，用户根本没碰过它。
+   */
+  it("hides by the raw group name, never by the display label", () => {
+    const g = group("9f3c1a2e", "claude-code · SignalHub");
+    expect(orderVisible([g], ["9f3c1a2e"], {})).toHaveLength(0);
+    expect(
+      orderVisible([g], ["claude-code · SignalHub"], {}),
+      "按显示名隐藏必须无效",
+    ).toHaveLength(1);
   });
 });
