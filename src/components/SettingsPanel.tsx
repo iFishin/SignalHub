@@ -28,6 +28,15 @@ import { SIGNALS, REPORTABLE_SIGNALS, type SignalState, type Snapshot } from "..
 const PI_AGENT_COMMAND = 'signalhub working --agent pi --session "<session-id>"';
 
 /**
+ * 给「任何其他工具」抄的那条命令。
+ *
+ * 和上面那条只差 `--agent` 的名字 —— 分开列出来是有用的：**用户看到「任何其他工具」
+ * 那一行才会相信自己的工具也能接**，而只列一个 Pi Agent 会让人以为这是个白名单。
+ * 尖括号里是占位符，不是字面量。
+ */
+const GENERIC_COMMAND = 'signalhub working --agent <name> --session "<id>"';
+
+/**
  * 「试一下」那一排按钮发哪几个状态。
  *
  * 挑的是**视觉上各不相同**的四个：绿闪（在干活）、红闪（等你授权）、红频闪
@@ -1361,6 +1370,23 @@ export function SettingsPanel({ snapshot }: Props) {
                   onClick={() => copy("pi", PI_AGENT_COMMAND)}
                 >
                   {copyLabel("pi")}
+                </button>
+              </div>
+              {/* 「任何其他工具」单独一行而不是只写在说明里：只列一个 Pi Agent
+                  会让人以为一份白名单 —— 而实际上任何能跑命令的工具都能接。 */}
+              <div className="agent">
+                <div className="agent-info">
+                  <div className="agent-line">
+                    <span className="agent-name">{m.cliAgentsAny}</span>
+                  </div>
+                  <span className="agent-config mono">{GENERIC_COMMAND}</span>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-tiny"
+                  onClick={() => copy("any", GENERIC_COMMAND)}
+                >
+                  {copyLabel("any")}
                 </button>
               </div>
             </div>
