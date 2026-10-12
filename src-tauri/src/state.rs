@@ -8,7 +8,15 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// 这一段存在的意义是把「智能体不说话了」和「智能体空闲待命」分开显示。
 /// 直接删掉的话，智能体崩溃/被强杀（SessionEnd 没触发）会表现为灯保持原状
 /// 直到 TTL 到期，用户看不出区别。
-const STALE_GRACE: Duration = Duration::from_secs(5 * 60);
+///
+/// **从 5 分钟放宽到 30 分钟**：5 分钟太短了 —— 一个正在跑长任务的智能体只要
+/// 超过这个时间没有事件，就会从灯上彻底消失，用户看到的是「没有智能体上报」，
+/// 而它其实还在干活。`stale` 本身已经是「它不说话了」这个信息，没必要那么快
+/// 升级成「它不存在」。半小时足够人从别的窗口切回来看到它。
+///
+/// ⚠️ 细环（`stale_progress`）画的就是这一段的剩余比例，所以这个值同时决定了
+/// 环缩短得多慢。
+const STALE_GRACE: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -143,8 +151,19 @@ impl Signal {
             Signal::Stale => STALE_GRACE,
             Signal::Idle => Duration::from_secs(600),
             Signal::Done => Duration::from_secs(30),
-            Signal::Thinking => Duration::from_secs(60),
-            Signal::Working => Duration::from_secs(90),
+            // 「推理中」和「执行中」的静默期要**给得很宽**。
+            //
+            // 钩子挂在**事件**上（`UserPromptSubmit` → thinking、`PreToolUse` →
+            // working…），而模型思考、或者跑一个没有工具调用的长回复时，**一个
+            // 事件都不触发**。早先这两个分别是 60s / 90s，于是一次超过一分半的
+            // 思考就会让灯显示「沉默」，再过五分钟干脆变成「没有智能体上报」
+            // —— 智能体明明在干活，灯却当它没了。
+            //
+            // 放宽的代价是「崩溃的智能体」晚一点才被发现。但那时它是转成 `stale`
+            // （「沉默」）而不是消失，用户仍然看得到它 —— 这比「活着的智能体看着
+            // 像死了」轻得多。
+            Signal::Thinking => Duration::from_secs(600),
+            Signal::Working => Duration::from_secs(300),
             Signal::Attention => Duration::from_secs(300),
             Signal::Permission => Duration::from_secs(600),
             Signal::Error => Duration::from_secs(300),
@@ -840,14 +859,20 @@ mod tests {
         assert_eq!(s.aggregate(), Signal::Working, "恢复后应立即回到真实状态");
     }
 
+    /// 上报方显式给的 `ttl_ms` 覆盖该状态的默认值。
+    ///
+    /// 这条对**自定义上报方**尤其重要：他们的任务可能一跑就是几十分钟，中间的
+    /// 进度由自己控制，所以「多久算沉默」也该由他们说了算，而不是被状态名的
+    /// 默认值绑死。
     #[test]
-    fn explicit_ttl_overrides_the_short_working_window() {
+    fn an_explicit_ttl_overrides_the_states_default() {
         let (mut s, t) = (Store::default(), Instant::now());
         let mut req = Report::new(Signal::Working);
         req.session = Some("long".into());
-        req.ttl_ms = Some(3_600_000);
+        req.ttl_ms = Some(3_600_000); // 一小时
         s.apply(t, req);
 
+        // 半小时后仍然活着 —— 按 `Working` 的默认值（5 分钟）早该转 stale 了
         assert!(!s.expire(t + Duration::from_secs(1800)));
         assert_eq!(s.aggregate(), Signal::Working);
     }
@@ -889,18 +914,18 @@ mod tests {
     fn a_stale_session_is_dropped_after_its_grace_period() {
         let (mut s, t) = (Store::default(), Instant::now());
         rep(&mut s, t, "a", Signal::Working);
+        // 用 `STALE_GRACE` 相对算而不是写死秒数：写死的话，改宽限期就得回来改测试，
+        // 而「改了宽限期却忘了改测试」正是这类常量最容易出的事
         let ttl = Signal::Working.default_ttl();
 
         assert!(s.expire(t + ttl));
         assert_eq!(s.aggregate(), Signal::Stale);
 
-        // 这**是**一次变化 —— 会话本身没动，但细环的进度跨了好几档（见
-        // `a_progress_step_counts_as_a_change`）。这时候推一帧，前端才能把环画短。
-        // 测的是 `s.expire` 的返回值，所以即便它变成了 true，聚合仍然是 Stale。
-        s.expire(t + ttl + Duration::from_secs(299));
+        // 宽限期里推一帧仍然是 `stale`：会话本身没动，变的只是细环的进度档位
+        s.expire(t + ttl + Duration::from_secs(STALE_GRACE.as_secs() - 1));
         assert_eq!(s.aggregate(), Signal::Stale, "宽限期内仍应保留");
 
-        assert!(s.expire(t + ttl + Duration::from_secs(301)));
+        assert!(s.expire(t + ttl + Duration::from_secs(STALE_GRACE.as_secs() + 1)));
         assert!(sessions(&s.snapshot()).is_empty());
         assert_eq!(s.aggregate(), Signal::Offline);
     }
@@ -1007,14 +1032,15 @@ mod tests {
         let fresh = sessions(&s.snapshot_at(t + ttl))[0].stale_progress.unwrap();
         assert!(fresh > 0.98, "刚转 stale 应接近 1.0，实际 {fresh}");
 
-        // 宽限期过半
-        let half = sessions(&s.snapshot_at(t + ttl + Duration::from_secs(150)))[0]
+        // 宽限期过半（相对 `STALE_GRACE` 算，改宽限期不用回来改这里）
+        let half_at = STALE_GRACE.as_secs() / 2;
+        let half = sessions(&s.snapshot_at(t + ttl + Duration::from_secs(half_at)))[0]
             .stale_progress
             .unwrap();
         assert!((0.4..0.6).contains(&half), "过半时应接近 0.5，实际 {half}");
 
         // 到点：归零
-        let gone = sessions(&s.snapshot_at(t + ttl + Duration::from_secs(300)))[0]
+        let gone = sessions(&s.snapshot_at(t + ttl + STALE_GRACE))[0]
             .stale_progress
             .unwrap();
         assert!(gone < 0.02, "宽限用尽应接近 0.0，实际 {gone}");
@@ -1042,10 +1068,18 @@ mod tests {
         assert!(serde_json::from_str::<Report>(r#"{"state":"offline"}"#).is_err());
     }
 
-    /// 每个状态都必须有 TTL。工作类状态的窗口尤其要短 —— 它决定了
-    /// 「智能体消失后灯还会错多久」。
+    /// 每个状态都要有 TTL，而且**「忙碌」那两个必须给得足够宽**。
+    ///
+    /// 这是一条回归测试，起因是一个真实的体验问题：用户看到「智能体正在思考，
+    /// 灯却说没有智能体上报」。根因是钩子挂在**事件**上（`UserPromptSubmit` →
+    /// thinking、`PreToolUse` → working），而模型思考、或跑一个没有工具调用的长
+    /// 回复时**一个事件都不触发** —— 原先这两个是 60s / 90s，一次稍长的思考就让
+    /// 它转沉默、再过五分钟彻底消失。
+    ///
+    /// 所以钉的是「不少于 5 分钟」，和早先那条「不超过 2 分钟」的方向**整个反了**
+    /// —— 把旧的那条留在原地，正是这个 bug 能活到今天的原因。
     #[test]
-    fn every_state_has_a_ttl_and_working_is_short() {
+    fn every_state_has_a_ttl_and_the_busy_ones_are_generous() {
         for state in [
             Signal::Offline,
             Signal::Off,
@@ -1060,8 +1094,21 @@ mod tests {
         ] {
             assert!(state.default_ttl() > Duration::ZERO, "{state:?} 缺少 TTL");
         }
-        assert!(Signal::Working.default_ttl() <= Duration::from_secs(120));
-        assert!(Signal::Thinking.default_ttl() <= Duration::from_secs(120));
+        for busy in [Signal::Thinking, Signal::Working] {
+            assert!(
+                busy.default_ttl() >= Duration::from_secs(5 * 60),
+                "{busy:?} 的静默期太短：钩子是按事件触发的，长任务期间一个都没有"
+            );
+        }
+    }
+
+    /// 沉默之后**要留得住**：`stale` 是「它不说话了」，不该那么快升级成「它不存在」。
+    #[test]
+    fn a_quiet_session_stays_visible_for_a_long_while() {
+        assert!(
+            STALE_GRACE >= Duration::from_secs(30 * 60),
+            "沉默后保留 {STALE_GRACE:?} 太短 —— 用户切回来时灯上已经空了"
+        );
     }
 
     #[test]

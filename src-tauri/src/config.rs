@@ -586,6 +586,15 @@ pub enum GroupBy {
     None,
     /// 用上报里的 `cwd` 当组名。一个工作目录一块牌。
     Cwd,
+    /// 用上报里的 `session` 当组名。**一个会话一块牌。**
+    ///
+    /// 同一个智能体并行开好几个会话时（每个窗口 / 每个 worktree 一个），只按目录
+    /// 分组还是会把它们挤在同一块牌上 —— 而它们的进度往往是各不相同的。按会话分
+    /// 就把每个会话摊成自己的一块，多个智能体自然也分开了（它们的会话必定不同）。
+    ///
+    /// 代价是组名是上报方给的会话 id，多半是个 UUID 那样不好读的串；牌上会自动
+    /// 截断，想去「外观 → 各组的显示」改名也行。
+    Session,
 }
 
 /// 牌面背景的默认不透明度。够看清内容，又能透出一点桌面。
@@ -772,7 +781,15 @@ impl Settings {
     /// 不能反：反了就等于「开了按目录分组之后，手写 `group` 的用法全失效」——
     /// 而多分组最早、也最稳的用法就是手写 `group`（见 docs/api.md §2.7）。
     /// 想只给某一路单独分组的人也不必关掉全局开关。
-    pub fn resolve_group(&self, group: Option<&str>, cwd: Option<&str>) -> Option<String> {
+    ///
+    /// `session` 是**必定有值**的（`Report::session_id()` 兜到 `default`），所以
+    /// `GroupBy::Session` 不需要 `cwd` 那样的 `Option` 处理。
+    pub fn resolve_group(
+        &self,
+        group: Option<&str>,
+        cwd: Option<&str>,
+        session: &str,
+    ) -> Option<String> {
         let explicit = group.map(str::trim).filter(|name| !name.is_empty());
         if let Some(name) = explicit {
             return Some(name.to_string());
@@ -780,6 +797,12 @@ impl Settings {
         match self.group_by {
             GroupBy::None => None,
             GroupBy::Cwd => cwd.and_then(group_from_cwd),
+            // 会话 id 本身就是组名。空串理论上到不了这儿（`session_id()` 兜了
+            // `default`），但真到了也没有意义 —— 退回不分组比造一个空组名好。
+            GroupBy::Session => {
+                let id = session.trim();
+                (!id.is_empty()).then(|| id.to_string())
+            }
         }
     }
 
@@ -1566,7 +1589,7 @@ mod tests {
     fn grouping_is_off_by_default() {
         let settings = Settings::default();
         assert_eq!(settings.group_by, GroupBy::None);
-        assert_eq!(settings.resolve_group(None, Some("/proj/api")), None);
+        assert_eq!(settings.resolve_group(None, Some("/proj/api"), "s-1"), None);
     }
 
     /// 上报自己带的 `group` **优先**，`group_by` 只是兜底而不是覆盖。
@@ -1575,7 +1598,7 @@ mod tests {
     fn an_explicit_group_beats_the_cwd_fallback() {
         let settings = Settings { group_by: GroupBy::Cwd, ..Settings::default() };
         assert_eq!(
-            settings.resolve_group(Some("work"), Some("/proj/api")).as_deref(),
+            settings.resolve_group(Some("work"), Some("/proj/api"), "s-1").as_deref(),
             Some("work")
         );
     }
@@ -1587,22 +1610,74 @@ mod tests {
         // **完整路径**，不是最后一段目录名：`~/a/api` 和 `~/b/api` 撞名会让
         // 两个项目的会话混进同一块牌。
         assert_eq!(
-            settings.resolve_group(None, Some("/Users/me/code/api")).as_deref(),
+            settings.resolve_group(None, Some("/Users/me/code/api"), "s-1").as_deref(),
             Some("/Users/me/code/api")
         );
         // 末尾分隔符要去掉，否则 `/proj` 和 `/proj/` 会变成两个组
         assert_eq!(
-            settings.resolve_group(None, Some("/Users/me/code/api/")).as_deref(),
+            settings.resolve_group(None, Some("/Users/me/code/api/"), "s-1").as_deref(),
             Some("/Users/me/code/api")
         );
-        assert_eq!(settings.resolve_group(None, Some("  /proj  ")).as_deref(), Some("/proj"));
+        assert_eq!(settings.resolve_group(None, Some("  /proj  "), "s-1").as_deref(), Some("/proj"));
 
         // 没给 cwd 就退回 default，而不是造一个空名字的组
-        assert_eq!(settings.resolve_group(None, None), None);
+        assert_eq!(settings.resolve_group(None, None, "s-1"), None);
         // 空串和空白串都不算「给了一个组」
-        assert_eq!(settings.resolve_group(Some("   "), Some("/proj")).as_deref(), Some("/proj"));
+        assert_eq!(settings.resolve_group(Some("   "), Some("/proj"), "s-1").as_deref(), Some("/proj"));
         // 根目录去掉分隔符只剩空串 —— 那不是个能用的组名
-        assert_eq!(settings.resolve_group(None, Some("/")), None);
+        assert_eq!(settings.resolve_group(None, Some("/"), "s-1"), None);
+    }
+
+    /// 按会话分组：**一个会话一块牌**。
+    ///
+    /// 这是「同一个智能体并行开了几个会话、进度各不相同」那个场景的解：只按目录
+    /// 分组还是会把它们挤在同一块牌上，只能看到最紧急的那一个。
+    #[test]
+    fn session_mode_gives_every_session_its_own_sign() {
+        let settings = Settings {
+            group_by: GroupBy::Session,
+            ..Settings::default()
+        };
+
+        assert_eq!(
+            settings.resolve_group(None, Some("/proj"), "abc-123").as_deref(),
+            Some("abc-123")
+        );
+
+        // **同一个目录里的两个会话必须分开** —— 这正是这个模式存在的理由，
+        // 所以用 `assert_ne!` 直接钉这一点，而不是只断言各自等于自己的 id
+        assert_ne!(
+            settings.resolve_group(None, Some("/proj"), "abc-123"),
+            settings.resolve_group(None, Some("/proj"), "def-456"),
+            "同目录的两个会话被分到同一块牌了"
+        );
+
+        // 显式 `group` 仍然优先 —— 「上报自己带的优先」这条对所有模式一视同仁
+        assert_eq!(
+            settings.resolve_group(Some("work"), None, "abc-123").as_deref(),
+            Some("work")
+        );
+
+        // 没有 cwd 也照样能分（会话 id 总是有的，不像 cwd）
+        assert_eq!(
+            settings.resolve_group(None, None, "abc-123").as_deref(),
+            Some("abc-123")
+        );
+    }
+
+    /// `group_by` 是设置里的一个值，所以它必须能**原样存取** —— 值名字写错了
+    /// （比如 serde 那边写成 `by_session`）会让开关打开后静默退回不分组。
+    #[test]
+    fn group_by_round_trips_through_json() {
+        for (mode, wire) in [
+            (GroupBy::None, "none"),
+            (GroupBy::Cwd, "cwd"),
+            (GroupBy::Session, "session"),
+        ] {
+            let json = serde_json::to_string(&mode).unwrap();
+            assert_eq!(json, format!("\"{wire}\""), "{mode:?} 的线上名字变了");
+            assert_eq!(serde_json::from_str::<GroupBy>(&json).unwrap(), mode);
+        }
     }
 
     /// `group_by` 是设置里的一个值，所以旧配置（没有这个键）必须能读成 `None`。

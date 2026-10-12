@@ -248,12 +248,13 @@ fn apply(ctx: &Ctx, path_session: Option<String>, mut report: Report) -> Result<
     // `/v1/sessions/{id}/state` 都走它，所以下面那两个 handler 不可能漏掉一个。
     //
     // 做在服务端而不是「改钩子命令」有两个理由：钩子命令是**写死的字符串**，
-    // 而按目录分组要的是每次调用各自的 cwd，写进命令行就成了一个固定值，根本
-    // 表达不了；而且改服务端就顺带覆盖了 curl / CI / 手写脚本，还不用去动用户
-    // 自己的智能体配置文件。
+    // 而按目录 / 按会话分组要的是每次调用各自的值，写进命令行就成了一个固定值，
+    // 根本表达不了；而且改服务端就顺带覆盖了 curl / CI / 手写脚本，还不用去动
+    // 用户自己的智能体配置文件。
+    let session = report.session_id().to_string();
     let resolved = {
         let settings = ctx.settings.lock().expect("settings poisoned");
-        settings.resolve_group(report.group.as_deref(), report.cwd.as_deref())
+        settings.resolve_group(report.group.as_deref(), report.cwd.as_deref(), &session)
     };
     report.group = resolved;
 
@@ -550,10 +551,40 @@ mod tests {
         assert!(body.contains(r#""name":"/proj/web""#), "body: {body}");
     }
 
+    /// 按会话分组：**同一个目录里的两个会话也要各占一块牌**。
+    ///
+    /// 这是用户报的那个场景 —— 同一个智能体并行开了两个会话（两个窗口 / 两个
+    /// worktree），进度各不相同，却挤在同一块牌上只看得到最紧急的那个。
+    /// 注意 cwd 故意给成一样的：按目录分组在这个用例里**分不开它们**，
+    /// 而按会话分得开，这正是两种模式的区别。
+    #[tokio::test]
+    async fn session_mode_gives_each_session_its_own_sign() {
+        let server = start().await;
+        server.settings.lock().unwrap().group_by = crate::config::GroupBy::Session;
+
+        post_state(
+            &server,
+            r#"{"state":"working","session":"sess-aaa","cwd":"/proj/same"}"#,
+        )
+        .await;
+        let (status, body) = post_state(
+            &server,
+            r#"{"state":"error","session":"sess-bbb","cwd":"/proj/same"}"#,
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert!(body.contains(r#""groups":2"#), "两个会话该是两块牌：{body}");
+
+        let (_, body) = call(&server, "GET", "/v1/state", Some(&server.token), false, None).await;
+        assert!(body.contains(r#""name":"sess-aaa""#), "body: {body}");
+        assert!(body.contains(r#""name":"sess-bbb""#), "body: {body}");
+        // 目录名不该成为组名 —— 那样两个会话又挤回一块了
+        assert!(!body.contains(r#""name":"/proj/same""#), "body: {body}");
+    }
+
     /// 上报自己带的 `group` 仍然优先 —— 开关是兜底，不是覆盖。
     #[tokio::test]
-    async fn cwd_mode_does_not_override_an_explicit_group() {
-        let server = start().await;
+    async fn cwd_mode_does_not_override_an_explicit_group() {        let server = start().await;
         server.settings.lock().unwrap().group_by = crate::config::GroupBy::Cwd;
 
         post_state(

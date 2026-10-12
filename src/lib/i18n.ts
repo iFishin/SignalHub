@@ -152,8 +152,12 @@ export interface Messages {
   pauseHint: string;
 
   // 接入页
+  /** 分组方式那一行的标题 + 三个取值 + 合并后的说明 */
+  groupBy: string;
+  groupByNone: string;
   groupByCwd: string;
-  groupByCwdHint: string;
+  groupBySession: string;
+  groupByHint: string;
   outboundHooks: string;
   configure: string;
   connectHookHint: string;
@@ -428,9 +432,12 @@ export const MESSAGES: Record<Lang, Messages> = {
     outboundHooks: "通知转发",
     configure: "去配置",
     connectHookHint: "状态变化时转发到你的服务器，或跑一条本地命令 —— 在「通知转发」页配置。",
-    groupByCwd: "按工作目录分组",
-    groupByCwdHint:
-      "默认不分组：所有不带 group 的上报归到同一块牌。打开后，带了 cwd 的上报按目录分开，一个目录一块牌 —— 每个项目各占一行。上报自己带了 group 的仍然听它的。组名就是那条路径，嫌长可以去「外观 → 各组的显示」改名。改完从下一次上报开始生效，正在跑的会话几秒内就跟上。",
+    groupBy: "分组方式",
+    groupByNone: "不分组",
+    groupByCwd: "按目录",
+    groupBySession: "按会话",
+    groupByHint:
+      "「不分组」：所有不带 group 的上报归到同一块牌。「按目录」：一个工作目录一块牌，每个项目各占一行。「按会话」：一个会话一块牌 —— 同一个智能体并行开几个窗口 / worktree 时，它们的状态各不相同的，只有按会话分才看得出来。三种都只是兜底：上报自己带了 group 的仍然听它的，也是改完从下一次上报开始生效。组名是那条路径或那个会话 id，嫌长可以去「外观 → 各组的显示」改名。",
     port: "端口",
     apiTitle: "接口速查",
     apiToken: "Token",
@@ -703,9 +710,12 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     configure: "Configure",
     connectHookHint:
       "Forward state changes to your server, or run a local command — set it up on the Forwarding tab.",
-    groupByCwd: "Group by working directory",
-    groupByCwdHint:
-      "Off by default: every report without a group lands on the same sign. Turn it on and reports carrying a cwd are split apart, one sign per directory — each project gets its own row. A report that carries its own group still wins. The group name is that path; rename it under Appearance → Per-group display if it is too long. It takes effect from the next report on, so an active session catches up within seconds.",
+    groupBy: "Group signs by",
+    groupByNone: "Nothing",
+    groupByCwd: "Directory",
+    groupBySession: "Session",
+    groupByHint:
+      "\"Nothing\": every report without a group lands on the same sign. \"Directory\": one sign per working directory — each project gets its own row. \"Session\": one sign per session — when a single agent has several windows or worktrees open their states differ, and only per-session grouping shows that. All three are just a fallback: a report that carries its own group still wins, and the change takes effect from the next report on. The group name is that path or session id; rename it under Appearance → Per-group display if it is too long.",
     port: "Port",
     apiTitle: "API quick reference",
     apiToken: "Token",

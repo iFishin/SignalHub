@@ -1322,16 +1322,31 @@ export function SettingsPanel({ snapshot }: Props) {
             {/* ---- 分组 ----
                 放在「接入」页而不是「外观」：它管的是**上报进来之后怎么解读**，
                 和「谁在往这儿报」是同一件事的两半。外观页管的是已经分好组之后
-                怎么称呼、怎么排。 */}
+                怎么称呼、怎么排。
+
+                三个取值用 `seg` 而不是开关：从「按目录」到「按会话」不是「开/
+                关」，而开关表达不了「换一种分法」。 */}
             <div className="section">
               <div className="row">
-                <span>{m.groupByCwd}</span>
-                <Switch
-                  on={settings.group_by === "cwd"}
-                  onChange={(on) => patch({ group_by: on ? "cwd" : "none" })}
-                />
+                <span>{m.groupBy}</span>
+                <div className="seg">
+                  {(["none", "cwd", "session"] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      data-active={settings.group_by === mode}
+                      onClick={() => patch({ group_by: mode })}
+                    >
+                      {mode === "none"
+                        ? m.groupByNone
+                        : mode === "cwd"
+                          ? m.groupByCwd
+                          : m.groupBySession}
+                    </button>
+                  ))}
+                </div>
               </div>
-              <p className="hint">{m.groupByCwdHint}</p>
+              <p className="hint">{m.groupByHint}</p>
             </div>
 
             {/* ---- 局域网访问 ----
