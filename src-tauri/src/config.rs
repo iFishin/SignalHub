@@ -226,11 +226,6 @@ pub fn append_hook_log(line: &str) {
 
 // ---- 用户设置 --------------------------------------------------------------
 
-/// 加 `serde(default)` 是为了向前兼容：这是用户可手改、也会跨版本留存的文件，
-/// 缺字段时应退回该字段的默认值，而不是整份解析失败 —— 否则每次新增设置项
-/// 都会把用户已经调好的其他设置一起重置。
-///
-/// 不派生 `Copy`：`webhook_url` 是 `Option<String>`。相关方法因此都取 `&self`。
 /// 圆点形状。
 ///
 /// 默认是圆；此时 `permission` / `error` 会额外画成**圆角方**，那是给色盲用的
@@ -587,6 +582,14 @@ impl GroupMeta {
     }
 }
 
+/// 用户设置。**这份文件是用户可手改、也会跨版本留存的**，所以带 `serde(default)`：
+/// 缺字段时退回该字段的默认值，而不是整份解析失败 —— 否则每次新增设置项，都会把
+/// 用户已经调好的其他设置一起重置。
+///
+/// 注意它是**容器级**的：加新字段**不需要**逐字段写 serde 属性，只要在下面那个
+/// 手写的 `Default` 里给出想要的默认值。
+///
+/// 不派生 `Copy`：`webhook_url` 是 `Option<String>`。相关方法因此都取 `&self`。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
