@@ -252,6 +252,12 @@ pub struct GroupView {
     pub message: Option<String>,
     /// 这一组里最早进入当前状态的时间，用于牌上的「已持续多久」
     pub since_ms: u64,
+    /// 这一组沉默到哪一步了，灯上画细环用。
+    ///
+    /// **取的是决定聚合那个会话的**，不是组内第一个：那颗圆点正是因为那个会话
+    /// 才变成 `stale`，要缩短的自然也是它。组内没有会话时是 `None`（那一组的
+    /// 聚合是 `offline` 而不是 `stale`，画不出环来）。
+    pub stale_progress: Option<f32>,
     pub sessions: Vec<SessionView>,
 }
 
@@ -275,6 +281,10 @@ impl Snapshot {
 
 /// 前端真正会渲染的那部分。用它做前后比对，避免「message 变了但聚合没变」
 /// 这类更新被当成无变化而丢掉。
+///
+/// 只放**离散**的东西。静默进度是个连续的 0.0–1.0，直接放进来会让每次快照都
+/// 「有变化」（`now` 每 tick 都在动），于是每秒推几十次、灯球窗口跟着抖。
+/// 放的是它的**档位**，见 `progress_step`。
 #[derive(Debug, PartialEq)]
 struct Visible {
     aggregate: Signal,
@@ -282,6 +292,8 @@ struct Visible {
     message: Option<String>,
     /// 带上组名 —— 一个会话换组会改变牌的分组，那是可见变化
     sessions: Vec<(String, String, Signal)>,
+    /// 每个会话的静默进度档位。跨档才算变化 —— 理由见上面那段。
+    progress: Vec<(String, u8)>,
 }
 
 #[derive(Debug, Default)]
@@ -292,6 +304,14 @@ pub struct Store {
     since: Option<SystemTime>,
     /// 最近上报过的消息，从旧到新。满了丢最旧的。
     messages: VecDeque<MessageEntry>,
+    /// 上一次「前端收到的那一帧」长什么样。
+    ///
+    /// **必须有这份基线**，否则细环动不起来：`expire` 的一次调用里前后两个瞬间是
+    /// 同一个 `now`，进度档位当然一样，于是永远比不出「跨档」—— 而 `sweep` 每
+    /// 250ms 调一次 `expire`、期间什么都不改，环就停在刚转 `stale` 那一刻的长度上，
+    /// 直到会话被删掉。有了基线，`expire` 拿「现在」和「上次推出去的那一帧」比，
+    /// 跨档才被发现。
+    last_pushed: Option<Visible>,
 }
 
 impl Store {
@@ -301,11 +321,12 @@ impl Store {
         let group = req.group_id().to_string();
 
         // `off` 作用在会话上等价于清除该会话；全局暂停走 set_paused。
+        //
+        // `now` 顺手传下去：清理路径也要做前后比对，而比对包含静默进度档位。
         if req.state == Signal::Off {
-            return self.clear(&session);
+            return self.clear(&session, now);
         }
 
-        let before = self.visible();
         let prev = self.sessions.get(&session);
 
         // agent / cwd 是身份信息，沿用上一次；message 是事件细节，每次替换。
@@ -360,7 +381,7 @@ impl Store {
             self.record_message(entry);
         }
 
-        self.settle(before)
+        self.settle(now)
     }
 
     /// 记一条消息进历史流。满了丢最旧的 —— 常驻应用不该无界增长。
@@ -376,8 +397,9 @@ impl Store {
         self.messages.iter().cloned().collect()
     }
 
-    pub fn clear(&mut self, session: &str) -> bool {
-        self.remove_session(session).1
+    /// `now` 的唯一用途是算静默进度档位（前后比对要用），见 `progress_step`。
+    pub fn clear(&mut self, session: &str, now: Instant) -> bool {
+        self.remove_session(session, now).1
     }
 
     /// 返回 `(是否真的移除了会话, 可见状态是否变化)`。
@@ -388,19 +410,20 @@ impl Store {
     ///
     /// HTTP 的 DELETE 需要区分这两者：清除一个本就不存在的会话要幂等地回
     /// `removed: false`，且不该被当成变化去推前端。
-    pub fn remove_session(&mut self, session: &str) -> (bool, bool) {
-        let before = self.visible();
+    ///
+    /// `now` 同 `clear`：只用于静默进度档位。
+    pub fn remove_session(&mut self, session: &str, now: Instant) -> (bool, bool) {
         let removed = self.sessions.remove(session).is_some();
-        (removed, self.settle(before))
+        (removed, self.settle(now))
     }
 
     /// 清掉某一组的全部会话（用户从灯上右键「清除该组」）。
     ///
     /// 返回 `(移除了几个会话, 可见状态是否变化)` —— 两个值要分开报，理由同
     /// `remove_session`：清一个空的组不该被当成变化去推前端。
-    pub fn clear_group(&mut self, group: &str) -> (usize, bool) {
-        let before = self.visible();
-
+    ///
+    /// `now` 同 `clear`：只用于静默进度档位。
+    pub fn clear_group(&mut self, group: &str, now: Instant) -> (usize, bool) {
         // 两趟处理，同 `expire`：先只读地收集要删的 id，再动手删。
         // 一趟里边迭代边删要跟借用检查绕，反而更难看。
         let ids: Vec<String> = self
@@ -414,13 +437,14 @@ impl Store {
             self.sessions.remove(id);
         }
 
-        (ids.len(), self.settle(before))
+        (ids.len(), self.settle(now))
     }
 
-    pub fn set_paused(&mut self, paused: bool) -> bool {
-        let before = self.visible();
+    /// `now` 只用于静默进度档位（见 `progress_step`）—— 暂停本身不改变进度，
+    /// 但前后比对要用同一个时钟，否则切换暂停的瞬间会凭空多出一次「有变化」。
+    pub fn set_paused(&mut self, paused: bool, now: Instant) -> bool {
         self.paused = paused;
-        self.settle(before)
+        self.settle(now)
     }
 
     /// 监控是否暂停中。灯上那枚持续可见的角标和折叠态的窗口尺寸都要读它。
@@ -431,8 +455,12 @@ impl Store {
     /// 处理静默超时的会话：转入 `stale`，而不是直接删掉。
     ///
     /// 由 sweep 任务定期调用。这是「智能体消失后灯还会错多久」的唯一闸门。
+    ///
+    /// **进度跨档也算变化**：一个 `stale` 会话在宽限期内什么都不发生（状态不变、
+    /// 集合不变），但细环每分每秒都在缩短。不把它算成变化的话，环会停在刚转
+    /// `stale` 那一刻画好的长度上，直到会话被删掉 —— 比不画更误导。
+    /// 分档而不逐次推的理由见 `progress_step`。
     pub fn expire(&mut self, now: Instant) -> bool {
-        let before = self.visible();
 
         // 两趟处理：先只读地判定谁该走哪条路，再改动。
         // 一趟里同时 retain + 改字段需要绕借用检查，反而更难看。
@@ -462,7 +490,7 @@ impl Store {
             }
         }
 
-        self.settle(before)
+        self.settle(now)
     }
 
     /// 聚合：跨会话取最高优先级 —— 「红 > 黄 > 绿」就实现在这里。
@@ -493,6 +521,8 @@ impl Store {
                     message: winner.and_then(|s| s.message.clone()),
                     // 这一组进入当前状态多久了 —— 牌上「已持续」那一段
                     since_ms: winner.map(|s| epoch_ms(s.since)).unwrap_or(0),
+                    // 细环取的是**决定聚合那个会话**的进度（见字段注释）
+                    stale_progress: winner.and_then(|s| stale_progress(s, now)),
                     sessions: self.views_in(&name, now),
                     name,
                 }
@@ -545,10 +575,7 @@ impl Store {
                     .duration_since(s.since)
                     .unwrap_or_default()
                     .as_millis() as u64,
-                stale_progress: (s.state == Signal::Stale).then(|| {
-                    let remaining = s.expires_at.saturating_duration_since(now);
-                    (remaining.as_secs_f32() / STALE_GRACE.as_secs_f32()).clamp(0.0, 1.0)
-                }),
+                stale_progress: stale_progress(s, now),
             })
             .collect();
         views.sort_by(|a, b| {
@@ -571,7 +598,9 @@ impl Store {
     }
 
     /// 用于前后比对：只要会话集合、聚合值或 tooltip 文本变了就返回不同的值。
-    fn visible(&self) -> Visible {
+    ///
+    /// `now` 是必需的：静默进度依赖它（见 `Visible::progress`）。
+    fn visible(&self, now: Instant) -> Visible {
         let mut sessions: Vec<(String, String, Signal)> = self
             .sessions
             .iter()
@@ -579,21 +608,72 @@ impl Store {
             .collect();
         // 按会话名排序即可得到规范顺序（会话名唯一），无需 Signal 实现 Ord
         sessions.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let mut progress: Vec<(String, u8)> = self
+            .sessions
+            .iter()
+            .map(|(id, s)| (id.clone(), progress_step(stale_progress(s, now))))
+            .collect();
+        progress.sort();
+
         Visible {
             aggregate: self.aggregate(),
             paused: self.paused,
             message: self.winner().and_then(|s| s.message.clone()),
             sessions,
+            progress,
         }
     }
 
-    fn settle(&mut self, before: Visible) -> bool {
-        let changed = self.visible() != before;
+    /// 和 `last_pushed` 比对：这一帧和上次推给前端的那一帧不一样就算变化。
+    ///
+    /// **首次调用（还没有基线）时算有变化**：`last_pushed` 是 `None` 表示前端还没
+    /// 收到过任何东西，这时哪怕内容一样也得推一次，否则前端永远停在初始状态。
+    fn settle(&mut self, now: Instant) -> bool {
+        let current = self.visible(now);
+        let changed = match &self.last_pushed {
+            Some(previous) => *previous != current,
+            None => true,
+        };
+        self.last_pushed = Some(current);
         if changed {
             self.since = Some(SystemTime::now());
         }
         changed
     }
+}
+
+/// 静默进度分几档。
+///
+/// **为什么要分档**：`stale_progress` 是个连续的 0.0–1.0，而 `sweep` 每 250ms
+/// 醒一次。直接把连续值放进 `Visible` 做前后比对的话，**每次都比出「有变化」**，
+/// 于是灯球在整段宽限期里每秒收到 4 次推送，窗口跟着重排 —— 细环本身是给
+/// 「省着看」的状态用的，为它把 CPU 烧起来得不偿失。
+///
+/// 细环是**环的长短**，5 分钟的宽限期里肉眼能看出的变化也就那么几档；而且
+/// conic-gradient 的角度变化本身就是离散的。分 16 档（每档约 19 秒）比平滑
+/// 动画粗，但换来的是这个常驻窗口在沉默时几乎不工作。
+///
+/// `None`（非 stale）归到第 0 档 —— 它和「即将消失」都是「没有环」，
+/// 不需要区分。
+const PROGRESS_STEPS: u8 = 16;
+
+fn progress_step(progress: Option<f32>) -> u8 {
+    match progress {
+        Some(p) => (p * PROGRESS_STEPS as f32).ceil() as u8,
+        None => 0,
+    }
+}
+
+/// 一个会话的沉默进度：1.0 = 刚转 `stale`，0.0 = 即将被删除。
+///
+/// 组和会话两处都取它，`visible` 的档位比对也走它 —— 摘成自由函数是为了这三处
+/// 用的是同一个定义，不会各自漂移。档位换算见 `progress_step`。
+fn stale_progress(session: &Session, now: Instant) -> Option<f32> {
+    (session.state == Signal::Stale).then(|| {
+        let remaining = session.expires_at.saturating_duration_since(now);
+        (remaining.as_secs_f32() / STALE_GRACE.as_secs_f32()).clamp(0.0, 1.0)
+    })
 }
 
 /// 优先级最高者胜；平局取最近进入该状态的，再平局取 id 最小者 —— 结果确定。
@@ -732,10 +812,10 @@ mod tests {
         let (mut s, t) = (Store::default(), Instant::now());
         rep(&mut s, t, "a", Signal::Working);
 
-        assert!(s.set_paused(true));
+        assert!(s.set_paused(true, t));
         assert_eq!(s.aggregate(), Signal::Off);
 
-        assert!(s.set_paused(false));
+        assert!(s.set_paused(false, t));
         assert_eq!(s.aggregate(), Signal::Working, "恢复后应立即回到真实状态");
     }
 
@@ -790,15 +870,91 @@ mod tests {
         rep(&mut s, t, "a", Signal::Working);
         let ttl = Signal::Working.default_ttl();
 
-        s.expire(t + ttl);
+        assert!(s.expire(t + ttl));
         assert_eq!(s.aggregate(), Signal::Stale);
 
-        assert!(!s.expire(t + ttl + Duration::from_secs(299)));
+        // 这**是**一次变化 —— 会话本身没动，但细环的进度跨了好几档（见
+        // `a_progress_step_counts_as_a_change`）。这时候推一帧，前端才能把环画短。
+        // 测的是 `s.expire` 的返回值，所以即便它变成了 true，聚合仍然是 Stale。
+        s.expire(t + ttl + Duration::from_secs(299));
         assert_eq!(s.aggregate(), Signal::Stale, "宽限期内仍应保留");
 
         assert!(s.expire(t + ttl + Duration::from_secs(301)));
         assert!(sessions(&s.snapshot()).is_empty());
         assert_eq!(s.aggregate(), Signal::Offline);
+    }
+
+    /// 细环进度**跨档**要算一次变化。没有这条，环会停在刚转 `stale` 那一刻画好的
+    /// 长度上，直到会话被删掉 —— 那比不画更误导。
+    ///
+    /// 断言的是**档与档之间**那只推一次，而不是每 tick 都推：连续值直接进前后
+    /// 比对的话，`sweep` 每 250ms 都会比出「有变化」，一个常驻窗口会一直重排。
+    #[test]
+    fn a_progress_step_counts_as_a_change() {
+        let (mut s, t) = (Store::default(), Instant::now());
+        rep(&mut s, t, "a", Signal::Working);
+        let ttl = Signal::Working.default_ttl();
+
+        assert!(s.expire(t + ttl), "转 stale 本身当然是一次变化");
+
+        // 5 分钟宽限期分 16 档，每档约 18.75 秒。第一次 expire 已经把进度记在第 16
+        // 档（当时还剩满额），所以走到「正好同一档」的时间点就该再推一次。
+        let one_step = Duration::from_secs_f32(STALE_GRACE.as_secs_f32() / 16.0);
+        assert!(
+            s.expire(t + ttl + one_step),
+            "进度跨了一档，前端要重画那条环"
+        );
+
+        // 同一档内重复调用不该再推 —— 这一条才是分档的意义所在
+        assert!(
+            !s.expire(t + ttl + one_step + Duration::from_millis(1)),
+            "同一档里不该反复推"
+        );
+    }
+
+    /// 组上的细环取的是**决定聚合那个会话**的进度。
+    ///
+    /// 组内两路都沉默时，圆点是因为聚合值更高的那一路才变灰的，环要缩短的
+    /// 自然也是它 —— 取组内第一个的话，画出来的是另一路的进度。
+    /// 组上的细环取的是**决定聚合那个会话**的进度。
+    ///
+    /// 组内两路都沉默时，圆点是因为聚合值更高的那一路才变 `stale` 的，环要缩短的
+    /// 自然也是它 —— 取组内第一个的话，画出来的是另一路的进度。
+    #[test]
+    fn group_progress_follows_the_winning_session() {
+        let (mut s, t) = (Store::default(), Instant::now());
+        // `working` 比 `done` 优先；沉默后 `working` 那一路就是组内的胜者
+        rep_in(&mut s, t, "slacker", "g", Signal::Done);
+        rep_in(&mut s, t, "busy", "g", Signal::Working);
+        let ttl = Signal::Working.default_ttl();
+
+        // 同一时刻过期，所以宽限期同时开始
+        s.expire(t + ttl);
+
+        let snapshot = s.snapshot();
+        let group = snapshot
+            .groups
+            .iter()
+            .find(|g| g.name == "g")
+            .expect("组 g 在");
+        assert_eq!(group.aggregate, Signal::Stale);
+        assert!(group.stale_progress.is_some(), "该组的圆点要画环");
+
+        // 胜者必须是 `busy`（priority 更高），环也就必须取它的 —— 用「精确等于那个
+        // 会话的值」来锁，而不是只断言个 None / Some
+        let winner = group
+            .sessions
+            .iter()
+            .find(|v| v.id == "busy")
+            .expect("busy 在组里");
+        assert_eq!(
+            group.stale_progress, winner.stale_progress,
+            "组的环要跟着决定聚合的那个会话"
+        );
+
+        // 反面：`done` 那一路沉默后会**直接消失**（done 的语义是「完成，回到常态」），
+        // 所以活着的只有 busy，这一条同时也是「组里只剩胜者」的旁证
+        assert!(group.sessions.iter().all(|v| v.id == "busy"), "{:?}", group.sessions);
     }
 
     /// 一路会话还活着（idle）时，不该被另一路已经沉默的会话盖成灰的
@@ -900,8 +1056,8 @@ mod tests {
     fn clear_is_idempotent() {
         let (mut s, t) = (Store::default(), Instant::now());
         rep(&mut s, t, "a", Signal::Error);
-        assert!(s.clear("a"));
-        assert!(!s.clear("a"));
+        assert!(s.clear("a", t));
+        assert!(!s.clear("a", t));
     }
 
     #[test]
@@ -911,16 +1067,16 @@ mod tests {
         rep(&mut s, t, "b", Signal::Idle);
 
         // 移除的是没在决定聚合的那一路：聚合不变，但会话列表变了
-        let (removed, changed) = s.remove_session("b");
+        let (removed, changed) = s.remove_session("b", t);
         assert!(removed);
         assert!(changed, "会话表变了，前端需要更新");
         assert_eq!(s.aggregate(), Signal::Error, "聚合不该被影响");
 
         // 再删一次：既没移除，也没有任何可见变化
-        assert_eq!(s.remove_session("b"), (false, false));
+        assert_eq!(s.remove_session("b", t), (false, false));
 
         // 删掉最后一个会话，就没有任何会话在报了
-        assert_eq!(s.remove_session("a"), (true, true));
+        assert_eq!(s.remove_session("a", t), (true, true));
         assert_eq!(s.aggregate(), Signal::Offline);
     }
 
@@ -932,7 +1088,7 @@ mod tests {
         rep_in(&mut s, t, "a2", "alpha", Signal::Idle);
         rep_in(&mut s, t, "b1", "beta", Signal::Error);
 
-        let (removed, changed) = s.clear_group("alpha");
+        let (removed, changed) = s.clear_group("alpha", t);
         assert_eq!(removed, 2);
         assert!(changed, "会话表变了，前端需要更新");
 
@@ -947,8 +1103,8 @@ mod tests {
         let (mut s, t) = (Store::default(), Instant::now());
         rep_in(&mut s, t, "a", "alpha", Signal::Working);
 
-        assert_eq!(s.clear_group("nope"), (0, false));
-        assert_eq!(s.clear_group("alpha"), (1, true), "有会话的组要报移除了 1 个");
+        assert_eq!(s.clear_group("nope", t), (0, false));
+        assert_eq!(s.clear_group("alpha", t), (1, true), "有会话的组要报移除了 1 个");
     }
 
     /// 决定聚合的那一组被清掉时聚合会变；不动聚合的那一组也会报变化
@@ -960,13 +1116,13 @@ mod tests {
         rep_in(&mut s, t, "b", "beta", Signal::Error);
 
         // beta 的 Error 优先级最高、在决定聚合，清掉 alpha 不影响聚合
-        let (removed, changed) = s.clear_group("alpha");
+        let (removed, changed) = s.clear_group("alpha", t);
         assert_eq!(removed, 1);
         assert!(changed, "会话表变了，前端需要更新");
         assert_eq!(s.aggregate(), Signal::Error, "聚合不该被影响");
 
         // 再清掉决定聚合的 beta，聚合随之落下
-        let (removed, changed) = s.clear_group("beta");
+        let (removed, changed) = s.clear_group("beta", t);
         assert_eq!(removed, 1);
         assert!(changed);
         assert_eq!(s.aggregate(), Signal::Offline, "一个会话都不剩了");
@@ -979,8 +1135,8 @@ mod tests {
         rep_in(&mut s, t, "a", "alpha", Signal::Working);
         rep_in(&mut s, t, "b", "beta", Signal::Permission);
 
-        s.clear_group("alpha");
-        s.clear_group("beta");
+        s.clear_group("alpha", t);
+        s.clear_group("beta", t);
 
         assert!(sessions(&s.snapshot()).is_empty());
         assert_eq!(s.aggregate(), Signal::Offline);

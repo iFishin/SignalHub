@@ -327,8 +327,9 @@ pub(crate) fn toggle_monitor(app: &AppHandle) {
     let (changed, snapshot) = {
         let mut guard = store.lock().expect("state store poisoned");
         // 暂停状态不在 Store 的公开读接口里，从快照取当前值再取反
+        let now = std::time::Instant::now();
         let next = !guard.snapshot().paused;
-        let changed = guard.set_paused(next);
+        let changed = guard.set_paused(next, now);
         (changed, guard.snapshot())
     };
     if changed {

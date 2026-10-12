@@ -119,6 +119,22 @@ function moreGroupsTip(
 }
 
 /**
+ * 沉默进度 → CSS 变量 `--progress`。
+ *
+ * `lamp.css` 的 `ring` 形状用它算 `conic-gradient` 的弧长（1.0 = 满圈，
+ * 0.0 = 环消失）。只有 `stale` 组才有值，别的状态不设这个变量 —— CSS 那边
+ * 有 `var(--progress, 1)` 兜底，缺省就是满圈。
+ *
+ * **返回 `undefined` 而不是 `{}`**：React 会把 `undefined` 当成「不设 style」，
+ * 省掉一个空的 `style` 属性；而在 `{}` 和 `undefined` 之间来回切换会让 React
+ * 多碰一次 DOM。
+ */
+function progressStyle(group: GroupView): React.CSSProperties | undefined {
+  if (group.stale_progress === null) return undefined;
+  return { "--progress": String(group.stale_progress) } as React.CSSProperties;
+}
+
+/**
  * 同一个元素上既要能拖窗口、又要能响应点击。
  *
  * 不能用 `data-tauri-drag-region`：它让系统在 mousedown 时接管鼠标，之后的
@@ -260,7 +276,16 @@ export function SignalLamp({ aggregate, groups, settings, paused }: Props) {
   const rows: GroupView[] =
     shown.length > 0
       ? shown
-      : [{ name: "", aggregate, message: null, since_ms: 0, sessions: [] }];
+      : [
+          {
+            name: "",
+            aggregate,
+            message: null,
+            since_ms: 0,
+            stale_progress: null,
+            sessions: [],
+          },
+        ];
 
   return (
     <div
@@ -295,6 +320,7 @@ export function SignalLamp({ aggregate, groups, settings, paused }: Props) {
             className="dot lamp-dot"
             data-state={group.aggregate}
             data-shape={shapes[group.aggregate]}
+            style={progressStyle(group)}
             onContextMenu={(event) => openGroupMenu(event, group.name)}
           />
         ) : (
@@ -304,7 +330,12 @@ export function SignalLamp({ aggregate, groups, settings, paused }: Props) {
             data-has-message={show.message && group.message ? "true" : "false"}
             onContextMenu={(event) => openGroupMenu(event, group.name)}
           >
-            <span className="dot" data-state={group.aggregate} data-shape={shapes[group.aggregate]} />
+            <span
+              className="dot"
+              data-state={group.aggregate}
+              data-shape={shapes[group.aggregate]}
+              style={progressStyle(group)}
+            />
             <div className="sign-body">
               <div className="sign-line">
                 {show.name && group.name && (

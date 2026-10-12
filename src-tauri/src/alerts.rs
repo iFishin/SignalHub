@@ -559,6 +559,7 @@ mod tests {
             aggregate,
             message: None,
             since_ms: 0,
+            stale_progress: None,
             sessions,
         }
     }

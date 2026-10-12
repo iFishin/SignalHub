@@ -151,7 +151,7 @@ fn set_state(
         message,
         ttl_ms: None,
     };
-    Ok(mutate(&app, &store, |guard| guard.apply(Instant::now(), req)))
+    Ok(mutate(&app, &store, |guard, now| guard.apply(now, req)))
 }
 
 #[tauri::command]
@@ -160,7 +160,7 @@ fn set_paused(
     store: tauri::State<'_, SharedStore>,
     paused: bool,
 ) -> Snapshot {
-    mutate(&app, &store, |guard| guard.set_paused(paused))
+    mutate(&app, &store, |guard, now| guard.set_paused(paused, now))
 }
 
 #[tauri::command]
@@ -898,11 +898,12 @@ pub(crate) fn reveal_settings(app: &tauri::AppHandle) {
 fn mutate(
     app: &tauri::AppHandle,
     store: &tauri::State<'_, SharedStore>,
-    f: impl FnOnce(&mut Store) -> bool,
+    f: impl FnOnce(&mut Store, Instant) -> bool,
 ) -> Snapshot {
+    let now = Instant::now();
     let (changed, snapshot) = {
         let mut guard = store.lock().expect("state store poisoned");
-        let changed = f(&mut guard);
+        let changed = f(&mut guard, now);
         (changed, guard.snapshot())
     };
     if changed {
@@ -1213,6 +1214,7 @@ mod tests {
             aggregate,
             message: None,
             since_ms: 0,
+            stale_progress: None,
             sessions: Vec::new(),
         }
     }

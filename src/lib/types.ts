@@ -58,6 +58,15 @@ export interface GroupView {
   message: string | null;
   /** 这一组进入当前状态的时间（epoch 毫秒），牌上的「已持续」由它算 */
   since_ms: number;
+  /**
+   * 这一组沉默到哪一步了。1.0 = 刚转 `stale`，0.0 = 即将被删除。
+   *
+   * **取的是决定聚合那个会话的**（灯上的圆点就是因为它才变 `stale`）。只有这一组
+   * 的聚合真是 `stale` 时才有值 —— 组内还有更高优先级的会话时，画不出环来。
+   *
+   * 由服务端算好：要自己算就得复刻一遍 TTL 与宽限期常量。
+   */
+  stale_progress: number | null;
   sessions: SessionView[];
 }
 

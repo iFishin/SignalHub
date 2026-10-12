@@ -123,6 +123,17 @@ jobs:
 
       - run: npm ci
 
+      # Tauri 打 dmg 走的是 `bundle_dmg.sh`，那个脚本要 `create-dmg` 这个第三方
+      # 命令行工具。GitHub 的 macos runner 镜像里**碰巧**装了它，但那是镜像的实现
+      # 细节，不是我们声明过的依赖 —— 镜像一升级就可能没掉，而这一步失败的报错是
+      # `error running bundle_dmg.sh`，看不出缺的是哪个工具（本地就是这么栽的）。
+      #
+      # 显式装一次：已经装了的话 brew 会说 "already installed"，几秒钟的事；换来
+      # 的是不管 runner 镜像怎么变，dmg 都打得出来。
+      - name: 装 create-dmg（打 dmg 用）
+        if: runner.os == 'macOS'
+        run: brew install create-dmg
+
       # 只传 `releaseId`，**不传 `tagName`**：给了 releaseId 之后 tauri-action 会跳过
       # 「查找或创建发布」那一步，直接往这个 id 上传产物 —— 这正是上面那个 job 存在的
       # 意义。（两个都给的话，tagName 会被忽略，但少写一个少一处误解。）

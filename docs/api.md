@@ -128,6 +128,7 @@ Authorization: Bearer <token>
       "aggregate": "permission",
       "message": "需要批准: rm -rf build",
       "since_ms": 1697030400000,
+      "stale_progress": null,
       "sessions": [
         {
           "id": "abc123",
@@ -150,7 +151,11 @@ Authorization: Bearer <token>
 
 每组自己的 `aggregate` 是组内取最高优先级；`since_ms` 是该组进入当前状态的时间，牌上的「已持续」由它算。
 
-`stale_progress` 只有 `stale` 会话有值（0.0–1.0，1.0 = 刚转 `stale`，0.0 = 即将被删除），灯球用它在灯上画细环。**它由服务端算好**，客户端不必复刻 TTL 常量——`age_ms` 是「距上次状态变化」，并不等于「沉默多久」。
+`stale_progress` 有值时（0.0–1.0，1.0 = 刚转 `stale`，0.0 = 即将被删除）灯球用它画细环：`ring` 形状下环的弧长就是它，所以一个沉默的组会眼看着自己的环一点点缩没。**它由服务端算好**，客户端不必复刻 TTL 常量——`age_ms` 是「距上次状态变化」，并不等于「沉默多久」。
+
+它出现在两处：**组上的** `stale_progress`（取决定聚合那个会话的，灯上的圆点就是因为它才变 `stale`）和每个 `SessionView` 上的同名字段。灯球只用前者——它画的是每组的圆点，不是每路的。
+
+**进度会自己往前走**：`sweep` 每 250ms 醒一次，进度跨过一档就再推一帧（分 16 档，约每 19 秒一档）。不分档而是每次 tick 都推的话，整段宽限期里灯球会一直重排；而常驻窗口每帧重排是这个项目一直在避免的事。
 
 ### 2.5 `POST /v1/monitor`
 

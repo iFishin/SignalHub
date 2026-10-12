@@ -218,7 +218,7 @@ fn clear_group(app: &AppHandle, group: &str) -> usize {
     let store = app.state::<crate::SharedStore>();
     let (removed, changed, snapshot) = {
         let mut guard = store.lock().expect("state store poisoned");
-        let (removed, changed) = guard.clear_group(group);
+        let (removed, changed) = guard.clear_group(group, std::time::Instant::now());
         (removed, changed, guard.snapshot())
     };
 

@@ -164,7 +164,7 @@ async fn report_state_at_path(
 async fn clear_session(State(ctx): State<Ctx>, Path(session): Path<String>) -> Json<Value> {
     let (removed, changed, snapshot) = {
         let mut guard = ctx.store.lock().expect("state store poisoned");
-        let (removed, changed) = guard.remove_session(&session);
+        let (removed, changed) = guard.remove_session(&session, std::time::Instant::now());
         (removed, changed, guard.snapshot())
     };
     if changed {
@@ -187,7 +187,7 @@ async fn set_monitor(
 
     let (changed, snapshot) = {
         let mut guard = ctx.store.lock().expect("state store poisoned");
-        let changed = guard.set_paused(request.paused);
+        let changed = guard.set_paused(request.paused, std::time::Instant::now());
         (changed, guard.snapshot())
     };
     if changed {
