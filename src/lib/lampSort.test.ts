@@ -157,18 +157,18 @@ describe("labelOf", () => {
    * 服务端给的默认显示名排在原始组名**之前**。
    *
    * 这一级是为「按会话分组」加的：那种组的原始组名是个会话 id（多半是 UUID），
-   * 一排牌全是 `9f3c1a2e-…` 等于没显示。Rust 算好「智能体 · 目录末段」传过来。
+   * 一排牌全是 `9f3c1a2e-…` 等于没显示。Rust 算好「目录末段 · 智能体」传过来。
    */
   it("prefers the server's default label over the raw group name", () => {
-    expect(labelOf(group("9f3c1a2e", "claude-code · SignalHub"), {})).toBe(
-      "claude-code · SignalHub",
+    expect(labelOf(group("9f3c1a2e", "SignalHub · claude-code"), {})).toBe(
+      "SignalHub · claude-code",
     );
   });
 
   /** 用户显式改的名字**压过**默认名 —— 那是明确的意图，不该被一个默认值盖掉。 */
   it("lets a user-set name beat the server's default label", () => {
     expect(
-      labelOf(group("9f3c1a2e", "claude-code · SignalHub"), {
+      labelOf(group("9f3c1a2e", "SignalHub · claude-code"), {
         "9f3c1a2e": { name: "重构" },
       }),
     ).toBe("重构");
@@ -182,10 +182,10 @@ describe("labelOf", () => {
    * 那个默认名是服务端算的，用户根本没碰过它。
    */
   it("hides by the raw group name, never by the display label", () => {
-    const g = group("9f3c1a2e", "claude-code · SignalHub");
+    const g = group("9f3c1a2e", "SignalHub · claude-code");
     expect(orderVisible([g], ["9f3c1a2e"], {})).toHaveLength(0);
     expect(
-      orderVisible([g], ["claude-code · SignalHub"], {}),
+      orderVisible([g], ["SignalHub · claude-code"], {}),
       "按显示名隐藏必须无效",
     ).toHaveLength(1);
   });

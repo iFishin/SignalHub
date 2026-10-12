@@ -287,7 +287,7 @@ pub struct SessionView {
 pub struct GroupView {
     pub name: String,
     /// 默认显示名。**只在「按会话分组」出来的组上有值** —— 那种组的组名是一个
-    /// 会话 id（多半是 UUID），直接画在牌上没法看。这里给出「智能体 · 目录末段」，
+    /// 会话 id（多半是 UUID），直接画在牌上没法看。这里给出「目录末段 · 智能体」，
     /// 一眼能认出是哪个窗口、在哪个项目里。见 [`session_label`]。
     ///
     /// **只是默认**：用户在「外观 → 各组的显示」里改的名字优先于它（见
@@ -697,10 +697,15 @@ impl Store {
     }
 }
 
-/// 会话分组的默认显示名：「智能体 · 目录末段」。
+/// 会话分组的默认显示名：「目录末段 · 智能体」。
 ///
 /// **为什么需要**：按会话分组时组名就是会话 id，多半是一串 UUID。真拿它当牌子
 /// 上的字，一排牌全是 `9f3c1a2e-…`，等于没显示 —— 用户看不出哪个窗口是哪个。
+///
+/// **为什么目录在前**：牌宽是固定的（`size × 7`），名字那一行还要跟状态文字分，
+/// 所以这个词**一定会被截断**，能看见的只有前几个字。而按会话分组的典型情形恰恰
+/// 是「同一个智能体开了好几个窗口」—— 那时智能体名是重复的噪音，只有项目名能
+/// 把它们区分开。项目放前面，截断切掉的就是那截重复的尾巴。
 ///
 /// **怎么知道这个组是按会话分出来的**：`Settings::resolve_group` 在按会话分组时
 /// 直接拿会话 id 当组名，所以只有那种情况下「组名 == 组内某个会话的 id」才成立。
@@ -723,7 +728,7 @@ fn session_label(name: &str, sessions: &[SessionView]) -> Option<String> {
         .filter(|p| !p.is_empty());
 
     match (agent, project) {
-        (Some(agent), Some(project)) => Some(format!("{agent} · {project}")),
+        (Some(agent), Some(project)) => Some(format!("{project} · {agent}")),
         (Some(agent), None) => Some(agent.to_string()),
         (None, Some(project)) => Some(project),
         (None, None) => None,
@@ -814,12 +819,16 @@ mod tests {
         }
     }
 
-    /// 按会话分组时，牌上显示「智能体 · 目录末段」，而不是那一串 UUID。
+    /// 按会话分组时，牌上显示「目录末段 · 智能体」，而不是那一串 UUID。
     ///
     /// 这是这个字段存在的全部理由：不这么写，一排牌全是 `9f3c1a2e-…`，
     /// 「哪个窗口是哪个」等于没显示。
+    ///
+    /// **顺序是有意的**：牌宽固定、名字一定被截断，所以只有前几个字看得见；
+    /// 而按会话分组的典型情形是「同一个智能体开了好几个窗口」，那时智能体名是
+    /// 重复的，能区分的只有项目名 —— 所以项目放前面。
     #[test]
-    fn a_session_group_is_labelled_by_agent_and_project() {
+    fn a_session_group_is_labelled_by_project_and_agent() {
         let s = [session(
             "9f3c1a2e",
             Some("claude-code"),
@@ -827,7 +836,7 @@ mod tests {
         )];
         assert_eq!(
             session_label("9f3c1a2e", &s).as_deref(),
-            Some("claude-code · SignalHub")
+            Some("SignalHub · claude-code")
         );
     }
 
