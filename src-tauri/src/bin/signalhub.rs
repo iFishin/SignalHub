@@ -37,14 +37,29 @@ mod hooks;
 #[path = "../state.rs"]
 mod state;
 
+// CLI 自己的文案（中英各一份）。**故意不挂进 `lib.rs` 的模块树**：只有这个二进制
+// 用它，挂到 app 那侧换来的是一片 dead_code（而 CI 是 `-D warnings`）。
+#[path = "../cli_text.rs"]
+mod cli_text;
+
+use cli_text::{fill, text as cli_text_for, CliText};
+use config::Lang;
+
+/// 这次调用该说哪种语言，**只解析一次**。
+///
+/// 懒解析 + `OnceLock` 而不是每次现算：`hook` 那条路径上智能体每轮工具调用都会走
+/// 一遍，而读 `config.json` 是有代价的 —— 这个值在一次调用里又不会变。
+fn t() -> &'static CliText {
+    static LANG: std::sync::OnceLock<Lang> = std::sync::OnceLock::new();
+    cli_text_for(*LANG.get_or_init(|| config::resolve_lang(&config::load_settings())))
+}
+
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(800);
 const CALL_TIMEOUT: Duration = Duration::from_millis(1500);
 
 const EXIT_OK: u8 = 0;
 const EXIT_ERROR: u8 = 1;
 const EXIT_NOT_RUNNING: u8 = 3;
-
-const APP_NOT_RUNNING: &str = "SignalHub 没有在运行";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -136,7 +151,7 @@ fn take_value(args: &[String], index: &mut usize, name: &str) -> Result<String, 
     *index += 1;
     args.get(*index)
         .cloned()
-        .ok_or_else(|| Failure::other(format!("{name} 缺少取值")))
+        .ok_or_else(|| Failure::other(fill(t().missing_value, &[name])))
 }
 
 impl Flags {
@@ -161,7 +176,7 @@ impl Flags {
                 "--port" => {
                     let raw = take_value(args, &mut index, "--port")?;
                     flags.port = Some(raw.parse().map_err(|_| {
-                        Failure::other(format!("--port 需要数字，收到 {raw:?}"))
+                        Failure::other(fill(t().port_not_number, &[&format!("{raw:?}")]))
                     })?);
                 }
                 "--json" => flags.json = true,
@@ -184,7 +199,7 @@ impl Flags {
                     break;
                 }
                 other if other.starts_with("--") => {
-                    return Err(Failure::other(format!("未知选项 {other}，用 --help 看用法")));
+                    return Err(Failure::other(fill(t().unknown_option, &[other])));
                 }
                 other => positional.push(other.to_string()),
             }
@@ -214,10 +229,10 @@ fn parse_ttl(raw: &str) -> Result<u64, Failure> {
     let value: u64 = digits
         .trim()
         .parse()
-        .map_err(|_| Failure::other(format!("无法解析时长 {raw:?}，试试 30s / 5m / 1h")))?;
+        .map_err(|_| Failure::other(fill(t().bad_duration, &[&format!("{raw:?}")])))?;
     value
         .checked_mul(per_unit)
-        .ok_or_else(|| Failure::other(format!("时长 {raw:?} 过大")))
+        .ok_or_else(|| Failure::other(fill(t().duration_too_big, &[&format!("{raw:?}")])))
 }
 
 fn run(args: &[String]) -> Result<(), Failure> {
@@ -244,12 +259,12 @@ fn run(args: &[String]) -> Result<(), Failure> {
     let (flags, positional) = Flags::parse(args)?;
     let (command, rest) = positional
         .split_first()
-        .ok_or_else(|| Failure::other("缺少状态或子命令，用 --help 看用法"))?;
+        .ok_or_else(|| Failure::other(t().no_command))?;
 
     match command.as_str() {
         "hook" => {
             let agent = rest.first().ok_or_else(|| {
-                Failure::other("hook 需要智能体名，例如 signalhub hook claude-code")
+                Failure::other(t().hook_needs_agent)
             })?;
             hook(agent, &flags)
         }
@@ -260,31 +275,22 @@ fn run(args: &[String]) -> Result<(), Failure> {
         "monitor" => match rest.first().map(String::as_str) {
             Some("on") => monitor(true, &flags),
             Some("off") => monitor(false, &flags),
-            other => Err(Failure::other(format!(
-                "monitor 需要 on 或 off，收到 {other:?}"
-            ))),
+            other => Err(Failure::other(fill(t().monitor_needs_on_off, &[&format!("{other:?}")]))),
         },
         // signalhub on / off 是 monitor 的简写
         "on" => monitor(true, &flags),
         "off" => monitor(false, &flags),
         "install" => match rest.first().map(String::as_str) {
             Some("hooks") => install_hooks(required_agent(rest, "install hooks")?, &flags),
-            other => Err(Failure::other(format!(
-                "install 只支持 hooks，收到 {other:?}"
-            ))),
+            other => Err(Failure::other(fill(t().only_hooks, &["install", &format!("{other:?}")]))),
         },
         "uninstall" => match rest.first().map(String::as_str) {
             Some("hooks") => uninstall_hooks(required_agent(rest, "uninstall hooks")?, &flags),
-            other => Err(Failure::other(format!(
-                "uninstall 只支持 hooks，收到 {other:?}"
-            ))),
+            other => Err(Failure::other(fill(t().only_hooks, &["uninstall", &format!("{other:?}")]))),
         },
         state => {
             if !rest.is_empty() {
-                return Err(Failure::other(format!(
-                    "多余的参数: {}",
-                    rest.join(" ")
-                )));
+                return Err(Failure::other(fill(t().too_many_args, &[&rest.join(" ")])));
             }
             report(state, &flags)
         }
@@ -315,18 +321,16 @@ impl Endpoint {
         let port = match flags.port {
             Some(port) => port,
             None => config::read_port().map_err(|err| match err.kind() {
-                std::io::ErrorKind::NotFound => Failure::not_running(format!(
-                    "{APP_NOT_RUNNING}（找不到 ~/.signalhub/port）"
-                )),
-                _ => Failure::other(format!("读取端口失败: {err}")),
+                std::io::ErrorKind::NotFound => Failure::not_running(fill(t().no_port_file, &[t().app_not_running])),
+                _ => Failure::other(fill(t().read_port_failed, &[&err.to_string()])),
             })?,
         };
 
         let token = config::read_token().map_err(|err| match err.kind() {
-            std::io::ErrorKind::NotFound => Failure::not_running(format!(
-                "{APP_NOT_RUNNING}（找不到 ~/.signalhub/token）"
-            )),
-            _ => Failure::other(format!("读取 token 失败: {err}")),
+            std::io::ErrorKind::NotFound => {
+                Failure::not_running(fill(t().no_token_file, &[t().app_not_running]))
+            }
+            _ => Failure::other(fill(t().read_token_failed, &[&err.to_string()])),
         })?;
 
         Ok(Self { base: format!("http://127.0.0.1:{port}/v1"), token })
@@ -344,13 +348,13 @@ impl Endpoint {
 fn classify(err: ureq::Error) -> Failure {
     match err {
         ureq::Error::Io(ref io) if io.kind() == std::io::ErrorKind::ConnectionRefused => {
-            Failure::not_running(APP_NOT_RUNNING)
+            Failure::not_running(t().app_not_running)
         }
-        ureq::Error::ConnectionFailed => Failure::not_running(APP_NOT_RUNNING),
+        ureq::Error::ConnectionFailed => Failure::not_running(t().app_not_running),
         ureq::Error::Timeout(_) => {
-            Failure::other("请求超时 —— app 可能在运行但卡住了")
+            Failure::other(t().request_timeout)
         }
-        other => Failure::other(format!("请求失败: {other}")),
+        other => Failure::other(fill(t().request_failed, &[&other.to_string()])),
     }
 }
 
@@ -362,7 +366,7 @@ macro_rules! read_response {
         let text = response
             .body_mut()
             .read_to_string()
-            .map_err(|err| Failure::other(format!("读取响应失败: {err}")))?;
+            .map_err(|err| Failure::other(fill(t().read_response_failed, &[&err.to_string()])))?;
         (status, text)
     }};
 }
@@ -378,7 +382,7 @@ fn expect_success(status: u16, body: &str) -> Result<Value, Failure> {
         .as_str()
         .map(str::to_string)
         .unwrap_or_else(|| body.trim().to_string());
-    Err(Failure::other(format!("服务返回 {status}: {detail}")))
+    Err(Failure::other(fill(t().server_error, &[&status.to_string(), &detail])))
 }
 
 // ---- 子命令 ----------------------------------------------------------------
@@ -425,11 +429,16 @@ fn report(state: &str, flags: &Flags) -> Result<(), Failure> {
     let parsed = expect_success(status, &text)?;
 
     println!(
-        "{} → 聚合 {}（{} 个会话{})",
-        state,
-        parsed["aggregate"].as_str().unwrap_or("?"),
-        parsed["sessions"].as_u64().unwrap_or(0),
-        if parsed["changed"].as_bool().unwrap_or(false) { "" } else { "，无变化" }
+        "{}",
+        fill(
+            t().report_ok,
+            &[
+                state,
+                parsed["aggregate"].as_str().unwrap_or("?"),
+                &parsed["sessions"].as_u64().unwrap_or(0).to_string(),
+                if parsed["changed"].as_bool().unwrap_or(false) { "" } else { t().no_change },
+            ]
+        )
     );
     Ok(())
 }
@@ -484,9 +493,7 @@ const RUN_TTL_MS: u64 = 60_000;
 /// 4. **起不来要如实报错**：命令名写错是调用方的错，那时报 `error` 并返回非零。
 fn run_command(flags: &Flags) -> Result<(), Failure> {
     let Some((program, args)) = flags.command.split_first() else {
-        return Err(Failure::other(
-            "run 需要一条命令，写在 -- 之后，例如 signalhub run --agent aider -- aider",
-        ));
+        return Err(Failure::other(t().run_needs_command));
     };
 
     // 端点只解析一次。**读不到就直接不报**（见第 3 条），而不是让整个命令失败。
@@ -504,7 +511,7 @@ fn run_command(flags: &Flags) -> Result<(), Failure> {
             && !warned
         {
             warned = true;
-            eprintln!("signalhub: 上报失败（{}）；命令照跑", err.message);
+            eprintln!("signalhub: {}", fill(t().run_report_failed, &[&err.message]));
         }
     };
 
@@ -516,7 +523,10 @@ fn run_command(flags: &Flags) -> Result<(), Failure> {
         Ok(child) => child,
         Err(err) => {
             report("error");
-            return Err(Failure::other(format!("起不了 {program:?}：{err}")));
+            return Err(Failure::other(fill(
+                t().run_spawn_failed,
+                &[&format!("{program:?}"), &err.to_string()],
+            )));
         }
     };
 
@@ -532,11 +542,14 @@ fn run_command(flags: &Flags) -> Result<(), Failure> {
         match rx.recv_timeout(RUN_HEARTBEAT) {
             Ok(Ok(status)) => break status,
             Ok(Err(err)) => {
-                return Err(Failure::other(format!("等 {program:?} 结束失败：{err}")));
+                return Err(Failure::other(fill(
+                    t().run_wait_failed,
+                    &[&format!("{program:?}"), &err.to_string()],
+                )));
             }
             Err(mpsc::RecvTimeoutError::Timeout) => report("working"),
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return Err(Failure::other("等待子进程的线程意外结束了"));
+                return Err(Failure::other(t().run_wait_thread_died));
             }
         }
     };
@@ -565,9 +578,15 @@ fn clear(flags: &Flags) -> Result<(), Failure> {    let endpoint = Endpoint::dis
     let parsed = expect_success(status, &text)?;
 
     println!(
-        "会话 {session} {}（聚合 {}）",
-        if parsed["removed"].as_bool().unwrap_or(false) { "已清除" } else { "本就不存在" },
-        parsed["aggregate"].as_str().unwrap_or("?")
+        "{}",
+        fill(
+            t().clear_line,
+            &[
+                session,
+                if parsed["removed"].as_bool().unwrap_or(false) { t().clear_removed } else { t().clear_absent },
+                parsed["aggregate"].as_str().unwrap_or("?"),
+            ]
+        )
     );
     Ok(())
 }
@@ -582,10 +601,16 @@ fn monitor(on: bool, flags: &Flags) -> Result<(), Failure> {
         .send(json!({ "paused": !on }).to_string()));
     let parsed = expect_success(status, &text)?;
 
+    let paused = parsed["paused"].as_bool().unwrap_or(false);
     println!(
-        "监控{}（聚合 {}）",
-        if parsed["paused"].as_bool().unwrap_or(false) { "已暂停" } else { "已恢复" },
-        if parsed["paused"].as_bool().unwrap_or(false) { "off" } else { "正常" }
+        "{}",
+        fill(
+            t().monitor_line,
+            &[
+                if paused { t().monitor_paused } else { t().monitor_resumed },
+                if paused { "off" } else { "ok" },
+            ]
+        )
     );
     Ok(())
 }
@@ -609,9 +634,9 @@ fn watch(flags: &Flags) -> Result<(), Failure> {
     let until = match &flags.until {
         Some(until) if WATCHABLE_STATES.contains(&until.as_str()) => Some(until.clone()),
         Some(until) => {
-            return Err(Failure::other(format!(
-                "--until {until:?} 不是已知状态；可用: {}",
-                WATCHABLE_STATES.join(" ")
+            return Err(Failure::other(fill(
+                t().until_unknown,
+                &[&format!("{until:?}"), &WATCHABLE_STATES.join(" ")],
             )));
         }
         None => None,
@@ -625,8 +650,8 @@ fn watch(flags: &Flags) -> Result<(), Failure> {
 
     // 提示走 stderr，这样 `signalhub watch > 日志` 得到的是干净的状态时间线
     match &until {
-        Some(until) => eprintln!("等待聚合变为 {until}…（Ctrl-C 取消）"),
-        None => eprintln!("跟随状态变化（Ctrl-C 退出）"),
+        Some(until) => eprintln!("{}", fill(t().watch_until_hint, &[until])),
+        None => eprintln!("{}", t().watch_follow_hint),
     }
 
     let mut last: Option<String> = None;
@@ -642,7 +667,7 @@ fn watch(flags: &Flags) -> Result<(), Failure> {
 
         if until.as_deref() == Some(aggregate.as_str()) {
             // 目标状态这一行也要打出来，否则 CI 日志里看不到到达了
-            println!("{aggregate}  {sessions} 个会话");
+            println!("{}", fill(t().watch_line, &[&aggregate, &sessions.to_string()]));
             return Ok(());
         }
 
@@ -651,15 +676,15 @@ fn watch(flags: &Flags) -> Result<(), Failure> {
             if flags.json {
                 println!("{}", serde_json::to_string(&parsed).unwrap_or_default());
             } else {
-                println!("{aggregate}  {sessions} 个会话");
+                println!("{}", fill(t().watch_line, &[&aggregate, &sessions.to_string()]));
             }
             last = Some(aggregate.clone());
         }
 
         if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-            return Err(Failure::other(format!(
-                "等待超时：仍是 {aggregate}，未变成 {}",
-                until.as_deref().unwrap_or("?")
+            return Err(Failure::other(fill(
+                t().watch_timeout,
+                &[&aggregate, until.as_deref().unwrap_or("?")],
             )));
         }
 
@@ -682,19 +707,19 @@ fn status(flags: &Flags) -> Result<(), Failure> {
     }
 
     println!(
-        "聚合: {}",
-        parsed["aggregate"].as_str().unwrap_or("?")
+        "{}",
+        fill(t().status_aggregate, &[parsed["aggregate"].as_str().unwrap_or("?")])
     );
     if parsed["paused"].as_bool().unwrap_or(false) {
-        println!("监控: 已暂停");
+        println!("{}", t().status_paused);
     }
     if let Some(message) = parsed["message"].as_str() {
-        println!("提示: {message}");
+        println!("{}", fill(t().status_hint, &[message]));
     }
 
     let empty = Vec::new();
     let sessions = parsed["sessions"].as_array().unwrap_or(&empty);
-    println!("会话: {}", sessions.len());
+    println!("{}", fill(t().status_sessions, &[&sessions.len().to_string()]));
     for session in sessions {
         println!(
             "  - {:<16} {:<11} {}{}{}",
@@ -703,11 +728,11 @@ fn status(flags: &Flags) -> Result<(), Failure> {
             format_ms(session["age_ms"].as_u64().unwrap_or(0)),
             session["agent"]
                 .as_str()
-                .map(|agent| format!("  {agent}"))
+                .map(|agent| fill(t().session_agent, &[agent]))
                 .unwrap_or_default(),
             session["message"]
                 .as_str()
-                .map(|message| format!("  「{message}」"))
+                .map(|message| fill(t().session_message, &[message]))
                 .unwrap_or_default(),
         );
     }
@@ -728,7 +753,7 @@ fn format_ms(ms: u64) -> String {
 
 fn required_agent<'a>(rest: &'a [String], what: &str) -> Result<&'a str, Failure> {
     rest.get(1).map(String::as_str).ok_or_else(|| {
-        Failure::other(format!("{what} 需要智能体名，例如 signalhub {what} claude-code"))
+        Failure::other(fill(t().agent_needed, &[what, what]))
     })
 }
 
@@ -737,44 +762,49 @@ fn install_hooks(agent: &str, flags: &Flags) -> Result<(), Failure> {
     let report = hooks::install(agent, flags.dry_run).map_err(Failure::other)?;
 
     println!(
-        "{} 的 hook{}",
-        agent.name(),
-        if report.dry_run { "（演练，未写入任何文件）" } else { " 已安装" }
+        "{}",
+        fill(
+            t().install_title,
+            &[
+                agent.name(),
+                if report.dry_run { t().dry_run_suffix } else { t().installed },
+            ]
+        )
     );
     if let Some(command) = &report.command {
-        println!("  命令  {command}");
+        println!("{}", fill(t().install_command, &[command]));
     }
-    println!("  配置  {}", report.path.display());
+    println!("{}", fill(t().install_config, &[&report.path.display().to_string()]));
     if let Some(backup) = &report.backup {
-        println!("  备份  {}", backup.display());
+        println!("{}", fill(t().install_backup, &[&backup.display().to_string()]));
     }
     if !report.added.is_empty() {
-        println!("  新增  {} 个事件", report.added.len());
+        println!("{}", fill(t().install_added, &[&report.added.len().to_string()]));
         println!("        {}", report.added.join(" "));
     }
     if !report.updated.is_empty() {
-        println!("  更新  {} 个事件（写入的命令变了）", report.updated.len());
+        println!("{}", fill(t().install_updated, &[&report.updated.len().to_string()]));
         println!("        {}", report.updated.join(" "));
     }
     if !report.already.is_empty() {
-        println!("  跳过  {} 个（已存在且命令相同）", report.already.len());
+        println!("{}", fill(t().install_skipped, &[&report.already.len().to_string()]));
     }
 
     if report.added.is_empty() && report.updated.is_empty() {
-        println!("无需改动。");
+        println!("{}", t().install_no_change);
     } else if report.dry_run {
-        println!("以上为演练结果；去掉 --dry-run 才会真正写入。");
+        println!("{}", t().dry_run_footer);
     } else {
-        println!("重启 {} 后生效。", agent.name());
+        println!("{}", fill(t().install_restart, &[agent.name()]));
     }
 
     // 没在 PATH 里就只能写绝对路径，此时二进制一挪动 hook 就失效——这种失效
     // 是静默的（智能体会话里什么都看不到），所以必须主动提醒。
     if !report.dry_run && !hooks::signalhub_on_path() {
         println!();
-        println!("提示：signalhub 不在 PATH 中，已写入绝对路径。");
-        println!("      若移动或删除了该二进制，hook 会静默失效。");
-        println!("      把它放进 PATH（例如软链到 /usr/local/bin）后重新执行本命令即可改为裸名字。");
+        println!("{}", t().path_warning_1);
+        println!("{}", t().path_warning_2);
+        println!("{}", t().path_warning_3);
     }
     Ok(())
 }
@@ -784,24 +814,29 @@ fn uninstall_hooks(agent: &str, flags: &Flags) -> Result<(), Failure> {
     let report = hooks::uninstall(agent, flags.dry_run).map_err(Failure::other)?;
 
     println!(
-        "{} 的 hook{}",
-        agent.name(),
-        if report.dry_run { "（演练，未写入任何文件）" } else { " 已移除" }
+        "{}",
+        fill(
+            t().install_title,
+            &[
+                agent.name(),
+                if report.dry_run { t().dry_run_suffix } else { t().uninstalled },
+            ]
+        )
     );
-    println!("  配置  {}", report.path.display());
+    println!("{}", fill(t().install_config, &[&report.path.display().to_string()]));
     if let Some(backup) = &report.backup {
-        println!("  备份  {}", backup.display());
+        println!("{}", fill(t().install_backup, &[&backup.display().to_string()]));
     }
 
     if report.removed_handlers == 0 {
-        println!("没有找到本工具装过的 hook，无需改动。");
+        println!("{}", t().uninstall_nothing);
     } else {
-        println!("  移除  {} 个 handler", report.removed_handlers);
+        println!("{}", fill(t().install_removed_handlers, &[&report.removed_handlers.to_string()]));
         if !report.removed.is_empty() {
             println!("        {}", report.removed.join(" "));
         }
         if report.dry_run {
-            println!("以上为演练结果；去掉 --dry-run 才会真正写入。");
+            println!("{}", t().dry_run_footer);
         }
     }
     Ok(())
@@ -828,13 +863,13 @@ fn hook(agent: &str, flags: &Flags) -> Result<(), Failure> {
     let mut input = String::new();
     std::io::stdin()
         .read_to_string(&mut input)
-        .map_err(|err| Failure::other(format!("读取 stdin 失败: {err}")))?;
+        .map_err(|err| Failure::other(fill(t().read_stdin_failed, &[&err.to_string()])))?;
 
     let payload: Value = match serde_json::from_str(&input) {
         Ok(payload) => payload,
         Err(err) => {
-            log_hook(agent, "?", "-", &format!("stdin 不是合法 JSON: {err}"));
-            return Err(Failure::other(format!("stdin 不是合法 JSON: {err}")));
+            log_hook(agent, "?", "-", &fill(t().stdin_not_json, &[&err.to_string()]));
+            return Err(Failure::other(fill(t().stdin_not_json, &[&err.to_string()])));
         }
     };
 
@@ -885,7 +920,7 @@ fn hook(agent: &str, flags: &Flags) -> Result<(), Failure> {
 
     match &result {
         Ok(()) => log_hook(agent, &event, &session, &outcome),
-        Err(err) => log_hook(agent, &event, &session, &format!("失败: {}", err.message)),
+        Err(err) => log_hook(agent, &event, &session, &fill(t().hook_failed, &[&err.message])),
     }
     result
 }
@@ -1058,69 +1093,11 @@ fn cwd_of(payload: &Value) -> Option<String> {
 }
 
 fn help() -> String {
-    format!(
-        "\
-signalhub {version} —— 桌面悬浮状态灯的上报客户端
-
-用法:
-  signalhub <状态> [选项]            上报状态
-  signalhub hook <智能体>            从 stdin 读智能体 hook 的 JSON 并上报
-  signalhub status [--json]          查询当前聚合状态
-  signalhub watch [选项]             跟随状态变化（终端里盯着，或 CI 里等状态）
-  signalhub run [选项] -- <命令>     把一条命令包起来上报（通用适配，见下）
-  signalhub clear --session <id>     清除某个会话
-  signalhub monitor on|off           全局暂停 / 恢复监控
-  signalhub on | off                 monitor 的简写
-  signalhub install hooks <智能体>   把 hook 写进智能体的配置文件
-  signalhub uninstall hooks <智能体> 移除本工具写进去的 hook
-
-状态:
-  idle thinking working done attention permission error off
-  off 作用在会话上等价于清除该会话；全局暂停请用 monitor off。
-  状态名接受别名，如 blocked→error、completed→done、permission_request→permission。
-
-选项:
-  --session <id>    会话标识，默认 default
-  --agent <name>    上报方名字，用于 UI 归因
-  --cwd <path>      项目路径
-  --group <name>    归属的组，默认 default。多分组时灯上每组一块牌
-  --message <text>  悬停提示文本
-  --ttl <时长>      覆盖默认过期时间，如 30s / 5m / 1h / 90（裸数字按秒）
-  --json            status 输出原始 JSON
-  --dry-run         install / uninstall 只打印将要做的改动，不写文件
-  --interval <时长>  watch 的轮询间隔，默认 500ms
-  --until <状态>     watch 等到聚合变成该状态就退出 0（如 --until done）
-  --timeout <时长>   watch 的等待上限，超时退出 1
-  --port <n>        覆盖端口自动发现
-  --never-fail      任何错误都以退出码 0 结束（hook 模式隐含此行为）
-  -h, --help        显示本帮助
-  -V, --version     显示版本
-
-退出码:
-  0  成功
-  1  参数错误或服务端返回错误
-  3  SignalHub 没有在运行
-
-  run 是**唯一例外**：它把被包命令的退出码原样传出去。包一层不能改被包命令的语义，
-  否则 CI 里 `signalhub run -- make test` 会永远是绿的。
-
-通用适配（signalhub run）:
-  任何跑在终端里的工具都能这么接，**不需要知道它自己的 hook 格式**：
-
-    signalhub run --agent aider -- aider --model sonnet
-
-  开始前报 working，跑的过程中每 20 秒续期一次，退出后报 done（退出码 0）
-  或 error（非零）。stdout / stderr 原样透传；灯没开的时候命令照跑。
-
-  被包命令自己的选项写在 `--` 之后 —— 那之后的一切都原样交给它，不会被当成
-  我们的选项解析。
-
-智能体: {agents}
-  install hooks 会改动它们的配置文件，写之前自动备份，且只动 hooks 这一个键。
-  （Goose 例外：它是插件，装的是自己的目录，不碰你的共享配置。）
-",
-        version = env!("CARGO_PKG_VERSION"),
-        agents = hooks::ALL_NAMES.join(" ")
+    // 正文在 `cli_text.rs`（中英各一份），这里只把版本号和智能体名单填进去。
+    // 一屏帮助有 60 多行，塞在这个文件里会让逻辑更难找。
+    fill(
+        t().help,
+        &[env!("CARGO_PKG_VERSION"), &hooks::ALL_NAMES.join(" ")],
     )
 }
 
@@ -1638,14 +1615,26 @@ mod tests {
     }
 
     #[test]
-    fn help_documents_every_exit_code_and_command() {
-        let text = help();
-        for expected in [
-            "hook", "status", "watch", "run", "clear", "monitor", "install", "uninstall",
-            "claude-code", "codex", "cursor", "--never-fail", "--ttl", "--dry-run",
-            "--until", "--timeout", "--interval", "--group", "退出码",
+    fn help_documents_every_command_and_option_in_both_languages() {
+        // **刻意不走 `help()`**：它按当前配置解析语言，而那取决于开发机上的
+        // `~/.signalhub` —— 同一个测试在中文机器和英文机器上会走不同的分支。
+        // 这两张表是给用户看的，两边都得站得住。
+        for (name, table, exit_heading) in [
+            ("中文", &cli_text::ZH, "退出码"),
+            ("英文", &cli_text::EN, "Exit codes"),
         ] {
-            assert!(text.contains(expected), "帮助文本缺少 {expected}");
+            // 版本号和智能体名单是填进去的，替两个假的看看占位符在不在
+            let text = fill(table.help, &["9.9.9", "claude-code codex"]);
+            for expected in [
+                "hook", "status", "watch", "run", "clear", "monitor", "install", "uninstall",
+                "claude-code", "9.9.9", "--never-fail", "--ttl", "--dry-run", "--until",
+                "--timeout", "--interval", "--group", "--session", "--agent", "--port",
+                exit_heading,
+            ] {
+                assert!(text.contains(expected), "{name} 帮助文本缺少 {expected}");
+            }
+            // 通用适配那一节也得在 —— 它是「其他工具怎么接」的唯一出处
+            assert!(text.contains("run --agent"), "{name} 帮助里没有 run 的用法示例");
         }
     }
 

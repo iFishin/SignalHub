@@ -274,7 +274,7 @@ pub fn init(app: AppHandle) -> tauri::Result<()> {
 /// `MenuItem` 存下来，而那些句柄除了这一件事之外没有任何用处。
 ///
 /// 菜单项的 **id 不变**，所以 `on_menu_event` 那个分派不用动。
-pub fn rebuild_menu(app: &AppHandle, lang: crate::lang::Lang) {
+pub fn rebuild_menu(app: &AppHandle, lang: crate::config::Lang) {
     let Some(tray) = app.tray_by_id("signalhub") else {
         return;
     };
@@ -288,7 +288,7 @@ pub fn rebuild_menu(app: &AppHandle, lang: crate::lang::Lang) {
     }
 }
 
-fn build_menu(app: &AppHandle, lang: crate::lang::Lang) -> tauri::Result<Menu<tauri::Wry>> {
+fn build_menu(app: &AppHandle, lang: crate::config::Lang) -> tauri::Result<Menu<tauri::Wry>> {
     let t = crate::lang::text(lang);
     // 这些构造器都要求传 &M（M: Manager），所以统一用 app
     let toggle = MenuItem::with_id(app, "toggle", t.tray_show_hide, true, None::<&str>)?;

@@ -428,8 +428,9 @@ impl QuietHours {
     }
 }
 
-/// 界面语言的**偏好**。注意和 `lang::Lang` 的区别：那个是**解析后**的语言，
-/// 只有中文和英文；这里的 `Auto` 要由前端解析成具体语言 —— Rust 不知道系统语言。
+/// 界面语言的**偏好**。注意和 `Lang` 的区别：那个是**解析后**的语言，只有中文和
+/// 英文；这里的 `Auto` 要由前端（CLI 那边则由环境变量）解析成具体语言 ——
+/// Rust 不知道系统语言。
 ///
 /// 定义在这个文件而不是 `lang.rs`：`Settings` 要被 CLI 通过 `#[path]` 共用，
 /// 而 `lang.rs` 是 app 侧的模块。
@@ -441,6 +442,106 @@ pub enum Locale {
     Auto,
     Zh,
     En,
+}
+
+/// 解析之后的界面语言。
+///
+/// **和 `Locale` 放在一起**而不是 `lang.rs`：CLI 也要用它挑自己的文案（`--help`
+/// 和报错），而 `lang.rs` 里那套 `NativeText` 是 app 侧的（托盘菜单、系统通知），
+/// CLI 一条都用不上 —— 把整个 `lang.rs` 拖进去只会换来一堆 dead_code 警告，而
+/// CI 现在是 `-D warnings`。理由和上面 `Locale` 那段是同一条。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Lang {
+    /// 默认中文：这是这个项目的母语，也是「谁都没告诉我们」时唯一有依据的猜测。
+    #[default]
+    Zh,
+    En,
+}
+
+impl Lang {
+    /// 认不出就返回 `None`，由调用方决定怎么办 —— 不在这里猜一个默认值，
+    /// 因为「拿到一个不认识的语言」是需要能被发现的事。
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "zh" | "zh-cn" | "zh-hans" | "zh-hant" => Some(Lang::Zh),
+            "en" | "en-us" | "en-gb" => Some(Lang::En),
+            _ => None,
+        }
+    }
+}
+
+/// app 解析出来的**当前界面语言**，供 CLI 读。
+///
+/// 为什么要有这个文件：CLI 是独立进程，它要挑自己的 `--help` / 报错文案，而
+/// `locale: "auto"` 的解析**只有前端做得了**（它读 `navigator.language`）。让 CLI
+/// 自己去猜环境变量在 Windows 上会直接落空，也会和界面上实际显示的语言不一致 ——
+/// 而这两个**必须一致**：用户在英文界面上敲 `signalhub --help`、看到的却是中文，
+/// 会以为装错了版本。
+///
+/// 和 `port` 是同一类东西：app 写、CLI 读的运行时事实。
+pub fn lang_file() -> io::Result<PathBuf> {
+    Ok(data_dir()?.join("lang"))
+}
+
+/// app 在 `set_lang` 时写一次（见 `lib.rs`）。
+pub fn write_lang(lang: Lang) -> io::Result<()> {
+    let text = match lang {
+        Lang::Zh => "zh",
+        Lang::En => "en",
+    };
+    atomic_write(&lang_file()?, text, None)
+}
+
+/// CLI 读它。**读不到就返回 `None`**（app 从没跑过），由调用方决定退到哪儿。
+pub fn read_lang() -> Option<Lang> {
+    Lang::parse(&fs::read_to_string(lang_file().ok()?).ok()?)
+}
+
+/// 把「偏好 + app 写下的实际语言 + 环境变量」折成一个具体语言。
+///
+/// 顺序是有讲究的：
+///   1. `Settings::locale` 是**显式**的 zh / en → 用它。用户明确选过，最权威。
+///   2. 是 `auto` → 用 app 写下的 `lang` 文件。那是界面**实际**在显示的语言。
+///   3. 还没有（app 从没跑过）→ 猜环境变量。
+///   4. 连环境变量都没有 → `Lang::default()`。
+///
+/// **`lang` 文件只对 `auto` 生效**：显式偏好排在它前面，所以用户在应用没跑的时候
+/// 手改 `config.json` 也立刻有效，不会被上一次运行留下的文件压住。
+pub fn resolve_lang(settings: &Settings) -> Lang {
+    match settings.locale {
+        Locale::Zh => Lang::Zh,
+        Locale::En => Lang::En,
+        Locale::Auto => read_lang().or_else(lang_from_env).unwrap_or_default(),
+    }
+}
+
+/// 从环境变量猜系统语言。
+///
+/// 按 POSIX 的优先级取：`LC_ALL` > `LC_MESSAGES` > `LANG`。**`LANG` 在 Windows 上
+/// 通常不存在**，所以这条路只对 Unix 可靠 —— Windows 靠的是上面那个 `lang` 文件，
+/// 而 app 只要跑过一次就会把它写下来。
+///
+/// 取不到就继续往下试，**不因为 `LC_ALL=C` 或空串而放弃**：那两个都表示「没有
+/// 指定 locale」，而不是「指定成某种不认识的语言」。
+fn lang_from_env() -> Option<Lang> {
+    for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
+        if let Ok(value) = std::env::var(key)
+            && let Some(lang) = Lang::parse(&normalize_posix_locale(&value))
+        {
+            return Some(lang);
+        }
+    }
+    None
+}
+
+/// POSIX 的 locale 写法 → `Lang::parse` 认得的那种。
+///
+/// `en_US.UTF-8` → `en-US`：去掉 `.` 之后的编码，下划线换成连字符。`Lang::parse`
+/// 认的是 `navigator.language` 那一套（`en-US`），两边只差这一层。
+pub fn normalize_posix_locale(raw: &str) -> String {
+    // `@` 是修饰符（`sr_RS@latin`），和编码一样丢掉
+    let base = raw.split(['.', '@']).next().unwrap_or("");
+    base.replace('_', "-")
 }
 
 /// 某一组的显示偏好。
@@ -1657,11 +1758,53 @@ mod tests {
         );
     }
 
+    // ---- 界面语言（CLI 也用它） ------------------------------------------------
+
+    /// POSIX 的 locale 写法要能翻译成 `Lang::parse` 认得的那种。
+    ///
+    /// 这一条是**实测踩到的**：`LANG=en_US.UTF-8` 一开始换不出英文，因为
+    /// `Lang::parse` 认的是 `navigator.language` 那一套（`en-US`），而环境变量给的是
+    /// 带编码、带下划线的 POSIX 写法。少了这层归一，CLI 在几乎所有 Unix 上都会
+    /// 退回中文 —— 而那正是「看起来做了、其实没生效」。
+    #[test]
+    fn posix_locale_spellings_are_normalized() {
+        for (raw, want) in [
+            ("en_US.UTF-8", "en-US"),
+            ("zh_CN.UTF-8", "zh-CN"),
+            ("en_US", "en-US"),
+            ("en", "en"),
+            ("C", "C"),
+            ("", ""),
+            // `@` 是修饰符，和编码一样该丢掉
+            ("sr_RS@latin", "sr-RS"),
+        ] {
+            assert_eq!(normalize_posix_locale(raw), want, "{raw:?}");
+        }
+
+        // 归一之后要真的能被认出来
+        assert_eq!(Lang::parse(&normalize_posix_locale("en_US.UTF-8")), Some(Lang::En));
+        assert_eq!(Lang::parse(&normalize_posix_locale("zh_CN.UTF-8")), Some(Lang::Zh));
+        // `C` / `POSIX` 表示「没有指定 locale」，认不出来是对的 —— 调用方会继续往下试
+        assert_eq!(Lang::parse(&normalize_posix_locale("C")), None);
+    }
+
+    /// **显式偏好最权威**，排在 `lang` 文件和环境变量前面。
+    ///
+    /// 这条不走文件系统：`Locale::Zh` / `Locale::En` 两个分支直接返回，只有 `Auto`
+    /// 才会去读文件。所以这里能确定性地断言 —— 而「用户明确选过」优先于「上次 app
+    /// 解析出来的」，正是为了让手改 `config.json` 立刻生效。
+    #[test]
+    fn an_explicit_locale_beats_everything_else() {
+        let zh = Settings { locale: Locale::Zh, ..Settings::default() };
+        let en = Settings { locale: Locale::En, ..Settings::default() };
+        assert_eq!(resolve_lang(&zh), Lang::Zh);
+        assert_eq!(resolve_lang(&en), Lang::En);
+    }
+
     /// `group_by` 是设置里的一个值，所以它必须能**原样存取** —— 值名字写错了
     /// （比如 serde 那边写成 `by_session`）会让开关打开后静默退回不分组。
     #[test]
-    fn group_by_round_trips_through_json() {
-        for (mode, wire) in [
+    fn group_by_round_trips_through_json() {        for (mode, wire) in [
             (GroupBy::None, "none"),
             (GroupBy::Cwd, "cwd"),
             (GroupBy::Session, "session"),

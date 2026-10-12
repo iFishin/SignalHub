@@ -165,9 +165,9 @@ $user = [Environment]::GetEnvironmentVariable('Path', 'User')
 
 ## 进度
 
-已完成：悬浮灯球、状态聚合与 TTL、HTTP 上报接口、CLI（含 `watch`）、设置面板、hook 自动接线（Claude Code / Codex / Cursor / Gemini CLI / Goose）、Pi Agent（命令行接入）、`signalhub run` 通用适配（把任意命令包起来上报）、系统通知与提示音、通知动作按钮、窗口位置记忆、展开 / 折叠两种形态、每组右键菜单、今日时长统计与近 30 分钟时间线、出站钩子转发、每个状态的颜色 / 形状 / 节奏可单独调、按组静音、勿扰时段、持续多久才提醒、卡住了一直提醒（5 / 15 / 30 分钟各再提一次，正文带上已经等了多久）、托盘图标跟随状态、单实例、开机自启、全局快捷键、多分组（上报带 `group` 或 `--group`，也可以按工作目录、或按会话自动兜底 —— 一个会话一块牌）、今日时长的每日落盘（保留 30 天）、配置导出 / 导入、局域网访问开关（默认关）、点击穿透。
+已完成：悬浮灯球、状态聚合与 TTL、HTTP 上报接口、CLI（含 `watch`）、设置面板、hook 自动接线（Claude Code / Codex / Cursor / Gemini CLI / Goose）、Pi Agent（命令行接入）、`signalhub run` 通用适配（把任意命令包起来上报）、CLI 文案跟随界面语言（`--help` / 报错 / 输出都有中英两份）、系统通知与提示音、通知动作按钮、窗口位置记忆、展开 / 折叠两种形态、每组右键菜单、今日时长统计与近 30 分钟时间线、出站钩子转发、每个状态的颜色 / 形状 / 节奏可单独调、按组静音、勿扰时段、持续多久才提醒、卡住了一直提醒（5 / 15 / 30 分钟各再提一次，正文带上已经等了多久）、托盘图标跟随状态、单实例、开机自启、全局快捷键、多分组（上报带 `group` 或 `--group`，也可以按工作目录、或按会话自动兜底 —— 一个会话一块牌）、今日时长的每日落盘（保留 30 天）、配置导出 / 导入、局域网访问开关（默认关）、点击穿透。
 
-待做：签名与公证（步骤位置留在 [.github/workflows/release.yml](.github/workflows/release.yml) 里，拿到证书就能填）；CLI 的 `--help` 和报错还是中文，没跟着界面语言走。
+待做：签名与公证（步骤位置留在 [.github/workflows/release.yml](.github/workflows/release.yml) 里，拿到证书就能填）。
 
 **自动更新还没接** —— 不是没时间，是有一条查不到确切答案、必须真机验的东西：未签名的 macOS 应用替换 bundle 之后，Gatekeeper 会不会拦。接线步骤（含密钥怎么生成、公钥为什么填内容而不是路径）已经写在 [.github/workflows/release.yml](.github/workflows/release.yml) 顶部，验证通过了就能打开。
 

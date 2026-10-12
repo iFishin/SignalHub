@@ -7,29 +7,12 @@
 //! `Settings::locale` 里存的是用户的**偏好**（可能是 `"auto"`），前端把它解析成
 //! 具体语言再调 `set_lang`。和 `LocalHour` 一个路子 —— 前端提供事实，Rust 用它
 //! 挑文案。
+//!
+//! `Lang` 本身定义在 `config.rs`（CLI 也要用它），这里只用不定义。
 
+use crate::config::Lang;
 use crate::state::Signal;
 use std::sync::Mutex;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Lang {
-    /// 默认中文：这是这个项目的母语，也是前端还没推第一帧时唯一有依据的猜测。
-    #[default]
-    Zh,
-    En,
-}
-
-impl Lang {
-    /// 认不出就返回 `None`，由调用方决定怎么办 —— 不在这里猜一个默认值，
-    /// 因为「前端推了个不认识的语言」是需要能被发现的事。
-    pub fn parse(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "zh" | "zh-cn" | "zh-hans" | "zh-hant" => Some(Lang::Zh),
-            "en" | "en-us" | "en-gb" => Some(Lang::En),
-            _ => None,
-        }
-    }
-}
 
 /// 前端推过来的当前界面语言。
 #[derive(Default)]

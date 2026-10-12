@@ -257,9 +257,12 @@ signalhub watch [选项]                       跟随状态变化，或等某个
 signalhub clear --session <id>               清除会话
 signalhub monitor on|off                     全局暂停 / 恢复
 signalhub on | off                           monitor 的简写
+signalhub run [选项] -- <命令>               把一条命令包起来上报（见 §4.13）
 signalhub install hooks <agent>              写入智能体 hook 配置
 signalhub uninstall hooks <agent>            移除本工具写进去的 hook
 ```
+
+**CLI 的文案跟着界面语言走**（`--help`、报错、各子命令的输出都有中英两份）。它拿不到浏览器的 `navigator.language`，所以按可靠性排了三个来源：`config.json` 里**显式**的 `locale` → app 写下的 `~/.signalhub/lang`（界面**实际**显示的语言）→ 环境变量 `LC_ALL` / `LC_MESSAGES` / `LANG`。所以应用跑过一次之后，CLI 说的语言和设置面板上显示的一定一致。
 
 选项可以写在子命令之前或之后，两种写法等价（`signalhub --port 1 status` 与 `signalhub status --port 1`）。
 

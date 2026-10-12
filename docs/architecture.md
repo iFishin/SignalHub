@@ -626,9 +626,28 @@ pub struct QuietHours { pub enabled: bool, pub start: u8, pub end: u8 }
 | 类型 | 在哪 | 取值 | 谁用 |
 |---|---|---|---|
 | `config::Locale` | `config.rs` | `auto` / `zh` / `en` | 用户的**偏好**，落盘 |
-| `lang::Lang` | `lang.rs` | `zh` / `en` | **解析后**的语言，瞬态 |
+| `config::Lang` | `config.rs` | `zh` / `en` | **解析后**的语言，瞬态 |
 
-`Locale` 定义在 `config.rs` 而不是 `lang.rs`，是因为 `Settings` 要被 CLI 通过 `#[path]` 共用，而 `lang.rs` 是 app 侧的模块。同理，`Signal::label()` 从 `state.rs` 搬到了 `lang.rs` —— 它现在要分语言，而 `state.rs` 也在 CLI 的共用名单里。
+**两个都在 `config.rs`**，而不是 `lang.rs`：`Settings` 要被 CLI 通过 `#[path]` 共用，而 `lang.rs` 是 app 侧的模块。`Lang` 一开始在 `lang.rs`（只有 app 用得上），CLI 也要挑自己的文案之后跟着搬了过去 —— 顺带避免了「把整个 `lang.rs` 拖进 CLI 换来一片 dead_code」的麻烦（CI 是 `-D warnings`）。同理，`Signal::label()` 从 `state.rs` 搬到了 `lang.rs` —— 它现在要分语言，而 `state.rs` 也在 CLI 的共用名单里。
+
+#### CLI 怎么知道该说哪种语言
+
+**CLI 是独立进程，`--help` 和报错也得跟着界面语言走**，否则用户在英文界面上敲 `signalhub --help` 看到中文会以为装错了版本。但它拿不到 `navigator.language`，所以按可靠性排了三个来源（`config::resolve_lang`）：
+
+1. `config.json` 里的 `locale` 是**显式**的 `zh` / `en` → 直接用。用户明确选过，最权威，而且手改配置文件立刻生效。
+2. 是 `auto` → 读 app 写下的 `~/.signalhub/lang`。那是界面**实际**在显示的语言（`set_lang` 时落一次）。
+3. 还没有（app 从没跑过）→ 猜环境变量 `LC_ALL` / `LC_MESSAGES` / `LANG`。
+4. 连环境变量都没有 → `Lang::default()`（中文）。
+
+`lang` 文件是必需的，不是锦上添花：Windows 上根本没有 `LANG`，而第 2 条正好补上那个洞 —— 它是 app 写、CLI 读的运行时事实，和 `port` 是同一类东西。
+
+**环境变量要做一次归一。** POSIX 写的是 `en_US.UTF-8`，而 `Lang::parse` 认的是 `navigator.language` 那一套（`en-US`）—— 少了 `normalize_posix_locale` 这一步，CLI 在几乎所有 Unix 上都会退回中文（实测踩到过）。
+
+**文案在 `cli_text.rs`**，由 CLI 用 `#[path]` 包含，**故意不挂进 `lib.rs` 的模块树** —— 只有 CLI 用它，挂到 app 那侧换来的是一片 dead_code。
+
+里面是两张并排的表（`ZH` / `EN`），占位符写成 `{}` 由 `fill` 从左往右替换。用运行时模板而不是 `format!`，是为了让两种语言能在同一个结构体里并排（`format!` 要求格式串是字面量）；代价是占位符写错编译器看不住，所以 `fill` 里有一句 `debug_assert` 逐个对数，而 CI 跑的是 debug 测试。
+
+同样有两条防漏译的测试：一条逐字段比「两边都非空、占位符个数相同、英文那份里没有 CJK」，一条把 `--help` 在两种语言下都过一遍，检查子命令和选项一个不漏。
 
 **原生界面必须单独处理。** 托盘菜单、灯上的右键菜单、通知的动作按钮、设置窗的标题都不经过 webview，前端换不了，所以语言一变就得重建。这几件事收在 `lib.rs` 的 `apply_lang` 一个函数里 —— 漏掉一处的表现是界面上混着两种语言，而那只有肉眼能发现。两个细节：
 
@@ -844,7 +863,8 @@ SignalHub/
       ├─ hooks.rs                智能体 hook 的安装/卸载（入站；与 outbound.rs 方向相反）
       ├─ server.rs               axum 路由 + 鉴权 + 端口发现，含 16 个 HTTP 层单测
       ├─ stats.rs                今日状态时长统计 + 近 30 分钟时间线
-      ├─ lang.rs                 界面语言（中/英）的读与广播
+      ├─ lang.rs                 原生界面的文案（托盘 / 通知），中英两份
+      ├─ cli_text.rs             CLI 的文案（--help、报错、输出），中英两份 ← 只有 CLI 编它
       ├─ open.rs                 用系统默认程序打开配置目录 / 日志
       ├─ tray.rs                 托盘菜单
       └─ bin/signalhub.rs        CLI ← 用户实际调用的 `signalhub` 命令
@@ -884,6 +904,7 @@ SignalHub/
 ~/.signalhub/
 ├─ port          实际监听端口（app 启动时写入）
 ├─ token         32 字节随机 token，权限 0600
+├─ lang          app 解析出来的界面语言，供 CLI 挑自己的文案（见 §3.20）
 ├─ config.json   用户设置（圆点大小、是否置顶）
 ├─ stats.json    每日状态时长（按本地日期分桶，保留最近 30 天）
 ├─ hooks.log     hook 调用日志 + 崩溃记录（每次调用一行，UTC 时间戳，512KB 轮转）
@@ -984,6 +1005,7 @@ SignalHub/
 | 8l | sweep 空闲时不建快照（见 §3.6.1） | ✅ 已完成 |
 | 8m | 「接入」页加「试一下」：不写 curl 也能发一条上报 | ✅ 已完成 |
 | 8n | `signalhub run`：通用适配器，包装任意命令（见 api.md §4.13） | ✅ 已完成 |
+| 8o | CLI 的 `--help` / 报错 / 输出跟着界面语言走（见 §3.20） | ✅ 已完成 |
 
 三处偏离原计划的地方，都记在这里以免以后当成疏漏：
 

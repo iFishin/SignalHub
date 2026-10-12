@@ -741,10 +741,15 @@ fn open_lamp_menu(app: tauri::AppHandle) -> Result<(), String> {
 /// 一处原生文案时忘了加进来 —— 漏掉的表现是界面上混着两种语言，而那只有肉眼能发现。
 #[tauri::command]
 fn set_lang(app: tauri::AppHandle, lang: String) -> Result<(), String> {
-    let Some(lang) = lang::Lang::parse(&lang) else {
+    let Some(lang) = config::Lang::parse(&lang) else {
         return Err(format!("不认识的语言 {lang:?}；可用 zh / en"));
     };
     app.state::<lang::LocalLang>().set(lang);
+    // 落一份给 CLI 读：它是独立进程，挑不了自己那些文案的语言（`auto` 的解析只有
+    // 前端做得了）。见 `config::lang_file`。
+    if let Err(err) = config::write_lang(lang) {
+        eprintln!("[signalhub] 写语言文件失败: {err}（CLI 的文案会退回按环境变量猜）");
+    }
     apply_lang(&app);
     Ok(())
 }
@@ -763,7 +768,7 @@ pub(crate) fn apply_lang(app: &tauri::AppHandle) {
 }
 
 /// 当前语言。命令和托盘菜单共用。
-pub(crate) fn current_lang(app: &tauri::AppHandle) -> lang::Lang {
+pub(crate) fn current_lang(app: &tauri::AppHandle) -> config::Lang {
     app.state::<lang::LocalLang>().get()
 }
 
