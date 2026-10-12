@@ -12,6 +12,7 @@ import {
   setPassThrough,
 } from "../lib/useToggles";
 import { useStats } from "../lib/useStats";
+import { useHistory, type DayRow } from "../lib/useHistory";
 import { useTimeline, type TimelineSegment } from "../lib/useTimeline";
 import { useOutboundLog, lastAttemptFor, type Attempt } from "../lib/useOutboundLog";
 import { useNow } from "../lib/useNow";
@@ -131,11 +132,15 @@ function alertDelayOptions(m: Messages): { label: string; value: number }[] {
  * 「指南」排在接入之后、系统之前 —— 它是一份手册，属于「看」而不是「调」，放在
  * 一堆开关中间会打断手感。
  */
-type Tab = "status" | "look" | "alert" | "connect" | "hooks" | "guide" | "system";
+type Tab = "status" | "history" | "look" | "alert" | "connect" | "hooks" | "guide" | "system";
 
 function tabOptions(m: Messages): { id: Tab; label: string }[] {
   return [
     { id: "status", label: m.tabStatus },
+    // 紧挨着「状态」：一个是「现在怎么样」，一个是「这几天怎么样」，同一件事的
+    // 两个时间尺度，分开只是因为合在一页会把「现在」淹掉（那一页自己写着
+    // 「只回答现在发生了什么」）。
+    { id: "history", label: m.tabHistory },
     { id: "look", label: m.tabLook },
     { id: "alert", label: m.tabAlert },
     { id: "connect", label: m.tabConnect },
@@ -377,6 +382,60 @@ function TimelineStrip({
 }
 
 /**
+ * 最近几天的每日合计：**一天一行** —— 日期 + 一条按状态分段的横条 + 当天合计。
+ *
+ * 和上面那条 30 分钟条带是同一个想法（**宽度就是时长**），只是粒度从分钟变成天。
+ * 刻意只给 7 天、不做趋势线也不做同比：这是「我这几天都在忙什么」的一屏。往
+ * 分析工具那个方向走，尽头是另一个应用 —— 而这个应用是一盏灯。
+ */
+function HistoryList({ days, m }: { days: DayRow[]; m: Messages }) {
+  if (days.length === 0) return null;
+
+  // **所有天按同一个尺度画**（最大的那天占满整条），而不是各画各的。
+  // 各归一化的话，只用了 10 分钟的那天会和用了 8 小时的那天一样满 —— 而
+  // 「哪几天真的忙」正是看这一屏要说的事。补一段透明尾巴就把尺度统一了。
+  const maxTotal = Math.max(...days.map((day) => day.total_seconds), 0);
+
+  return (
+    <div className="history">
+      {days.map((day, index) => (
+        <div className="history-day" key={day.day}>
+          {/* 「今天」只认下标：Rust 保证今天在最前（它在 totals 里，不在 history 里），
+              而两边的「今天」都来自同一个本地时钟 —— 再比一次日期字符串反而多出
+              一处可以对不上的地方。 */}
+          <span className="history-date">
+            {index === 0 ? m.historyToday : shortDay(day.day)}
+          </span>
+          <span className="history-bar">
+            {day.rows.map((row) => (
+              <span
+                key={row.state}
+                className="history-seg"
+                data-state={row.state}
+                // 时长决定宽度。极短的一段也留 1px，否则它会在视觉上消失
+                style={{ flexGrow: Math.max(row.seconds, 1) }}
+                title={`${row.label} · ${formatDuration(row.seconds)}`}
+              />
+            ))}
+            {/* 补齐到「最忙的那天」：透明，只是把这一天的条压到它该有的比例 */}
+            <span
+              className="history-rest"
+              style={{ flexGrow: Math.max(maxTotal - day.total_seconds, 0) }}
+            />
+          </span>
+          <span className="history-total">{formatDuration(day.total_seconds)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** `2026-10-12` → `10-12`。年份在「最近几天」这种列表里是纯噪音。 */
+function shortDay(day: string): string {
+  return day.length === 10 ? day.slice(5) : day;
+}
+
+/**
  * 逐个状态的外观覆盖：颜色 / 形状 / 节奏，各自可以只覆盖其中几样。
  *
  * 单独提出来而不是内联在「外观」那个 case 里：它自成一块（一组预设 + 一张表 +
@@ -582,6 +641,7 @@ export function SettingsPanel({ snapshot }: Props) {
   const toggles = useToggles();
   const stats = useStats();
   const timeline = useTimeline(snapshot.aggregate);
+  const { days: historyDays, refresh: refreshHistory } = useHistory();
   const feed = useMessageFeed(snapshot.aggregate);
   const outboundLog = useOutboundLog(snapshot.aggregate);
   const { agents, refresh: refreshAgents } = useAgents();
@@ -861,6 +921,24 @@ export function SettingsPanel({ snapshot }: Props) {
   // 每个页签的内容。写成函数而不是子组件，是为了免去把十几个 prop 一路传下去。
   const page = () => {
     switch (tab) {
+      case "history":
+        return (
+          <div className="section">
+            <div className="row">
+              <span>{m.historyTitle}</span>
+              <button type="button" className="btn btn-tiny" onClick={refreshHistory}>
+                {m.diagRefresh}
+              </button>
+            </div>
+            <p className="hint">{m.historyHint}</p>
+            {historyDays.length === 0 ? (
+              <p className="empty">{m.historyEmpty}</p>
+            ) : (
+              <HistoryList days={historyDays} m={m} />
+            )}
+          </div>
+        );
+
       case "status":
         return (
           <>

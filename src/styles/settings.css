@@ -693,6 +693,62 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   font-size: 10.5px;
 }
 
+/* ---- 历史页：一天一行 ---------------------------------------------------- */
+
+/* 和上面那条 30 分钟带子同一套做法（宽度 = 时长），只是粒度变成天。
+   三栏固定：日期 / 条 / 合计。条用 flex:1，于是各天的**左右两端对齐** ——
+   长度可以直接横向比，不用先看数字。 */
+.history {
+  margin-top: 2px;
+}
+
+.history-day {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+}
+
+.history-date,
+.history-total {
+  flex: none;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.history-date {
+  width: 42px;
+}
+
+.history-total {
+  width: 54px;
+  text-align: right;
+}
+
+/* 条子是一条**轨道**：填色的部分是那天的各状态，剩下的透明。
+   透明那段由 HistoryList 的 `.history-rest` 撑出来，为的是让所有天共用
+   「最忙的那天」这个尺度 —— 各归一化的话，10 分钟的一天会和 8 小时的一天一样满。 */
+.history-bar {
+  flex: 1;
+  display: flex;
+  height: 10px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.history-seg {
+  flex-basis: 0;
+  min-width: 1px;
+  background: var(--state, var(--muted));
+}
+
+.history-rest {
+  flex-basis: 0;
+}
+
 /* 已隐藏的组：把会话列表压暗，一眼看出它在灯上不占位置。
    组名那一行**不**压暗 —— 它是这块牌的身份，压暗了就分不清是哪一组。 */
 .group[data-hidden="true"] .sessions {

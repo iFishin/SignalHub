@@ -84,6 +84,16 @@ fn to_states(totals: &HashMap<String, u64>) -> HashMap<Signal, u64> {
         .collect()
 }
 
+/// 按时长从多到少；时长相同再按优先级。
+///
+/// 今日和历史共用这一条：**顺序不能取决于 `HashMap` 的迭代顺序**，否则界面每刷新
+/// 一次就可能换个次序；而两份各写一遍的话，迟早只改到一处。
+fn by_duration_desc(rows: &mut [(Signal, Duration)]) {
+    rows.sort_by(|a, b| {
+        b.1.cmp(&a.1).then_with(|| b.0.priority().cmp(&a.0.priority()))
+    });
+}
+
 #[derive(Debug, Default)]
 pub struct Stats {
     /// 前端上次给的本地日期，用来判断是否跨天
@@ -282,12 +292,43 @@ impl Stats {
             .filter(|(_, total)| !total.is_zero())
             .map(|(state, total)| (*state, *total))
             .collect();
-        // 时长相同（例如都是 5 秒）时再按优先级排 —— 否则顺序取决于 HashMap
-        // 的迭代顺序，界面每次刷新都可能换个次序
-        rows.sort_by(|a, b| {
-            b.1.cmp(&a.1).then_with(|| b.0.priority().cmp(&a.0.priority()))
-        });
+        by_duration_desc(&mut rows);
         rows
+    }
+
+    /// 过去 `days` 天（**含今天**）的每日分状态时长，**由近及远**。
+    ///
+    /// 今天走 `report()`，更早的从 `history` 字段拿 —— 两边本来就是同一份账的两半
+    /// （今天在 `totals` 里、过去在 `history` 里，见 `rollover`），这里只是把它们
+    /// 摆成「一天一行」，不重算任何东西。
+    ///
+    /// **没有记录的那几天不补零**：`history` 里只有真的记过的日期，中间断掉的日子
+    /// 本来就不存在。补一排 0 会读成「那天灯开着但什么都没干」，而真相是应用没跑。
+    ///
+    /// 叫 `recent_days` 而不是 `history`：那样会和 `history` 字段撞名，
+    /// `stats.history(...)` 和 `stats.history` 摆在一起谁也读不出哪个是哪个。
+    pub fn recent_days(
+        &mut self,
+        now: Instant,
+        today: &str,
+        days: usize,
+    ) -> Vec<(String, Vec<(Signal, Duration)>)> {
+        let mut out = vec![(today.to_string(), self.report(now, today))];
+
+        // 日期是 `YYYY-MM-DD`，所以字符串倒序就是时间倒序（`trim_history` 同理）
+        let mut past: Vec<(&String, &HashMap<Signal, u64>)> = self.history.iter().collect();
+        past.sort_by(|a, b| b.0.cmp(a.0));
+
+        for (day, seconds_by_state) in past.into_iter().take(days.saturating_sub(1)) {
+            let mut rows: Vec<(Signal, Duration)> = seconds_by_state
+                .iter()
+                .filter(|(_, seconds)| **seconds > 0)
+                .map(|(state, seconds)| (*state, Duration::from_secs(*seconds)))
+                .collect();
+            by_duration_desc(&mut rows);
+            out.push((day.clone(), rows));
+        }
+        out
     }
 
     /// 近 `window` 内的状态分段，**从旧到新**，覆盖 `[now - window, now]`。
@@ -506,8 +547,75 @@ mod tests {
         );
     }
 
-    /// **跨天时要先把正在跑的那一段结算掉再归档。**
+    /// 历史是「一天一行、由近及远」，**今天永远在最前**（它不在 `history` 字段里，
+    /// 而在 `totals` 里 —— 这条也顺手锁住「今天只存一处」这个不变量）。
+    #[test]
+    fn recent_days_put_today_first_and_skip_days_with_no_record() {
+        let (mut stats, t) = (Stats::default(), Instant::now());
+        stats.record(t, Signal::Working);
+        stats
+            .history
+            .insert("2026-10-10".into(), [(Signal::Working, 600u64)].into_iter().collect());
+        stats
+            .history
+            .insert("2026-10-09".into(), [(Signal::Error, 120u64)].into_iter().collect());
+
+        let days = stats.recent_days(t, "2026-10-12", 7);
+        let names: Vec<&str> = days.iter().map(|(day, _)| day.as_str()).collect();
+        // 10-11 那天没有任何记录 —— **不补一行零**：补了会读成「那天灯开着但什么都没干」
+        assert_eq!(names, ["2026-10-12", "2026-10-10", "2026-10-09"]);
+    }
+
+    /// 每天内部**按时长从多到少**，零秒的状态不出现。
     ///
+    /// 排序不能交给 `HashMap` 的迭代顺序：那样界面每刷新一次就可能换个次序。
+    #[test]
+    fn a_day_lists_its_states_longest_first() {
+        let (mut stats, t) = (Stats::default(), Instant::now());
+        stats.history.insert(
+            "2026-10-11".into(),
+            [
+                (Signal::Idle, 10u64),
+                (Signal::Working, 900),
+                (Signal::Done, 0),
+                (Signal::Error, 60),
+            ]
+            .into_iter()
+            .collect(),
+        );
+
+        let days = stats.recent_days(t, "2026-10-12", 7);
+        let states: Vec<Signal> = days[1].1.iter().map(|(state, _)| *state).collect();
+        assert_eq!(
+            states,
+            [Signal::Working, Signal::Error, Signal::Idle],
+            "多的在前，零秒的不出现"
+        );
+    }
+
+    /// `days` 是**总天数**（含今天），不是「再往前几天」。
+    #[test]
+    fn the_day_count_includes_today() {
+        let (mut stats, t) = (Stats::default(), Instant::now());
+        for day in ["2026-10-08", "2026-10-09", "2026-10-10", "2026-10-11"] {
+            stats
+                .history
+                .insert(day.into(), [(Signal::Working, 60u64)].into_iter().collect());
+        }
+
+        // 要 3 天 = 今天 + 昨天 + 前天
+        let names: Vec<String> = stats
+            .recent_days(t, "2026-10-12", 3)
+            .into_iter()
+            .map(|(day, _)| day)
+            .collect();
+        assert_eq!(names, ["2026-10-12", "2026-10-11", "2026-10-10"]);
+
+        // 要 0 天也至少有今天那一行 —— 否则界面上会连「今天」都不见了
+        assert_eq!(stats.recent_days(t, "2026-10-12", 0).len(), 1);
+    }
+
+    /// **跨天时要先把正在跑的那一段结算掉再归档。**
     /// 不结算的话，一天里最后那一段（从上次状态变化到跨天，可能几小时）整个丢掉
     /// —— 它在 `segment_start` 里，还没进 `totals`。
     #[test]

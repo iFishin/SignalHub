@@ -444,6 +444,52 @@ fn get_stats(
         .collect()
 }
 
+/// 历史里的一天。
+#[derive(serde::Serialize)]
+struct DayRow {
+    /// 本地日期 `YYYY-MM-DD`。**原样给前端**，格式化交给它 —— Rust 这边没有时区，
+    /// 把 `2026-10-12` 加工成「10月12日」这种事只能由知道怎么显示时间的那边做。
+    day: String,
+    rows: Vec<StatRow>,
+    /// 这一天各状态之和的秒数。
+    ///
+    /// 可以和，是因为统计记的是**聚合状态占用**的时间：同一时刻只有一个聚合值，
+    /// 所以各状态的区间互不重叠，「和」就是这一天灯亮着多久。
+    total_seconds: u64,
+}
+
+/// 过去 `days` 天（含今天）的每日合计，由近及远。
+#[tauri::command]
+fn get_history(
+    app: tauri::AppHandle,
+    stats: tauri::State<'_, SharedStats>,
+    today: String,
+    days: usize,
+) -> Vec<DayRow> {
+    /// 落盘只留 30 天（`stats::KEEP_DAYS`），再多要也没有
+    const MAX_DAYS: usize = 30;
+
+    let lang = current_lang(&app);
+    stats
+        .lock()
+        .expect("stats poisoned")
+        .recent_days(Instant::now(), &today, days.min(MAX_DAYS))
+        .into_iter()
+        .map(|(day, rows)| DayRow {
+            day,
+            total_seconds: rows.iter().map(|(_, duration)| duration.as_secs()).sum(),
+            rows: rows
+                .into_iter()
+                .map(|(state, duration)| StatRow {
+                    state,
+                    label: lang::signal_label(lang, state),
+                    seconds: duration.as_secs(),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
 /// 三个开关类功能的当前状态。做成一个命令是为了让前端**不必知道**
 /// 快捷键的文案 —— 那个字符串由 Rust 定义一次，两边不会漂移。
 #[derive(serde::Serialize, Clone)]
@@ -1210,6 +1256,7 @@ pub fn run() {
             set_autostart,
             set_pass_through,
             get_stats,
+            get_history,
             get_timeline,
             get_messages,
             get_outbound_log,

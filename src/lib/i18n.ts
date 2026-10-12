@@ -34,6 +34,12 @@ export interface Messages {
 
   // 页签
   tabStatus: string;
+  tabHistory: string;
+  /** 「历史」页的正文 */
+  historyTitle: string;
+  historyHint: string;
+  historyToday: string;
+  historyEmpty: string;
   tabLook: string;
   tabAlert: string;
   tabConnect: string;
@@ -327,6 +333,12 @@ export const MESSAGES: Record<Lang, Messages> = {
     },
 
     tabStatus: "状态",
+    tabHistory: "历史",
+    historyTitle: "近 7 天",
+    historyHint:
+      "一天一行，横条的宽度就是那天各状态占用的时间（同一天内部按状态从多到少排，鼠标停上去看某一段多久），右边是当天合计。数据每天落盘，保留 30 天。没有记录的日子不会补一行零 —— 那多半是应用没跑，而不是「灯开着但什么都没干」。",
+    historyToday: "今天",
+    historyEmpty: "还没有历史数据 —— 用过一天之后这里就有了。",
     tabLook: "外观",
     tabAlert: "提醒",
     tabConnect: "接入",
@@ -616,6 +628,12 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     },
 
     tabStatus: "Status",
+    tabHistory: "History",
+    historyTitle: "Last 7 days",
+    historyHint:
+      "One row per day. A segment's width is how long that state occupied the lamp (within a day, longest first — hover one for its duration), and the number on the right is the day's total. Durations are written to disk daily and kept for 30 days. Days with no record get no zero row: that usually means the app was not running, not that the lamp was on doing nothing.",
+    historyToday: "Today",
+    historyEmpty: "No history yet — it fills in after a day of use.",
     tabLook: "Look",
     tabAlert: "Alerts",
     tabConnect: "Connect",
