@@ -47,7 +47,9 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          # 构建用的 Node。它和 action 自己跑在哪个 Node 上是两回事（那个由 v7
+          # 定），但两边都停在 24 —— 免得以后有人对着一处 24、一处 22 猜哪个作数。
+          node-version: 24
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable

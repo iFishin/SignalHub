@@ -136,7 +136,9 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          # 和 CI 保持一致（那边有说明）。打出来的包用不到这个 Node —— 它只负责
+          # 跑 `npm ci` 和 vite 构建 —— 所以两边版本不同只会让人多一件事要想。
+          node-version: 24
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
