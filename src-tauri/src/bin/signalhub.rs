@@ -1521,10 +1521,28 @@ mod tests {
         assert_eq!(body.as_object().unwrap().len(), 1, "只该有 state：{body}");
     }
 
+    /// 报错文案**跟着界面语言走**，所以断言里不能写死某一种语言的措辞。
+    ///
+    /// 这个坑真的踩到过：CI 的 macOS runner 设了 `LANG=en_US.UTF-8`，而开发机上
+    /// 常常根本没有 `LANG`（于是走默认的中文）—— 写死中文的断言就「本地绿、CI 红」。
+    ///
+    /// 两种语言下的说法都算通过，`message` 必须**正好是其中一个**（不是「包含」，
+    /// 那样漏掉了措辞变化也看不出来）。
+    fn assert_says_one_of(message: &str, zh: &str, en: &str) {
+        assert!(
+            message == zh || message == en,
+            "既不是中文那份也不是英文那份：{message}"
+        );
+    }
+
     #[test]
     fn an_unknown_flag_is_an_error() {
         let err = parse(&["--nope"]).unwrap_err();
-        assert!(err.message.contains("未知选项"), "{}", err.message);
+        assert_says_one_of(
+            &err.message,
+            &fill(cli_text::ZH.unknown_option, &["--nope"]),
+            &fill(cli_text::EN.unknown_option, &["--nope"]),
+        );
     }
 
     #[test]
@@ -1547,7 +1565,13 @@ mod tests {
     fn watch_rejects_an_unknown_until_state() {
         let (flags, _) = parse(&["--until", "workng"]).unwrap();
         let err = watch(&flags).unwrap_err();
-        assert!(err.message.contains("不是已知状态"), "{}", err.message);
+        let states = WATCHABLE_STATES.join(" ");
+        assert_says_one_of(
+            &err.message,
+            &fill(cli_text::ZH.until_unknown, &["\"workng\"", &states]),
+            &fill(cli_text::EN.until_unknown, &["\"workng\"", &states]),
+        );
+        // 可用状态那一段是**语言无关**的，两种语言下都该在
         assert!(
             err.message.contains("working"),
             "错误里该列出可用状态: {}",
