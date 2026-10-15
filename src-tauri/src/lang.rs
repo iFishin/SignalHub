@@ -85,6 +85,8 @@ pub struct NativeText {
     pub menu_settings: &'static str,
 
     // ---- 系统通知 ----
+    // `action_reveal` 组右键菜单里那一项也用：两处做的是同一件事（在文件管理器里
+    // 打开该组的项目目录），文案分开写迟早会漂移。
     pub action_reveal: &'static str,
     pub action_mute: &'static str,
     pub pass_through_title: &'static str,

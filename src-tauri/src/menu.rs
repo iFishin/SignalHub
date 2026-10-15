@@ -25,6 +25,7 @@ const MUTE: &str = "group:mute";
 const CLEAR: &str = "group:clear";
 const TOGGLE: &str = "group:toggle";
 const SETTINGS: &str = "group:settings";
+const OPEN_DIR: &str = "group:open-dir";
 
 /// 灯上**通用**菜单的 id（空白处和占位牌用的那张）。同样与托盘、与组菜单都不
 /// 重合：三边的菜单事件都会走到 `AppHandle::on_menu_event`。
@@ -44,6 +45,17 @@ pub fn show(app: &AppHandle, window: &WebviewWindow, group: &str) -> Result<(), 
     let muted = settings.muted_groups.iter().any(|name| name == group);
     let t = crate::lang::text(crate::current_lang(app));
 
+    // 「打开项目目录」——目录取该组 winner 会话的 `cwd`。没有（或已经不是目录）就
+    // 置灰而不是藏起来：藏起来的话用户不知道这个能力存在，也不知道为什么没有。
+    let project_dir = crate::group_project_dir(app, group);
+    let open_dir = MenuItem::with_id(
+        app,
+        OPEN_DIR,
+        t.action_reveal,
+        project_dir.is_some(),
+        None::<&str>,
+    )
+    .map_err(menu_err)?;
     let hide = MenuItem::with_id(app, HIDE, t.menu_hide, true, None::<&str>).map_err(menu_err)?;
     // 措辞跟着当前状态走：写「切换静音」的话得先看一眼设置才知道会切成什么
     let mute = MenuItem::with_id(
@@ -70,7 +82,7 @@ pub fn show(app: &AppHandle, window: &WebviewWindow, group: &str) -> Result<(), 
 
     let menu = Menu::with_items(
         app,
-        &[&hide, &mute, &clear, &toggle, &open_settings],
+        &[&open_dir, &hide, &mute, &clear, &toggle, &open_settings],
     )
     .map_err(menu_err)?;
 
@@ -143,7 +155,7 @@ pub fn handle(app: &AppHandle, id: &str) -> bool {
         return true;
     }
 
-    if !matches!(id, HIDE | MUTE | CLEAR | TOGGLE | SETTINGS) {
+    if !matches!(id, OPEN_DIR | HIDE | MUTE | CLEAR | TOGGLE | SETTINGS) {
         // 托盘菜单那些 id（quit / toggle / …）也走这条路，不是我们的就放行
         return false;
     }
@@ -166,6 +178,7 @@ pub fn handle(app: &AppHandle, id: &str) -> bool {
     };
 
     let result = match id {
+        OPEN_DIR => open_project_dir(app, &group),
         HIDE => hide_group(app, &group),
         MUTE => {
             let muted = crate::current_settings(app)
@@ -191,6 +204,19 @@ pub fn handle(app: &AppHandle, id: &str) -> bool {
         eprintln!("[signalhub] 右键菜单操作失败: {err}");
     }
     true
+}
+
+/// 在文件管理器里打开这一组的项目目录。
+///
+/// 目录**在点下去这一刻**再取一次（不把弹菜单时的值传过来）：菜单弹出来到点下去
+/// 之间状态可能已经变了。目录没了时 `reveal_dir` 自己会静默跳过。
+fn open_project_dir(app: &AppHandle, group: &str) -> Result<(), String> {
+    match crate::group_project_dir(app, group) {
+        Some(dir) => {
+            crate::open::reveal_dir(&dir).map_err(|err| format!("打开项目目录失败: {err}"))
+        }
+        None => Ok(()),
+    }
 }
 
 /// 把一组藏起来。藏起来的组不再占灯上的位置，但**仍然参与聚合、通知和钩子**

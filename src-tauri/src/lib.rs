@@ -854,6 +854,16 @@ fn get_timeline(stats: tauri::State<'_, SharedStats>) -> Vec<stats::Segment> {
         .timeline(Instant::now(), TIMELINE_WINDOW)
 }
 
+/// 某一组的「项目目录」：决定聚合那个会话的 `cwd`，且必须**还是个真目录**。
+///
+/// 两个用途共用这一条判断：组右键菜单里那一项要不要置灰（`menu.rs`），以及点下去
+/// 时打开哪儿。`None` = 这一组没有可打开的项目目录。
+pub(crate) fn group_project_dir(app: &tauri::AppHandle, group: &str) -> Option<String> {
+    let store = app.state::<SharedStore>();
+    let cwd = store.lock().expect("state store poisoned").winner_cwd_in(group)?;
+    std::path::Path::new(&cwd).is_dir().then_some(cwd)
+}
+
 /// 在灯上某一组的位置弹出右键菜单。
 ///
 /// `window` 是**发起右键的那个灯窗**（多灯模式下可能是某个组灯）。Tauri 会把调用

@@ -36,6 +36,18 @@ pub fn reveal(path: &str) -> io::Result<()> {
     spawn_detached(command)
 }
 
+/// 在文件管理器里打开一个**目录**；不存在、或根本不是目录就什么都不做。
+///
+/// 「打开项目目录」有两个入口（通知上的按钮、组右键菜单），两条路都得用同一套
+/// 「目录还在不在」的判断、以及同一套不过 shell 的 argv 调用 —— 各写一遍迟早
+/// 分叉。目录没了时**不报错**：弹一个「找不到」的框比什么都不做更烦人。
+pub fn reveal_dir(path: &str) -> io::Result<()> {
+    if !std::path::Path::new(path).is_dir() {
+        return Ok(());
+    }
+    reveal(path)
+}
+
 /// 用系统默认程序打开一个路径或网址（网址会走默认浏览器）。
 ///
 /// 与 `reveal` 的区别是「打开它」而不是「在文件管理器里指出来」。
@@ -99,5 +111,14 @@ mod tests {
     fn a_missing_program_is_an_error() {
         let command = Command::new("signalhub-definitely-not-a-real-command-xyz");
         assert!(spawn_detached(command).is_err());
+    }
+
+    /// 「打开项目目录」在目录已经没了时**静默成功**：不弹报错框，也**不去起进程**
+    /// —— 起了也只会失败，白留一个僵尸。
+    ///
+    /// 正向（真存在一个目录）不用测：那会真的弹出文件管理器，跑一次测试打断人一次。
+    #[test]
+    fn revealing_a_missing_dir_is_a_no_op() {
+        reveal_dir("/signalhub/definitely/not/here").expect("目录不存在不该报错");
     }
 }

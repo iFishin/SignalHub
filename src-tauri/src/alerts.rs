@@ -453,17 +453,12 @@ pub fn wire_actions(app: &tauri::AppHandle) {
 ///
 /// 具体怎么调系统命令在 `crate::open` 里 —— 那里还管着「打开配置目录」之类的
 /// 其它入口，而且**参数一律走独立 argv、不过 shell**（这个路径来自智能体上报的
-/// `cwd`，是不可信输入）。
+/// `cwd`，是不可信输入）。目录没了时那边会静默跳过。
 fn reveal(target: &AlertTarget) {
     let Some(cwd) = target.cwd.as_deref() else {
         return;
     };
-    // 目录可能已经没了（项目被删、移动盘没挂上）。那就不动 —— 弹一个「找不到」
-    // 的报错框比什么都不做更烦人。
-    if !std::path::Path::new(cwd).is_dir() {
-        return;
-    }
-    if let Err(err) = crate::open::reveal(cwd) {
+    if let Err(err) = crate::open::reveal_dir(cwd) {
         eprintln!("[signalhub] 打开项目目录失败: {err}");
     }
 }

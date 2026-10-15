@@ -651,6 +651,15 @@ impl Store {
             .max_by(|a, b| by_priority(a, b))
     }
 
+    /// 某一组「决定聚合那个会话」的工作目录 —— 「打开项目目录」用它。
+    ///
+    /// 取 winner 而不是组内随便一个：牌上那块颜色 / 消息就是 winner 的，菜单要打开
+    /// 的自然也该是同一个会话的目录（组内多个会话在同一个仓库时看不出来，但按会话
+    /// 分组时一组就是一个会话，这条就没有歧义了）。
+    pub fn winner_cwd_in(&self, group: &str) -> Option<String> {
+        self.winner_in(group).and_then(|s| s.cwd.clone())
+    }
+
     /// 用于前后比对：只要会话集合、聚合值或 tooltip 文本变了就返回不同的值。
     ///
     /// `now` 是必需的：静默进度依赖它（见 `Visible::progress`）。
@@ -1130,6 +1139,34 @@ mod tests {
         // 反面：`done` 那一路沉默后会**直接消失**（done 的语义是「完成，回到常态」），
         // 所以活着的只有 busy，这一条同时也是「组里只剩胜者」的旁证
         assert!(group.sessions.iter().all(|v| v.id == "busy"), "{:?}", group.sessions);
+    }
+
+    /// 「打开项目目录」取的是**决定聚合那个会话**的 cwd —— 牌上那块颜色是谁的，
+    /// 打开的目录就该是谁的（见 `winner_cwd_in`）。
+    #[test]
+    fn the_project_dir_comes_from_the_winning_session() {
+        let (mut s, t) = (Store::default(), Instant::now());
+        let mut slow = Report::new(Signal::Done);
+        slow.session = Some("slow".into());
+        slow.group = Some("g".into());
+        slow.cwd = Some("/tmp/slow".into());
+        s.apply(t, slow);
+        // `working` 比 `done` 优先，所以 winner 是 busy
+        let mut busy = Report::new(Signal::Working);
+        busy.session = Some("busy".into());
+        busy.group = Some("g".into());
+        busy.cwd = Some("/tmp/busy".into());
+        s.apply(t, busy);
+
+        assert_eq!(s.winner_cwd_in("g").as_deref(), Some("/tmp/busy"), "取 winner 的目录");
+        assert_eq!(s.winner_cwd_in("nope"), None, "没有这一组就没有目录");
+
+        // 一组里只有没报 cwd 的会话时，也不能凭空编一个出来
+        let mut bare = Report::new(Signal::Working);
+        bare.session = Some("bare".into());
+        bare.group = Some("empty".into());
+        s.apply(t, bare);
+        assert_eq!(s.winner_cwd_in("empty"), None);
     }
 
     /// 一路会话还活着（idle）时，不该被另一路已经沉默的会话盖成灰的
