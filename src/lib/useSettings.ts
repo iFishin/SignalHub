@@ -16,8 +16,8 @@ export type Palette = "default" | "colorblind" | "vivid";
  * 配置文件里那个值。`raw` 是默认 —— 原样发 SignalHub 自己的 JSON 快照。
  *
  * 除了 `raw`，其余每一个都只发**一行文字**：那些服务（ntfy / Bark / Slack /
- * Discord / 飞书 / 企业微信 / 钉钉 / Telegram）的形状本来就是「一个 URL + 一段
- * 文字」，服务端自己决定怎么排版。给它们发结构化数据，用户收到的是一坨看不懂的
+ * Discord / 飞书 / 企业微信 / 钉钉 / Telegram / PushDeer）的形状本来就是「一个 URL
+ * + 一段文字」，服务端自己决定怎么排版。给它们发结构化数据，用户收到的是一坨看不懂的
  * JSON —— 而「转发看起来什么都没发生」正是 R4 要解决的问题。
  */
 export type HttpPreset =
@@ -30,7 +30,8 @@ export type HttpPreset =
   | "lark"
   | "wecom"
   | "dingtalk"
-  | "telegram";
+  | "telegram"
+  | "pushdeer";
 
 /**
  * 预设的选项顺序。**和 Rust 的 `HttpPreset` 枚举顺序一致** —— 两边列出来的顺序
@@ -47,6 +48,7 @@ export const HTTP_PRESETS: HttpPreset[] = [
   "wecom",
   "dingtalk",
   "telegram",
+  "pushdeer",
 ];
 
 /** 钩子能做的事。`command` 会执行本地命令，见 docs/api.md 里的安全说明。 */

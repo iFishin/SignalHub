@@ -247,10 +247,13 @@ fn short_age(secs: u64) -> String {
 
 /// 一条组装好的转发请求。
 ///
-/// 单独一个结构体而不是元组：四样字段各有类型相近的味道，元组在调用点会变成一串
+/// 单独一个结构体而不是元组：这几样字段各有类型相近的味道，元组在调用点会变成一串
 /// 看不出谁是谁的东西。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
+    /// 按哪个预设组的。`post` 之后要靠它判定「对方到底接受了没有」（见 [`verdict`]）
+    /// —— 几个服务出错时照样回 200，把原因写在响应体里，只有知道是哪一家才读得对。
+    pub preset: HttpPreset,
     pub url: String,
     /// 要带的头（预设自己加的那些也在里面，例如 ntfy 的 `Title`）。
     pub headers: Vec<(String, String)>,
@@ -328,13 +331,57 @@ pub fn compose(
                 body,
             )
         }
+        HttpPreset::Pushdeer => {
+            // 官方给的地址本身就带 `pushkey`（`…/message/push?pushkey=…`），**不动
+            // 用户填的东西** —— 实测查询串和表单体会被合起来读，所以 key 留在它
+            // 文档里的位置，正文走 body。
+            //
+            // 两处**实测**：只填服务器根地址（自架版 README 给的就是 `host:8800`）
+            // 时 POST 到根路径回 405，所以空路径补上官方的 `/message/push`
+            // （见 [`pushdeer_endpoint`]）；而它默认按 **markdown** 渲染正文，摘要
+            // 里的 `·` `—`、会话消息里的 `*` `_` 都会被当成标记 —— 所以固定
+            // `type=text` 发纯文本。
+            (
+                pushdeer_endpoint(url),
+                "application/x-www-form-urlencoded",
+                format!("text={}&type=text", form_encode(summary)),
+            )
+        }
     };
 
     Request {
+        preset,
         url,
         headers: extra,
         content_type,
         body,
+    }
+}
+
+/// 补全 PushDeer 的路径：用户只填了服务器地址时加上官方的 `/message/push`。
+///
+/// 只在**主机之后没有路径**时才动手（`https://api2.pushdeer.com`、
+/// `http://192.168.1.5:8800/`）。写全了的一律原样返回 —— 包括反代在别的路径下的
+/// 自建服务（`https://pd.example.com/api/message/push`），那种地址我们猜不出来，
+/// 也不该猜。查询串（`?pushkey=…`）跟着搬过去。
+fn pushdeer_endpoint(url: &str) -> String {
+    let (base, query) = match url.split_once('?') {
+        Some((base, query)) => (base, Some(query)),
+        None => (url, None),
+    };
+    let base = base.trim_end_matches('/');
+    // 主机之后还有没有路径？`https://host:8800` 没有（整条就是主机），
+    // `https://host:8800/message/push` 有。
+    let has_path = base
+        .split_once("://")
+        .map(|(_, rest)| rest.contains('/'))
+        .unwrap_or(false);
+    if has_path {
+        return url.to_string();
+    }
+    match query {
+        Some(query) => format!("{base}/message/push?{query}"),
+        None => format!("{base}/message/push"),
     }
 }
 
@@ -494,6 +541,10 @@ struct Payload<'a> {
     at_ms: u64,
 }
 
+/// 只看响应体的**前一小段**：要判定的信封就几十字节，而这个地址是用户自己填的
+/// （可能指向不受我们控制的地方）—— 不该由它决定我们往内存里读多少。
+const ENVELOPE_LIMIT: u64 = 8 * 1024;
+
 /// 发一条请求。成功时把**状态码**带回来 —— 只报「没报错」区分不了 200 和 500，
 /// 而「对方到底收没收到」正是用户要看的。
 ///
@@ -513,10 +564,93 @@ fn post(request: &Request) -> Result<String, String> {
     }
 
     // ureq 默认把 4xx/5xx 也当成 Err（http_status_as_error），所以 Ok 就意味着 2xx
-    builder
-        .send(&request.body)
-        .map(|response| response.status().as_u16().to_string())
-        .map_err(|err| err.to_string())
+    let mut response = builder.send(&request.body).map_err(|err| err.to_string())?;
+    let status = response.status().as_u16();
+    // **body 也得看一眼**：见 [`verdict`] —— 有几个服务出错时照样回 200，原因写在
+    // 响应体里。读不出来（太大、半路断了、不是 utf-8）就当「看不出形状」，退回状态码：
+    // 请求本身是发出去了，不该因为多看的这一眼把它判成失败。
+    let body = response
+        .body_mut()
+        .with_config()
+        .limit(ENVELOPE_LIMIT)
+        .lossy_utf8(true)
+        .read_to_string()
+        .unwrap_or_default();
+    verdict(request.preset, status, &body)
+}
+
+/// 「对方到底接受了没有」。
+///
+/// **只看 HTTP 状态码会撒谎。** 几个通知服务在应用层出错时照样回 200，把原因写在
+/// 响应体里：飞书 `{"code":…}`、企业微信/钉钉 `{"errcode":…}`、Slack `{"ok":false}`、
+/// PushDeer `{"code":…}` —— PushDeer 这条是**实测**的：一个坏的 key 回的就是
+/// `200 {"code":80501,"error":"错误的Key"}`。不读那个信封的话，填错的 key 在面板上
+/// 是绿色的「✓ 200」，而手机一声不响。这正是「转发疑似不可用」里最难查的一类：
+/// 界面上写着成功。
+///
+/// 2xx 之外的情况 ureq 直接报错（`http_status_as_error`），走不到这里。
+fn verdict(preset: HttpPreset, status: u16, body: &str) -> Result<String, String> {
+    match envelope_error(preset, body) {
+        Some(error) => Err(error),
+        None => Ok(status.to_string()),
+    }
+}
+
+/// 这个服务在 200 的响应体里**明说它失败了**没有。`None` = 从 body 看不出来。
+///
+/// 键名是一张查过文档、PushDeer 那条还实测过的表（见 `docs/api.md` §4.9）。
+/// **认不出形状就返回 `None`**：这只是顺手多看一眼，不该因为解析不出形状就把一次
+/// 真发出去的推送判成失败 —— 那会变成一种新的「疑似」。
+fn envelope_error(preset: HttpPreset, body: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    match preset {
+        // PushDeer：`{"code":0,…}` / `{"code":80501,"error":"错误的Key"}`
+        HttpPreset::Pushdeer => code_failure(&value, "code", "error"),
+        // 飞书自定义机器人：`{"code":0,"msg":"success"}`
+        HttpPreset::Lark => code_failure(&value, "code", "msg"),
+        // 企业微信 / 钉钉：`{"errcode":0,"errmsg":"ok"}`
+        HttpPreset::Wecom | HttpPreset::Dingtalk => code_failure(&value, "errcode", "errmsg"),
+        // Slack：`{"ok":true}` / `{"ok":false,"error":"invalid_token"}`
+        HttpPreset::Slack => not_true(&value, "error"),
+        // Telegram 出错时给 4xx（走不到这里），但它的信封里也有 `ok`
+        HttpPreset::Telegram => not_true(&value, "description"),
+        // 纯文本 / 我们自己的 JSON 快照这些没有一个统一的失败信封，只能看状态码
+        HttpPreset::Raw
+        | HttpPreset::Text
+        | HttpPreset::Ntfy
+        | HttpPreset::Bark
+        | HttpPreset::Discord => None,
+    }
+}
+
+/// `{"code":0}` 这类信封：`code` 不是 0，或者压根不是个数字，就算失败。
+fn code_failure(value: &serde_json::Value, code_key: &str, text_key: &str) -> Option<String> {
+    let code = value.get(code_key)?;
+    if code.as_i64() == Some(0) {
+        return None;
+    }
+    Some(explain(value, text_key, &format!("{code_key}={code}")))
+}
+
+/// `{"ok":true}` 这类信封。没有 `ok` 字段 = 不是这个形状，不多嘴。
+fn not_true(value: &serde_json::Value, text_key: &str) -> Option<String> {
+    match value.get("ok") {
+        Some(serde_json::Value::Bool(true)) => None,
+        Some(serde_json::Value::Bool(false)) => Some(explain(value, text_key, "ok=false")),
+        _ => None,
+    }
+}
+
+/// 失败原因优先用服务自己给的那句话 —— 用户要的是「为什么」，不是「失败」两个字。
+/// 它没给就退回兜底那段，免得界面上只剩一个孤零零的「✗」。
+fn explain(value: &serde_json::Value, text_key: &str, fallback: &str) -> String {
+    value
+        .get(text_key)
+        .and_then(|text| text.as_str())
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .unwrap_or(fallback)
+        .to_string()
 }
 
 /// 跑一条 shell 命令。
@@ -847,6 +981,14 @@ mod tests {
     /// 必须**按 `Content-Length` 把 body 读满**：请求头和体是两个 TCP 段，
     /// 只 `read` 一次拿到的是头，于是「体没发出去」会变成一个假阳性。
     fn one_shot_server(status_line: &'static str) -> (String, std::thread::JoinHandle<String>) {
+        one_shot_server_body(status_line, "ok")
+    }
+
+    /// 同上，但能指定回什么 body —— 判「200 里的错误信封」那几条要用。
+    fn one_shot_server_body(
+        status_line: &'static str,
+        response_body: &'static str,
+    ) -> (String, std::thread::JoinHandle<String>) {
         use std::io::{Read, Write};
         use std::net::TcpListener;
 
@@ -875,9 +1017,11 @@ mod tests {
                 let n = stream.read(&mut buf).unwrap();
                 raw.extend_from_slice(&buf[..n]);
             }
-            stream
-                .write_all(format!("{status_line}\r\nContent-Length: 2\r\n\r\nok").as_bytes())
-                .unwrap();
+            let response = format!(
+                "{status_line}\r\nContent-Length: {}\r\n\r\n{response_body}",
+                response_body.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
             String::from_utf8_lossy(&raw).to_string()
         });
         (addr, handle)
@@ -1021,6 +1165,151 @@ mod tests {
             "{}",
         );
         assert_eq!(telegram.url, "https://api.telegram.org/botTOKEN/sendMessage");
+
+        // PushDeer：`pushkey` 留在用户填的 URL 上（那是它文档里的位置），正文按表单体
+        let pushdeer = compose(
+            HttpPreset::Pushdeer,
+            summary,
+            "https://api2.pushdeer.com/message/push?pushkey=PDU123",
+            &BTreeMap::new(),
+            "{}",
+        );
+        assert_eq!(
+            pushdeer.url,
+            "https://api2.pushdeer.com/message/push?pushkey=PDU123"
+        );
+        assert_eq!(
+            pushdeer.content_type,
+            "application/x-www-form-urlencoded"
+        );
+        assert!(pushdeer.body.starts_with("text="), "{}", pushdeer.body);
+        assert!(pushdeer.body.ends_with("&type=text"), "{}", pushdeer.body);
+        // 摘要里的中文和那几个标点都得转义，否则 PushDeer 那边会只显示一串乱码
+        assert!(!pushdeer.body.contains('·'), "正文里不该有没转义的原文");
+        assert!(pushdeer.body.contains("%20"), "空格该转成 %20：{}", pushdeer.body);
+    }
+
+    /// PushDeer 的 `type=text`：它**默认按 markdown 渲染**正文。会话消息里一个
+    /// `_` 或 `*` 会被吃成排版标记 —— 而通知里看不懂的排版比不排版更糟。
+    #[test]
+    fn pushdeer_asks_for_plain_text() {
+        let request = compose(
+            HttpPreset::Pushdeer,
+            "hi",
+            "https://api2.pushdeer.com/message/push?pushkey=K",
+            &BTreeMap::new(),
+            "{}",
+        );
+        assert_eq!(request.body, "text=hi&type=text");
+    }
+
+    /// 只填服务器地址（自架版 README 给的就是 `host:8800`）也要能用：POST 到根路径
+    /// **实测**回 405，所以空路径补上官方的 `/message/push`；写全了的一个字都不动
+    /// —— 反代在别的路径下的地址我们猜不出来，也不该猜。
+    #[test]
+    fn pushdeer_fills_in_the_endpoint_the_user_left_off() {
+        for (given, expected) in [
+            ("http://192.168.1.5:8800", "http://192.168.1.5:8800/message/push"),
+            (
+                "http://192.168.1.5:8800/",
+                "http://192.168.1.5:8800/message/push",
+            ),
+            (
+                "https://api2.pushdeer.com?pushkey=K",
+                "https://api2.pushdeer.com/message/push?pushkey=K",
+            ),
+            (
+                "https://api2.pushdeer.com/message/push?pushkey=K",
+                "https://api2.pushdeer.com/message/push?pushkey=K",
+            ),
+            (
+                "https://pd.example.com/api/message/push?pushkey=K",
+                "https://pd.example.com/api/message/push?pushkey=K",
+            ),
+        ] {
+            assert_eq!(pushdeer_endpoint(given), expected, "{given}");
+        }
+    }
+
+    /// **200 不代表成功。** 这几个服务在应用层出错时照样回 200，把原因写在响应体里。
+    /// PushDeer 那条是**实测**的：坏的 key 回的就是 `200 {"code":80501,"error":"错误的Key"}`。
+    /// 不读这个信封的话，面板上是绿色的「✓ 200」而手机一声不响。
+    #[test]
+    fn a_service_that_reports_an_error_inside_a_200_is_not_called_a_success() {
+        // 各家的信封键名都不一样，这就是那张表
+        for (preset, body, reason) in [
+            (
+                HttpPreset::Pushdeer,
+                r#"{"code":80501,"error":"错误的Key"}"#,
+                "错误的Key",
+            ),
+            (
+                HttpPreset::Wecom,
+                r#"{"errcode":93000,"errmsg":"invalid webhook url"}"#,
+                "invalid webhook url",
+            ),
+            (
+                HttpPreset::Dingtalk,
+                r#"{"errcode":310000,"errmsg":"keywords not in content"}"#,
+                "keywords not in content",
+            ),
+            (HttpPreset::Lark, r#"{"code":9499,"msg":"Bad Request"}"#, "Bad Request"),
+            (
+                HttpPreset::Slack,
+                r#"{"ok":false,"error":"invalid_token"}"#,
+                "invalid_token",
+            ),
+        ] {
+            assert_eq!(
+                envelope_error(preset, body).as_deref(),
+                Some(reason),
+                "{preset:?} {body}"
+            );
+        }
+
+        // 成功的那些信封一个字都不算失败
+        for (preset, body) in [
+            (HttpPreset::Pushdeer, r#"{"code":0,"content":{"result":[]}}"#),
+            (HttpPreset::Wecom, r#"{"errcode":0,"errmsg":"ok"}"#),
+            (HttpPreset::Dingtalk, r#"{"errcode":0,"errmsg":"ok"}"#),
+            (HttpPreset::Lark, r#"{"code":0,"msg":"success"}"#),
+            (HttpPreset::Slack, r#"{"ok":true}"#),
+        ] {
+            assert_eq!(envelope_error(preset, body), None, "{preset:?} {body}");
+        }
+
+        // **认不出形状就不当失败** —— 这是关键的一半：有人把自己的纯文本接收端挂在
+        // 某个预设上，响应是「ok」两个字，不该因此被显示成失败
+        for (preset, body) in [
+            (HttpPreset::Pushdeer, "SENT"),
+            (HttpPreset::Pushdeer, ""),
+            (HttpPreset::Slack, "ok"),
+            (HttpPreset::Wecom, r#"{"hello":"world"}"#),
+            (HttpPreset::Ntfy, r#"{"code":1}"#),
+        ] {
+            assert_eq!(envelope_error(preset, body), None, "{preset:?} {body}");
+        }
+    }
+
+    /// 整条路都算上：**对方在 200 里说它失败了**，界面读到的是失败加它的原话
+    /// —— 而不是绿色的一句「✓ 200」。
+    #[test]
+    fn a_200_with_an_error_envelope_comes_back_as_a_failure() {
+        let (addr, server) = one_shot_server_body(
+            "HTTP/1.1 200 OK",
+            r#"{"code":80501,"error":"错误的Key"}"#,
+        );
+
+        let request = compose(
+            HttpPreset::Pushdeer,
+            "需要授权 · work",
+            &format!("http://{addr}/message/push?pushkey=K"),
+            &BTreeMap::new(),
+            "{}",
+        );
+        let err = post(&request).unwrap_err();
+        server.join().unwrap();
+        assert!(err.contains("错误的Key"), "要把对方的原话带回来，实际: {err}");
     }
 
     /// Telegram 的 `chat_id`：URL 上的查询串要**搬进 body**，URL 上不留 ——

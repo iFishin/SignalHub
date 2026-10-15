@@ -567,7 +567,7 @@ hook 模式会把每次调用追加到 `~/.signalhub/hooks.log`：
 
 ### 4.9 出站钩子（SignalHub 往外发）
 
-这是唯一一个方向相反的接口：配置若干条**钩子**，聚合变化时按条件触发。用于手机推送（ntfy）、团队频道（Slack）、跑脚本、或接进自建服务。
+这是唯一一个方向相反的接口：配置若干条**钩子**，聚合变化时按条件触发。用于手机推送（ntfy / Bark / PushDeer）、团队频道（Slack）、跑脚本、或接进自建服务。
 
 在设置面板的「通知转发」页配置，也可以直接写 `~/.signalhub/config.json`：
 
@@ -606,8 +606,16 @@ hook 模式会把每次调用追加到 `~/.signalhub/hooks.log`：
 | `wecom`（企业微信） | `application/json` | `{"msgtype":"text","text":{"content":"…"}}` |
 | `dingtalk`（钉钉） | `application/json` | 同企业微信 |
 | `telegram` | `application/x-www-form-urlencoded` | `chat_id=…&text=…` |
+| `pushdeer` | `application/x-www-form-urlencoded` | `text=…&type=text` |
 
 `telegram` 有一个特别之处：`chat_id` 按官方文档是**查询参数**，所以你填的地址是 `…/bot<token>/sendMessage?chat_id=<id>` —— 发送时整条查询串会被**搬进 body**，URL 上不留（SendMessage 只认表单体）。裸的 `…/sendMessage` 也能填，Telegram 会回 400，而那条状态码会显示在面板上那条钩子下面。
+
+`pushdeer` 填官方文档给的那个地址就行：`https://api2.pushdeer.com/message/push?pushkey=<key>`（自架版把域名换成你的）。**`pushkey` 留在 URL 上不动**——那是它文档里的位置，查询串和表单体它都会读。两点值得说明：
+
+- **只填服务器地址也能用**（自架版 README 里给的就是 `host:8800`）：主机后面没有路径时会自动补上官方的 `/message/push`（POST 到根路径会回 405）。写全了的地址一个字都不动，包括反代在别的路径下的自建服务。
+- **`type=text` 是故意的**：PushDeer 默认按 **markdown** 渲染正文，而摘要里的 `·`、`—` 和会话消息里的 `*`、`_` 会被吃成排版标记。
+
+**`200` 不等于成功。** 有几个服务在应用层出错时照样回 200，把原因写在响应体里：PushDeer `{"code":…}`（一个失效的 key 实测回的是 `200 {"code":80501,"error":"错误的Key"}`）、飞书 `{"code":…}`、企业微信/钉钉 `{"errcode":…}`、Slack `{"ok":false}`。这些预设会多看一眼那个信封，**在 200 里说失败了就按失败记**，并把服务自己给的那句话（「错误的Key」而不是「失败」两个字）显示在面板上。认不出形状的响应（例如你自己的纯文本接收端回了个 `ok`）不当成失败——那只是多看一眼，不该把一次真发出去的推送判成失败。
 
 那一行文字的形态是 `[SignalHub] 需要授权 · 构建 — 等你批准 (2m)`：状态、**组显示名**（你在「外观 → 各组的显示」里改的名字优先）、说明、已经持续多久。不限定组的钩子写的是全局聚合，所以没有组名那一段。
 

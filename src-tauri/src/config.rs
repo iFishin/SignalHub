@@ -381,6 +381,9 @@ pub enum HttpPreset {
     /// Telegram Bot API。`chat_id` 写在 URL 的查询串上
     /// （`…/bot<token>/sendMessage?chat_id=<id>`），发送时搬进表单体。
     Telegram,
+    /// PushDeer（官方服务器或自架）。`pushkey` 写在 URL 的查询串上
+    /// （`https://api2.pushdeer.com/message/push?pushkey=<key>`），正文按表单体发。
+    Pushdeer,
 }
 
 impl Hook {
@@ -437,6 +440,7 @@ impl<'de> Deserialize<'de> for HttpPreset {
             "wecom" => HttpPreset::Wecom,
             "dingtalk" => HttpPreset::Dingtalk,
             "telegram" => HttpPreset::Telegram,
+            "pushdeer" => HttpPreset::Pushdeer,
             _ => HttpPreset::Raw,
         })
     }

@@ -2092,7 +2092,10 @@ export function SettingsPanel({ snapshot }: Props) {
                     spellCheck={false}
                     placeholder={
                       hook.type === "http"
-                        ? "https://ntfy.sh/my-topic"
+                        ? // 占位符**按预设给**：每个服务的地址形状都不一样（PushDeer
+                          // 的 `…/message/push?pushkey=…` 尤其猜不出来），而填错地址
+                          // 是这一列里最常见的失败
+                          m.presetUrls[hook.preset]
                         : m.commandPlaceholder
                     }
                     value={shown}

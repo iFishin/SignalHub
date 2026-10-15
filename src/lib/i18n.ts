@@ -249,6 +249,11 @@ export interface Messages {
   hookPreset: string;
   /** 预设显示名。键是 Rust `HttpPreset` 的 serde 名（= `HTTP_PRESETS` 里的值）。 */
   presetNames: Record<HttpPreset, string>;
+  /**
+   * 地址输入框的占位符 —— **按预设给**。光看名字猜不出该填什么地址，而填错地址
+   * 是这一列里最常见的失败（PushDeer 的 `…/message/push?pushkey=…` 尤其是）。
+   */
+  presetUrls: Record<HttpPreset, string>;
   /** 预设说明：`raw` 之外每一个都只发一行文字 */
   presetHint: string;
   /** 请求头那一节的标题 */
@@ -605,6 +610,20 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       wecom: "企业微信",
       dingtalk: "钉钉",
       telegram: "Telegram",
+      pushdeer: "PushDeer",
+    },
+    presetUrls: {
+      raw: "https://你的服务器/ingest",
+      text: "https://你的服务器/hook",
+      ntfy: "https://ntfy.sh/my-topic",
+      bark: "https://api.day.app/你的key",
+      slack: "https://hooks.slack.com/services/T…/B…/…",
+      discord: "https://discord.com/api/webhooks/…/…",
+      lark: "https://open.feishu.cn/open-apis/bot/v2/hook/…",
+      wecom: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…",
+      dingtalk: "https://oapi.dingtalk.com/robot/send?access_token=…",
+      telegram: "https://api.telegram.org/bot<token>/sendMessage?chat_id=…",
+      pushdeer: "https://api2.pushdeer.com/message/push?pushkey=…",
     },
     presetHint:
       "除了「原样 JSON」，其余都只发下面那行文字 —— 那些服务要的就是「一个地址 + 一句话」，服务端自己排版。选完先用「发送测试」看一眼手机收到的是什么。",
@@ -947,6 +966,20 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
       wecom: "WeCom",
       dingtalk: "DingTalk",
       telegram: "Telegram",
+      pushdeer: "PushDeer",
+    },
+    presetUrls: {
+      raw: "https://your.server/ingest",
+      text: "https://your.server/hook",
+      ntfy: "https://ntfy.sh/my-topic",
+      bark: "https://api.day.app/your-key",
+      slack: "https://hooks.slack.com/services/T…/B…/…",
+      discord: "https://discord.com/api/webhooks/…/…",
+      lark: "https://open.feishu.cn/open-apis/bot/v2/hook/…",
+      wecom: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…",
+      dingtalk: "https://oapi.dingtalk.com/robot/send?access_token=…",
+      telegram: "https://api.telegram.org/bot<token>/sendMessage?chat_id=…",
+      pushdeer: "https://api2.pushdeer.com/message/push?pushkey=…",
     },
     presetHint:
       "Everything except Raw JSON sends just the one line below — those services want a URL and a sentence, and they do the formatting. Pick one and hit Send test to see what lands on your phone.",
