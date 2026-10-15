@@ -26,6 +26,7 @@ pub enum Agent {
     Goose,
     Opencode,
     Pi,
+    Hermes,
 }
 
 impl Agent {
@@ -41,6 +42,7 @@ impl Agent {
             "opencode" | "open-code" => Agent::Opencode,
             // Pi 同时是 @mariozechner/pi-coding-agent（命令就叫 `pi`）
             "pi" | "pi-agent" | "pi-coding-agent" => Agent::Pi,
+            "hermes" | "hermes-agent" => Agent::Hermes,
             other => {
                 return Err(format!(
                     "不认识的智能体 {other:?}；支持 {}",
@@ -61,6 +63,7 @@ impl Agent {
             // 在两个名字之间对不上。
             Agent::Opencode => "opencode",
             Agent::Pi => "Pi",
+            Agent::Hermes => "Hermes",
         }
     }
 
@@ -85,13 +88,16 @@ impl Agent {
             Agent::Opencode => ".config/opencode/plugins/signalhub.js",
             // Pi 的扩展目录：启动时自动发现这里的 *.ts（见官方 extensions 文档）
             Agent::Pi => ".pi/agent/extensions/signalhub.ts",
+            // Hermes 的插件是**一个目录**（里面有清单和代码），整个都是我们建的 ——
+            // 所以这里的路径是目录，卸载时整删（同 Goose）。
+            Agent::Hermes => ".hermes/plugins/signalhub",
         }
     }
 }
 
 /// 全部智能体，按加入顺序。`parse` 的报错信息和 CLI 的 help 都用它，
 /// 免得新增一个之后忘改其中一处、报错里少列一个。
-pub const ALL_NAMES: [&str; 7] = [
+pub const ALL_NAMES: [&str; 8] = [
     "claude-code",
     "codex",
     "cursor",
@@ -99,6 +105,7 @@ pub const ALL_NAMES: [&str; 7] = [
     "goose",
     "opencode",
     "pi",
+    "hermes",
 ];
 
 impl Agent {
@@ -114,7 +121,7 @@ impl Agent {
     /// 解析这一步直接不存在，卸载就是删文件。
     fn install_kind(self) -> InstallKind {
         match self {
-            Agent::Opencode | Agent::Pi => InstallKind::PluginFile,
+            Agent::Opencode | Agent::Pi | Agent::Hermes => InstallKind::PluginFile,
             Agent::ClaudeCode | Agent::Codex | Agent::Cursor | Agent::Gemini | Agent::Goose => {
                 InstallKind::JsonHooks
             }
@@ -135,6 +142,7 @@ impl Agent {
             Agent::Goose => ".config/goose",
             Agent::Opencode => ".config/opencode",
             Agent::Pi => ".pi/agent",
+            Agent::Hermes => ".hermes",
         }
     }
 
@@ -149,6 +157,7 @@ impl Agent {
             Agent::Goose => &["goose"],
             Agent::Opencode => &["opencode"],
             Agent::Pi => &["pi"],
+            Agent::Hermes => &["hermes"],
         }
     }
 }
@@ -197,9 +206,7 @@ pub fn is_installed(agent: Agent) -> bool {
         let Ok(path) = config_path(agent) else {
             return false;
         };
-        return fs::read_to_string(&path)
-            .map(|text| plugin_command_in(&text).is_some())
-            .unwrap_or(false);
+        return plugin_command_at(&path).is_some();
     }
 
     // Goose 是插件：整个目录都是我们建的，看它在不在就够了
@@ -243,12 +250,18 @@ fn config_has_our_hooks(text: &str) -> bool {
 ///
 /// 见 [`command_resolves`] 怎么判断它还跑不跑得起来。
 pub fn installed_command(agent: Agent) -> Option<String> {
-    let text = fs::read_to_string(config_path(agent).ok()?).ok()?;
+    let path = config_path(agent).ok()?;
     match agent.install_kind() {
         // 插件式里那条命令就是**这个 CLI 自己**（插件拼出 `signalhub <状态> …`），
         // 不带 `hook <agent>` 那一段 —— 诊断要报的是「它指向的那个程序还在不在」。
-        InstallKind::PluginFile => plugin_command_in(&text),
-        InstallKind::JsonHooks => installed_command_in(&text),
+        //
+        // 注意这里**不能**先 `read_to_string`：Hermes 的家是一个目录，读它会直接
+        // 失败，那条诊断就永远报不出来。
+        InstallKind::PluginFile => plugin_command_at(&path),
+        InstallKind::JsonHooks => {
+            let text = fs::read_to_string(&path).ok()?;
+            installed_command_in(&text)
+        }
     }
 }
 
@@ -302,7 +315,7 @@ pub fn command_resolves(command: &str) -> bool {
 /// `plugin_source`）。这张表只服务于「往共享 JSON 里插条目」那条路。
 fn events(agent: Agent) -> &'static [(&'static str, Option<&'static str>)] {
     match agent {
-        Agent::Opencode | Agent::Pi => &[],
+        Agent::Opencode | Agent::Pi | Agent::Hermes => &[],
         Agent::ClaudeCode => &[
             ("SessionStart", Some("startup|resume")),
             ("UserPromptSubmit", None),
@@ -517,6 +530,7 @@ fn agent_name_for_cli(agent: Agent) -> &'static str {
         Agent::Goose => "goose",
         Agent::Opencode => "opencode",
         Agent::Pi => "pi",
+        Agent::Hermes => "hermes",
     }
 }
 
@@ -697,6 +711,107 @@ export default function (pi: ExtensionAPI) {
 }
 "#;
 
+/// Hermes 插件清单。内容固定，没有任何来自用户的输入。
+const HERMES_MANIFEST: &str = r#"name: signalhub
+version: "0.1.0"
+description: Report this Hermes session's status to SignalHub
+"#;
+
+/// Hermes 插件模板（写进 `__init__.py`）。两个占位符同 [`OPENCODE_PLUGIN`]。
+const HERMES_PLUGIN: &str = r#"# 由 SignalHub 生成 —— 请勿手改。要更新就回 SignalHub 的「接入」页重新点一次接入。
+# %MARKER%
+"""把 Hermes 的会话生命周期转成一条 `signalhub` 命令行。
+
+Hermes 在 CLI 和网关里都会加载 ~/.hermes/plugins/ 下的插件，于是这份文件就成了
+「Hermes 说什么 → signalhub 命令行」的翻译器。
+
+改之前先读四条纪律：
+
+ 1. **不许阻塞。** 每一次工具调用都会打到这里。subprocess.run / wait 都会把 Hermes
+    卡住 —— 用 Popen 派生完就走，不 wait。
+ 2. **不许抛。** 上报失败绝不许影响 Hermes 自己，所以整段包在 try 里。
+ 3. **只映射下面这几个事件。** 名字都来自官方 hooks 文档。
+ 4. **会话 id 只认 `session_id`，绝不拿 `task_id` 顶替。** 见下面那条注释。
+"""
+
+import os
+import subprocess
+import sys
+
+CLI = "%CLI%"
+AGENT = "hermes"
+
+
+def _report(state, session="", cwd=None, message=None):
+    # 不知道是哪个会话时**绝不发 clear**：会话名会兜底成 "default"，
+    # 清掉它等于把别的上报方的状态一起抹了。
+    if state == "clear" and not session:
+        return
+    args = [CLI, state, "--agent", AGENT]
+    if state != "clear":
+        # Hermes 的 hook 参数里**没有**工作目录，但插件就跑在它自己的进程里，
+        # 所以 os.getcwd() 就是「在哪个项目里干活」—— 按目录分组靠它。
+        args += ["--cwd", cwd or os.getcwd()]
+    if session:
+        args += ["--session", session]
+    if message:
+        args += ["--message", str(message)[:200]]
+    try:
+        kwargs = {}
+        if sys.platform != "win32":
+            # 脱离 Hermes 的进程组：它被 Ctrl+C 带走时上报不该跟着死
+            kwargs["start_new_session"] = True
+        subprocess.Popen(
+            args,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **kwargs,
+        )
+    except Exception:
+        pass
+
+
+def _register(ctx):
+    def on_session_start(session_id="", **kwargs):
+        _report("idle", session_id)
+
+    def on_pre_llm_call(session_id="", **kwargs):
+        _report("thinking", session_id)
+
+    def on_pre_tool_call(tool_name=None, session_id="", **kwargs):
+        # **只取工具名**（terminal / web_search / read_file …），不碰 args：
+        # 那里可能有密钥，而这句话会进灯的状态、系统通知正文和消息流。
+        #
+        # **`task_id` 不是会话 id，别拿它顶替。** 它在 Hermes 里是
+        # `effective_task_id = task_id or str(uuid.uuid4())`，**每一轮都会重来**
+        # 一次 —— 用它当会话 id 会在灯上给同一场会话每轮多出一块牌。
+        _report("working", session_id, message=tool_name)
+
+    def on_post_llm_call(session_id="", **kwargs):
+        _report("done", session_id)
+
+    def on_session_end(session_id="", **kwargs):
+        # **映射成 done 而不是 clear。** Hermes 的 on_session_end 是
+        # 「每一次 run_conversation() 结束」（也就是**每一轮**）都发，不是进程退出
+        # 才发；映射成 clear 会让灯每轮结束后闪没一次。收尾交给 TTL（stale）。
+        _report("done", session_id)
+
+    ctx.register_hook("on_session_start", on_session_start)
+    ctx.register_hook("pre_llm_call", on_pre_llm_call)
+    ctx.register_hook("pre_tool_call", on_pre_tool_call)
+    ctx.register_hook("post_llm_call", on_post_llm_call)
+    ctx.register_hook("on_session_end", on_session_end)
+
+
+def register(ctx):
+    try:
+        _register(ctx)
+    except Exception:
+        # 注册失败也不许把 Hermes 带崩
+        pass
+"#;
+
 impl Agent {
     /// 插件式安装要写的源码。**纯函数**：输入只有 CLI 的路径，不碰环境，所以
     /// 「标记行对不对、转义对不对、事件映射对不对」全都能单测。
@@ -708,8 +823,27 @@ impl Agent {
             Agent::Pi => PI_PLUGIN
                 .replace("%MARKER%", &self.plugin_marker_line(program))
                 .replace("%CLI%", &as_string_literal(program)),
+            Agent::Hermes => HERMES_PLUGIN
+                .replace("%MARKER%", &self.plugin_marker_line(program))
+                .replace("%CLI%", &as_string_literal(program)),
             _ => unreachable!("这个智能体不是插件式安装（见 install_kind）"),
         }
+    }
+
+    /// 插件式安装要写的**全部**文件（绝对路径 → 内容）。
+    ///
+    /// 单文件的家（opencode / Pi）只有一份，路径就是 `config_relative_path` 本身；
+    /// Hermes 的插件是「一个目录 + 清单 + 代码」，所以是两份，都在那个目录下。
+    fn plugin_files(self, program: &str) -> Result<Vec<(PathBuf, String)>, String> {
+        let root = config_path(self)?;
+        Ok(match self {
+            Agent::Opencode | Agent::Pi => vec![(root, self.plugin_source(program))],
+            Agent::Hermes => vec![
+                (root.join("plugin.yaml"), HERMES_MANIFEST.to_string()),
+                (root.join("__init__.py"), self.plugin_source(program)),
+            ],
+            _ => unreachable!("这个智能体不是插件式安装（见 install_kind）"),
+        })
     }
 
     /// 生成源码里那一行标记，命令用**带引号**的写法。
@@ -729,6 +863,23 @@ impl Agent {
 ///
 /// **判据是这一行，不是文件在不在**：同一个路径上可能躺着用户自己写的插件，
 /// 光看文件会把没装的说成装了。
+fn plugin_command_at(root: &std::path::Path) -> Option<String> {
+    // 单文件的家（opencode / Pi）：直接看那个文件
+    if root.is_file() {
+        let text = fs::read_to_string(root).ok()?;
+        return plugin_command_in(&text);
+    }
+    // 目录的家（Hermes）：看目录里**任意一份**文件 —— 目录整个是我们的，
+    // 所以「里面有没有我们的标记」就够了，不用记得标记具体写在哪个文件里。
+    fs::read_dir(root)
+        .ok()?
+        .flatten()
+        .find_map(|entry| {
+            let text = fs::read_to_string(entry.path()).ok()?;
+            plugin_command_in(&text)
+        })
+}
+
 fn plugin_command_in(text: &str) -> Option<String> {
     text.lines()
         .find_map(|line| line.split_once(PLUGIN_MARKER))
@@ -739,7 +890,7 @@ fn plugin_command_in(text: &str) -> Option<String> {
 
 pub fn install(agent: Agent, dry_run: bool) -> Result<Report, String> {
     if agent.install_kind() == InstallKind::PluginFile {
-        return install_plugin_file(agent, dry_run);
+        return install_plugin_files(agent, dry_run);
     }
 
     let path = config_path(agent)?;
@@ -790,16 +941,15 @@ pub fn uninstall(agent: Agent, dry_run: bool) -> Result<Report, String> {
 /// 插件式安装：把我们自己的那份源码写进对方自动加载的目录。
 ///
 /// **没有「解析失败就中止，绝不覆盖」这一条** —— 那条底线防的是弄坏**用户的**配置，
-/// 而这个文件是我们自己建的。同一个路径上残留着旧版本（或者干脆是用户手抄的一份）
+/// 而这些文件是我们自己建的。同一个路径上残留着旧版本（或者干脆是用户手抄的一份）
 /// 时，重装一次应该得到一个能用的插件，而不是一个坏掉的文件。
-fn install_plugin_file(agent: Agent, dry_run: bool) -> Result<Report, String> {
-    let path = config_path(agent)?;
+fn install_plugin_files(agent: Agent, dry_run: bool) -> Result<Report, String> {
     let program = cli_program();
-    let source = agent.plugin_source(&program);
+    let files = agent.plugin_files(&program)?;
+    let root = config_path(agent)?;
 
-    let existing = fs::read_to_string(&path).ok();
     let mut report = Report {
-        path: path.clone(),
+        path: root.clone(),
         backup: None,
         // 界面用它显示「这个插件调的是哪个 CLI」；带引号的写法与标记行一致
         command: Some(quote_program(&program)),
@@ -810,40 +960,61 @@ fn install_plugin_file(agent: Agent, dry_run: bool) -> Result<Report, String> {
         removed_handlers: 0,
         dry_run,
         manifest: None,
-        plugin: Some(path.clone()),
+        plugin: Some(root),
     };
 
-    match existing.as_deref() {
-        Some(text) if text == source => {
-            report.already.push("plugin".to_string());
-            return Ok(report);
+    // 逐份比内容：**任何一份**变了就算「更新」。只比第一份会漏掉
+    // 「清单没变、代码变了」这种情况（命令指向的路径被挪走时就是这样）。
+    let mut changed = false;
+    let mut exists = false;
+    for (path, source) in &files {
+        match fs::read_to_string(path) {
+            Ok(text) if text == *source => exists = true,
+            Ok(_) => {
+                exists = true;
+                changed = true;
+            }
+            Err(_) => changed = true,
         }
-        Some(_) => report.updated.push("plugin".to_string()),
-        None => report.added.push("plugin".to_string()),
+    }
+    if changed {
+        report.added.push("plugin".to_string());
+    } else if exists {
+        report.already.push("plugin".to_string());
+        return Ok(report);
     }
 
-    if !dry_run {
+    if dry_run {
+        return Ok(report);
+    }
+    for (path, source) in &files {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|err| format!("创建 {} 失败: {err}", parent.display()))?;
         }
-        // 原子写：这个文件会被对方在执行过程中读到，写一半就是一份语法错误的源码
-        crate::config::atomic_write(&path, &source, None)
+        // 原子写：这些文件会被对方在执行过程中读到，写一半就是一份语法错误的源码
+        crate::config::atomic_write(path, source, None)
             .map_err(|err| format!("写 {} 失败: {err}", path.display()))?;
     }
     Ok(report)
 }
 
-/// 插件式卸载：删掉我们那个文件。
+/// 插件式卸载：删掉我们自己写的那份东西。
 ///
-/// **只删文件、不删目录**：`plugins/` 是**对方的**目录，里面多半还躺着别人的插件。
-/// （Goose 那种「整个目录都是我们建的」是另一回事，见上面那条分支。）
+/// 是文件还是目录**看它自己**，不多加一张表：opencode / Pi 的
+/// `config_relative_path` 是**一个文件**（同名文件可能是别人的，所以只删这一个），
+/// Hermes 的是一个**我们独有的目录**（整删）。前者绝不能顺手删父目录 ——
+/// `plugins/` 是对方的目录，里面多半还躺着别人的插件。
 fn uninstall_plugin_file(agent: Agent, dry_run: bool) -> Result<Report, String> {
     let path = config_path(agent)?;
-    let existed = path.is_file();
+    let existed = path.exists();
     if existed && !dry_run {
-        fs::remove_file(&path)
-            .map_err(|err| format!("删除 {} 失败: {err}", path.display()))?;
+        let removed = if path.is_dir() {
+            fs::remove_dir_all(&path)
+        } else {
+            fs::remove_file(&path)
+        };
+        removed.map_err(|err| format!("删除 {} 失败: {err}", path.display()))?;
     }
     Ok(Report {
         path: path.clone(),
@@ -1174,7 +1345,9 @@ fn first_token(command: &str) -> Option<&str> {
 fn handler_group(agent: Agent, command: &str, matcher: Option<&str>) -> Value {
     match agent {
         // 插件式安装不走这条路（它不写共享配置），真走到了就是分类写错了。
-        Agent::Opencode | Agent::Pi => unreachable!("插件式的智能体不构造 hooks 条目"),
+        Agent::Opencode | Agent::Pi | Agent::Hermes => {
+            unreachable!("插件式的智能体不构造 hooks 条目")
+        }
         // Cursor 这边 preToolUse 之类是会被等待的，所以超时保护有意义
         Agent::Cursor => json!({ "command": command, "timeout": 5 }),
         // Gemini / Goose 也会**同步等待** hook（两家都没有 async 开关），所以给
@@ -1953,7 +2126,7 @@ mod tests {
     /// —— 已经分好类的这 6 家有没有分错。
     /// 插件式的这几家。新增一个插件式智能体时**把它加进来**，下面三条测试
     /// （标记行 / 转义 / clear 守卫）就会自动覆盖它。
-    const PLUGIN_AGENTS: [Agent; 2] = [Agent::Opencode, Agent::Pi];
+    const PLUGIN_AGENTS: [Agent; 3] = [Agent::Opencode, Agent::Pi, Agent::Hermes];
 
     #[test]
     fn the_two_install_kinds_are_classified_explicitly() {
@@ -1997,11 +2170,11 @@ mod tests {
                 assert_eq!(first_token(&recovered), Some(program));
 
                 // 「不知道会话 id 就不发 clear」这条守卫：会话名会兜底成 default，
-                // 清掉它等于顺手把别的上报方的状态一起抹了。生成的三份源码都要有。
-                assert!(
-                    source.contains(r#""clear" && !session"#),
-                    "{agent:?} 生成的源码里少了 clear 守卫"
-                );
+                // 清掉它等于顺手把别的上报方的状态一起抹了。生成的每份源码都要有
+                // （JS / TS 一种写法，Python 另一种 —— 语义必须一致）。
+                let has_guard = source.contains(r#""clear" && !session"#)
+                    || source.contains(r#""clear" and not session"#);
+                assert!(has_guard, "{agent:?} 生成的源码里少了 clear 守卫");
             }
         }
     }
@@ -2012,11 +2185,13 @@ mod tests {
     fn backslashes_in_the_path_are_escaped_for_the_plugin_source() {
         for agent in PLUGIN_AGENTS {
             let source = agent.plugin_source(r"C:\Program Files\SignalHub\signalhub.exe");
+            // 字面量里必须是双写的（`C:\\Program` 在源码里就是 `C:\\Program`），
+            // 不绑死某种语言的赋值语法 —— 三种语言的双引号字符串转义规则一致。
             assert!(
-                source.contains(r#"const CLI = "C:\\Program Files\\SignalHub\\signalhub.exe""#),
+                source.contains(r#""C:\\Program Files\\SignalHub\\signalhub.exe""#),
                 "{agent:?} 的源码里反斜杠没有双写"
             );
-            // 而标记行里给**我们**看的那份是 shell 写法（原样 + 引号），不是 JS 字面量
+            // 而标记行里给**我们**看的那份是 shell 写法（原样 + 引号），不是字面量
             assert!(
                 source.contains(r#"signalhub-hook: "C:\Program Files\SignalHub\signalhub.exe""#),
                 "{agent:?} 的标记行不是 shell 写法"
@@ -2051,6 +2226,68 @@ mod tests {
         fs::remove_file(&path).unwrap();
         assert!(!path.is_file());
         assert!(plugin_command_in("").is_none());
+    }
+
+    /// Hermes 是**一个目录 + 两份文件**：路径必须是那个目录（卸载时整删），
+    /// 不是目录里的某一个文件 —— 否则卸载只删掉一半，留下一份没主人的清单。
+    #[test]
+    fn a_multi_file_plugin_owns_a_whole_directory() {
+        let files = Agent::Hermes.plugin_files("/opt/signalhub").unwrap();
+        assert_eq!(files.len(), 2, "Hermes 的插件是清单 + 代码两份");
+
+        let root = crate::config::home_dir()
+            .unwrap()
+            .join(Agent::Hermes.config_relative_path());
+        let expected: Vec<&str> = vec!["plugin.yaml", "__init__.py"];
+        for (path, _) in &files {
+            assert_eq!(path.parent().unwrap(), root, "两份文件都该在同一个目录下");
+            let name = path.file_name().unwrap().to_str().unwrap();
+            assert!(expected.contains(&name), "意外多出来的文件 {name}");
+        }
+        // 标记行只在**代码**那份里（清单是固定的、没有任何来自命令的信息）。
+        // 检测靠的是「目录里任意一份文件有标记」，所以这仍然认得出来。
+        let code = files
+            .iter()
+            .find(|(path, _)| path.ends_with("__init__.py"))
+            .unwrap();
+        assert!(code.1.contains(PLUGIN_MARKER), "代码那份里没有标记行");
+
+        // 单文件的家：路径就是根本身，别多套一层
+        let single = crate::config::home_dir()
+            .unwrap()
+            .join(Agent::Opencode.config_relative_path());
+        assert_eq!(
+            Agent::Opencode.plugin_files("/opt/signalhub").unwrap()[0].0,
+            single,
+            "单文件的家不该被当成目录"
+        );
+    }
+
+    /// 目录形状的家，`is_installed` / `installed_command` 要看目录里**任意一份**
+    /// 文件找标记 —— 目录整个是我们的，不用记得标记具体写在哪个文件里。
+    #[test]
+    fn a_marker_inside_a_plugin_directory_is_found() {
+        let dir = TempDir::new();
+        let root = dir.file("signalhub");
+        fs::create_dir_all(&root).unwrap();
+        // 清单里没有标记，代码里有
+        fs::write(root.join("plugin.yaml"), "name: signalhub\n").unwrap();
+        let files = Agent::Hermes.plugin_files("/opt/signalhub").unwrap();
+        fs::write(root.join("__init__.py"), &files[1].1).unwrap();
+
+        assert_eq!(
+            plugin_command_at(&root).as_deref(),
+            Some("/opt/signalhub"),
+            "目录里那份代码的标记该被认出来"
+        );
+
+        // 整个目录都不含标记 → 不是我们装的
+        let other = dir.file("someone-else");
+        fs::create_dir_all(&other).unwrap();
+        fs::write(other.join("__init__.py"), "def register(ctx): pass\n").unwrap();
+        assert!(plugin_command_at(&other).is_none());
+        // 路径根本不存在也不能炸
+        assert!(plugin_command_at(&dir.file("nope")).is_none());
     }
 
     /// 空白的标记行后面什么都没有（这种情况只会来自手改），不算装上了。

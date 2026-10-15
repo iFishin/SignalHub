@@ -207,14 +207,16 @@ export default function (pi: ExtensionAPI) {
 - **不订 `message_update` / `turn_end`**：那是最热的路径，插件跑一次就打一次进程，
   没必要。
 
-**Hermes**（Python 插件，标准库）：
+**Hermes**（Python 插件，标准库）：**一个目录 + 两份文件**
+（`plugin.yaml` + `__init__.py`），所以机制要支持「多文件」这一形状（实施时的补充，
+见 §1.6）。
 
 ```python
 # signalhub-hook: <命令>
 def register(ctx):
     ctx.register_hook("on_session_start", lambda session_id="", **kw: report("idle", session_id))
     ctx.register_hook("pre_llm_call",    lambda session_id="", **kw: report("thinking", session_id))
-    ctx.register_hook("pre_tool_call",   lambda task_id="",    **kw: report("working", task_id))
+    ctx.register_hook("pre_tool_call",   lambda session_id="", **kw: report("working", session_id))
     ctx.register_hook("post_llm_call",   lambda session_id="", **kw: report("done", session_id))
     ctx.register_hook("on_session_end",  lambda session_id="", **kw: report("done", session_id))
 ```
@@ -223,7 +225,12 @@ def register(ctx):
   必须写在注释里：Hermes 的 `on_session_end` 是「每一次 `run_conversation()` 结束」
   （也就是**每一轮**）都发，不是进程退出才发。映射成 `clear` 会让灯**每轮结束后
   闪没一次**。清理交给 TTL（`stale`）。
+- **会话 id 只认 `session_id`，绝不拿 `task_id` 顶替**（起草时写的是 `task_id`，实施
+  时在 Hermes 源码里核到它是 `effective_task_id = task_id or str(uuid.uuid4())`，
+  **每轮都重来**；用它会在灯上给同一场会话每轮多出一块牌。而 `pre_tool_call` 的调用点
+  其实**也传了 `session_id`**，只是没写进文档的参数表）。
 - Hermes 没有「需要授权」事件，同 Gemini：只能拿 `post_tool_call` 的结果串猜，本轮不做。
+- 工作目录取插件进程的 `os.getcwd()`：hook 参数里没有它，但插件就在那个项目里跑。
 - `plugin.yaml` 内容固定、无用户输入。
 
 ### 1.4 验收（R1）
@@ -240,6 +247,15 @@ def register(ctx):
 - 手工验收（写进 `docs/api.md`）：三家各装一遍、跑一个真实会话，看灯亮；
   `~/.signalhub/hook.log` 里能看到入站记录。
 - 前端**不用改**：`detect_agents` 读的是 `ALL_NAMES`，新三家自动出现在「接入」页。
+
+### 1.6 实施时对起草的三处修正
+
+- Hermes 是「一个目录 + 两份文件」，所以 `InstallKind::PluginFile` 从「写一个文件」
+  扩成「写一组文件」（`plugin_files`）。判据 / 卸载仍然是**看那个路径自己是什么**：
+  文件就删文件、目录就整删 —— 不多加一张表。
+- Hermes 的会话 id 用 `session_id`，**不是** `task_id`（见 §1.3 里那段）。
+- 三家都补上「不知道会话 id 时绝不发 `clear`」这条守卫：会话名会兜底成 `default`，
+  清掉它等于顺手把别的上报方的状态一起抹了。这条守卫有测试盯着三份源码。
 
 ### 1.5 拆成 3 个 commit
 

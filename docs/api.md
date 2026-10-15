@@ -801,8 +801,11 @@ PreToolUse  tool_name=Bash  tool_input={command: "cargo test --all"}
 | 智能体 | 装在哪 | 对方怎么加载它 |
 |---|---|---|
 | **opencode** | `~/.config/opencode/plugins/signalhub.js` | 启动时自动加载该目录下所有 js / ts |
-| Pi | `~/.pi/agent/extensions/signalhub.ts` | 启动时自动发现该目录下的扩展 |
-| Hermes | `~/.hermes/plugins/signalhub/` | 启动时扫描 `~/.hermes/plugins/` 下的插件目录 |
+| **Pi** | `~/.pi/agent/extensions/signalhub.ts` | 启动时自动发现该目录下的扩展 |
+| **Hermes** | `~/.hermes/plugins/signalhub/`（清单 + 代码两份文件） | 启动时扫描 `~/.hermes/plugins/` 下的插件目录 |
+
+前两家的路径是**一个文件**（同名文件可能是别人写的，所以只删那一个）；Hermes 的是一个
+**我们独有的目录**，卸载时整删。是文件还是目录不用查表 —— 看那个路径自己是什么就行。
 
 生成的源码里嵌入的是**我们自己解析出来的 CLI 路径**（`install hooks` 时算的那一个，
 见 `hooks.rs::cli_program`；PATH 上有 `signalhub` 就用裸名字）。它把对方的事件翻译成
@@ -864,6 +867,37 @@ a successful switch, pi emits session_shutdown for the old extension instance…
 
 `import type { ExtensionAPI }` 是类型导入，jiti 转译时会整个擦掉（不做类型检查），
 所以用户没装 `@mariozechner/pi-coding-agent` 也照样加载。
+
+#### Hermes
+
+这一家是**一个目录 + 两份文件**（`plugin.yaml` 清单 + `__init__.py`），整个目录都是
+我们建的 —— 所以卸载是整删那个目录（同 Goose），而不是删一个文件。
+
+| Hermes hook | 状态 |
+|---|---|
+| `on_session_start` | `idle` |
+| `pre_llm_call` | `thinking` |
+| `pre_tool_call` | `working`（`--message` 只取工具名） |
+| `post_llm_call` | `done` |
+| `on_session_end` | `done` —— **不是**「清除」，见下 |
+
+**`on_session_end` 映射成 `done` 而不是「清除」**，这条最反直觉，必须写在注释里：
+官方文档明说它「fires at the very end of **every** `run_conversation()` call」——
+也就是**每一轮**都发，不是进程退出才发。映射成 `clear` 会让灯在每一轮结束后闪没一次。
+收尾交给 TTL（会话沉默后转 `stale`，再按 TTL 删除）。
+
+**会话 id 只认 `session_id`，绝不拿 `task_id` 顶替。** `pre_tool_call` 的文档签名里
+写的是 `task_id`，看起来像会话 id，但 Hermes 源码里它是
+`effective_task_id = task_id or str(uuid.uuid4())`，**每一轮都会重来**一次 —— 拿它当
+会话 id，会在灯上给同一场会话每轮多出一块牌。实际上 `pre_tool_call` / `post_tool_call`
+的调用点**也传了 `session_id`**（`invoke_hook(..., session_id=session_id or "")`），
+只是没写进文档的参数表；官方也建议回调一律接 `**kwargs`，所以用它是安全的。
+`session_id` 为空时**不发 `clear`**（会误伤 `default` 组），只会上报一个全局会话。
+
+工作目录取插件进程的 `os.getcwd()`：Hermes 的 hook 参数里没有工作目录，但插件就跑在
+它自己的进程里，那个目录就是「在哪个项目里干活」—— 按目录分组（`group_by: cwd`）靠它。
+
+Hermes 没有「需要授权」事件，所以接不了 `permission` 那一档（同 Gemini）。
 
 ---
 
