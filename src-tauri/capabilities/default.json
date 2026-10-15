@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "灯球窗口与设置窗口",
-  "windows": ["main", "settings"],
+  "description": "灯球窗口、各组自己的灯窗与设置窗口",
+  "windows": ["main", "settings", "lamp-*"],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",

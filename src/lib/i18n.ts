@@ -106,6 +106,10 @@ export interface Messages {
   form: string;
   expanded: string;
   singleLight: string;
+  lampLayout: string;
+  layoutSingle: string;
+  layoutPerGroup: string;
+  layoutHint: string;
   size: string;
   shape: string;
   palette: string;
@@ -408,6 +412,11 @@ export const MESSAGES: Record<Lang, Messages> = {
     form: "形态",
     expanded: "展开牌面",
     singleLight: "一颗灯",
+    lampLayout: "灯的数量",
+    layoutSingle: "一盏灯",
+    layoutPerGroup: "每组分灯",
+    layoutHint:
+      "「每组分灯」让每个组各有一盏能单独拖动的灯，主灯只剩全局状态；每盏灯第一次出现在屏幕右缘，拖到想要的地方后各自记住。超过 8 个组会自动变回一盏灯。",
     size: "大小",
     shape: "形状",
     palette: "配色方案",
@@ -706,6 +715,11 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     form: "Form",
     expanded: "Expanded",
     singleLight: "Single light",
+    lampLayout: "Lamps",
+    layoutSingle: "One lamp",
+    layoutPerGroup: "One per group",
+    layoutHint:
+      "\"One per group\" gives each group its own draggable lamp and leaves the main lamp showing global state; new lamps appear along the right edge and each remembers where you drag it. More than 8 groups falls back to a single lamp.",
     size: "Size",
     shape: "Shape",
     palette: "Palette",

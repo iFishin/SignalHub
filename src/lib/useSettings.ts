@@ -97,6 +97,8 @@ export interface Settings {
   sign_w_mult: number;
   /** 牌高倍率。**1.0 = 原样**（单行 / 带消息两行都乘）。 */
   sign_h_mult: number;
+  /** 多灯布局：`single` 一盏灯画一叠牌（默认），`per-group` 每个可见组一盏灯。 */
+  lamp_layout: "single" | "per-group";
   always_on_top: boolean;
   /** 安静模式：空闲 / 沉默 / 离线时圆点几乎透明，悬停恢复。 */
   quiet: boolean;
@@ -170,6 +172,7 @@ export const DEFAULTS: Settings = {
   size: 22,
   sign_w_mult: 1,
   sign_h_mult: 1,
+  lamp_layout: "single",
   always_on_top: true,
   quiet: true,
   notify: true,

@@ -1,5 +1,6 @@
 mod alerts;
 mod lang;
+mod lamps;
 mod menu;
 mod notify;
 mod open;
@@ -15,7 +16,7 @@ mod tray;
 pub mod config;
 pub mod hooks;
 
-use config::Settings;
+use config::{LampLayout, Settings};
 use notify::Notifier;
 use state::{GroupView, Report, Signal, Snapshot, Store};
 use std::collections::BTreeMap;
@@ -49,6 +50,12 @@ struct UiFlags {
 }
 
 type SharedUi = Mutex<UiFlags>;
+
+/// 多信号灯：组名 → 灯窗，加位置 / 尺寸记忆（见 `lamps.rs`）。
+///
+/// 用 `Mutex` 而不是 `Arc<Mutex>`：只有本模块（`sync_lamps` 和退出时的
+/// `save_open_positions`）碰它，不像 `Settings` 那样要跨 HTTP 那条路共享。
+type SharedLamps = Mutex<lamps::LampWindows>;
 
 /// 悬浮窗几何的缓存。**存在的理由：热路径上不许问窗口。**
 ///
@@ -600,7 +607,7 @@ fn set_pass_through_impl(app: &tauri::AppHandle, enabled: bool) -> Result<(), St
             .lock()
             .expect("settings poisoned")
             .clone();
-        apply_window_size(app, &settings, &snapshot);
+        sync_layout(app, &settings, &snapshot);
     }
 
     // 开启时发一条通知说明怎么退出。**不再顺手把外形收起来**：穿透下窗口本来
@@ -961,10 +968,14 @@ pub(crate) fn refresh_tray(app: &tauri::AppHandle) {
 }
 
 fn apply_settings(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapshot) {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.set_always_on_top(settings.always_on_top);
+    // 主灯和每个组灯都要跟着「总在最前」走 —— 只改主灯的话，切到多灯之后
+    // 组灯会一直是最前的（它们是按建窗时的设置建的）。
+    for (label, window) in app.webview_windows() {
+        if label == "main" || label.starts_with(lamps::LABEL_PREFIX) {
+            let _ = window.set_always_on_top(settings.always_on_top);
+        }
     }
-    apply_window_size(app, settings, snapshot);
+    sync_layout(app, settings, snapshot);
     // 开关可能刚被改过，所以尺寸之外还要重画一次托盘
     refresh_tray(app);
     // 用户刚把通知打开时也要能申请到权限 —— 只在启动时申请的话，启动时通知是关着的
@@ -999,6 +1010,102 @@ fn visible_groups<'a>(settings: &Settings, snapshot: &'a Snapshot) -> Vec<&'a Gr
 
     groups.truncate(config::MAX_SIGNS);
     groups
+}
+
+/// 可见组的名字，**不截断**到 `MAX_SIGNS` —— 多灯模式下每组一盏灯，截断没有意义。
+///
+/// 顺序和 `visible_groups` 一致（置顶在前），只是这里要的是名字。
+fn visible_group_names(settings: &Settings, snapshot: &Snapshot) -> Vec<String> {
+    let mut groups: Vec<&GroupView> = snapshot
+        .groups
+        .iter()
+        .filter(|group| settings.shows_group(&group.name))
+        .collect();
+    groups.sort_by_key(|group| match settings.group_order(&group.name) {
+        Some(order) => (0, order),
+        None => (1, 0),
+    });
+    groups.into_iter().map(|group| group.name.clone()).collect()
+}
+
+/// 这一帧是否走「每组分灯」。
+///
+/// 两个条件缺一不可：布局选的是 `PerGroup`，且可见组数没超过硬上限。超过就**回落
+/// 单灯**（各组仍画在主灯上）—— 8 个 webview 已经不少了，再多不该默默开下去。
+///
+/// **前端必须按同一条规则算**（`src/lib/lampLayout.ts` 的 `perGroupActive`），否则
+/// 主灯一边以为要画全局、一边以为要画各组，窗口尺寸就会对不上。
+fn per_group_active(settings: &Settings, snapshot: &Snapshot) -> bool {
+    // 先看便宜的枚举，隔开一次不必要的计数 —— 默认的单灯模式下这里是零成本
+    settings.lamp_layout == LampLayout::PerGroup
+        && visible_group_count(settings, snapshot) <= lamps::MAX_LAMPS
+}
+
+/// 可见组**个数**。只数不排队、不拷名字：`per_group_active` 在热路径上被问好几次，
+/// 为了数个数去排序 + 拷一串 `String` 不值当。
+fn visible_group_count(settings: &Settings, snapshot: &Snapshot) -> usize {
+    snapshot
+        .groups
+        .iter()
+        .filter(|group| settings.shows_group(&group.name))
+        .count()
+}
+
+/// 主灯这一帧该画哪些组。
+///
+/// 每组分灯时主灯退出「一叠牌」的角色，只留全局 —— 传空就等于走 `SignalLamp` 现有
+/// 的占位 / 全局分支（和前端 `App.tsx` 的同一判断对齐）。
+fn main_window_groups<'a>(settings: &Settings, snapshot: &'a Snapshot) -> Vec<&'a GroupView> {
+    if per_group_active(settings, snapshot) {
+        Vec::new()
+    } else {
+        visible_groups(settings, snapshot)
+    }
+}
+
+/// 每个可见组该有的灯窗：组名 + 这一帧的尺寸。
+///
+/// 一盏组灯的几何 = 「只有这一组的单灯」：展开态是一块牌，折叠态是一个点（外加
+/// 暂停 / 穿透那枚角标）。**必须和前端渲染对齐** —— 多一块牌或少一枚角标，窗口
+/// 就会裁掉内容。
+fn lamp_specs(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapshot) -> Vec<lamps::LampSpec> {
+    if !per_group_active(settings, snapshot) {
+        return Vec::new();
+    }
+    let flags = ui_flag_count(app);
+    visible_group_names(settings, snapshot)
+        .into_iter()
+        .map(|name| {
+            let has_message = !settings.collapsed
+                && settings.show.message
+                && snapshot
+                    .groups
+                    .iter()
+                    .find(|group| group.name == name)
+                    .is_some_and(|group| group.message.is_some());
+            let size = if settings.collapsed {
+                config::collapsed_window_size(settings.size, 1, flags + config::more_badge(1))
+            } else {
+                settings.window_size(&[config::sign_height(settings.size, has_message, settings.sign_h_mult)])
+            };
+            lamps::LampSpec { group: name, size }
+        })
+        .collect()
+}
+
+/// 让灯窗集合跟上这一帧。单灯模式下 `lamps::MAX_LAMPS` 那个分支不成立，`specs` 为空，
+/// 于是所有组灯被关掉 —— 从多灯切回单灯自然也走这条路。
+fn sync_lamps(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapshot) {
+    let specs = lamp_specs(app, settings, snapshot);
+    let handle = app.state::<SharedLamps>();
+    let mut lamps = handle.lock().expect("lamps poisoned");
+    lamps.reconcile(&lamps::TauriHost(app), &specs);
+}
+
+/// 一次状态 / 设置变化之后，把**所有**窗口的布局同步一遍：主灯尺寸 + 各组的灯。
+fn sync_layout(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapshot) {
+    apply_window_size(app, settings, snapshot);
+    sync_lamps(app, settings, snapshot);
 }
 
 /// 这些组在展开态各占多高。有东西可读的牌多占一行，正好是个提示。
@@ -1060,8 +1167,9 @@ fn apply_window_size(app: &tauri::AppHandle, settings: &Settings, snapshot: &Sna
         return;
     };
 
-    // 展开态是一叠牌，折叠态是一排点 —— 两套几何，见 config.rs
-    let groups = visible_groups(settings, snapshot);
+    // 展开态是一叠牌，折叠态是一排点 —— 两套几何，见 config.rs。
+    // 多灯模式下主灯只看全局（各组交给各自的灯），所以这里拿的是「主灯该画的组」。
+    let groups = main_window_groups(settings, snapshot);
     let (width, height) = if settings.collapsed {
         // 折叠态里没有牌面，全局状态角标和「还有几组」的 `+N` 都得自己占一个点位。
         // 少算一枚，那枚角标就落在窗口外面 —— 而折叠态最不该出的就是这种错：
@@ -1303,6 +1411,8 @@ pub fn run() {
         .manage(SharedStore::new(Mutex::new(Store::default())))
         .manage(SharedUi::default())
         .manage(SharedGeometry::default())
+        // 位置记忆从盘上读回来（`LampWindows::load`），这样组灯一开就在上次的位置
+        .manage(Mutex::new(lamps::LampWindows::load()))
         .manage(SharedBind::default())
         // 统计从盘上读回来：灯球是常驻的，但「常驻」不等于「永不重启」——
         // 改设置、升级、崩了重来，用户对「今天等了多久」的期待是跨重启的。
@@ -1441,8 +1551,15 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // 退出前把灯窗的位置落盘：用户拖完最后一个动作就退出时，那点位移还只在
+            // 窗口里（见 `lamps::save_open_positions`）。
+            if let tauri::RunEvent::Exit = event {
+                lamps::save_open_positions(app);
+            }
+        });
 }
 
 #[cfg(test)]

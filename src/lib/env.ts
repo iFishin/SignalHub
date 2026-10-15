@@ -13,3 +13,14 @@ export function windowKind(): WindowKind {
     ? "settings"
     : "light";
 }
+
+/**
+ * 这个灯窗显示的**组名**，null = 主灯（画全局 / 全部）。
+ *
+ * 多灯模式下每个组灯窗的 URL 是 `?window=light&group=<percent-encoded>`（由 Rust
+ * 侧的 `lamps::encode_query` 编码）。`URLSearchParams` 会自动把百分号解码回 UTF-8，
+ * 所以这里拿到的就是原始组名。
+ */
+export function windowGroup(): string | null {
+  return new URLSearchParams(window.location.search).get("group");
+}

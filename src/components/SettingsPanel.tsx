@@ -1584,6 +1584,36 @@ export function SettingsPanel({ snapshot }: Props) {
               <p className="hint">{m.groupByHint}</p>
             </div>
 
+            {/* ---- 灯的数量 ----
+                紧挨着「分组」：分组定了「有哪些组」，这一项定的就是「这些组摆成
+                一盏灯还是一组一盏灯」，是同一个决定的下半句。
+
+                两项用 `seg` 而不是开关：不是「开/关多灯」，而是「换一种摆法」。
+                「每组分灯」在组数超过 `MAX_LAMPS` 时会**自动回落**成一盏灯
+                （每盏灯都是一个真 webview，Linux 上尤其贵），提示里写明。 */}
+            <div className="section">
+              <div className="row">
+                <span>{m.lampLayout}</span>
+                <div className="seg">
+                  <button
+                    type="button"
+                    data-active={settings.lamp_layout === "single"}
+                    onClick={() => patch({ lamp_layout: "single" })}
+                  >
+                    {m.layoutSingle}
+                  </button>
+                  <button
+                    type="button"
+                    data-active={settings.lamp_layout === "per-group"}
+                    onClick={() => patch({ lamp_layout: "per-group" })}
+                  >
+                    {m.layoutPerGroup}
+                  </button>
+                </div>
+              </div>
+              <p className="hint">{m.layoutHint}</p>
+            </div>
+
             {/* ---- 局域网访问 ----
                 和「分组」同页、紧挨着它：两者都是「上报进来这一侧」的事 ——
                 一个管怎么解读，一个管从哪能报进来。

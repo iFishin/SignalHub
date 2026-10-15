@@ -267,6 +267,20 @@ pub enum Shape {
     Ring,
 }
 
+/// 多灯布局：一盏灯画一叠牌，还是每个可见组一盏自己的灯。
+///
+/// **默认单灯**，也是永远可用的回落形态（可见组超过 `lamps::MAX_LAMPS` 时自动回到
+/// 它）—— 新能力默认关（红线 3）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LampLayout {
+    /// 一盏灯画一叠牌（现状）。
+    #[default]
+    Single,
+    /// 每个可见组一盏自己的灯窗，可以各自拖到不同位置；主灯只剩一颗全局灯。
+    PerGroup,
+}
+
 /// 配色方案。
 ///
 /// 给的是**预设而不是任意取色**：红 = 危险、黄 = 注意是有语义的，
@@ -634,6 +648,8 @@ pub struct Settings {
     ///
     /// 两档都乘 —— 漏一档窗口就会裁掉带消息的那块牌。
     pub sign_h_mult: f32,
+    /// 多灯布局。默认 `Single`（一盏灯画一叠牌），`PerGroup` 时每个可见组一盏灯。
+    pub lamp_layout: LampLayout,
     pub always_on_top: bool,
     /// 「有事才显形」：空闲 / 沉默 / 离线时把圆点压到几乎透明，
     /// 只有真正有活动或需要你注意时才完全显形。
@@ -851,6 +867,8 @@ impl Default for Settings {
             // 「原样」。**必须是 1.0**：写成 0.0 就是牌宽归零（红线 3 的经典翻车）。
             sign_w_mult: 1.0,
             sign_h_mult: 1.0,
+            // 默认单灯 —— 新能力默认关（红线 3）
+            lamp_layout: LampLayout::Single,
             always_on_top: true,
             quiet: true,
             notify: true,
@@ -1291,6 +1309,7 @@ mod tests {
             // 新字段设成**非默认值**：全默认的话「漏了字段」这种错看不出来
             sign_w_mult: 1.4,
             sign_h_mult: 0.9,
+            lamp_layout: LampLayout::PerGroup,
             always_on_top: false,
             quiet: false,
             notify: false,
@@ -2012,6 +2031,17 @@ mod tests {
         let parsed: Settings = serde_json::from_str(&legacy).unwrap();
         assert_eq!(parsed.sign_w_mult, 1.0);
         assert_eq!(parsed.sign_h_mult, 1.0);
+    }
+
+    /// 旧配置（没有 `lamp_layout`）必须读成单灯 —— 新能力默认关（红线 3）。
+    #[test]
+    fn settings_without_lamp_layout_read_as_single() {
+        let json = serde_json::to_string(&Settings::default()).unwrap();
+        assert!(json.contains(r#""lamp_layout":"single""#), "{json}");
+
+        let legacy = json.replace(r#""lamp_layout":"single","#, "");
+        let parsed: Settings = serde_json::from_str(&legacy).unwrap();
+        assert_eq!(parsed.lamp_layout, LampLayout::Single);
     }
 
     /// 折叠态：一个组一个点，窗口比展开态小得多

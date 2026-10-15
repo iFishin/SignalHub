@@ -7,7 +7,8 @@ import { useSettings } from "./lib/useSettings";
 import { usePalettePush } from "./lib/palettes";
 import { useLocalClock } from "./lib/useLocalClock";
 import { useLangPush } from "./lib/i18n";
-import { inTauri, windowKind } from "./lib/env";
+import { inTauri, windowGroup, windowKind } from "./lib/env";
+import { perGroupActive } from "./lib/lampLayout";
 import { REPORTABLE_SIGNALS } from "./lib/types";
 
 /**
@@ -67,10 +68,24 @@ export default function App() {
     return <SettingsPanel snapshot={snapshot} />;
   }
 
+  // 多灯：这个灯窗只看自己那一组（`?group=`）。主灯在「每组分灯」生效时退成一颗
+  // 全局灯 —— 传空组让 SignalLamp 走它现有的占位 / 全局分支。
+  //
+  // **判断必须和 Rust 的 `per_group_active` 一致**（见 lib/lampLayout.ts）。
+  const myGroup = windowGroup();
+  const one = myGroup === null ? undefined : snapshot.groups.find((g) => g.name === myGroup);
+  const groups =
+    myGroup !== null
+      ? snapshot.groups.filter((g) => g.name === myGroup)
+      : perGroupActive(settings, snapshot.groups)
+        ? []
+        : snapshot.groups;
+
   return (
     <SignalLamp
-      aggregate={snapshot.aggregate}
-      groups={snapshot.groups}
+      // 组灯用**这一组**的聚合（角标 / 底色都该跟着它），主灯才用全局聚合
+      aggregate={one ? one.aggregate : snapshot.aggregate}
+      groups={groups}
       settings={settings}
       // 暂停是**灯上**要持续可见的状态，而 `off`（暂停时的聚合值）和 `offline`
       // 都是很淡的灰，只靠颜色分不出来。

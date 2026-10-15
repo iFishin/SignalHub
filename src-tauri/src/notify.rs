@@ -49,7 +49,7 @@ pub fn compose(app: tauri::AppHandle) -> Notifier {
             .lock()
             .expect("settings poisoned")
             .clone();
-        crate::apply_window_size(&app, &settings, snapshot);
+        crate::sync_layout(&app, &settings, snapshot);
 
         app.state::<SharedStats>()
             .lock()
