@@ -4,16 +4,18 @@
 //! 让它们能上报进来）；这个是**出站**的（SignalHub 主动往外发或执行东西）。
 //! 两个名字都在用「hook」这个词，但方向相反。
 //!
-//! 三条约束：
+//! 三条约束（另外一条：**发出去的那行字要能看懂**，见 [`compose`]）：
 //! 1. **必须异步。** 触发点在状态变更路径上（HTTP 上报和 sweep 都会走到），
 //!    同步发网络请求或等命令结束会把状态机卡住。
 //! 2. **一条钩子失败不影响其它钩子**，也不影响状态机本身。失败只写 stderr。
 //! 3. **命令要带超时。** 挂死的钩子会把 tokio 的阻塞线程池占满。
 
-use crate::config::{Hook, HookAction};
+use crate::config::{Hook, HookAction, HttpPreset, Lang, Settings};
+use crate::lang;
 use crate::state::{Signal, Snapshot};
 use serde::Serialize;
-use std::collections::VecDeque;
+use serde_json::json;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -24,16 +26,20 @@ const HOOK_TIMEOUT: Duration = Duration::from_secs(10);
 ///
 /// `transitioned` 是全局聚合本次有没有跃迁，`changes` 是本次跃迁了的组 ——
 /// 前者给不限定组的钩子用，后者给限定了组的钩子用（见 `config::Hook::fires`）。
+/// `settings` 和 `lang` 只用来拼那行给人看的摘要（组显示名要按用户改的名字来，
+/// 文案要按界面语言来）。
 pub fn fire(
-    hooks: &[Hook],
+    settings: &Settings,
     snapshot: &Snapshot,
     transitioned: bool,
     changes: &[(String, Signal)],
+    lang: Lang,
     log: &OutboundLog,
 ) {
     let aggregate = snapshot.aggregate.name();
 
-    for hook in hooks
+    for hook in settings
+        .hooks
         .iter()
         .filter(|hook| hook.fires(aggregate, transitioned, changes))
     {
@@ -53,22 +59,293 @@ pub fn fire(
                 continue;
             }
         };
-        let log = log.clone();
-
-        tauri::async_runtime::spawn_blocking(move || {
-            let (ok, detail) = match &action {
-                HookAction::Http { url } => match post(url, &payload) {
-                    Ok(status) => (true, status),
-                    Err(err) => (false, err),
-                },
-                HookAction::Command { command } => match run_command(command) {
-                    Ok(()) => (true, String::new()),
-                    Err(err) => (false, err),
-                },
-            };
-            record(&log, action.target(), ok, &detail);
-        });
+        // 摘要**按这条钩子**算：限定了组的写它自己那几个组里最紧急的那个。
+        let line = summarize(lang, lang::text(lang).summary_prefix, &subject(hook, snapshot, changes, settings));
+        dispatch(action, line, payload, log.clone());
     }
+}
+
+/// 把所有**已配置**的钩子各发一遍 —— 「发送测试」按钮。
+///
+/// 它**忽略 `when`、忽略组过滤、忽略跃迁判据**：用户就是想现在验证一次「这条通路通不通」，
+/// 而等下一次真实跃迁可能等一整天。连「等不到」这件事本身都没法判断 —— 这正是
+/// 「疑似不可用」的来源。
+///
+/// 除此之外**和真实触发走的是同一条路**（同一个 [`compose`]、同一个 `post`、同一份
+/// 日志）：测试按钮必须发出和真实触发**一模一样**的请求，否则它会通过而真实触发失败，
+/// 那比没有测试按钮更糟。唯一的区别是前缀（`SignalHub 测试`）——测试消息必须看起来
+/// 就像测试，否则用户会以为真出事了。
+///
+/// 摘要写的是**当前最紧急的那一组**：一条测试消息要能当样本看（「真出事时手机上大概
+/// 长这样」），写死一句「测试」就没这个作用了。没填目标的钩子跳过（同 [`fire`]）。
+///
+/// 返回发了几条，界面据此说「已发出 2 条」还是「还没有配好的转发」。
+pub fn test_all(settings: &Settings, snapshot: &Snapshot, lang: Lang, log: &OutboundLog) -> usize {
+    let subject = snapshot
+        .groups
+        .iter()
+        .max_by_key(|group| group.aggregate.priority())
+        .map(|group| Subject {
+            state: group.aggregate,
+            label: settings.display_label(group),
+            message: group.message.as_deref(),
+            since_ms: group.since_ms,
+        })
+        .unwrap_or(Subject {
+            state: snapshot.aggregate,
+            label: "",
+            message: snapshot.message.as_deref(),
+            since_ms: snapshot.since_ms,
+        });
+    let line = summarize(lang, lang::text(lang).summary_prefix_test, &subject);
+    let payload = match serde_json::to_string(&Payload {
+        snapshot,
+        at_ms: now_ms(),
+    }) {
+        Ok(payload) => payload,
+        Err(err) => {
+            eprintln!("[signalhub] 序列化测试载荷失败: {err}");
+            return 0;
+        }
+    };
+
+    let mut sent = 0;
+    for hook in settings.hooks.iter().filter(|hook| hook.action.is_configured()) {
+        dispatch(
+            hook.action.clone(),
+            line.clone(),
+            payload.clone(),
+            log.clone(),
+        );
+        sent += 1;
+    }
+    sent
+}
+
+/// 真的把一条钩子发出去，并把结果记进日志。
+///
+/// [`fire`] 和 [`test_all`] 共用它 —— 两条路径必须一模一样（见 `test_all` 的说明）。
+fn dispatch(action: HookAction, line: String, payload: String, log: OutboundLog) {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (ok, detail) = match &action {
+            HookAction::Http {
+                url,
+                headers,
+                preset,
+            } => match post(&compose(*preset, &line, url, headers, &payload)) {
+                Ok(status) => (true, status),
+                Err(err) => (false, err),
+            },
+            HookAction::Command { command } => match run_command(command) {
+                Ok(()) => (true, String::new()),
+                Err(err) => (false, err),
+            },
+        };
+        record(&log, action.target(), ok, &detail);
+    });
+}
+
+/// 这一条钩子的摘要写的是**谁**。
+struct Subject<'a> {
+    state: Signal,
+    /// 组的显示名。全局聚合没有「哪一个组」，所以是空的。
+    label: &'a str,
+    message: Option<&'a str>,
+    /// 这个状态的起点（epoch 毫秒）。`0` = 不必写「已经多久」。
+    since_ms: u64,
+}
+
+/// 算出一条钩子的主语。
+///
+/// 判据和 `Hook::fires` 同源：那边已经决定了这条钩子该触发，所以限定了组时这里一定
+/// 能从 `changes` 里找到自己那几个组中的一个。找不到（那一组刚好在两次快照之间消失）
+/// 就退回全局聚合 —— 宁可写得不那么具体，也不要写一个已经被删掉的组名。
+fn subject<'a>(
+    hook: &Hook,
+    snapshot: &'a Snapshot,
+    changes: &[(String, Signal)],
+    settings: &'a Settings,
+) -> Subject<'a> {
+    if !hook.groups.is_empty() {
+        let winner = changes
+            .iter()
+            .filter(|(name, _)| hook.groups.iter().any(|group| group == name))
+            .max_by_key(|(_, state)| state.priority());
+        if let Some((name, state)) = winner
+            && let Some(group) = snapshot.groups.iter().find(|group| &group.name == name)
+        {
+            return Subject {
+                state: *state,
+                // **用户看到的那个名字**，不是原始的组名
+                label: settings.display_label(group),
+                message: group.message.as_deref(),
+                since_ms: group.since_ms,
+            };
+        }
+    }
+
+    Subject {
+        state: snapshot.aggregate,
+        label: "",
+        message: snapshot.message.as_deref(),
+        since_ms: snapshot.since_ms,
+    }
+}
+
+/// 把主语拼成一行摘要：`[SignalHub] 需要授权 · work — 等你批准 (2m)`
+///
+/// 后面三段有内容才出现。末尾是**已经持续了多久** —— 收件人最想知道的两件事就是
+/// 「什么状态」和「卡了多久」，而后者正是系统通知里催人的那一条信息。
+///
+/// **没有 emoji。** Rust 这边没有状态 emoji 表（`lang::signal_label` 只有文字），
+/// 新加一份就是第三处「状态长什么样」的真值 —— 而这类漂移是最难自查的。收件人读的
+/// 是文字。
+///
+/// `prefix` 走 `lang::text()`：正式通知是 `SignalHub`，**测试消息是
+/// `SignalHub 测试`** —— 测试消息必须看起来就像测试，否则用户会以为真出事了。
+fn summarize(lang: Lang, prefix: &str, subject: &Subject<'_>) -> String {
+    let mut line = format!("[{prefix}] {}", lang::signal_label(lang, subject.state));
+    if !subject.label.is_empty() {
+        line.push_str(" · ");
+        line.push_str(subject.label);
+    }
+    if let Some(message) = subject.message.map(str::trim).filter(|m| !m.is_empty()) {
+        line.push_str(" — ");
+        line.push_str(message);
+    }
+    if subject.since_ms > 0 {
+        let secs = now_ms().saturating_sub(subject.since_ms) / 1000;
+        line.push_str(&format!(" ({})", short_age(secs)));
+    }
+    line
+}
+
+/// 「多久了」的短写法：`45s` / `12m` / `3h` / `2d`。
+///
+/// 比 `lang::stuck_for` 短一档：那是系统通知正文里的句子（「已等待 5 分钟」），而这里
+/// 要塞在一行摘要末尾的括号里 —— 长了会把状态本身挤掉。分段规则和灯上那段
+/// 「已持续多久」（前端 `formatAge`）一致，免得同一件事在两处读起来不一样。
+///
+/// 单位不进 i18n：`s` / `m` / `h` / `d` 两边都这么读。
+fn short_age(secs: u64) -> String {
+    let (value, unit) = match secs {
+        0..=59 => (secs, "s"),
+        60..=3599 => (secs / 60, "m"),
+        3600..=86399 => (secs / 3600, "h"),
+        _ => (secs / 86400, "d"),
+    };
+    format!("{value}{unit}")
+}
+
+/// 一条组装好的转发请求。
+///
+/// 单独一个结构体而不是元组：四样字段各有类型相近的味道，元组在调用点会变成一串
+/// 看不出谁是谁的东西。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Request {
+    pub url: String,
+    /// 要带的头（预设自己加的那些也在里面，例如 ntfy 的 `Title`）。
+    pub headers: Vec<(String, String)>,
+    pub content_type: &'static str,
+    pub body: String,
+}
+
+/// 组装一条转发请求。
+///
+/// **纯函数**：输入就是那几个参数，输出就是最终要发出去的东西 —— 所以「每个服务到底
+/// 发什么形状」全都能单测，而且**只有这一处实现**。
+///
+/// `raw` 之外的所有预设都只发**一行文字**（[`summarize`] 拼出来的那条）。这不是偷懒：
+/// 那些服务的形状本来就是「一个 URL + 一段文字」，服务端自己决定怎么排版。给它们发
+/// 结构化数据，用户收到的是一坨看不懂的 JSON —— 而「转发看起来什么都没发生」正是
+/// 这一轮要解决的问题。`json_payload` 只有 `raw` 用得上。
+pub fn compose(
+    preset: HttpPreset,
+    summary: &str,
+    url: &str,
+    headers: &BTreeMap<String, String>,
+    json_payload: &str,
+) -> Request {
+    let url = url.trim();
+    let mut extra: Vec<(String, String)> =
+        headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+
+    let (url, content_type, body) = match preset {
+        // 原样发我们自己的快照 JSON（向后兼容）
+        HttpPreset::Raw => (url.to_string(), "application/json", json_payload.to_string()),
+        // ntfy / Bark / 任何要一行字的地方
+        HttpPreset::Text | HttpPreset::Bark => (url.to_string(), "text/plain", summary.to_string()),
+        HttpPreset::Ntfy => {
+            extra.push(("Title".to_string(), "SignalHub".to_string()));
+            (url.to_string(), "text/plain", summary.to_string())
+        }
+        HttpPreset::Slack => (
+            url.to_string(),
+            "application/json",
+            json!({ "text": summary }).to_string(),
+        ),
+        HttpPreset::Discord => (
+            url.to_string(),
+            "application/json",
+            json!({ "content": summary }).to_string(),
+        ),
+        // 飞书自定义机器人
+        HttpPreset::Lark => (
+            url.to_string(),
+            "application/json",
+            json!({ "msg_type": "text", "content": { "text": summary } }).to_string(),
+        ),
+        // 企业微信 / 钉钉的群机器人形状完全一样
+        HttpPreset::Wecom | HttpPreset::Dingtalk => (
+            url.to_string(),
+            "application/json",
+            json!({ "msgtype": "text", "text": { "content": summary } }).to_string(),
+        ),
+        HttpPreset::Telegram => {
+            // `chat_id` 按 Telegram 的文档是**查询参数**，于是它天然会被写进 URL
+            // （`…/sendMessage?chat_id=123`）。但 Telegram 的 sendMessage 只认表单体，
+            // 所以整条查询串要**搬进 body**，URL 上不留 —— 留着的话，同一个参数会以
+            // 两种方式各出现一次。裸的 `…/sendMessage`（没有 chat_id）也允许：Telegram
+            // 会回一个 400，而那条状态码正好通过「非 2xx 带码回来」显示给用户。
+            let (base, query) = url.split_once('?').unwrap_or((url, ""));
+            let mut body = String::from(query);
+            if !body.is_empty() {
+                body.push('&');
+            }
+            body.push_str("text=");
+            body.push_str(&form_encode(summary));
+            (
+                base.to_string(),
+                "application/x-www-form-urlencoded",
+                body,
+            )
+        }
+    };
+
+    Request {
+        url,
+        headers: extra,
+        content_type,
+        body,
+    }
+}
+
+/// `application/x-www-form-urlencoded` 的转义。
+///
+/// 手写而不引一个依赖：规则只有一条 —— 非 unreserved 的字节一律 `%XX`（空格用
+/// `%20`），一共十行。摘要里会有中文、`·`、`—`、括号，全都得转。
+fn form_encode(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for byte in text.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char);
+            }
+            b' ' => out.push_str("%20"),
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
 }
 
 /// 一条钩子的执行结果。
@@ -131,19 +408,27 @@ struct Payload<'a> {
     at_ms: u64,
 }
 
-/// 发一条 POST。成功时把**状态码**带回来 —— 只报「没报错」区分不了 200 和 500，
+/// 发一条请求。成功时把**状态码**带回来 —— 只报「没报错」区分不了 200 和 500，
 /// 而「对方到底收没收到」正是用户要看的。
-fn post(url: &str, payload: &str) -> Result<String, String> {
+///
+/// 头名或头值里有非法字符时，ureq 会把错误存进 builder、在 `send` 时抛出来 ——
+/// 于是一条写错的 `Authorization` 会带着原因出现在结果里，而不是静默不发。
+fn post(request: &Request) -> Result<String, String> {
     let config = ureq::Agent::config_builder()
         .timeout_connect(Some(Duration::from_secs(3)))
         .timeout_per_call(Some(HOOK_TIMEOUT))
         .build();
 
+    let mut builder = ureq::Agent::new_with_config(config)
+        .post(&request.url)
+        .header("Content-Type", request.content_type);
+    for (name, value) in &request.headers {
+        builder = builder.header(name.as_str(), value.as_str());
+    }
+
     // ureq 默认把 4xx/5xx 也当成 Err（http_status_as_error），所以 Ok 就意味着 2xx
-    ureq::Agent::new_with_config(config)
-        .post(url.trim())
-        .header("Content-Type", "application/json")
-        .send(payload)
+    builder
+        .send(&request.body)
         .map(|response| response.status().as_u16().to_string())
         .map_err(|err| err.to_string())
 }
@@ -214,13 +499,291 @@ mod tests {
         Hook {
             when: when.iter().map(|s| s.to_string()).collect(),
             groups: groups.iter().map(|s| s.to_string()).collect(),
-            action: HookAction::Http { url: "https://x/y".into() },
+            action: HookAction::http("https://x/y"),
         }
+    }
+
+    /// 起一个只回一次的最小 HTTP 服务，把收到的那一份请求原样交回来。
+    ///
+    /// 必须**按 `Content-Length` 把 body 读满**：请求头和体是两个 TCP 段，
+    /// 只 `read` 一次拿到的是头，于是「体没发出去」会变成一个假阳性。
+    fn one_shot_server(status_line: &'static str) -> (String, std::thread::JoinHandle<String>) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 1024];
+            // 先把头读全（空行结束）
+            let header_end = loop {
+                let n = stream.read(&mut buf).unwrap();
+                raw.extend_from_slice(&buf[..n]);
+                if let Some(pos) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break pos + 4;
+                }
+            };
+            // 再按 Content-Length 把体读满
+            let headers = String::from_utf8_lossy(&raw[..header_end]).to_ascii_lowercase();
+            let len: usize = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length:"))
+                .and_then(|value| value.trim().parse().ok())
+                .unwrap_or(0);
+            while raw.len() < header_end + len {
+                let n = stream.read(&mut buf).unwrap();
+                raw.extend_from_slice(&buf[..n]);
+            }
+            stream
+                .write_all(format!("{status_line}\r\nContent-Length: 2\r\n\r\nok").as_bytes())
+                .unwrap();
+            String::from_utf8_lossy(&raw).to_string()
+        });
+        (addr, handle)
+    }
+
+    /// HTTP 钩子**确实把 JSON 发出去了**。
+    ///
+    /// 这条测试存在的理由只有一个：这一路出站是「看不见」的 —— 用户只说
+    /// 「我的服务器没收到」，而 stderr 从 Dock 启动时根本没地方去。有一条能跑的
+    /// 端到端测试，才谈得上「转发可用」。
+    #[test]
+    fn a_http_hook_posts_the_json_payload() {
+        let (addr, server) = one_shot_server("HTTP/1.1 200 OK");
+
+        let request = compose(
+            HttpPreset::Raw,
+            "摘要没用上",
+            &format!("http://{addr}/hook"),
+            &BTreeMap::new(),
+            r#"{"hello":"world"}"#,
+        );
+        let status = post(&request).unwrap();
+        assert_eq!(status, "200");
+
+        let seen = server.join().unwrap();
+        assert!(seen.starts_with("POST /hook "), "实际请求: {seen}");
+        assert!(
+            seen.to_ascii_lowercase()
+                .contains("content-type: application/json"),
+            "实际请求: {seen}"
+        );
+        assert!(seen.ends_with(r#"{"hello":"world"}"#), "实际请求: {seen}");
+    }
+
+    /// 对方回 4xx/5xx 要被认成失败，并把状态码带回来 —— 只报「没报错」
+    /// 区分不了 200 和 500，而「对方到底收没收到」正是用户要看的。
+    #[test]
+    fn a_non_2xx_response_is_reported_as_a_failure_with_its_status() {
+        let (addr, server) = one_shot_server("HTTP/1.1 401 Unauthorized");
+
+        let request = compose(
+            HttpPreset::Text,
+            "炸了",
+            &format!("http://{addr}/hook"),
+            &BTreeMap::new(),
+            "",
+        );
+        let err = post(&request).unwrap_err();
+        server.join().unwrap();
+        assert!(err.contains("401"), "错误里要带状态码，实际: {err}");
+    }
+
+    /// 自定义请求头**真的发出去了**，而且预设自己加的头也在。
+    #[test]
+    fn custom_and_preset_headers_are_sent() {
+        let (addr, server) = one_shot_server("HTTP/1.1 200 OK");
+
+        let headers: BTreeMap<String, String> = [(
+            "Authorization".to_string(),
+            "Bearer secret".to_string(),
+        )]
+        .into_iter()
+        .collect();
+        let request = compose(
+            HttpPreset::Ntfy,
+            "[SignalHub] 出错",
+            &format!("http://{addr}/hook"),
+            &headers,
+            "",
+        );
+        post(&request).unwrap();
+
+        let seen = server.join().unwrap();
+        let lower = seen.to_ascii_lowercase();
+        assert!(lower.contains("authorization: bearer secret"), "实际请求: {seen}");
+        assert!(lower.contains("title: signalhub"), "ntfy 的 Title 该带上: {seen}");
+        assert!(lower.contains("content-type: text/plain"), "实际请求: {seen}");
+    }
+
+    // ---- 服务预设：形状都测在这一处 -----------------------------------------
+
+    fn composed(preset: HttpPreset, summary: &str) -> Request {
+        compose(preset, summary, "https://x/y", &BTreeMap::new(), "{}")
+    }
+
+    /// 每个预设的 content-type 和 body 形状。**这张表就是「转发到底发了什么」的
+    /// 唯一一处真值** —— 用户在手机上收到的东西全在这里决定。
+    #[test]
+    fn every_preset_has_the_shape_its_service_expects() {
+        let summary = "[SignalHub] 需要授权 · work — 等你批准";
+
+        // raw：还是我们自己的 JSON（向后兼容那条）
+        let raw = compose(HttpPreset::Raw, "摘要不该出现", "https://x/y", &BTreeMap::new(), r#"{"a":1}"#);
+        assert_eq!(raw.content_type, "application/json");
+        assert_eq!(raw.body, r#"{"a":1}"#);
+        assert!(!raw.body.contains("摘要不该出现"), "raw 发的是结构化数据，不是那行字");
+
+        for preset in [
+            HttpPreset::Text,
+            HttpPreset::Bark,
+        ] {
+            let request = composed(preset, summary);
+            assert_eq!(request.content_type, "text/plain", "{preset:?}");
+            assert_eq!(request.body, summary, "{preset:?}");
+        }
+
+        // ntfy：一字不差的正文，另加 Title
+        let ntfy = composed(HttpPreset::Ntfy, summary);
+        assert_eq!(ntfy.content_type, "text/plain");
+        assert_eq!(ntfy.body, summary);
+        assert_eq!(ntfy.headers, vec![("Title".to_string(), "SignalHub".to_string())]);
+
+        for (preset, body) in [
+            (HttpPreset::Slack, json!({ "text": summary }).to_string()),
+            (HttpPreset::Discord, json!({ "content": summary }).to_string()),
+            (
+                HttpPreset::Lark,
+                json!({ "msg_type": "text", "content": { "text": summary } }).to_string(),
+            ),
+            (
+                HttpPreset::Wecom,
+                json!({ "msgtype": "text", "text": { "content": summary } }).to_string(),
+            ),
+            (
+                HttpPreset::Dingtalk,
+                json!({ "msgtype": "text", "text": { "content": summary } }).to_string(),
+            ),
+        ] {
+            let request = composed(preset, summary);
+            assert_eq!(request.content_type, "application/json", "{preset:?}");
+            assert_eq!(request.body, body, "{preset:?}");
+        }
+
+        // **每个预设都得保住那条 URL**：填错地址是用户最常犯的错，而把 URL 弄坏
+        // （例如 Telegram 那条把路径也切掉）只会表现成「发不出去」，查不出来。
+        let telegram = compose(
+            HttpPreset::Telegram,
+            summary,
+            "https://api.telegram.org/botTOKEN/sendMessage",
+            &BTreeMap::new(),
+            "{}",
+        );
+        assert_eq!(telegram.url, "https://api.telegram.org/botTOKEN/sendMessage");
+    }
+
+    /// Telegram 的 `chat_id`：URL 上的查询串要**搬进 body**，URL 上不留 ——
+    /// Telegram 的 sendMessage 只认表单体，而 `chat_id` 是官方文档给的查询参数写法，
+    /// 所以用户填的地址必然是带 `?chat_id=…` 的。
+    #[test]
+    fn telegram_moves_the_query_string_into_the_body() {
+        let request = compose(
+            HttpPreset::Telegram,
+            "需要授权 · work",
+            " https://api.telegram.org/botTOKEN/sendMessage?chat_id=123 ",
+            &BTreeMap::new(),
+            "{}",
+        );
+        assert_eq!(request.url, "https://api.telegram.org/botTOKEN/sendMessage");
+        assert!(
+            !request.url.contains("chat_id"),
+            "URL 上不该还留着 chat_id：{}",
+            request.url
+        );
+        assert_eq!(
+            request.content_type,
+            "application/x-www-form-urlencoded"
+        );
+        assert!(request.body.starts_with("chat_id=123&text="), "{}", request.body);
+        // 中文和那几个标点都得转义，否则 Telegram 会回 400
+        assert!(!request.body.contains('·'), "正文里不该有没转义的原文");
+        assert!(request.body.contains("%20"), "空格该转成 %20：{}", request.body);
+
+        // 裸的 …/sendMessage 也得能发（没有 chat_id 时 Telegram 会回 400，
+        // 那条状态码正好通过「非 2xx 带码回来」显示给用户）
+        let bare = compose(
+            HttpPreset::Telegram,
+            "hi",
+            "https://api.telegram.org/botTOKEN/sendMessage",
+            &BTreeMap::new(),
+            "{}",
+        );
+        assert_eq!(bare.url, "https://api.telegram.org/botTOKEN/sendMessage");
+        assert_eq!(bare.body, "text=hi");
+    }
+
+    /// 摘要：有消息 / 没消息 / 派生状态。三种都拼得出来，且**组名是显示名**。
+    #[test]
+    fn the_summary_reads_like_a_sentence() {
+        let snapshot = crate::state::Snapshot {
+            aggregate: Signal::Permission,
+            paused: false,
+            since_ms: now_ms() - 120_000,
+            message: Some("等你批准".into()),
+            groups: Vec::new(),
+        };
+        let subject = Subject {
+            state: snapshot.aggregate,
+            label: "构建",
+            message: snapshot.message.as_deref(),
+            since_ms: snapshot.since_ms,
+        };
+        let line = summarize(Lang::Zh, "SignalHub", &subject);
+        assert!(line.starts_with("[SignalHub] 需要授权 · 构建 — 等你批准"), "{line}");
+        assert!(line.ends_with("(2m)"), "末尾该带上已经多久了：{line}");
+
+        // 没有消息、没有组名：只剩状态，但仍然是完整的一句话
+        let bare = Subject {
+            state: Signal::Stale,
+            label: "",
+            message: None,
+            since_ms: 0,
+        };
+        assert_eq!(summarize(Lang::Zh, "SignalHub", &bare), "[SignalHub] 会话已沉默");
+        assert_eq!(
+            summarize(Lang::En, "SignalHub test", &bare),
+            "[SignalHub test] Session went quiet"
+        );
+
+        // 只有空白的消息等于没有消息 —— 服务端每次上报都整体替换 message，
+        // 空串是常见值，不该在牌上留一个空荡荡的破折号
+        let blank = Subject {
+            state: Signal::Error,
+            label: "ci",
+            message: Some("   "),
+            since_ms: 0,
+        };
+        assert_eq!(summarize(Lang::Zh, "SignalHub", &blank), "[SignalHub] 出错 / 阻塞 · ci");
+    }
+
+    /// 「多久了」的几档。**边界**要准：59s 和 60s 是两个不同的单位。
+    #[test]
+    fn short_age_picks_the_readable_unit() {
+        assert_eq!(short_age(0), "0s");
+        assert_eq!(short_age(45), "45s");
+        assert_eq!(short_age(59), "59s");
+        assert_eq!(short_age(60), "1m");
+        assert_eq!(short_age(3599), "59m");
+        assert_eq!(short_age(3600), "1h");
+        assert_eq!(short_age(86_399), "23h");
+        assert_eq!(short_age(86_400), "1d");
     }
 
     #[test]
     fn an_empty_when_matches_every_state() {
-        let any = hook(&[], HookAction::Http { url: "https://x/y".into() });
+        let any = hook(&[], HookAction::http("https://x/y"));
         for name in crate::state::Signal::ALL_NAMES {
             assert!(any.matches(name), "{name} 应被空 when 匹配");
         }
@@ -230,7 +793,7 @@ mod tests {
     fn when_filters_to_the_listed_states_only() {
         let only_urgent = hook(
             &["permission", "error"],
-            HookAction::Http { url: "https://x/y".into() },
+            HookAction::http("https://x/y"),
         );
         assert!(only_urgent.matches("permission"));
         assert!(only_urgent.matches("error"));
@@ -253,7 +816,7 @@ mod tests {
     /// 一变就发」会让用户已经配好的钩子静默变成刷屏。
     #[test]
     fn an_ungrouped_hook_fires_only_on_an_aggregate_transition() {
-        let any = hook(&["error"], HookAction::Http { url: "https://x/y".into() });
+        let any = hook(&["error"], HookAction::http("https://x/y"));
         let changes = vec![("ci".to_string(), Signal::Error)];
 
         assert!(any.fires("error", true, &changes), "聚合跃迁到 error 要触发");

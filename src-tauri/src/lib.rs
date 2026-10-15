@@ -750,6 +750,25 @@ pub(crate) fn clear_group(app: &tauri::AppHandle, group: &str) -> usize {
     removed
 }
 
+/// 把已配置的转发各发一遍（设置 →「通知转发」里的「发送测试」）。
+///
+/// 复用**当前**快照，忽略 `when` / 组过滤 / 跃迁判据（见 `outbound::test_all`）——
+/// 用户就是想现在验证一次「这条通路通不通」，等下一次真实跃迁可能等一整天。
+/// 结果照常进 `OutboundLog`，前端和真实触发读的是同一份（`get_outbound_log`）。
+///
+/// 返回发了几条，界面据此说「已发出 2 条」还是「还没有配好的转发」。
+#[tauri::command]
+fn test_hooks(app: tauri::AppHandle) -> usize {
+    let settings = current_settings(&app);
+    let snapshot = current_snapshot(&app);
+    outbound::test_all(
+        &settings,
+        &snapshot,
+        current_lang(&app),
+        app.state::<SharedOutbound>().inner(),
+    )
+}
+
 /// 清掉某一组的全部会话（灯上那块牌右上角的 `×`）。
 ///
 /// 与右键菜单里的「清除该组的状态」走同一个函数（[`clear_group`]）。**不做二次
@@ -1769,6 +1788,7 @@ pub fn run() {
             toggle_collapsed,
             clear_group_state,
             clear_session,
+            test_hooks,
             open_group_menu,
             open_lamp_menu,
             set_palette_colors,

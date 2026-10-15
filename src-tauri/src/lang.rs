@@ -93,6 +93,13 @@ pub struct NativeText {
 
     // ---- 窗口 ----
     pub settings_window_title: &'static str,
+
+    // ---- 转发摘要 ----
+    /// 转发出去那行字的方括号前缀。收件人一眼知道是谁发的。
+    pub summary_prefix: &'static str,
+    /// 测试消息的前缀。**必须看起来就像测试** —— 用户点一下「发送测试」收到一条
+    /// 和真告警长得一样的消息，会以为真出事了。
+    pub summary_prefix_test: &'static str,
 }
 
 pub fn text(lang: Lang) -> &'static NativeText {
@@ -150,6 +157,9 @@ static ZH: NativeText = NativeText {
     pass_through_title: "已进入点击穿透模式",
 
     settings_window_title: "SignalHub 设置",
+
+    summary_prefix: "SignalHub",
+    summary_prefix_test: "SignalHub 测试",
 };
 
 static EN: NativeText = NativeText {
@@ -173,6 +183,9 @@ static EN: NativeText = NativeText {
     pass_through_title: "Click-through mode is on",
 
     settings_window_title: "SignalHub Settings",
+
+    summary_prefix: "SignalHub",
+    summary_prefix_test: "SignalHub test",
 };
 
 #[cfg(test)]
@@ -249,6 +262,8 @@ mod tests {
             en.action_mute,
             en.pass_through_title,
             en.settings_window_title,
+            en.summary_prefix,
+            en.summary_prefix_test,
         ];
         for line in all {
             assert!(

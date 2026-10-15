@@ -99,10 +99,11 @@ pub fn compose(app: tauri::AppHandle) -> Notifier {
         // 不像通知那样限定在需要注意的状态 —— 用户可以配「done 时跑个脚本」。
         if transitioned || !group_changes.is_empty() {
             outbound::fire(
-                &settings.hooks,
+                &settings,
                 snapshot,
                 transitioned,
                 &group_changes,
+                crate::current_lang(&app),
                 app.state::<crate::SharedOutbound>().inner(),
             );
         }

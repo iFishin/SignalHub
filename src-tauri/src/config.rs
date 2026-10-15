@@ -331,8 +331,56 @@ pub struct Hook {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum HookAction {
-    Http { url: String },
+    Http {
+        url: String,
+        /// 额外请求头。**鉴权靠它** —— `Authorization: Bearer …`、ntfy 的
+        /// `X-Token`。没有它的话，任何要鉴权的地址都配不了。
+        #[serde(default)]
+        headers: BTreeMap<String, String>,
+        /// 服务预设：决定 content-type 和 body 的形状（见 [`HttpPreset`]）。
+        ///
+        /// `#[serde(default)]` 是「老配置照旧」那条契约的落点：
+        /// `{"type":"http","url":"…"}` 解析出来就是 `raw`，一个字节都不变。
+        #[serde(default)]
+        preset: HttpPreset,
+    },
     Command { command: String },
+}
+
+/// HTTP 转发的**服务预设**：决定 content-type 和 body 形状。
+///
+/// 起因是一条很具体的反馈：照着占位符填了 ntfy，收到的是一大坨 JSON。默认发的
+/// `raw` 是 SignalHub 自己的快照 schema，而现实里做通知的那些服务（Slack /
+/// Discord / Telegram / 飞书 / 企业微信 / 钉钉 / Bark / ntfy）要的都是
+/// **一个 URL + 一段文字**，服务端自己决定怎么排版。
+///
+/// **默认 `raw`**：新能力默认关（红线 3），也保证老的 `{"type":"http","url":…}`
+/// 行为一个字都不变。每个预设的形状都在 `outbound::compose` 里，那是唯一一处实现。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HttpPreset {
+    /// 原样发 SignalHub 自己的 JSON 快照（默认）。给「自己写了个接收端」的人用。
+    #[default]
+    Raw,
+    /// 一行纯文本。任何「贴一行字」的地址都吃（ntfy / Bark / 自己的脚本）。
+    Text,
+    /// 同文本，另加 `Title` 头 —— ntfy 用它当通知的标题。
+    Ntfy,
+    /// Bark（iOS 推送）
+    Bark,
+    /// Slack incoming webhook：`{"text": …}`
+    Slack,
+    /// Discord webhook：`{"content": …}`
+    Discord,
+    /// 飞书自定义机器人：`{"msg_type":"text","content":{"text": …}}`
+    Lark,
+    /// 企业微信群机器人：`{"msgtype":"text","text":{"content": …}}`
+    Wecom,
+    /// 钉钉自定义机器人：形状同企业微信
+    Dingtalk,
+    /// Telegram Bot API。`chat_id` 写在 URL 的查询串上
+    /// （`…/bot<token>/sendMessage?chat_id=<id>`），发送时搬进表单体。
+    Telegram,
 }
 
 impl Hook {
@@ -369,7 +417,7 @@ impl HookAction {
     /// 「刚添加、还没填目标」这个中间态，那时候报错就没法编辑了。
     pub fn is_configured(&self) -> bool {
         match self {
-            HookAction::Http { url } => !url.trim().is_empty(),
+            HookAction::Http { url, .. } => !url.trim().is_empty(),
             HookAction::Command { command } => !command.trim().is_empty(),
         }
     }
@@ -380,10 +428,52 @@ impl HookAction {
     /// 下标会错位，于是会显示成「另一条钩子的结果」，比不显示更糟。
     pub fn target(&self) -> String {
         match self {
-            HookAction::Http { url } => url.clone(),
+            HookAction::Http { url, .. } => url.clone(),
             HookAction::Command { command } => command.clone(),
         }
     }
+
+    /// 一条只要网址的 HTTP 钩子（预设 `raw`、不带额外头）。
+    ///
+    /// 给「就要默认行为」的调用方和测试一个短写法：多出来两个字段之后，每处都写全
+    /// `Http { url, headers: BTreeMap::new(), preset: HttpPreset::Raw }` 会把真正的
+    /// 意图（「默认那条路」）埋在一片噪音里。
+    pub fn http(url: impl Into<String>) -> Self {
+        HookAction::Http {
+            url: url.into(),
+            headers: BTreeMap::new(),
+            preset: HttpPreset::default(),
+        }
+    }
+}
+
+/// 额外请求头的条数上限。
+///
+/// 转发目标（尤其是别人给你的一个 webhook 地址）算**不可信输入**：一个几千条的
+/// map 会让每次转发都多花一大截时间在拼头上，而正常的鉴权只需要一两条。
+pub const MAX_HOOK_HEADERS: usize = 16;
+
+/// 规整额外请求头：去空白、丢掉空键、按上限截断。
+///
+/// **不做「只差大小写」的去重**：HTTP 头名是大小写不敏感的，但要判断
+/// `Authorization` 和 `authorization` 哪个是「后写的那条」，得知道用户写下的
+/// **顺序** —— 而 `BTreeMap` 已经把顺序排掉了，任何胜者都是任意挑的。宁可两条都发
+/// （服务器会用一个状态码告诉我们它不接受），也不要悄悄丢掉一条用户明确写下的鉴权头。
+/// 编辑界面在输入那一层挡重复的键，那里顺序还在。
+///
+/// 截断按**键的字典序**（`BTreeMap` 的顺序），所以丢哪几条是确定的，不是随机。
+fn normalize_headers(headers: BTreeMap<String, String>) -> BTreeMap<String, String> {
+    headers
+        .into_iter()
+        .filter_map(|(name, value)| {
+            let name = name.trim().to_string();
+            if name.is_empty() {
+                return None;
+            }
+            Some((name, value.trim().to_string()))
+        })
+        .take(MAX_HOOK_HEADERS)
+        .collect()
 }
 
 /// 展开的牌上显示哪几段内容。四段都可以单独关掉 —— 有人只要一眼颜色，
@@ -859,7 +949,7 @@ pub fn hook_problem(hook: &Hook) -> Option<String> {
     }
     // 空目标不算错（见 is_configured）；填了但填错才算
     match &hook.action {
-        HookAction::Http { url } if !url.trim().is_empty() && !is_http_url(url) => {
+        HookAction::Http { url, .. } if !url.trim().is_empty() && !is_http_url(url) => {
             Some(format!("钩子地址不合法：{url:?}（需要以 http:// 或 https:// 开头）"))
         }
         _ => None,
@@ -960,6 +1050,9 @@ impl Settings {
         // 钩子里的组名也要规整，理由同 hidden_groups
         for hook in &mut self.hooks {
             hook.groups = normalize_groups(std::mem::take(&mut hook.groups));
+            if let HookAction::Http { headers, .. } = &mut hook.action {
+                *headers = normalize_headers(std::mem::take(headers));
+            }
         }
         self
     }
@@ -1009,6 +1102,25 @@ impl Settings {
             .get(name)
             .and_then(|meta| meta.name.as_deref())
             .unwrap_or(name)
+    }
+
+    /// 灯上那块牌**显示**的组名：用户改的名字 > 服务端给的默认名 > 原始组名。
+    ///
+    /// 和前端 `lampSort.ts::labelOf` 是同一条三级规则。转发摘要用它，因为转发出去的
+    /// 那行字必须是**同一个人看到的那个名字**：用户在灯上把 `build-1` 改成了「构建」，
+    /// 转发里却还是 `build-1`，那就是两处真值打架。
+    ///
+    /// 匹配（隐藏 / 静音 / 通知动作 / 钩子的 `groups`）**永远用原始 `name`** ——
+    /// 和前端一样，显示名不参与任何匹配。
+    pub fn display_label<'a>(&'a self, group: &'a crate::state::GroupView) -> &'a str {
+        if let Some(custom) = self
+            .group_meta
+            .get(&group.name)
+            .and_then(|meta| meta.name.as_deref())
+        {
+            return custom;
+        }
+        group.default_label.as_deref().unwrap_or(&group.name)
     }
 
     /// 置顶权重。`None` = 不置顶，按紧急程度排。
@@ -1091,7 +1203,7 @@ fn migrate_legacy_webhook(mut settings: Settings) -> Settings {
                 when: vec!["permission".into(), "attention".into(), "error".into()],
                 // 旧的单条 webhook 只看全局聚合，这正是 groups 为空的语义
                 groups: Vec::new(),
-                action: HookAction::Http { url },
+                action: HookAction::http(url),
             });
         }
     }
@@ -1326,8 +1438,14 @@ mod tests {
                 Hook {
                     when: vec!["permission".into(), "error".into()],
                     groups: vec!["builds".into()],
+                    // preset / headers 都设成**非默认值**：全默认的话「漏了这个字段」
+                    // 这种错在往返里看不出来，而这两个字段正好是新加的
                     action: HookAction::Http {
                         url: "https://example.test/hook".into(),
+                        preset: HttpPreset::Slack,
+                        headers: [("X-Token".to_string(), "abc".to_string())]
+                            .into_iter()
+                            .collect(),
                     },
                 },
                 Hook {
@@ -1390,6 +1508,108 @@ mod tests {
         assert_eq!(back, settings, "导出再导入必须一模一样：\n{json}");
     }
 
+    /// **老配置照旧**：`{"type":"http","url":"…"}` 里没有 `preset` / `headers`，
+    /// 靠两条 `#[serde(default)]` 落到 `raw` + 空表。这是整个 R4 里最该盯住的一条
+    /// —— 它要是坏了，所有已经配好转发的人在升级后都会静默变成「发一坨 JSON」。
+    #[test]
+    fn an_old_http_hook_without_preset_reads_as_raw() {
+        let legacy: Hook =
+            serde_json::from_str(r#"{"type":"http","url":"https://x/y","when":["error"]}"#)
+                .unwrap();
+        assert_eq!(
+            legacy.action,
+            HookAction::Http {
+                url: "https://x/y".into(),
+                headers: BTreeMap::new(),
+                preset: HttpPreset::Raw,
+            }
+        );
+
+        // 反过来：`raw` 写出去之后也还能读回来
+        let wire = serde_json::to_string(&legacy.action).unwrap();
+        assert!(wire.contains(r#""preset":"raw""#), "{wire}");
+        assert_eq!(
+            serde_json::from_str::<HookAction>(&wire).unwrap(),
+            legacy.action
+        );
+    }
+
+    /// 请求头的规整：去空白、丢掉空键、按上限截断（**确定的**截断）。
+    #[test]
+    fn extra_headers_are_trimmed_and_capped() {
+        let mut headers = BTreeMap::new();
+        headers.insert("  X-Token  ".to_string(), "  abc  ".to_string());
+        headers.insert("   ".to_string(), "没人要的值".to_string());
+        headers.insert("".to_string(), "也没人要".to_string());
+        let clean = normalize_headers(headers);
+        assert_eq!(
+            clean,
+            [("X-Token".to_string(), "abc".to_string())]
+                .into_iter()
+                .collect(),
+            "键值都该去空白，空键那条该被丢掉"
+        );
+
+        // 条数上限：多出来的按键的字典序丢，丢哪几条是确定的
+        let many: BTreeMap<String, String> = (0..MAX_HOOK_HEADERS + 5)
+            .map(|index| (format!("X-H{index:03}"), "v".to_string()))
+            .collect();
+        let capped = normalize_headers(many);
+        assert_eq!(capped.len(), MAX_HOOK_HEADERS);
+        assert!(capped.contains_key("X-H000"), "前几个该留着");
+        assert!(!capped.contains_key("X-H020"), "超出的该丢掉");
+
+        // 经过 clamped() 也一样（手改的配置文件走的是这条路）
+        let raw = r#"{"hooks":[{"type":"http","url":"https://x/y",
+            "headers":{" A ":" 1 ","  ":""}}]}"#;
+        let settings = serde_json::from_str::<Settings>(raw).unwrap().clamped();
+        let HookAction::Http { headers, .. } = &settings.hooks[0].action else {
+            panic!("应是一条 http 钩子");
+        };
+        assert_eq!(
+            headers,
+            &[("A".to_string(), "1".to_string())].into_iter().collect(),
+            "clamped() 也要规整请求头"
+        );
+    }
+
+    /// 转发摘要里的组名是**用户看到的那个**：用户改的名字 > 服务端默认名 > 原始组名。
+    /// 和前端 `lampSort.ts::labelOf` 是同一条三级规则 —— 两处算出不同的名字，就是
+    /// 「转发里写着 build-1、灯上写着构建」这种两处真值打架。
+    #[test]
+    fn display_label_follows_the_same_three_levels_as_the_lamp() {
+        let group = |name: &str, default_label: Option<&str>| crate::state::GroupView {
+            name: name.to_string(),
+            default_label: default_label.map(str::to_string),
+            aggregate: crate::state::Signal::Idle,
+            message: None,
+            since_ms: 0,
+            stale_progress: None,
+            sessions: Vec::new(),
+        };
+
+        let mut settings = Settings::default();
+        // 三级里最低的一级：什么都没有就是原始组名
+        assert_eq!(settings.display_label(&group("build-1", None)), "build-1");
+        // 中间那一级：会话分组出来的组有 default_label
+        assert_eq!(
+            settings.display_label(&group("0191f0aa", Some("proj · claude"))),
+            "proj · claude"
+        );
+        // 最高一级：用户起的名字压过 default_label
+        settings.group_meta.insert(
+            "0191f0aa".to_string(),
+            GroupMeta {
+                name: Some("构建".into()),
+                order: None,
+            },
+        );
+        assert_eq!(
+            settings.display_label(&group("0191f0aa", Some("proj · claude"))),
+            "构建"
+        );
+    }
+
     /// 导入一个坏文件要**报错**（而不是静默套用默认值）。
     ///
     /// 静默退回默认值在「启动时读配置」那条路上是对的（总得起得来），但在
@@ -1443,7 +1663,7 @@ mod tests {
         Hook {
             when: when.iter().map(|s| s.to_string()).collect(),
             groups: Vec::new(),
-            action: HookAction::Http { url: url.to_string() },
+            action: HookAction::http(url),
         }
     }
 
@@ -1498,7 +1718,7 @@ mod tests {
         );
         assert_eq!(
             settings.hooks[0].action,
-            HookAction::Http { url: "https://ntfy.sh/x".into() }
+            HookAction::http("https://ntfy.sh/x")
         );
 
         // 空白的旧值不该凭空造出一条钩子
