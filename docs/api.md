@@ -841,6 +841,30 @@ signalhub <状态> --agent <名字> --session <会话> --cwd <目录> [--message
 `spawn` + `unref`，stdio 全丢掉）、不许抛（上报失败绝不影响 opencode）、不许在不知道
 会话 id 时发 `clear`（会话名会兜底成 `default`，清掉它等于把别的上报方的状态一起抹了）。
 
+#### Pi
+
+事件与状态的映射（名字来自官方 extensions 文档）：
+
+| Pi 事件 | 状态 |
+|---|---|
+| `session_start` | `idle` |
+| `before_agent_start` | `thinking` |
+| `tool_execution_start` | `working`（`--message` 只取工具名，如 `bash`） |
+| `agent_end` | `done` |
+| `session_shutdown` | 清除该会话 |
+
+**`session_shutdown` 映射成「清除」是对的**（和 Hermes 那边相反，见下一节）：Pi 在
+`/new`、`/resume` 时会先给**旧实例**发 `session_shutdown`，之后才是新会话的
+`session_start`，所以它清的正是刚结束的那个会话。这条在官方文档里写得很明白（「After
+a successful switch, pi emits session_shutdown for the old extension instance…」）。
+
+会话 id 取 `ctx.sessionManager.getSessionId()`（uuidv7）；拿不到就退回
+`getSessionFile()` 的**路径** —— 同样唯一，只是长一点。两个都拿不到时按上面那条
+「不知道就不发 clear」处理。
+
+`import type { ExtensionAPI }` 是类型导入，jiti 转译时会整个擦掉（不做类型检查），
+所以用户没装 `@mariozechner/pi-coding-agent` 也照样加载。
+
 ---
 
 ## 5. 降级通道（v1.1，未实现）

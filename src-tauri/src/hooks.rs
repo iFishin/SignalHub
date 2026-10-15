@@ -25,6 +25,7 @@ pub enum Agent {
     Gemini,
     Goose,
     Opencode,
+    Pi,
 }
 
 impl Agent {
@@ -38,6 +39,8 @@ impl Agent {
             "gemini" | "gemini-cli" => Agent::Gemini,
             "goose" => Agent::Goose,
             "opencode" | "open-code" => Agent::Opencode,
+            // Pi 同时是 @mariozechner/pi-coding-agent（命令就叫 `pi`）
+            "pi" | "pi-agent" | "pi-coding-agent" => Agent::Pi,
             other => {
                 return Err(format!(
                     "不认识的智能体 {other:?}；支持 {}",
@@ -57,6 +60,7 @@ impl Agent {
             // 官方写法就是全小写的 `opencode`（不是 OpenCode），照抄，免得用户
             // 在两个名字之间对不上。
             Agent::Opencode => "opencode",
+            Agent::Pi => "Pi",
         }
     }
 
@@ -79,19 +83,22 @@ impl Agent {
             // 插件式：opencode 启动时自动加载这个目录下的所有 js/ts 文件，所以
             // 「装」就是写一个我们自己的文件，「卸」就是删掉它（见 `InstallKind`）。
             Agent::Opencode => ".config/opencode/plugins/signalhub.js",
+            // Pi 的扩展目录：启动时自动发现这里的 *.ts（见官方 extensions 文档）
+            Agent::Pi => ".pi/agent/extensions/signalhub.ts",
         }
     }
 }
 
 /// 全部智能体，按加入顺序。`parse` 的报错信息和 CLI 的 help 都用它，
 /// 免得新增一个之后忘改其中一处、报错里少列一个。
-pub const ALL_NAMES: [&str; 6] = [
+pub const ALL_NAMES: [&str; 7] = [
     "claude-code",
     "codex",
     "cursor",
     "gemini",
     "goose",
     "opencode",
+    "pi",
 ];
 
 impl Agent {
@@ -107,7 +114,7 @@ impl Agent {
     /// 解析这一步直接不存在，卸载就是删文件。
     fn install_kind(self) -> InstallKind {
         match self {
-            Agent::Opencode => InstallKind::PluginFile,
+            Agent::Opencode | Agent::Pi => InstallKind::PluginFile,
             Agent::ClaudeCode | Agent::Codex | Agent::Cursor | Agent::Gemini | Agent::Goose => {
                 InstallKind::JsonHooks
             }
@@ -127,6 +134,7 @@ impl Agent {
             Agent::Gemini => ".gemini",
             Agent::Goose => ".config/goose",
             Agent::Opencode => ".config/opencode",
+            Agent::Pi => ".pi/agent",
         }
     }
 
@@ -140,6 +148,7 @@ impl Agent {
             Agent::Gemini => &["gemini"],
             Agent::Goose => &["goose"],
             Agent::Opencode => &["opencode"],
+            Agent::Pi => &["pi"],
         }
     }
 }
@@ -293,7 +302,7 @@ pub fn command_resolves(command: &str) -> bool {
 /// `plugin_source`）。这张表只服务于「往共享 JSON 里插条目」那条路。
 fn events(agent: Agent) -> &'static [(&'static str, Option<&'static str>)] {
     match agent {
-        Agent::Opencode => &[],
+        Agent::Opencode | Agent::Pi => &[],
         Agent::ClaudeCode => &[
             ("SessionStart", Some("startup|resume")),
             ("UserPromptSubmit", None),
@@ -507,6 +516,7 @@ fn agent_name_for_cli(agent: Agent) -> &'static str {
         Agent::Gemini => "gemini",
         Agent::Goose => "goose",
         Agent::Opencode => "opencode",
+        Agent::Pi => "pi",
     }
 }
 
@@ -607,12 +617,95 @@ export const SignalHub = async ({ directory }) => {
 }
 "#;
 
+/// Pi 扩展模板。两个占位符同 [`OPENCODE_PLUGIN`]。
+const PI_PLUGIN: &str = r#"// 由 SignalHub 生成 —— 请勿手改。要更新就回 SignalHub 的「接入」页重新点一次接入。
+// %MARKER%
+//
+// pi 启动时会自动发现 ~/.pi/agent/extensions/ 下的扩展，于是这份文件就成了
+// 「pi 说什么 → signalhub 命令行」的翻译器。
+//
+// 改之前先读三条纪律（和 opencode 那份同源）：
+//
+//  1. **不许阻塞。** 每一次工具调用都会打到这里。同步等待、await、execSync 都会把
+//     pi 卡住 —— 用 spawn 派生完就 unref，stdio 全丢掉。
+//  2. **不许抛。** 上报失败绝不许影响 pi 自己，所以整段包在 try 里，子进程的
+//     error 事件也吃掉。
+//  3. **只映射下面这几个事件。** 名字都来自官方 extensions 文档；多映射一个没核实
+//     过的事件就可能得到一个「永远在忙」的假灯。
+//
+// 下面那个 import 是**类型导入**：jiti 转译时会整个擦掉，不做类型检查。所以就算
+// 这个项目里没装 @mariozechner/pi-coding-agent，这份扩展也照样加载。
+import { spawn } from "node:child_process"
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent"
+
+const CLI = "%CLI%"
+const AGENT = "pi"
+
+function report(state, session, cwd, message) {
+  try {
+    // 不知道是哪个会话时**绝不发 clear**：会话名会兜底成 "default"，
+    // 清掉它等于把别的上报方的状态一起抹了。
+    if (state === "clear" && !session) return
+    const args =
+      state === "clear"
+        ? ["clear", "--agent", AGENT]
+        : [state, "--agent", AGENT, "--cwd", cwd]
+    if (session) args.push("--session", session)
+    if (message) args.push("--message", String(message).slice(0, 200))
+    const child = spawn(CLI, args, {
+      detached: true,
+      windowsHide: true,
+      stdio: "ignore",
+    })
+    child.on("error", () => {})
+    child.unref()
+  } catch {
+    // 上报永远不许影响 pi 自己
+  }
+}
+
+export default function (pi: ExtensionAPI) {
+  // 会话 id 优先用 `getSessionId()`（uuidv7，短且唯一）；拿不到就退回会话**文件**
+  // 的路径 —— 它同样唯一，只是长一点。
+  const session = (ctx: any) =>
+    String(
+      ctx?.sessionManager?.getSessionId?.() ??
+        ctx?.sessionManager?.getSessionFile?.() ??
+        "",
+    )
+  const cwd = (ctx: any) => String(ctx?.cwd ?? process.cwd())
+
+  pi.on("session_start", (_event: any, ctx: any) =>
+    report("idle", session(ctx), cwd(ctx)),
+  )
+  pi.on("before_agent_start", (_event: any, ctx: any) =>
+    report("thinking", session(ctx), cwd(ctx)),
+  )
+  // 只取工具名（`bash` / `edit`），**不碰 event.args**：那里可能有密钥，而这句话
+  // 会进灯的状态、系统通知正文和消息流。
+  pi.on("tool_execution_start", (event: any, ctx: any) =>
+    report("working", session(ctx), cwd(ctx), event?.toolName),
+  )
+  pi.on("agent_end", (_event: any, ctx: any) =>
+    report("done", session(ctx), cwd(ctx)),
+  )
+  // 换会话（/new、/resume）时，**旧实例**先收到 session_shutdown，之后才是新会话的
+  // session_start —— 所以这里清掉的正是刚结束的那个会话。
+  pi.on("session_shutdown", (_event: any, ctx: any) =>
+    report("clear", session(ctx), cwd(ctx)),
+  )
+}
+"#;
+
 impl Agent {
     /// 插件式安装要写的源码。**纯函数**：输入只有 CLI 的路径，不碰环境，所以
     /// 「标记行对不对、转义对不对、事件映射对不对」全都能单测。
     fn plugin_source(self, program: &str) -> String {
         match self {
             Agent::Opencode => OPENCODE_PLUGIN
+                .replace("%MARKER%", &self.plugin_marker_line(program))
+                .replace("%CLI%", &as_string_literal(program)),
+            Agent::Pi => PI_PLUGIN
                 .replace("%MARKER%", &self.plugin_marker_line(program))
                 .replace("%CLI%", &as_string_literal(program)),
             _ => unreachable!("这个智能体不是插件式安装（见 install_kind）"),
@@ -1081,7 +1174,7 @@ fn first_token(command: &str) -> Option<&str> {
 fn handler_group(agent: Agent, command: &str, matcher: Option<&str>) -> Value {
     match agent {
         // 插件式安装不走这条路（它不写共享配置），真走到了就是分类写错了。
-        Agent::Opencode => unreachable!("插件式的智能体不构造 hooks 条目"),
+        Agent::Opencode | Agent::Pi => unreachable!("插件式的智能体不构造 hooks 条目"),
         // Cursor 这边 preToolUse 之类是会被等待的，所以超时保护有意义
         Agent::Cursor => json!({ "command": command, "timeout": 5 }),
         // Gemini / Goose 也会**同步等待** hook（两家都没有 async 开关），所以给
@@ -1858,9 +1951,19 @@ mod tests {
 
     /// 分类是穷尽 match：新增一个智能体忘分类**编译不过**。这条测试盯的是另一件事
     /// —— 已经分好类的这 6 家有没有分错。
+    /// 插件式的这几家。新增一个插件式智能体时**把它加进来**，下面三条测试
+    /// （标记行 / 转义 / clear 守卫）就会自动覆盖它。
+    const PLUGIN_AGENTS: [Agent; 2] = [Agent::Opencode, Agent::Pi];
+
     #[test]
     fn the_two_install_kinds_are_classified_explicitly() {
-        assert_eq!(Agent::Opencode.install_kind(), InstallKind::PluginFile);
+        for agent in PLUGIN_AGENTS {
+            assert_eq!(
+                agent.install_kind(),
+                InstallKind::PluginFile,
+                "{agent:?} 是写自己那份插件的，不该走共享 JSON"
+            );
+        }
         for agent in [
             Agent::ClaudeCode,
             Agent::Codex,
@@ -1880,17 +1983,26 @@ mod tests {
     /// 切词规则完整切出来 —— 路径带空格时这一条最容易翻车。
     #[test]
     fn a_generated_plugin_carries_a_recognizable_marker() {
-        for program in [
-            "signalhub",
-            "/Applications/SignalHub.app/Contents/MacOS/signalhub",
-        ] {
-            let source = Agent::Opencode.plugin_source(program);
-            let marker = Agent::Opencode.plugin_marker_line(program);
-            assert!(source.contains(&marker), "源码里没有标记行");
+        for agent in PLUGIN_AGENTS {
+            for program in [
+                "signalhub",
+                "/Applications/SignalHub.app/Contents/MacOS/signalhub",
+            ] {
+                let source = agent.plugin_source(program);
+                let marker = agent.plugin_marker_line(program);
+                assert!(source.contains(&marker), "{agent:?} 的源码里没有标记行");
 
-            // 摘回来的命令要能过诊断那一关：切出第一个词（去掉引号）就等于原路径
-            let recovered = plugin_command_in(&source).unwrap();
-            assert_eq!(first_token(&recovered), Some(program));
+                // 摘回来的命令要能过诊断那一关：切出第一个词（去掉引号）就等于原路径
+                let recovered = plugin_command_in(&source).unwrap();
+                assert_eq!(first_token(&recovered), Some(program));
+
+                // 「不知道会话 id 就不发 clear」这条守卫：会话名会兜底成 default，
+                // 清掉它等于顺手把别的上报方的状态一起抹了。生成的三份源码都要有。
+                assert!(
+                    source.contains(r#""clear" && !session"#),
+                    "{agent:?} 生成的源码里少了 clear 守卫"
+                );
+            }
         }
     }
 
@@ -1898,13 +2010,18 @@ mod tests {
     /// 路径悄悄少几层，插件去执行一个不存在的程序，**双方都不报错**。
     #[test]
     fn backslashes_in_the_path_are_escaped_for_the_plugin_source() {
-        let source = Agent::Opencode.plugin_source(r"C:\Program Files\SignalHub\signalhub.exe");
-        assert!(
-            source.contains(r#"const CLI = "C:\\Program Files\\SignalHub\\signalhub.exe""#),
-            "反斜杠必须双写，实际源码里没有找到转义后的路径"
-        );
-        // 而标记行里给**我们**看的那份是 shell 写法（原样 + 引号），不是 JS 字面量
-        assert!(source.contains(r#"signalhub-hook: "C:\Program Files\SignalHub\signalhub.exe""#));
+        for agent in PLUGIN_AGENTS {
+            let source = agent.plugin_source(r"C:\Program Files\SignalHub\signalhub.exe");
+            assert!(
+                source.contains(r#"const CLI = "C:\\Program Files\\SignalHub\\signalhub.exe""#),
+                "{agent:?} 的源码里反斜杠没有双写"
+            );
+            // 而标记行里给**我们**看的那份是 shell 写法（原样 + 引号），不是 JS 字面量
+            assert!(
+                source.contains(r#"signalhub-hook: "C:\Program Files\SignalHub\signalhub.exe""#),
+                "{agent:?} 的标记行不是 shell 写法"
+            );
+        }
     }
 
     /// 判据是**标记行**，不是文件在不在。同名路径上躺着用户自己的插件时，不能

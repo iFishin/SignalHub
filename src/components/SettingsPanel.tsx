@@ -22,12 +22,17 @@ import { presets, isActivePreset, stylePresets, isActiveStylePreset } from "../l
 import { SIGNALS, REPORTABLE_SIGNALS, type SignalState, type Snapshot } from "../lib/types";
 
 /**
- * 给「只用命令行上报」的智能体抄的那条命令。
+ * 给「在自己的事件钩子里调」那一类智能体抄的那条命令。
  *
- * **不进 i18n**：它就是一条 shell 命令，`--agent pi` 里的名字是给上报体用的标识，
- * 翻成中文只会让人抄错。会话 id 留成占位符 —— 那个值只有 Pi Agent 自己知道。
+ * **不进 i18n**：它就是一条 shell 命令，`--agent <name>` 里的名字是给上报体用的
+ * 标识（`claude-code` / `cursor` / `goose` …，接入页里都列着），翻成中文只会让人
+ * 抄错。会话 id 留成占位符 —— 那个值只有对方自己知道。
+ *
+ * 以前这里点名 Pi：Pi 现在有了一键接入（插件式，见 hooks.rs），再拿它当例子会让人
+ * 以为 Pi 还得手抄。
  */
-const PI_AGENT_COMMAND = 'signalhub working --agent pi --session "<session-id>"';
+const HOOK_AGENT_COMMAND =
+  'signalhub working --agent <name> --session "<session-id>"';
 
 /**
  * 「包一条命令」那条 —— **通用适配**，见 api.md §4.13。
@@ -1518,20 +1523,21 @@ export function SettingsPanel({ snapshot }: Props) {
                   {copyLabel("wrap")}
                 </button>
               </div>
-              {/* Pi Agent 点名放在下面：它是「在事件钩子里调」那一类的具体例子 */}
+              {/* 第二行不点名具体的智能体：点名的那家迟早会有一键接入（Pi 就是
+                  这么从这一节毕业的），而那句代码抄过去就对不上了。 */}
               <div className="agent">
                 <div className="agent-info">
                   <div className="agent-line">
-                    <span className="agent-name">Pi Agent</span>
+                    <span className="agent-name">{m.cliAgentsHookName}</span>
                   </div>
-                  <span className="agent-config mono">{PI_AGENT_COMMAND}</span>
+                  <span className="agent-config mono">{HOOK_AGENT_COMMAND}</span>
                 </div>
                 <button
                   type="button"
                   className="btn btn-tiny"
-                  onClick={() => copy("pi", PI_AGENT_COMMAND)}
+                  onClick={() => copy("hooks", HOOK_AGENT_COMMAND)}
                 >
-                  {copyLabel("pi")}
+                  {copyLabel("hooks")}
                 </button>
               </div>
               <p className="hint">{m.cliAgentsHint}</p>
