@@ -9,7 +9,7 @@
 
 use std::sync::Mutex;
 use tauri::menu::{Menu, MenuItem};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, WebviewWindow};
 
 /// 刚才右键点的是哪一组。
 ///
@@ -34,7 +34,10 @@ const LAMP_COLLAPSED: &str = "lamp:collapsed";
 const LAMP_QUIT: &str = "lamp:quit";
 
 /// 在灯球窗口上弹出菜单。`group` 是右键点中的那一组的名字。
-pub fn show(app: &AppHandle, group: &str) -> Result<(), String> {
+///
+/// `window` 是**发起这次右键的那个灯窗** —— 多灯模式下每个组灯都会调这里，菜单必须
+/// 弹在用户点的那盏灯上，而不是永远弹在 `main` 上（那样点组灯会弹出别处的菜单）。
+pub fn show(app: &AppHandle, window: &WebviewWindow, group: &str) -> Result<(), String> {
     *app.state::<Target>().0.lock().expect("menu target poisoned") = Some(group.to_string());
 
     let settings = crate::current_settings(app);
@@ -71,7 +74,7 @@ pub fn show(app: &AppHandle, group: &str) -> Result<(), String> {
     )
     .map_err(menu_err)?;
 
-    popup(app, &menu)
+    popup(window, &menu)
 }
 
 /// 灯上空白处（以及还没接任何上报方时那块占位牌）的右键菜单。
@@ -80,7 +83,7 @@ pub fn show(app: &AppHandle, group: &str) -> Result<(), String> {
 /// 装好、还没接任何上报方时，灯上那块牌的名字是空的，它对不上任何真实的组 ——
 /// 于是 `open_group_menu` 那条路走不通，灯上完全没有进入设置的地方，用户只能
 /// 去托盘里找。
-pub fn show_general(app: &AppHandle) -> Result<(), String> {
+pub fn show_general(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
     let t = crate::lang::text(crate::current_lang(app));
     let collapsed = crate::current_settings(app).collapsed;
 
@@ -101,14 +104,11 @@ pub fn show_general(app: &AppHandle) -> Result<(), String> {
 
     let menu = Menu::with_items(app, &[&open_settings, &pause, &collapse, &quit]).map_err(menu_err)?;
 
-    popup(app, &menu)
+    popup(window, &menu)
 }
 
-/// 把菜单弹在灯球窗口上。两张菜单共用，免得「找不到窗口」这条错误处理写两遍。
-fn popup(app: &AppHandle, menu: &Menu<tauri::Wry>) -> Result<(), String> {
-    let window = app
-        .get_webview_window("main")
-        .ok_or_else(|| "找不到灯球窗口".to_string())?;
+/// 把菜单弹在**发起的那个灯窗**上。两张菜单共用，免得错误处理写两遍。
+fn popup(window: &WebviewWindow, menu: &Menu<tauri::Wry>) -> Result<(), String> {
     window
         .popup_menu(menu)
         .map_err(|err| format!("弹出右键菜单失败: {err}"))

@@ -855,9 +855,16 @@ fn get_timeline(stats: tauri::State<'_, SharedStats>) -> Vec<stats::Segment> {
 }
 
 /// 在灯上某一组的位置弹出右键菜单。
+///
+/// `window` 是**发起右键的那个灯窗**（多灯模式下可能是某个组灯）。Tauri 会把调用
+/// 来源窗口注入进来，菜单因此弹在用户真正点的那盏灯上。
 #[tauri::command]
-fn open_group_menu(app: tauri::AppHandle, group: String) -> Result<(), String> {
-    menu::show(&app, &group)
+fn open_group_menu(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    group: String,
+) -> Result<(), String> {
+    menu::show(&app, &window, &group)
 }
 
 /// 在灯的空白处（或还没接上报方时那块占位牌）弹出通用菜单。
@@ -866,8 +873,8 @@ fn open_group_menu(app: tauri::AppHandle, group: String) -> Result<(), String> {
 /// 过去只会得到一张「隐藏/静音/清除那个叫 "" 的组」的菜单，点哪个都不会发生
 /// 任何事 —— 而它恰恰是首次安装时灯上唯一能右键的地方。
 #[tauri::command]
-fn open_lamp_menu(app: tauri::AppHandle) -> Result<(), String> {
-    menu::show_general(&app)
+fn open_lamp_menu(app: tauri::AppHandle, window: tauri::WebviewWindow) -> Result<(), String> {
+    menu::show_general(&app, &window)
 }
 
 /// 前端推过来的**解析后**的界面语言（`"auto"` 由前端解析 —— Rust 不知道系统语言）。
