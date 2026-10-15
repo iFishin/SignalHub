@@ -356,7 +356,7 @@ pub enum HookAction {
 ///
 /// **默认 `raw`**：新能力默认关（红线 3），也保证老的 `{"type":"http","url":…}`
 /// 行为一个字都不变。每个预设的形状都在 `outbound::compose` 里，那是唯一一处实现。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HttpPreset {
     /// 原样发 SignalHub 自己的 JSON 快照（默认）。给「自己写了个接收端」的人用。
@@ -408,6 +408,36 @@ impl Hook {
         }
         changes.iter().any(|(name, state)| {
             self.groups.iter().any(|group| group == name) && self.matches(state.name())
+        })
+    }
+}
+
+/// **宽松解析**：认识的值照收（大小写不敏感），**不认识的落到 `raw`**。
+///
+/// 不是随手加的宽容。`Settings` 是一个**整体**：任何一个字段解析失败都会让它整份
+/// 退回默认值（`load_settings` 那个兜底）。而手写配置里把 `"slack"` 写成 `"Slack"`、
+/// 或者照着别的工具写成 `"webhook"`，都是很正常的事 —— 代价却是用户丢掉**全部**设置
+/// （组显示名、配色、所有钩子）。退回一个预设，用户看到的是「发出去的是 JSON」，
+/// 而设置面板上那个下拉就明写着「原样 JSON」，改一下就好了。
+///
+/// 序列化永远是那几个小写名字（`#[serde(rename_all = "lowercase")]`）。
+impl<'de> Deserialize<'de> for HttpPreset {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Ok(match raw.trim().to_ascii_lowercase().as_str() {
+            "text" => HttpPreset::Text,
+            "ntfy" => HttpPreset::Ntfy,
+            "bark" => HttpPreset::Bark,
+            "slack" => HttpPreset::Slack,
+            "discord" => HttpPreset::Discord,
+            "lark" => HttpPreset::Lark,
+            "wecom" => HttpPreset::Wecom,
+            "dingtalk" => HttpPreset::Dingtalk,
+            "telegram" => HttpPreset::Telegram,
+            _ => HttpPreset::Raw,
         })
     }
 }
@@ -1532,6 +1562,43 @@ mod tests {
             serde_json::from_str::<HookAction>(&wire).unwrap(),
             legacy.action
         );
+    }
+
+    /// 预设写错一个字母**不该毁掉整份设置**。
+    ///
+    /// `Settings` 是一个整体，任何一个字段解析失败都会让它整份退回默认值 ——
+    /// 组显示名、配色、所有钩子一起没。手写配置时把 `"slack"` 写成 `"Slack"` 是
+    /// 很正常的事，所以预设的解析是宽松的：认不出来就落到 `raw`（发 JSON），
+    /// 而设置面板上那个下拉本身就写着「原样 JSON」。
+    #[test]
+    fn a_mistyped_preset_falls_back_to_raw_instead_of_losing_the_config() {
+        let raw = r#"{
+            "sign_w_mult": 1.4,
+            "group_meta": { "builds": { "name": "构建" } },
+            "hooks": [
+                { "type": "http", "url": "https://x/y", "preset": "Slack" },
+                { "type": "http", "url": "https://x/z", "preset": "webhook" }
+            ]
+        }"#;
+        let settings = serde_json::from_str::<Settings>(raw)
+            .expect("不认识的预设不该让整份设置解析失败");
+        assert_eq!(settings.sign_w_mult, 1.4, "别的设置一个都不该丢");
+        assert_eq!(settings.group_meta["builds"].name.as_deref(), Some("构建"));
+        assert_eq!(
+            settings.hooks.len(),
+            2,
+            "钩子也不该被丢掉 —— 它们只是多发一坨 JSON"
+        );
+        // 大小写写错的那个能认出来，完全没见过的落到 raw
+        assert_eq!(
+            settings.hooks[0].action,
+            HookAction::Http {
+                url: "https://x/y".into(),
+                headers: BTreeMap::new(),
+                preset: HttpPreset::Slack,
+            }
+        );
+        assert_eq!(settings.hooks[1].action.target(), "https://x/z");
     }
 
     /// 请求头的规整：去空白、丢掉空键、按上限截断（**确定的**截断）。
