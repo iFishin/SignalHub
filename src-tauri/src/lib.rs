@@ -43,10 +43,16 @@ type SharedSettings = Arc<Mutex<Arc<Settings>>>;
 
 /// 瞬态的界面开关。**不是设置，所以不落盘** —— 尤其是 `pass_through`：
 /// 重启后必须回到可点击状态，否则用户一开机就面对一个点不动、拖不动的圆点。
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 struct UiFlags {
     /// 点击穿透：整个窗口忽略指针事件
     pass_through: bool,
+    /// 折叠态下正被鼠标指着、**临时**当展开态画的那盏灯的 label。
+    ///
+    /// 记 label 而不是一个 bool：多灯下悬停的是某一盏，只该展开那一盏，别的灯
+    /// 一动不动。一次只可能有一盏（鼠标只有一个），所以是 `Option` 不是集合。
+    /// 它**不是设置**，所以不落盘 —— 退出重开仍是用户选的折叠态。
+    peek: Option<String>,
 }
 
 type SharedUi = Mutex<UiFlags>;
@@ -376,11 +382,7 @@ pub(crate) fn persist_settings(
     // 无所谓 —— 改设置是用户手点出来的低频操作。
     *app.state::<SharedSettings>().lock().expect("settings poisoned") = Arc::new(settings.clone());
 
-    let snapshot = app
-        .state::<SharedStore>()
-        .lock()
-        .expect("state store poisoned")
-        .snapshot();
+    let snapshot = current_snapshot(app);
     apply_settings(app, &settings, &snapshot);
     let _ = app.emit(SETTINGS_EVENT, &settings);
     Ok(settings)
@@ -395,6 +397,15 @@ pub(crate) fn current_settings(app: &tauri::AppHandle) -> Arc<Settings> {
         .lock()
         .expect("settings poisoned")
         .clone()
+}
+
+/// 读一份当前快照。命令里要重算布局、但手上没有快照时用它（`persist_settings`
+/// 那种自己顺手取的路径就不必绕这一下）。
+fn current_snapshot(app: &tauri::AppHandle) -> Snapshot {
+    app.state::<SharedStore>()
+        .lock()
+        .expect("state store poisoned")
+        .snapshot()
 }
 
 /// 给设置面板显示「怎么手动调用这个服务」用。端口和 token 都从文件读，
@@ -661,6 +672,35 @@ pub(crate) fn set_collapsed(app: &tauri::AppHandle, collapsed: bool) -> Result<S
 fn toggle_collapsed(app: tauri::AppHandle) -> Result<Settings, String> {
     let collapsed = !current_settings(&app).collapsed;
     set_collapsed(&app, collapsed)
+}
+
+/// 折叠态被鼠标指着时**临时**展开（3s 或移开就回去）。
+///
+/// 只影响渲染和窗口尺寸，**不改设置** —— 退出重开仍是折叠态（这是这一项的验收
+/// 之一）。`window` 由 Tauri 注入，所以多灯下只有被指着的那一盏会展开，别的灯
+/// 一动不动（见 `effective_collapsed`）。
+#[tauri::command]
+fn set_peek(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    peek: bool,
+) -> Result<(), String> {
+    {
+        let ui_state = app.state::<SharedUi>();
+        let mut ui = ui_state.lock().expect("ui poisoned");
+        if peek {
+            ui.peek = Some(window.label().to_string());
+        } else if ui.peek.as_deref() == Some(window.label()) {
+            // **只清自己那一条**：新窗口挂载时也会发一次 `peek: false`，不能顺手把
+            // 另一盏正被 hover 的灯收掉。
+            ui.peek = None;
+        }
+    }
+    // 尺寸跟着「实际折叠与否」变，所以要重算一遍所有窗口的布局。
+    let settings = current_settings(&app);
+    let snapshot = current_snapshot(&app);
+    sync_layout(&app, &settings, &snapshot);
+    Ok(())
 }
 
 /// 静音 / 取消静音某一组。
@@ -1045,6 +1085,27 @@ fn visible_group_names(settings: &Settings, snapshot: &Snapshot) -> Vec<String> 
     groups.into_iter().map(|group| group.name.clone()).collect()
 }
 
+/// 某个灯窗这一帧**实际**是不是折叠态：设置里折叠了，且它没在被悬停临时展开。
+///
+/// `peek` 只是「临时当展开态画」，**不改设置** —— 退出重开仍是折叠态。
+///
+/// **主灯（`apply_window_size`）和组灯（`lamp_specs`）都必须用它**，而且前端渲染
+/// 也必须按同一条件切 —— 前端画展开、窗口按折叠算（或反过来）就会被
+/// `overflow: hidden` 裁掉一块（红线 1）。
+fn effective_collapsed(app: &tauri::AppHandle, settings: &Settings, label: &str) -> bool {
+    if !settings.collapsed {
+        return false;
+    }
+    let peeking = app
+        .state::<SharedUi>()
+        .lock()
+        .expect("ui poisoned")
+        .peek
+        .as_deref()
+        == Some(label);
+    !peeking
+}
+
 /// 这一帧是否走「每组分灯」。
 ///
 /// 两个条件缺一不可：布局选的是 `PerGroup`，且可见组数没超过硬上限。超过就**回落
@@ -1093,14 +1154,16 @@ fn lamp_specs(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapshot) 
     visible_group_names(settings, snapshot)
         .into_iter()
         .map(|name| {
-            let has_message = !settings.collapsed
+            // 折叠 / 展开按**这个灯窗**自己被 hover 与否算（多灯下各算各的）
+            let collapsed = effective_collapsed(app, settings, &lamps::label_for(&name));
+            let has_message = !collapsed
                 && settings.show.message
                 && snapshot
                     .groups
                     .iter()
                     .find(|group| group.name == name)
                     .is_some_and(|group| group.message.is_some());
-            let size = if settings.collapsed {
+            let size = if collapsed {
                 config::collapsed_window_size(settings.size, 1, flags + config::more_badge(1))
             } else {
                 settings.window_size(&[config::sign_height(settings.size, has_message, settings.sign_h_mult)])
@@ -1187,7 +1250,10 @@ fn apply_window_size(app: &tauri::AppHandle, settings: &Settings, snapshot: &Sna
     // 展开态是一叠牌，折叠态是一排点 —— 两套几何，见 config.rs。
     // 多灯模式下主灯只看全局（各组交给各自的灯），所以这里拿的是「主灯该画的组」。
     let groups = main_window_groups(settings, snapshot);
-    let (width, height) = if settings.collapsed {
+    // 悬停临时展开也算「不折叠」（见 `effective_collapsed`）—— 前端会按同一个条件
+    // 渲染，两边不一致就会裁内容。
+    let collapsed = effective_collapsed(app, settings, "main");
+    let (width, height) = if collapsed {
         // 折叠态里没有牌面，全局状态角标和「还有几组」的 `+N` 都得自己占一个点位。
         // 少算一枚，那枚角标就落在窗口外面 —— 而折叠态最不该出的就是这种错：
         // 看不见的东西，人不会想到去查。
@@ -1198,19 +1264,20 @@ fn apply_window_size(app: &tauri::AppHandle, settings: &Settings, snapshot: &Sna
     };
 
     // 和上次设下去的尺寸一样就收工。**这是热路径**：拿缓存比，不问窗口。
-    let scale = {
+    let (previous, scale) = {
         let handle = app.state::<SharedGeometry>();
         let mut geometry = handle.lock().expect("geometry poisoned");
         if geometry.size == Some((width, height)) {
             return;
         }
+        let previous = geometry.size;
         geometry.size = Some((width, height));
-        geometry.scale
+        (previous, geometry.scale)
     };
 
     let _ = window.set_size(LogicalSize::new(width, height));
     // 尺寸变了才可能越界，所以放在这个分支里
-    keep_on_screen(&window, width, height, scale);
+    keep_on_screen(&window, width, height, previous, scale);
 }
 
 /// 尺寸变了之后，把窗口推回屏幕内。
@@ -1231,7 +1298,17 @@ fn apply_window_size(app: &tauri::AppHandle, settings: &Settings, snapshot: &Sna
 ///
 /// 用工作区（`work_area`）而不是整块屏幕：任务栏 / Dock 占掉的那一条不算可用空间，
 /// 按整屏算的话，贴着底边的窗口会有一截压在任务栏底下。
-fn keep_on_screen(window: &tauri::WebviewWindow, width: u16, height: u16, scale: f64) {
+///
+/// `previous` 是**变化前**的逻辑尺寸。贴着右 / 下边缘的窗口按它把位置让出来，好让
+/// 窗口**往屏幕里长**（而不是从左上角长出去、再被这里夹回来）—— 见
+/// `grow_away_from_edges`。
+fn keep_on_screen(
+    window: &tauri::WebviewWindow,
+    width: u16,
+    height: u16,
+    previous: Option<(u16, u16)>,
+    scale: f64,
+) {
     let (Ok(Some(monitor)), Ok(position)) = (window.current_monitor(), window.outer_position())
     else {
         // 拿不到显示器信息（多屏拔插的瞬间、无头环境）就什么都不做 ——
@@ -1239,10 +1316,13 @@ fn keep_on_screen(window: &tauri::WebviewWindow, width: u16, height: u16, scale:
         return;
     };
 
-    let size = (
-        (width as f64 * scale).round() as i32,
-        (height as f64 * scale).round() as i32,
-    );
+    let to_physical = |size: (u16, u16)| {
+        (
+            (size.0 as f64 * scale).round() as i32,
+            (size.1 as f64 * scale).round() as i32,
+        )
+    };
+    let size = to_physical((width, height));
     let area = monitor.work_area();
     let bounds = (
         (area.position.x, area.position.y),
@@ -1252,10 +1332,52 @@ fn keep_on_screen(window: &tauri::WebviewWindow, width: u16, height: u16, scale:
         ),
     );
 
-    let (x, y) = clamp_to_area((position.x, position.y), size, bounds);
+    // 先按「贴边就往里长」挪，再夹回区内兜底（窗口比工作区还大时只有夹这一步管用）
+    let anchored = match previous {
+        Some(previous) => grow_away_from_edges(
+            (position.x, position.y),
+            to_physical(previous),
+            size,
+            bounds,
+            EDGE_ANCHOR_PX,
+        ),
+        None => (position.x, position.y),
+    };
+    let (x, y) = clamp_to_area(anchored, size, bounds);
     if (x, y) != (position.x, position.y) {
         let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
     }
+}
+
+/// 尺寸变了之后，把左上角挪一下，让窗口**往屏幕里长**：本来贴着右 / 下边缘的窗口，
+/// 保持那条边不动（内容就不会长到屏幕外），**缩回去时再挪回来**。
+///
+/// `previous` / `size` 是变化前 / 后的物理尺寸。只挪贴边的那一维；不在边缘的窗口
+/// 一个像素都不动（照旧从左上角长）。
+///
+/// **为什么不能只靠 `clamp_to_area` 兜底**：夹只会把越界的窗口推回区内，而**缩回去
+/// 时它不会推回来** —— 于是「悬停临时展开」这种一伸一缩的操作会一次比一次把灯往屏幕
+/// 里挪（第一次悬停就往左跳几百像素，之后再也不回去）。让伸缩对称，就不会有这种漂移。
+fn grow_away_from_edges(
+    position: (i32, i32),
+    previous: (i32, i32),
+    size: (i32, i32),
+    bounds: ((i32, i32), (i32, i32)),
+    margin: i32,
+) -> (i32, i32) {
+    let ((_left, _top), (right, bottom)) = bounds;
+    let (mut x, mut y) = position;
+    let delta_w = size.0 - previous.0;
+    let delta_h = size.1 - previous.1;
+    // 贴着右边缘：右边不动 ⇒ 左上角让出宽度变化
+    if delta_w != 0 && x + previous.0 >= right - margin {
+        x -= delta_w;
+    }
+    // 贴着下边缘：底边不动
+    if delta_h != 0 && y + previous.1 >= bottom - margin {
+        y -= delta_h;
+    }
+    (x, y)
 }
 
 /// 把一个窗口位置夹进工作区。返回夹紧后的左上角。
@@ -1279,6 +1401,9 @@ fn clamp_to_area(
 
 /// 吸附判定：窗口边缘离工作区边缘这么近就贴齐（物理像素）。
 const SNAP_THRESHOLD_PX: i32 = 12;
+
+/// 贴边判定的余量：窗口边和屏幕边差这么多以内就算「贴着那条边」（物理像素）。
+const EDGE_ANCHOR_PX: i32 = 24;
 
 /// 停多久算「拖完了」。`WindowEvent::Moved` 在拖动过程中一路都在发，所以不能一收到
 /// 就吸 —— 得等它安静下来。见 `wire_snap`。
@@ -1564,6 +1689,7 @@ pub fn run() {
             get_toggles,
             set_autostart,
             set_pass_through,
+            set_peek,
             get_stats,
             get_history,
             get_timeline,
@@ -1688,9 +1814,9 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        clamp_to_area, pass_through_shortcut_label, shortcut_label, shortcut_label_for,
-        snap_to_edges, validate_settings, visible_groups, KeyStyle, PASS_THROUGH_SHORTCUT,
-        TEST_REPORT_TTL_MS,
+        clamp_to_area, grow_away_from_edges, pass_through_shortcut_label, shortcut_label,
+        shortcut_label_for, snap_to_edges, validate_settings, visible_groups, KeyStyle,
+        PASS_THROUGH_SHORTCUT, TEST_REPORT_TTL_MS,
     };
     use crate::config::{GroupMeta, Settings, StateStyle};
     use crate::state::{GroupView, Report, Signal, Snapshot, Store};
@@ -1936,6 +2062,42 @@ mod tests {
                 "{position:?} 吸到 {snapped:?} 之后又被夹了"
             );
         }
+    }
+
+    // ---- 贴边生长 -------------------------------------------------------------
+
+    /// 贴右边缘的窗口变大时，左上角往左让，右边不动 —— 内容不会长到屏幕外。
+    #[test]
+    fn growing_at_the_right_edge_keeps_the_right_edge_still() {
+        // 收起态在右边缘，右边 1920 贴着屏幕右边
+        let grown = grow_away_from_edges((1860, 500), (60, 60), (400, 60), SCREEN, 24);
+        assert_eq!(grown, (1520, 500));
+        assert_eq!(grown.0 + 400, 1920, "右边必须还在屏幕边上");
+    }
+
+    /// **缩回去必须挪回来**：不然「悬停临时展开」一次就把灯往屏幕里推一次。
+    #[test]
+    fn shrinking_back_returns_to_where_it_was() {
+        let there = (1860, 500);
+        let grown = grow_away_from_edges(there, (60, 60), (400, 60), SCREEN, 24);
+        let shrunk = grow_away_from_edges(grown, (400, 60), (60, 60), SCREEN, 24);
+        assert_eq!(shrunk, there, "一伸一缩必须回到原地");
+    }
+
+    /// 不在边缘的窗口一个像素都不动 —— 既有行为不变。
+    #[test]
+    fn growing_away_from_the_edges_does_not_move() {
+        assert_eq!(
+            grow_away_from_edges((700, 300), WINDOW, (400, 200), SCREEN, 24),
+            (700, 300)
+        );
+    }
+
+    /// 贴下边缘同理（底边不动）。
+    #[test]
+    fn growing_at_the_bottom_edge_keeps_the_bottom_still() {
+        let grown = grow_away_from_edges((500, 980), (60, 60), (60, 260), SCREEN, 24);
+        assert_eq!(grown, (500, 780));
     }
 
     // ---- 置顶排序 -------------------------------------------------------------

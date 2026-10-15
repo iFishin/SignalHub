@@ -18,6 +18,8 @@ const MAX_SIGNS = 4;
 const DRAG_THRESHOLD_PX = 4;
 /** 跃迁脉冲的时长（ms）。必须和 lamp.css 里 `pulse-in` 的一致。 */
 const PULSE_MS = 420;
+/** 折叠态悬停临时展开的时长（ms）。到点或鼠标移开就收回折叠态。 */
+const PEEK_MS = 3000;
 
 interface Props {
   aggregate: SignalState;
@@ -192,6 +194,34 @@ export function SignalLamp({ aggregate, groups, settings, paused }: Props) {
   // 「一个值」，没法塞进一个根变量里。
   const shapes = resolveShapes(settings);
 
+  // 折叠态悬停**临时**展开：只改渲染 + 让 Rust 把窗口算大，**不改设置** —— 退出
+  // 重开仍是折叠态（这是这一项的验收之一）。3s 到点、或鼠标移开就回去。窗口尺寸
+  // 由 Rust 按同一个标志算（命令 `set_peek`；多灯下只有被指着的那盏会变），所以
+  // 前端和窗口不会打架。
+  const [peek, setPeek] = useState(false);
+
+  // 真的展开了（点一下 / 托盘）就把 peek 收掉，免得它残留着和设置打仗
+  useEffect(() => {
+    if (!collapsed) setPeek(false);
+  }, [collapsed]);
+
+  // 把「谁在被 hover」推给 Rust —— 它按这个把那个窗口算成展开态
+  useEffect(() => {
+    if (!inTauri) return;
+    invoke("set_peek", { peek }).catch(console.error);
+  }, [peek]);
+
+  // 3s 到点自动收回。effect 挂在 `peek` 上：一直 hover 着也只数一次
+  useEffect(() => {
+    if (!peek) return;
+    const timer = window.setTimeout(() => setPeek(false), PEEK_MS);
+    return () => window.clearTimeout(timer);
+  }, [peek]);
+
+  // 折叠设置 + 临时展开，合成「这一帧到底画哪一态」。**下面所有渲染分支都读它**，
+  // 别再直接读 `collapsed` —— 一处分歧就会画成「窗口是展开的大、内容却只有点」。
+  const expanded = !collapsed || peek;
+
   const [flash, setFlash] = useState(false);
   const flashTimer = useRef<number | null>(null);
   const firstRun = useRef(true);
@@ -258,7 +288,7 @@ export function SignalLamp({ aggregate, groups, settings, paused }: Props) {
 
   // 「已持续」是算出来的，所以得有东西让它随时间重绘 —— 否则它永远停在状态刚变化
   // 那一刻，也就是 0s。折叠形态和关掉这一格的牌上没有这个数字，不起定时器。
-  const now = useNow(show.age && !collapsed);
+  const now = useNow(show.age && expanded);
 
   const toggle = () => {
     if (!inTauri) return;
@@ -311,19 +341,24 @@ export function SignalLamp({ aggregate, groups, settings, paused }: Props) {
       data-quiet={quiet && !toggles.pass_through}
       data-paused={paused || undefined}
       data-pass-through={toggles.pass_through || undefined}
-      data-collapsed={collapsed}
+      data-collapsed={!expanded}
       data-flash={flash || undefined}
       title={tooltip(m, lang, aggregate, groups, settings.group_meta, [
         paused ? m.lampPaused : "",
         toggles.pass_through ? m.lampPassThrough : "",
       ].filter((line) => line !== ""))}
+      // 折叠态被指着时临时展开（见上），移开 / 超时收回
+      onMouseEnter={() => {
+        if (collapsed) setPeek(true);
+      }}
+      onMouseLeave={() => setPeek(false)}
       // 空白处（牌之间、留白）也要吃掉右键，否则会冒出 webview 自己的菜单；
       // 顺手弹的是灯自己那张（进设置 / 暂停 / 折叠 / 退出）
       onContextMenu={openLampMenu}
       {...drag}
     >
       {rows.map((group, index) =>
-        collapsed ? (
+        !expanded ? (
           <span
             // 折叠后只有点，没有可读的文字，所以 key 用下标；组名可能为空（占位那块）
             key={index}
@@ -385,7 +420,7 @@ export function SignalLamp({ aggregate, groups, settings, paused }: Props) {
       {/* 折叠态没有牌面可寄住，角标只能自己占一个点的位置（见 CSS 的
           .lamp-dot-flag / .lamp-dot-more），Rust 的 `collapsed_window_size`
           因此要按「点数 + 角标数」算宽 —— 少留一个点位那枚角标就被裁掉了。 */}
-      {collapsed && flag && (
+      {!expanded && flag && (
         <span className="lamp-dot-flag" data-state={aggregate} title={flagTitle}>
           {toggles.pass_through ? "⇥" : "⏸"}
         </span>
@@ -393,7 +428,7 @@ export function SignalLamp({ aggregate, groups, settings, paused }: Props) {
       {/* 展开态那条同样的提示挂在最后一块牌上；折叠态看不到牌面，**不留这一枚
           就等于「还有几个智能体在跑」被悄悄抹掉了** —— 而那正是这盏灯要回答的。
           条件与 Rust 的 `config::more_badge` 是同一个。 */}
-      {collapsed && hidden.length > 0 && (
+      {!expanded && hidden.length > 0 && (
         <span className="lamp-dot-more" title={moreGroupsTip(m, hidden, settings.group_meta)}>
           +{hidden.length}
         </span>
