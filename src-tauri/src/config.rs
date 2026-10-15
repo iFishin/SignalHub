@@ -10,6 +10,25 @@ const MIN_SIZE: u16 = 12;
 const MAX_SIZE: u16 = 64;
 pub const DEFAULT_SIZE: u16 = 22;
 
+/// 牌宽 / 牌高的倍率范围。1.0 = 现状。
+///
+/// 下限 0.8：再小牌上那几段字就压成一团了（牌宽已经是「文字被截断」的前提，
+/// 缩太多等于把信息全砍掉）。上限 2.5：已经大到能占掉小半块屏，再多就不该靠
+/// 这一盏灯回答了。
+pub const MIN_SIGN_MULT: f32 = 0.8;
+pub const MAX_SIGN_MULT: f32 = 2.5;
+
+/// 倍率的夹紧。**NaN 要单独挡掉**：浮点的 `f32::clamp` 遇到 NaN 会把 NaN 原样
+/// 返回（它是自查式比较，和一切都不相等），而 NaN 一路传到 `ceil` 会变成 0、
+/// 把牌宽归零 —— 那正是这份夹紧要防的事。非有限值也一并退回 1.0。
+fn clamp_mult(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(MIN_SIGN_MULT, MAX_SIGN_MULT)
+    } else {
+        1.0
+    }
+}
+
 /// 圆点四周留白的**总量**（不是每边）。留白是为了好抓取圆点来拖动。
 pub const LAMP_MARGIN: u16 = 20;
 
@@ -21,20 +40,27 @@ pub const MAX_SIGNS: usize = 4;
 /// 由 `size` 派生，不另加一个设置 —— `size` 现在表示整块牌的尺度，「大小」
 /// 一个旋钮就够。文字长度不定，所以宽度**固定**、超出用省略号截断：让宽度
 /// 跟着文字走会让窗口每次消息变化都跳一下。
-pub fn sign_width(size: u16) -> u16 {
-    size * 7
+///
+/// `w` 是用户设的**宽度倍率**（见 `Settings::sign_w_mult`），1.0 = 原样。
+/// 两步都重要：
+/// - **先算整数 `size * 7`，再乘倍率**：这样 `w = 1.0` 时逐字等于旧公式 ——
+///   默认值不许无声改变既有行为（红线 3）。
+/// - **向上取整**，不是四舍五入：CSS 那边的宽度是 `size*7*w` 这个小数（浏览器
+///   不会帮我们取整），取整方向反了（`round` 可能向下）会让窗口比牌窄一线，
+///   `overflow: hidden` 就把右边缘裁掉了。向上只会多留不到 1px。
+pub fn sign_width(size: u16, w: f32) -> u16 {
+    ((size * 7) as f32 * w).ceil() as u16
 }
 
 /// 一块牌的高度。有消息就多一行 —— 那块牌会变高，正好是个「有东西可读」的提示。
 ///
+/// `h` 是高度倍率，弄法和 `sign_width` 一样：先整数、后乘、向上取整。
+///
 /// **CSS 里的 `.sign` / `.sign[data-has-message="true"]` 必须与这两个值严格对齐**，
 /// 否则窗口会裁掉最后一块牌、或者底下留一条缝。
-pub fn sign_height(size: u16, has_message: bool) -> u16 {
-    if has_message {
-        size * 5 / 2
-    } else {
-        size * 3 / 2
-    }
+pub fn sign_height(size: u16, has_message: bool, h: f32) -> u16 {
+    let base = if has_message { size * 5 / 2 } else { size * 3 / 2 };
+    (base as f32 * h).ceil() as u16
 }
 
 /// 折叠形态的圆点个数上限。折叠成一个单纯的灯时，一个组一个点。
@@ -590,11 +616,24 @@ impl GroupMeta {
 /// 手写的 `Default` 里给出想要的默认值。
 ///
 /// 不派生 `Copy`：`webhook_url` 是 `Option<String>`。相关方法因此都取 `&self`。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// 也**不派生 `Eq`**：牌宽 / 牌高是 `f32` 倍率，而 `f32` 不是 `Eq`（NaN ≠ NaN）。
+/// 需要比较的地方（导出 / 导入的往返测试）用 `PartialEq` 就够了。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     /// 圆点直径（px）
     pub size: u16,
+    /// 牌宽倍率。**1.0 = 现状**（`size * 7`）。
+    ///
+    /// 只作用于**展开态**的牌 —— 折叠态是一排正方形点，长宽倍率对它没有意义
+    /// （写了也只会让点变椭圆）。窗口尺寸照旧按内容算（见 `apply_window_size`），
+    /// 这个倍率只是把「内容」本身放大或缩小。
+    pub sign_w_mult: f32,
+    /// 牌高倍率。**1.0 = 现状**（一行 `size * 3/2`，带消息两行 `size * 5/2`）。
+    ///
+    /// 两档都乘 —— 漏一档窗口就会裁掉带消息的那块牌。
+    pub sign_h_mult: f32,
     pub always_on_top: bool,
     /// 「有事才显形」：空闲 / 沉默 / 离线时把圆点压到几乎透明，
     /// 只有真正有活动或需要你注意时才完全显形。
@@ -809,6 +848,9 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             size: DEFAULT_SIZE,
+            // 「原样」。**必须是 1.0**：写成 0.0 就是牌宽归零（红线 3 的经典翻车）。
+            sign_w_mult: 1.0,
+            sign_h_mult: 1.0,
             always_on_top: true,
             quiet: true,
             notify: true,
@@ -842,6 +884,9 @@ impl Settings {
     /// 和前端传来的值。
     pub fn clamped(mut self) -> Self {
         self.size = self.size.clamp(MIN_SIZE, MAX_SIZE);
+        // 倍率先夹紧再往下走：NaN / 无穷 / 手改的离谱值都在这儿被挡掉
+        self.sign_w_mult = clamp_mult(self.sign_w_mult);
+        self.sign_h_mult = clamp_mult(self.sign_h_mult);
         self.sign_opacity = self.sign_opacity.min(100);
         self.blink_speed = self.blink_speed.clamp(MIN_BLINK_SPEED, MAX_BLINK_SPEED);
         self.alert_after_secs = self.alert_after_secs.min(MAX_ALERT_DELAY_SECS);
@@ -953,7 +998,7 @@ impl Settings {
         let count = signs.len().clamp(1, MAX_SIGNS) as u16;
         let stacked: u16 = signs.iter().take(count as usize).sum();
         let gaps = gap * count.saturating_sub(1);
-        (sign_width(self.size) + LAMP_MARGIN, stacked + gaps + LAMP_MARGIN)
+        (sign_width(self.size, self.sign_w_mult) + LAMP_MARGIN, stacked + gaps + LAMP_MARGIN)
     }
 }
 
@@ -1243,6 +1288,9 @@ mod tests {
     fn settings_survive_an_export_import_round_trip() {
         let settings = Settings {
             size: 30,
+            // 新字段设成**非默认值**：全默认的话「漏了字段」这种错看不出来
+            sign_w_mult: 1.4,
+            sign_h_mult: 0.9,
             always_on_top: false,
             quiet: false,
             notify: false,
@@ -1874,7 +1922,7 @@ mod tests {
     #[test]
     fn window_grows_downward_as_signs_stack() {
         let settings = Settings::default();
-        let one_line = sign_height(settings.size, false);
+        let one_line = sign_height(settings.size, false, 1.0);
         let one = settings.window_size(&[one_line]);
 
         // 宽度不随牌数变 —— 牌是竖着叠的，不是横着排
@@ -1883,7 +1931,7 @@ mod tests {
         assert!(two.1 > one.1, "多一块牌就多占一份高度");
 
         // 有消息的那块多一行，于是窗口更高 —— 那是刻意的提示
-        let with_message = settings.window_size(&[sign_height(settings.size, true)]);
+        let with_message = settings.window_size(&[sign_height(settings.size, true, 1.0)]);
         assert!(with_message.1 > one.1, "有消息的牌多占一行");
 
         // 超出上限按上限算，不会无限往下长
@@ -1895,11 +1943,75 @@ mod tests {
     #[test]
     fn a_sign_is_wider_than_tall_and_scales_with_size() {
         for size in [16, 22, 32] {
-            let width = sign_width(size);
-            let height = sign_height(size, false);
+            let width = sign_width(size, 1.0);
+            let height = sign_height(size, false, 1.0);
             assert!(width > height, "牌是横条：{size} → {width}×{height}");
-            assert_eq!(sign_height(size, true), height * 5 / 3, "有消息时约 1.67 倍高");
+            assert_eq!(sign_height(size, true, 1.0), height * 5 / 3, "有消息时约 1.67 倍高");
         }
+    }
+
+    /// 倍率在 1.0 时必须**逐字**等于旧公式 —— 默认值不许无声改变既有行为（红线 3）。
+    /// 它一旦不是 1.0，就该真的把牌放大 / 缩小。
+    #[test]
+    fn sign_multipliers_scale_the_sign_and_are_identity_at_one() {
+        for size in [12u16, 22, 33, 64] {
+            assert_eq!(sign_width(size, 1.0), size * 7, "宽 {size}");
+            assert_eq!(sign_height(size, false, 1.0), size * 3 / 2, "单行高 {size}");
+            assert_eq!(sign_height(size, true, 1.0), size * 5 / 2, "双行高 {size}");
+        }
+
+        let size = 22;
+        // 放大：确实更大，且随倍率单调
+        assert!(sign_width(size, 1.5) > sign_width(size, 1.0));
+        assert!(sign_width(size, 2.0) > sign_width(size, 1.5));
+        assert!(sign_height(size, false, 1.2) > sign_height(size, false, 1.0));
+        assert!(sign_height(size, true, 1.2) > sign_height(size, true, 1.0));
+        // 缩小也认
+        assert!(sign_width(size, 0.8) < sign_width(size, 1.0));
+
+        // **向上取整**：22*7*1.3 = 200.2 → 201（不是 200）。差这一下，CSS 那边
+        // 200.2px 的牌就会被 `overflow: hidden` 裁掉右边缘一线。
+        assert_eq!(sign_width(22, 1.3), 201);
+    }
+
+    /// 手改配置 / 前端都可能塞进越界的倍率，`clamped()` 必须夹住它们。
+    #[test]
+    fn clamped_pulls_the_sign_multipliers_into_range() {
+        let wild = Settings {
+            sign_w_mult: 99.0,
+            sign_h_mult: 0.01,
+            ..Settings::default()
+        };
+        let clamped = wild.clamped();
+        assert_eq!(clamped.sign_w_mult, MAX_SIGN_MULT);
+        assert_eq!(clamped.sign_h_mult, MIN_SIGN_MULT);
+
+        // NaN / 无穷必须被挡掉：NaN 一路传到 `ceil` 会变成 0，把牌宽归零。
+        let broken = Settings {
+            sign_w_mult: f32::NAN,
+            sign_h_mult: f32::INFINITY,
+            ..Settings::default()
+        };
+        let clamped = broken.clamped();
+        assert_eq!(clamped.sign_w_mult, 1.0, "NaN 要退回 1.0，不能令牌宽归零");
+        assert_eq!(clamped.sign_h_mult, 1.0, "无穷一律退回 1.0");
+        assert!(sign_width(22, clamped.sign_w_mult) > 0);
+    }
+
+    /// 旧配置（没有这两个键）必须读成倍率 1.0 —— 也就是完全不变的行为。
+    /// 这是 `serde(default)` 那条契约的落点：升级不该让任何人的灯变形。
+    #[test]
+    fn settings_without_the_sign_multipliers_read_as_one() {
+        let json = serde_json::to_string(&Settings::default()).unwrap();
+        assert!(json.contains(r#""sign_w_mult":1.0,"#), "{json}");
+
+        // 把两个键整个删掉，模拟旧版本写出来的文件
+        let legacy = json
+            .replace(r#""sign_w_mult":1.0,"#, "")
+            .replace(r#""sign_h_mult":1.0,"#, "");
+        let parsed: Settings = serde_json::from_str(&legacy).unwrap();
+        assert_eq!(parsed.sign_w_mult, 1.0);
+        assert_eq!(parsed.sign_h_mult, 1.0);
     }
 
     /// 折叠态：一个组一个点，窗口比展开态小得多
@@ -1967,7 +2079,7 @@ mod tests {
     fn collapsed_is_much_smaller_than_expanded() {
         let settings = Settings::default();
         let (cw, ch) = collapsed_window_size(settings.size, 1, 0);
-        let (ew, eh) = settings.window_size(&[sign_height(settings.size, false)]);
+        let (ew, eh) = settings.window_size(&[sign_height(settings.size, false, 1.0)]);
         assert!(cw < ew, "折叠态更窄: {cw} vs {ew}");
         assert!(ch < eh, "折叠态更矮: {ch} vs {eh}");
     }

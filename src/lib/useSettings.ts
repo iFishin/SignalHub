@@ -90,6 +90,13 @@ export interface QuietHours {
 /** 与 Rust 侧 `config::Settings` 对应（JSON 字段名保持 snake_case）。 */
 export interface Settings {
   size: number;
+  /**
+   * 牌宽倍率。**1.0 = 原样**。只作用于展开态的牌 —— 折叠态是一排正方形点，
+   * 长宽倍率对它没有意义。
+   */
+  sign_w_mult: number;
+  /** 牌高倍率。**1.0 = 原样**（单行 / 带消息两行都乘）。 */
+  sign_h_mult: number;
   always_on_top: boolean;
   /** 安静模式：空闲 / 沉默 / 离线时圆点几乎透明，悬停恢复。 */
   quiet: boolean;
@@ -161,6 +168,8 @@ export interface Settings {
  */
 export const DEFAULTS: Settings = {
   size: 22,
+  sign_w_mult: 1,
+  sign_h_mult: 1,
   always_on_top: true,
   quiet: true,
   notify: true,

@@ -15,15 +15,17 @@
  * 2) 动画只动 opacity，交给 GPU 合成，避免这个常驻窗口烧 CPU。
  *
  * 几何必须和 Rust 的 config.rs 严格对齐：
- *   牌宽     = size × 7                (sign_width)
- *   牌高     = size × 3/2（一行）       (sign_height(size, false))
- *            = size × 5/2（带消息两行）  (sign_height(size, true))
+ *   牌宽     = size × 7 × 宽倍率         (sign_width)
+ *   牌高     = size × 3/2 × 高倍率（一行）(sign_height(size, false, h))
+ *            = size × 5/2 × 高倍率（两行）(sign_height(size, true, h))
  *   牌间距   = size / 2                (window_size 里的 gap)
  *   折叠点径 = size                    (collapsed_window_size)
  *   折叠点距 = size / 3
  *   折叠点数 = 组数 + 角标数            (collapsed_window_size 的 dots + flags)
  *   留白     = 10px 一侧                (LAMP_MARGIN 总量 20)
  * 任何一处改了都要同步改那边，否则窗口会裁掉最后一块牌、或者底下留一条缝。
+ * 两个倍率（`--sign-w-mult` / `--sign-h-mult`）由前端 lampVars 推过来；Rust 那边
+ * 是**向上取整**的，所以窗口只会比牌略大、绝不会裁到 —— 别把取整方向改反。
  */
 
 html,
@@ -79,8 +81,8 @@ body,
 
 .sign {
   box-sizing: border-box;
-  width: calc(var(--size) * 7);
-  height: calc(var(--size) * 3 / 2);
+  width: calc(var(--size) * 7 * var(--sign-w-mult, 1));
+  height: calc(var(--size) * 3 / 2 * var(--sign-h-mult, 1));
   flex: none;
   display: flex;
   align-items: center;
@@ -100,7 +102,7 @@ body,
    注意这个属性必须和 Rust 的 sign_heights 算出同一个真假值：用户把「消息」
    那段关掉之后牌永远是单行，两边不一致就会裁掉最后一块牌。 */
 .sign[data-has-message="true"] {
-  height: calc(var(--size) * 5 / 2);
+  height: calc(var(--size) * 5 / 2 * var(--sign-h-mult, 1));
 }
 
 .sign-body {

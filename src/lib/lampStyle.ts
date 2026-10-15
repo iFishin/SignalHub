@@ -111,6 +111,11 @@ export function resolveAnimations(settings: Settings): Record<SignalState, strin
 export function lampVars(settings: Settings): React.CSSProperties {
   const style: Record<string, string> = {
     ...(colorVars(settings) as Record<string, string>),
+    // 牌宽 / 牌高倍率。CSS 那边把它们乘在牌的基础尺寸上（`.sign`），和 Rust 的
+    // `sign_width` / `sign_height` 是两处真值 —— 改一处必须同步另一处（见 lamp.css 文件头）。
+    // 1.0（默认）时是恒等，不改变任何现有几何。
+    "--sign-w-mult": String(settings.sign_w_mult),
+    "--sign-h-mult": String(settings.sign_h_mult),
   };
   for (const [state, anim] of Object.entries(resolveAnimations(settings))) {
     style[`--anim-${state}`] = anim;

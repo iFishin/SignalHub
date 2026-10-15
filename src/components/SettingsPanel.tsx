@@ -89,6 +89,9 @@ function fieldOptions(m: Messages): { key: keyof Settings["show"]; label: string
 /** 与 Rust 侧 config.rs 的 MIN_BLINK_SPEED / MAX_BLINK_SPEED 一致。 */
 const BLINK_RANGE = { min: 50, max: 200 };
 
+/** 与 Rust 侧 config.rs 的 MIN_SIGN_MULT / MAX_SIGN_MULT 一致。1.0 = 原样。 */
+const SIGN_MULT_RANGE = { min: 0.8, max: 2.5 };
+
 /**
  * 单个状态的闪烁间隔选项。`""` = 跟随全局，`"0"` = 常亮。
  *
@@ -208,12 +211,15 @@ function Slider({
   value,
   min,
   max,
+  step = 1,
   onChange,
   format,
 }: {
   value: number;
   min: number;
   max: number;
+  /** 步进。默认 1（透明度 / 节奏都是整数）；倍率用 0.1。 */
+  step?: number;
   onChange: (value: number) => void;
   format: (value: number) => string;
 }) {
@@ -223,6 +229,7 @@ function Slider({
         type="range"
         min={min}
         max={max}
+        step={step}
         value={value}
         // 拖动时连续触发也就连续保存 —— 和取色器同理：调外观必须能实时看到效果
         onChange={(event) => onChange(Number(event.target.value))}
@@ -1128,6 +1135,29 @@ export function SettingsPanel({ snapshot }: Props) {
                 max={100}
                 onChange={(sign_opacity) => patch({ sign_opacity })}
                 format={(value) => `${value}%`}
+              />
+            </Row>
+            {/* 长宽倍率：只放大 / 缩小**展开态**的牌本身（字号、点径、间距仍由
+                「大小」决定）。窗口尺寸照旧按内容算，所以这两个滑杆不会把窗口
+                拖成一块空白。折叠态是一排正方形点，不受影响。 */}
+            <Row label={m.signWidth}>
+              <Slider
+                value={settings.sign_w_mult}
+                min={SIGN_MULT_RANGE.min}
+                max={SIGN_MULT_RANGE.max}
+                step={0.1}
+                onChange={(sign_w_mult) => patch({ sign_w_mult })}
+                format={(value) => `×${value.toFixed(1)}`}
+              />
+            </Row>
+            <Row label={m.signHeight}>
+              <Slider
+                value={settings.sign_h_mult}
+                min={SIGN_MULT_RANGE.min}
+                max={SIGN_MULT_RANGE.max}
+                step={0.1}
+                onChange={(sign_h_mult) => patch({ sign_h_mult })}
+                format={(value) => `×${value.toFixed(1)}`}
               />
             </Row>
             <Row label={m.blinkSpeed}>

@@ -110,6 +110,8 @@ export interface Messages {
   shape: string;
   palette: string;
   signOpacity: string;
+  signWidth: string;
+  signHeight: string;
   blinkSpeed: string;
   onSign: string;
   quietMode: string;
@@ -410,6 +412,8 @@ export const MESSAGES: Record<Lang, Messages> = {
     shape: "形状",
     palette: "配色方案",
     signOpacity: "背景透明度",
+    signWidth: "牌宽",
+    signHeight: "牌高",
     blinkSpeed: "闪烁节奏",
     onSign: "牌上显示",
     quietMode: "安静模式",
@@ -706,6 +710,8 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     shape: "Shape",
     palette: "Palette",
     signOpacity: "Sign opacity",
+    signWidth: "Sign width",
+    signHeight: "Sign height",
     blinkSpeed: "Blink speed",
     onSign: "On the sign",
     quietMode: "Quiet mode",

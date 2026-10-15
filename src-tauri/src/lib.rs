@@ -1012,6 +1012,7 @@ fn sign_heights(settings: &Settings, groups: &[&GroupView]) -> Vec<u16> {
             config::sign_height(
                 settings.size,
                 settings.show.message && group.message.is_some(),
+                settings.sign_h_mult,
             )
         })
         .collect();
@@ -1019,7 +1020,7 @@ fn sign_heights(settings: &Settings, groups: &[&GroupView]) -> Vec<u16> {
     // 一块牌都没有时也要留一块（表示 offline，或者用户把所有组都藏了），
     // 否则窗口会塌成一条缝 —— 那样既看不见状态，也没法拖它
     if heights.is_empty() {
-        vec![config::sign_height(settings.size, false)]
+        vec![config::sign_height(settings.size, false, settings.sign_h_mult)]
     } else {
         heights
     }

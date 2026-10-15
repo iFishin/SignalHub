@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveAnimations, resolveShapes } from "./lampStyle";
+import { lampVars, resolveAnimations, resolveShapes } from "./lampStyle";
 import { DEFAULTS, type Settings } from "./useSettings";
 
 const withSettings = (patch: Partial<Settings>): Settings => ({ ...DEFAULTS, ...patch });
@@ -135,5 +135,29 @@ describe("resolveAnimations", () => {
     expect(anim.error).toBe("pulse 300ms ease-in-out infinite");
     // 同时没设过节奏的那几个仍然跟着倍率走
     expect(anim.working).toBe("pulse 800ms ease-in-out infinite");
+  });
+});
+
+describe("lampVars", () => {
+  /**
+   * 牌宽 / 牌高的倍率要作为 CSS 变量推给样式表（`.sign` 拿它们乘基础尺寸）。
+   *
+   * 这一条钉的是「前端确实把设置带到了 CSS」—— 变量名写错的话，CSS 会静默回落到
+   * `var(..., 1)`，滑杆就完全不生效，而那种错没有任何东西会报出来。
+   */
+  it("carries the sign multipliers through as CSS variables", () => {
+    const vars = lampVars(withSettings({ sign_w_mult: 1.4, sign_h_mult: 0.9 })) as Record<
+      string,
+      string
+    >;
+    expect(vars["--sign-w-mult"]).toBe("1.4");
+    expect(vars["--sign-h-mult"]).toBe("0.9");
+  });
+
+  /** 默认 1 = 恒等 —— 升级不该让任何人的灯变形。 */
+  it("defaults to 1 so existing geometry is unchanged", () => {
+    const vars = lampVars(DEFAULTS) as Record<string, string>;
+    expect(vars["--sign-w-mult"]).toBe("1");
+    expect(vars["--sign-h-mult"]).toBe("1");
   });
 });
