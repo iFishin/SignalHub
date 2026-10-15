@@ -1187,6 +1187,10 @@ export function SettingsPanel({ snapshot }: Props) {
             <Row label={m.quietMode}>
               <Switch on={settings.quiet} onChange={(on) => patch({ quiet: on })} />
             </Row>
+            <Row label={m.snapToEdge}>
+              <Switch on={settings.snap_to_edge} onChange={(on) => patch({ snap_to_edge: on })} />
+            </Row>
+            <p className="hint">{m.snapToEdgeHint}</p>
             <p className="hint">{m.lookHint}</p>
 
             {/* 逐状态覆盖和上面的全局项是**两层**，所以单独起一个标题分开 ——

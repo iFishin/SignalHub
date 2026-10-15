@@ -119,6 +119,8 @@ export interface Messages {
   blinkSpeed: string;
   onSign: string;
   quietMode: string;
+  snapToEdge: string;
+  snapToEdgeHint: string;
   lookHint: string;
   sizeSmall: string;
   sizeMedium: string;
@@ -426,6 +428,8 @@ export const MESSAGES: Record<Lang, Messages> = {
     blinkSpeed: "闪烁节奏",
     onSign: "牌上显示",
     quietMode: "安静模式",
+    snapToEdge: "贴边吸附",
+    snapToEdgeHint: "拖到屏幕左 / 右边缘附近松手时自动贴齐（上下不吸 —— 任务栏和 Dock 在那边）。",
     lookHint:
       "形状只影响灯珠：改成圆角方或环会让 permission / error 的方角区分失效，此时建议配合色盲友好配色。",
     sizeSmall: "小",
@@ -729,6 +733,9 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     blinkSpeed: "Blink speed",
     onSign: "On the sign",
     quietMode: "Quiet mode",
+    snapToEdge: "Snap to edges",
+    snapToEdgeHint:
+      "Snap flush to the left or right screen edge when released nearby (top and bottom are left alone — the taskbar and Dock live there).",
     lookHint:
       "Shape affects only the light: rounded or ring drops the square-corner cue for permission / error, so pair it with the colourblind palette.",
     sizeSmall: "Small",

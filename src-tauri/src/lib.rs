@@ -1277,6 +1277,43 @@ fn clamp_to_area(
     (position.0.clamp(left, max_x), position.1.clamp(top, max_y))
 }
 
+/// 吸附判定：窗口边缘离工作区边缘这么近就贴齐（物理像素）。
+const SNAP_THRESHOLD_PX: i32 = 12;
+
+/// 停多久算「拖完了」。`WindowEvent::Moved` 在拖动过程中一路都在发，所以不能一收到
+/// 就吸 —— 得等它安静下来。见 `wire_snap`。
+const SNAP_SETTLE_MS: u64 = 220;
+
+/// 把 `position` 吸到最近的**左 / 右**工作区边缘，够近才吸。`size` / `bounds` 与
+/// `clamp_to_area` 是同一套（物理像素、工作区）。
+///
+/// **只动 `x`**：上下不吸 —— 任务栏 / Dock 在上下，吸过去会和 `keep_on_screen` 抢
+/// 地方。窗口比工作区还宽时贴左，和 `clamp_to_area` 的兜底一致。
+///
+/// 抽成纯函数是为了能单测：左右都够近、都不够近、窗口有一半在屏外这些边界，真机上
+/// 很难摆出来。
+///
+/// **必须吸到工作区边缘**（`clamp_to_area` 用的也是工作区）：吸到一个它不认可的
+/// 位置，尺寸一变就会被拉回来 —— 那就是要避免的「吸过去又被弹开」。
+fn snap_to_edges(
+    position: (i32, i32),
+    size: (i32, i32),
+    bounds: ((i32, i32), (i32, i32)),
+    threshold: i32,
+) -> (i32, i32) {
+    let ((left, _top), (right, _bottom)) = bounds;
+    let (x, y) = position;
+    if (x - left).abs() <= threshold {
+        // 左边缘够近（含已经拖出屏外一点的情况，此时把它拉回来贴齐）
+        (left, y)
+    } else if (right - (x + size.0)).abs() <= threshold {
+        // 右边缘够近。(right - width).max(left) 与 clamp_to_area 的兜底同款
+        ((right - size.0).max(left), y)
+    } else {
+        (x, y)
+    }
+}
+
 /// 由命令和托盘菜单共用。
 pub(crate) fn reveal_settings(app: &tauri::AppHandle) {
     let Some(window) = app.get_webview_window("settings") else {
@@ -1338,6 +1375,75 @@ fn wire_main_window(app: &tauri::App) {
                 .scale = *scale_factor;
         }
     });
+
+    wire_snap(app.handle(), &window);
+}
+
+/// 拖完之后贴边吸附。**只吸左右**，且要用户在设置里打开（见 `Settings::snap_to_edge`）。
+///
+/// 「拖完了」为什么不用前端 mouseup：原生拖动（`startDragging`）由系统接管鼠标，
+/// mouseup 会被拖动自己的事件循环吃掉、未必回得到 webview。改成听 `Moved` —— 拖动
+/// 过程中它一路都在发，那就**等它安静 `SNAP_SETTLE_MS`**：这期间没有新的 `Moved`
+/// 才动手（靠后台线程醒来后比一次「位置还是不是刚才那个」来判断）。
+fn wire_snap(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
+    let app = app.clone();
+    // 闭包里要用 `window`，但调用 `on_window_event` 本身又借着它 —— 所以先单独克隆
+    // 一份给闭包用，别去动外面的 `window`。
+    let handle = window.clone();
+    window.on_window_event(move |event| {
+        let tauri::WindowEvent::Moved(moved) = event else {
+            return;
+        };
+        if !current_settings(&app).snap_to_edge {
+            return;
+        }
+        // 先记下候选位置、丢到后台线程去等：事件回调在事件循环上，在这儿 `sleep`
+        // 会把整个界面卡住。
+        let moved = (moved.x, moved.y);
+        let app = app.clone();
+        let window = handle.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(SNAP_SETTLE_MS));
+            // 这段里又移动过 = 还在拖，放过这一次（等下一轮安静下来）
+            let Ok(current) = window.outer_position() else {
+                return;
+            };
+            if (current.x, current.y) != moved {
+                return;
+            }
+            // 设置可能就在这 220ms 里被关掉了
+            if !current_settings(&app).snap_to_edge {
+                return;
+            }
+            snap_window(&window);
+        });
+    });
+}
+
+/// 把这个窗口吸到最近的左 / 右工作区边缘（够近才吸）。几何判断在 `snap_to_edges`。
+fn snap_window(window: &tauri::WebviewWindow) {
+    let (Ok(Some(monitor)), Ok(position), Ok(size)) = (
+        window.current_monitor(),
+        window.outer_position(),
+        window.outer_size(),
+    ) else {
+        // 拿不到显示器信息（多屏拔插的瞬间、无头环境）就什么都不做
+        return;
+    };
+
+    let area = monitor.work_area();
+    let bounds = (
+        (area.position.x, area.position.y),
+        (
+            area.position.x + area.size.width as i32,
+            area.position.y + area.size.height as i32,
+        ),
+    );
+    let size = (size.width as i32, size.height as i32);
+    let snapped = snap_to_edges((position.x, position.y), size, bounds, SNAP_THRESHOLD_PX);
+    if snapped != (position.x, position.y) {
+        let _ = window.set_position(tauri::PhysicalPosition::new(snapped.0, snapped.1));
+    }
 }
 
 /// 设置窗被关掉时只隐藏、不销毁，下次打开不用重建；同时把激活策略切回
@@ -1583,7 +1689,7 @@ pub fn run() {
 mod tests {
     use super::{
         clamp_to_area, pass_through_shortcut_label, shortcut_label, shortcut_label_for,
-        validate_settings, visible_groups, KeyStyle, PASS_THROUGH_SHORTCUT,
+        snap_to_edges, validate_settings, visible_groups, KeyStyle, PASS_THROUGH_SHORTCUT,
         TEST_REPORT_TTL_MS,
     };
     use crate::config::{GroupMeta, Settings, StateStyle};
@@ -1784,6 +1890,52 @@ mod tests {
         let area = ((-1920, -200), (0, 880));
         assert_eq!(clamp_to_area((-1900, 700), WINDOW, area), (-1900, 700), "区内不动");
         assert_eq!(clamp_to_area((-2000, 900), WINDOW, area), (-1920, 720), "越界拉回");
+    }
+
+    // ---- 贴边吸附 -------------------------------------------------------------
+
+    /// 离边缘还远就不动 —— 吸附是「够近才吸」，不是「总要贴一个边」。
+    #[test]
+    fn nothing_snaps_far_from_the_edges() {
+        assert_eq!(snap_to_edges((960, 500), WINDOW, SCREEN, 12), (960, 500));
+        // 差一像素超过阈值也不吸（阈值是「以内」）
+        assert_eq!(snap_to_edges((13, 500), WINDOW, SCREEN, 12), (13, 500));
+    }
+
+    /// 够近就贴齐，而且**只动 x** —— 上下不吸（任务栏 / Dock 在那儿）。
+    #[test]
+    fn near_the_left_or_right_edge_snaps_flat() {
+        assert_eq!(snap_to_edges((5, 500), WINDOW, SCREEN, 12), (0, 500));
+        assert_eq!(snap_to_edges((12, 500), WINDOW, SCREEN, 12), (0, 500), "正好在阈值上也吸");
+        assert_eq!(snap_to_edges((1712, 500), WINDOW, SCREEN, 12), (1720, 500), "右边贴齐");
+        assert_eq!(snap_to_edges((100, 7), WINDOW, SCREEN, 12), (100, 7), "上下不吸");
+    }
+
+    /// 拖出屏外一点（左 / 右）也拉回来贴齐，而不是留在外面。
+    #[test]
+    fn a_window_hanging_off_an_edge_is_snapped_back_in() {
+        assert_eq!(snap_to_edges((-8, 500), WINDOW, SCREEN, 12), (0, 500));
+        assert_eq!(snap_to_edges((1732, 500), WINDOW, SCREEN, 12), (1720, 500));
+    }
+
+    /// 窗口比工作区还宽时贴左，和 `clamp_to_area` 的兜底一致（别 panic）。
+    #[test]
+    fn a_window_wider_than_the_area_snaps_left() {
+        assert_eq!(snap_to_edges((5, 500), (4000, 3000), SCREEN, 12), (0, 500));
+    }
+
+    /// 吸完的位置必须**同时**是 `clamp_to_area` 的不动点 —— 否则尺寸一变，
+    /// `keep_on_screen` 就会把窗口从吸好的边上拉走，变成「吸过去又弹开」。
+    #[test]
+    fn a_snapped_window_is_not_pulled_back_by_keep_on_screen() {
+        for position in [(-8, 300), (5, 300), (1712, 300), (1732, 300), (700, 300)] {
+            let snapped = snap_to_edges(position, WINDOW, SCREEN, 12);
+            assert_eq!(
+                clamp_to_area(snapped, WINDOW, SCREEN),
+                snapped,
+                "{position:?} 吸到 {snapped:?} 之后又被夹了"
+            );
+        }
     }
 
     // ---- 置顶排序 -------------------------------------------------------------

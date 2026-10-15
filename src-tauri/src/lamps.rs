@@ -172,6 +172,8 @@ impl LampHost for TauriHost<'_> {
                 if let Some((x, y)) = position {
                     let _ = window.set_position(PhysicalPosition::new(x, y));
                 }
+                // 组灯也要能贴边吸附（和主灯同一套，见 lib.rs 的 `wire_snap`）
+                crate::wire_snap(app, &window);
             }
             Err(err) => eprintln!("[signalhub] 建灯窗 {label} 失败: {err}"),
         }

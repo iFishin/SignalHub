@@ -100,6 +100,8 @@ export interface Settings {
   /** 多灯布局：`single` 一盏灯画一叠牌（默认），`per-group` 每个可见组一盏灯。 */
   lamp_layout: "single" | "per-group";
   always_on_top: boolean;
+  /** 拖完之后离屏幕左右边缘 12px 以内就吸附贴齐。默认关。 */
+  snap_to_edge: boolean;
   /** 安静模式：空闲 / 沉默 / 离线时圆点几乎透明，悬停恢复。 */
   quiet: boolean;
   /** 需要你注意时弹系统通知。 */
@@ -174,6 +176,7 @@ export const DEFAULTS: Settings = {
   sign_h_mult: 1,
   lamp_layout: "single",
   always_on_top: true,
+  snap_to_edge: false,
   quiet: true,
   notify: true,
   hooks: [],

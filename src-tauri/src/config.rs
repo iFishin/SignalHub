@@ -651,6 +651,12 @@ pub struct Settings {
     /// 多灯布局。默认 `Single`（一盏灯画一叠牌），`PerGroup` 时每个可见组一盏灯。
     pub lamp_layout: LampLayout,
     pub always_on_top: bool,
+    /// 拖完之后若窗口离屏幕**左 / 右**边缘 12px 以内，就吸附过去贴齐。
+    ///
+    /// **默认关**（红线 3）：吸附会改变「拖到哪就是哪」的既有手感，得由用户明确
+    /// 打开。只在左右吸 —— 上下是任务栏 / Dock 的地盘，吸过去会和 `keep_on_screen`
+    /// 的底边夹取抢地方。
+    pub snap_to_edge: bool,
     /// 「有事才显形」：空闲 / 沉默 / 离线时把圆点压到几乎透明，
     /// 只有真正有活动或需要你注意时才完全显形。
     pub quiet: bool,
@@ -870,6 +876,8 @@ impl Default for Settings {
             // 默认单灯 —— 新能力默认关（红线 3）
             lamp_layout: LampLayout::Single,
             always_on_top: true,
+            // 吸附会改变拖动的手感，默认关（红线 3）
+            snap_to_edge: false,
             quiet: true,
             notify: true,
             webhook_url: None,
@@ -1311,6 +1319,7 @@ mod tests {
             sign_h_mult: 0.9,
             lamp_layout: LampLayout::PerGroup,
             always_on_top: false,
+            snap_to_edge: true,
             quiet: false,
             notify: false,
             hooks: vec![
@@ -2042,6 +2051,17 @@ mod tests {
         let legacy = json.replace(r#""lamp_layout":"single","#, "");
         let parsed: Settings = serde_json::from_str(&legacy).unwrap();
         assert_eq!(parsed.lamp_layout, LampLayout::Single);
+    }
+
+    /// 旧配置（没有 `snap_to_edge`）必须读成「不吸附」—— 新能力默认关（红线 3）。
+    #[test]
+    fn settings_without_snap_to_edge_read_as_off() {
+        let json = serde_json::to_string(&Settings::default()).unwrap();
+        assert!(json.contains(r#""snap_to_edge":false"#), "{json}");
+
+        let legacy = json.replace(r#""snap_to_edge":false,"#, "");
+        let parsed: Settings = serde_json::from_str(&legacy).unwrap();
+        assert!(!parsed.snap_to_edge);
     }
 
     /// 折叠态：一个组一个点，窗口比展开态小得多
