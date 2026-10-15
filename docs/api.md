@@ -569,14 +569,16 @@ hook 模式会把每次调用追加到 `~/.signalhub/hooks.log`：
 
 这是唯一一个方向相反的接口：配置若干条**钩子**，聚合变化时按条件触发。用于手机推送（ntfy）、团队频道（Slack）、跑脚本、或接进自建服务。
 
-在设置面板的「钩子」页配置，也可以直接写 `~/.signalhub/config.json`：
+在设置面板的「通知转发」页配置，也可以直接写 `~/.signalhub/config.json`：
 
 ```json
 {
   "hooks": [
-    { "when": ["permission", "error"], "type": "http",    "url": "https://ntfy.sh/my-topic" },
+    { "when": ["permission", "error"], "type": "http", "url": "https://ntfy.sh/my-topic", "preset": "ntfy" },
+    { "when": ["error"],              "type": "http", "url": "https://ntfy.sh/private", "preset": "ntfy",
+      "headers": { "X-Token": "tk_…" } },
     { "when": ["done"],               "type": "command", "command": "say 完成" },
-    { "when": [],                     "type": "http",    "url": "http://localhost:9000/ingest" }
+    { "when": [],                     "type": "http", "url": "http://localhost:9000/ingest" }
   ]
 }
 ```
@@ -586,11 +588,32 @@ hook 模式会把每次调用追加到 `~/.signalhub/hooks.log`：
 | `when` | 哪些状态**变成**时触发。空数组 = 任何变化都触发。值是状态名，**含 `stale` / `offline` 这类派生状态**（你可能只想知道「会话沉默了」） |
 | `type` | `"http"` 或 `"command"` |
 | `url` | `type: "http"` 时的目标，必须 `http://` 或 `https://` 开头 |
+| `headers` | 可选。额外请求头，要鉴权的地址靠它（`Authorization: Bearer …`、ntfy 的 `X-Token`）。最多 16 条 |
+| `preset` | 可选，默认 `"raw"`。发什么形状，见下表 |
 | `command` | `type: "command"` 时执行的命令，通过 `sh -c`（Windows 上是 `cmd /C`）执行 |
+
+**`preset` 决定 body 的形状。** 默认的 `raw` 是 SignalHub 自己的 JSON 快照（见下）；其余每一个都只发**一行文字** —— 那些服务要的就是「一个地址 + 一段话」，服务端自己排版：
+
+| `preset` | content-type | body |
+|---|---|---|
+| `raw`（默认） | `application/json` | SignalHub 自己的快照 JSON（见下） |
+| `text` | `text/plain` | 那一行文字 |
+| `ntfy` | `text/plain` | 同上，另加 `Title: SignalHub` 头 |
+| `bark` | `text/plain` | 那一行文字 |
+| `slack` | `application/json` | `{"text": "…"}` |
+| `discord` | `application/json` | `{"content": "…"}` |
+| `lark`（飞书） | `application/json` | `{"msg_type":"text","content":{"text":"…"}}` |
+| `wecom`（企业微信） | `application/json` | `{"msgtype":"text","text":{"content":"…"}}` |
+| `dingtalk`（钉钉） | `application/json` | 同企业微信 |
+| `telegram` | `application/x-www-form-urlencoded` | `chat_id=…&text=…` |
+
+`telegram` 有一个特别之处：`chat_id` 按官方文档是**查询参数**，所以你填的地址是 `…/bot<token>/sendMessage?chat_id=<id>` —— 发送时整条查询串会被**搬进 body**，URL 上不留（SendMessage 只认表单体）。裸的 `…/sendMessage` 也能填，Telegram 会回 400，而那条状态码会显示在面板上那条钩子下面。
+
+那一行文字的形态是 `[SignalHub] 需要授权 · 构建 — 等你批准 (2m)`：状态、**组显示名**（你在「外观 → 各组的显示」里改的名字优先）、说明、已经持续多久。不限定组的钩子写的是全局聚合，所以没有组名那一段。
 
 **触发语义**：只在聚合**发生跃迁**时触发（同一个状态内的变化不算，例如某个会话的说明文本改了）。这一点和系统通知一致——一轮工具调用会触发几十次状态推送，按「每次变化」触发就成了骚扰。
 
-**请求体**（`type: "http"`）：
+**请求体**（只对 `preset: "raw"`）：
 
 ```json
 {
@@ -614,6 +637,7 @@ hook 模式会把每次调用追加到 `~/.signalhub/hooks.log`：
 - 命令的 stdout / stderr 全部丢弃——钩子是拿来触发副作用的，它的输出没地方去。
 - 失败只写 stderr（`[signalhub] 钩子执行失败: …`），不重试。本地状态灯不该因为远端不可达而变复杂。
 - **目标留空的钩子不触发也不报错**：那是编辑器里的中间态（刚点「添加」还没填），面板上会标「未填目标」。
+- **面板上有「发送测试」**：忽略 `when` 和组过滤，把已配置的每条各发一遍，结果（HTTP 状态码 / 失败原因）就地显示在每条钩子下面，并写进 `~/.signalhub/outbound.json`（重启后还在）。配完先点它一下 —— 「等下一次真实跃迁」和「其实没发出去」从外面看是一样的。
 
 > **关于 `type: "command"` 的安全性**：它会执行本地命令。信任模型和 git hooks / npm scripts 一样——配置文件在你自己的主目录里，能改它就能执行任何东西。所以**没有**额外的开关：多一个开关只会给人一种「关掉就安全」的错觉，而配置文件本来就在你手里。不要把别人的 `config.json` 直接拿来用。
 

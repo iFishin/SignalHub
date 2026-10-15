@@ -485,26 +485,46 @@ fn compose(preset: HttpPreset, summary: &str, url: &str, headers: &BTreeMap<Stri
 - 手工：一条 ntfy + 一条 Bark，点「发送测试」，手机收到；重启应用后
   「最近一次结果」还在。
 
-### 4.5 拆成 2-3 个 commit
+### 4.5 拆成 2-3 个 commit（实施了，附三处修正）
 
-1. `R4-a` Rust：`HttpPreset` + `compose` + 摘要 builder + headers + clamp（+ 单测）。
-2. `R4-b` Rust：`test_hooks` 命令 + 出站日志落盘。
-3. `R4-c` 前端：预设下拉 + headers 编辑器 + 测试按钮 + i18n。
+1. `R4-a` Rust：`HttpPreset` + `compose` + 摘要 builder + headers + clamp
+   （+ 单测）——**外加 `test_all` 和 `test_hooks` 命令**（5ece827）。
+2. `R4-b` Rust：出站日志落盘（defee00）。
+3. `R4-c` 前端：预设下拉 + headers 编辑器 + 测试按钮 + i18n（234ffdd）。
+
+**修正一：`test_all` / `test_hooks` 挪进了 R4-a。** 原计划把它们放 R4-b，但
+`lang::text().summary_prefix_test` 只有它用得上 —— 分开的话，R4-a 单独提交过去不了
+`clippy -D warnings`（unused）。挪过来之后 R4-a 是「组装层（预设 / 摘要 / 请求头）+
+一次性发送」，R4-b 只剩「结果落盘」，两个都自洽。
+
+**修正二：摘要里没有 emoji。** §4.2 里写的是 `🔴 需授权`，实现时去掉了：Rust 这边
+没有状态 emoji 表（`lang::signal_label` 只有文字），新加一份就是第三处「状态长什么
+样」的真值 —— 而前端的 `signals.ts`、Rust 的 `lang.rs` 已经有两处在同步了，再加一处
+只会更难自查。收件人读的是文字。
+
+**修正三：Rust 侧不做「只差大小写」的头名去重。** §4.3 写的是「去重时以最后一个为
+准」，但 `BTreeMap` 已经丢掉了用户写下的**顺序**，任何胜者都是任意挑的 —— 与其悄悄
+丢掉一条用户明确写下的鉴权头，不如两条都发（服务器会用状态码告诉我们它不接受）。
+这条规则挪到了**前端**（R4-c 的 `lib/hookHeaders.ts`）：那里顺序还在，能确定地问用户
+一句「这个名字已经有了」。Rust 侧只做去空白、丢空键、上限 16 条（按键的字典序截断，
+所以丢哪几条是确定的）。
 
 ---
 
 ## 5. 实施顺序与提交
 
-| 顺序 | 提交 | 内容 |
-|---|---|---|
-| 1 | `R1-a` | 插件式安装机制（`InstallKind`）+ opencode |
-| 2 | `R1-b` | Pi |
-| 3 | `R1-c` | Hermes + 文档 |
-| 4 | `R2` | 牌上删除 + 会话粒度删除 |
-| 5 | `R3` | 牌上就地改名 |
-| 6 | `R4-a` | 转发预设 + 摘要 + headers |
-| 7 | `R4-b` | 测试命令 + 结果落盘 |
-| 8 | `R4-c` | 转发界面的预设与测试 |
+**全部完成**（下表右列是实际提交）：
+
+| 顺序 | 提交 | 内容 | 实际 |
+|---|---|---|---|
+| 1 | `R1-a` | 插件式安装机制（`InstallKind`）+ opencode | 28d14dc |
+| 2 | `R1-b` | Pi | af9f4d1 |
+| 3 | `R1-c` | Hermes + 文档 | c8e7f35 |
+| 4 | `R2` | 牌上删除 + 会话粒度删除 | 69bf509 |
+| 5 | `R3` | 牌上就地改名 | 291f3db |
+| 6 | `R4-a` | 转发预设 + 摘要 + headers + 测试发送 | 5ece827 |
+| 7 | `R4-b` | 结果落盘 | defee00 |
+| 8 | `R4-c` | 转发界面的预设与测试 | 234ffdd |
 
 每步一步一提交，提交信息用中文、说清「为什么」；`git commit -- <paths>` 限定路径
 （多个会话共用这个检出）；push 用
