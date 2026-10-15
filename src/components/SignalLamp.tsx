@@ -7,9 +7,10 @@ import { useLang, useMessages, type Messages, type Lang } from "../lib/i18n";
 import { lampVars, resolveShapes } from "../lib/lampStyle";
 import { transitions, type AggregateMap } from "../lib/lampTransitions";
 import { labelOf, orderVisible } from "../lib/lampSort";
+import { withGroupName } from "../lib/groupMeta";
 import { useNow } from "../lib/useNow";
 import { useToggles } from "../lib/useToggles";
-import type { GroupMeta, Settings } from "../lib/useSettings";
+import { updateSettings, type GroupMeta, type Settings } from "../lib/useSettings";
 import type { GroupView, SignalState } from "../lib/types";
 
 /** 与 Rust 侧 `config::MAX_SIGNS` 一致。超出的牌服务端已经截断。 */
@@ -308,6 +309,29 @@ export function SignalLamp({ aggregate, groups, settings, paused }: Props) {
 
   const drag = useDragOrClick(toggle);
 
+  // 就地改名：被点开的那一组（原始组名）+ 输入框里的草稿。
+  //
+  // **草稿 + 提交**，不是每敲一个字就存一次：那会把半截名字写进配置，而且灯窗
+  // 每帧都在重渲染（状态推送），受控输入容易掉字。
+  const [renaming, setRenaming] = useState<{ group: string; value: string } | null>(null);
+
+  const commitRename = () => {
+    if (!renaming) return;
+    const { group, value } = renaming;
+    setRenaming(null);
+    // 值没变就别写设置 —— 失焦提交时这条最常命中（点一下输入框又点回来）
+    const current = settings.group_meta[group]?.name ?? "";
+    if (value.trim() === current) return;
+    // **整份设置展开**：`set_settings` 是整份替换，只传 group_meta 会把其它字段
+    // 回落到默认值，等于把所有设置重置一遍。改名算法与设置页共用同一个纯函数
+    // （`lib/groupMeta.ts`），两处不会分叉。
+    // 改完不用自己刷新：`set_settings` 会把新设置广播回来，两个窗口一起更新
+    // （同 `SettingsPanel` 的 `patch`）。
+    updateSettings({ ...settings, group_meta: withGroupName(settings.group_meta, group, value) }).catch(
+      console.error,
+    );
+  };
+
   const clearGroup = (group: string) => {
     if (!inTauri) return;
     // 和右键菜单「清除该组的状态」走同一个命令（Rust 侧同一个函数），两条入口
@@ -403,8 +427,53 @@ export function SignalLamp({ aggregate, groups, settings, paused }: Props) {
             />
             <div className="sign-body">
               <div className="sign-line">
-                {show.name && group.name && (
-                  <span className="sign-name">{labelOf(group, settings.group_meta)}</span>
+                {show.name && group.name && renaming?.group === group.name ? (
+                  /* 就地改名的输入框。**必须吃掉 mousedown / mouseup / click**：
+                     否则按一下就开始拖窗口、松开又被当成「点了一下灯」→ 折叠。
+                     Enter 提交、Esc 取消、失焦提交（同 macOS 各处的手感）。 */
+                  <input
+                    className="sign-rename"
+                    autoFocus
+                    value={renaming.value}
+                    placeholder={group.default_label ?? group.name}
+                    aria-label={m.renameHint}
+                    onMouseDown={stopMouse}
+                    onMouseUp={stopMouse}
+                    onClick={stopMouse}
+                    onFocus={(event) => event.currentTarget.select()}
+                    onChange={(event) =>
+                      setRenaming({ group: group.name, value: event.target.value })
+                    }
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") commitRename();
+                      // Esc 直接丢掉草稿：先把状态清掉，再让 blur 什么也不做
+                      if (event.key === "Escape") setRenaming(null);
+                      event.stopPropagation();
+                    }}
+                    onBlur={commitRename}
+                  />
+                ) : (
+                  show.name &&
+                  group.name && (
+                    <span
+                      className="sign-name"
+                      title={m.renameHint}
+                      /* **只吃 mouseup，不吃 mousedown**：冒到 `.lamp-root` 上的
+                         mouseup 会被当成「点了一下灯」→ 折叠（见 `useDragOrClick`）。
+                         而 mousedown 留着，从名字上照样能把灯拖走 —— 拖拽靠的是
+                         mousemove 上的 `startDragging()`，那条路不受影响。 */
+                      onMouseUp={stopMouse}
+                      onClick={(event) => {
+                        stopMouse(event);
+                        setRenaming({
+                          group: group.name,
+                          value: settings.group_meta[group.name]?.name ?? "",
+                        });
+                      }}
+                    >
+                      {labelOf(group, settings.group_meta)}
+                    </span>
+                  )
                 )}
                 {show.state && (
                   <span className="sign-state">{signalLabel(lang, group.aggregate)}</span>
@@ -420,6 +489,27 @@ export function SignalLamp({ aggregate, groups, settings, paused }: Props) {
                 占位那块（name 为空）不对应任何真实的组，不挂这枚。 */}
             {group.name !== "" && (
               <span className="sign-actions">
+                {/* 名字被用户关掉时没有可改的东西 —— 不渲染这枚，也不为了改名把
+                    用户关掉的字段强行画出来。 */}
+                {show.name && renaming?.group !== group.name && (
+                  <button
+                    type="button"
+                    className="sign-action"
+                    title={m.renameHint}
+                    aria-label={m.renameHint}
+                    onMouseDown={stopMouse}
+                    onMouseUp={stopMouse}
+                    onClick={(event) => {
+                      stopMouse(event);
+                      setRenaming({
+                        group: group.name,
+                        value: settings.group_meta[group.name]?.name ?? "",
+                      });
+                    }}
+                  >
+                    ✎
+                  </button>
+                )}
                 <button
                   type="button"
                   className="sign-action"

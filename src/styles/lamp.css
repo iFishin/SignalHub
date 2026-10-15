@@ -166,6 +166,36 @@ body,
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* 点它就是改名 —— 光标得说出来这件事，否则没人会去点一个看起来只是文本的东西 */
+  cursor: pointer;
+}
+
+/* 就地改名的输入框。**必须占的和名字一样大**：牌的宽高是 Rust
+   （`config.rs::sign_width` / `sign_height`）与这里算出的同一个值，输入框只要比
+   文字高一点，牌就会被顶高、然后被 `overflow: hidden` 裁掉。所以边框和内边距
+   全部清零、行高与 `.sign` 一致；聚焦的提示用 inset 阴影画 —— 它不占布局。 */
+.sign-rename {
+  box-sizing: border-box;
+  flex: 1;
+  min-width: 0;
+  height: 1.15em;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: 600;
+  line-height: 1.15;
+  outline: none;
+  box-shadow: inset 0 -1px 0 var(--state, var(--sign-line));
+}
+
+/* 占位符（没起过名时显示服务端给的默认名）比正文淡一档 */
+.sign-rename::placeholder {
+  color: var(--sign-muted);
+  opacity: 1;
 }
 
 .sign-state {

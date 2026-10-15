@@ -19,6 +19,7 @@ import { useNow } from "../lib/useNow";
 import { useAgents, useHookLog, type AgentStatus, type HookChange } from "../lib/useAgents";
 import { colorVars, resolveColors } from "../lib/palettes";
 import { presets, isActivePreset, stylePresets, isActiveStylePreset } from "../lib/presets";
+import { withGroupName } from "../lib/groupMeta";
 import { SIGNALS, REPORTABLE_SIGNALS, type SignalState, type Snapshot } from "../lib/types";
 
 /**
@@ -844,9 +845,12 @@ export function SettingsPanel({ snapshot }: Props) {
     patch({ group_meta });
   };
 
-  /** 清空显示名 = 回到「跟随上报方给的原始组名」。 */
+  /** 清空显示名 = 回到「跟随上报方给的原始组名」。
+   *
+   *  改名的算法住在 `lib/groupMeta.ts` 里，因为**灯上那块牌也能就地改名** ——
+   *  两处各写一份，就会出现「灯上改完，设置里看着还是旧名字」。 */
   const setGroupName = (group: string, name: string) =>
-    setGroupMeta(group, { ...settings.group_meta[group], name: name || null });
+    patch({ group_meta: withGroupName(settings.group_meta, group, name) });
 
   /**
    * 置顶 / 取消置顶。

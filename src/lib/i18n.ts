@@ -290,6 +290,8 @@ export interface Messages {
   collapseNow: string;
   /** 持续可见的状态指示 */
   lampPaused: string;
+  /** 牌上那一小块名字的悬停提示（点它就是改名） */
+  renameHint: string;
   /** 牌右上角那枚 × 的悬停提示 */
   lampClearGroup: string;
   /** 会话行尾那枚 × 的悬停提示 */
@@ -608,6 +610,7 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     expandNow: "已展开",
     collapseNow: "已折叠",
     lampPaused: "已暂停监控",
+    renameHint: "点击改名（留空则跟随上报方给的组名）",
     lampClearGroup: "清除该组的状态（智能体下次上报会回来）",
     clearSessionHint: "清掉这个会话（智能体下次上报会回来）",
     lampPassThrough: "点击穿透",
@@ -923,6 +926,7 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     expandNow: "Expanded",
     collapseNow: "Collapsed",
     lampPaused: "Monitoring paused",
+    renameHint: "Click to rename (leave empty to follow the group name the reporter sends)",
     lampClearGroup: "Clear this group's state (the agent will report again next time)",
     clearSessionHint: "Clear this session (the agent will report again next time)",
     lampPassThrough: "Click-through",
