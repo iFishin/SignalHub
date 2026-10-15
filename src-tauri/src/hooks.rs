@@ -24,6 +24,7 @@ pub enum Agent {
     Cursor,
     Gemini,
     Goose,
+    Opencode,
 }
 
 impl Agent {
@@ -36,6 +37,7 @@ impl Agent {
             "cursor" => Agent::Cursor,
             "gemini" | "gemini-cli" => Agent::Gemini,
             "goose" => Agent::Goose,
+            "opencode" | "open-code" => Agent::Opencode,
             other => {
                 return Err(format!(
                     "不认识的智能体 {other:?}；支持 {}",
@@ -52,6 +54,9 @@ impl Agent {
             Agent::Cursor => "Cursor",
             Agent::Gemini => "Gemini CLI",
             Agent::Goose => "Goose",
+            // 官方写法就是全小写的 `opencode`（不是 OpenCode），照抄，免得用户
+            // 在两个名字之间对不上。
+            Agent::Opencode => "opencode",
         }
     }
 
@@ -71,15 +76,44 @@ impl Agent {
             Agent::Cursor => ".cursor/hooks.json",
             Agent::Gemini => ".gemini/settings.json",
             Agent::Goose => ".agents/plugins/signalhub/hooks/hooks.json",
+            // 插件式：opencode 启动时自动加载这个目录下的所有 js/ts 文件，所以
+            // 「装」就是写一个我们自己的文件，「卸」就是删掉它（见 `InstallKind`）。
+            Agent::Opencode => ".config/opencode/plugins/signalhub.js",
         }
     }
 }
 
 /// 全部智能体，按加入顺序。`parse` 的报错信息和 CLI 的 help 都用它，
 /// 免得新增一个之后忘改其中一处、报错里少列一个。
-pub const ALL_NAMES: [&str; 5] = ["claude-code", "codex", "cursor", "gemini", "goose"];
+pub const ALL_NAMES: [&str; 6] = [
+    "claude-code",
+    "codex",
+    "cursor",
+    "gemini",
+    "goose",
+    "opencode",
+];
 
 impl Agent {
+    /// 我们往对方那儿放东西的**方式**。
+    ///
+    /// 抽象这一层而不是给每家写一套：现有的 5 家全是「读一份 JSON、往 `hooks` 键里
+    /// 插条目」，而插件式的几家（写一个属于我们自己的文件、对方启动时自动加载）
+    /// 共用一份实现，`events()` 那种逐事件的差异完全不参与。
+    ///
+    /// 为什么只挑「有自己插件目录」的家：往**共享配置**里插条目必须先解析用户的
+    /// 文件。JSON 能整份解析后重写（`install_at` 就是），YAML 做不到 —— 重写会丢掉
+    /// 注释和格式，那是不可接受的数据损坏。而插件目录里的文件**全是我们建的**，
+    /// 解析这一步直接不存在，卸载就是删文件。
+    fn install_kind(self) -> InstallKind {
+        match self {
+            Agent::Opencode => InstallKind::PluginFile,
+            Agent::ClaudeCode | Agent::Codex | Agent::Cursor | Agent::Gemini | Agent::Goose => {
+                InstallKind::JsonHooks
+            }
+        }
+    }
+
     /// 这个智能体在机器上留下的**目录**痕迹，用来判断它装没装。
     ///
     /// 与 `config_relative_path` 分开：那个是我们**写** hook 的地方，这个是我们
@@ -92,6 +126,7 @@ impl Agent {
             Agent::Cursor => ".cursor",
             Agent::Gemini => ".gemini",
             Agent::Goose => ".config/goose",
+            Agent::Opencode => ".config/opencode",
         }
     }
 
@@ -104,9 +139,27 @@ impl Agent {
             Agent::Cursor => &["cursor-agent", "cursor"],
             Agent::Gemini => &["gemini"],
             Agent::Goose => &["goose"],
+            Agent::Opencode => &["opencode"],
         }
     }
 }
+
+/// 见 [`Agent::install_kind`]。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstallKind {
+    /// 往用户共享的一份 JSON 里插 `hooks` 条目。
+    JsonHooks,
+    /// 往对方自动加载的插件目录里放**我们自己的一个文件**
+    /// （路径见 `Agent::config_relative_path`）。
+    PluginFile,
+}
+
+/// 生成的插件源码里那一行标记的前缀。
+///
+/// 安装判据、卸载、以及「配置里那条命令还解析得到吗」全都只认它，**不解析对方的
+/// 格式** —— 那些格式会随版本变，而这一行是我们自己写的。注释号（`//` / `#`）刻意
+/// 不含在里面：找的是这一行里的这个子串，几种语言共用一份实现。
+const PLUGIN_MARKER: &str = "signalhub-hook:";
 
 /// 这台机器上有没有这个智能体。
 ///
@@ -131,6 +184,15 @@ pub fn detect(agent: Agent) -> bool {
 /// 判据是「配置文件里有没有我们写的 handler」，**不是「配置文件在不在」** ——
 /// 那个文件本来就可能存在（用户自己配的别的东西），光看它会把没装的说成装了。
 pub fn is_installed(agent: Agent) -> bool {
+    if agent.install_kind() == InstallKind::PluginFile {
+        let Ok(path) = config_path(agent) else {
+            return false;
+        };
+        return fs::read_to_string(&path)
+            .map(|text| plugin_command_in(&text).is_some())
+            .unwrap_or(false);
+    }
+
     // Goose 是插件：整个目录都是我们建的，看它在不在就够了
     if let Some(dir) = plugin_dir(agent) {
         return dir.is_dir();
@@ -173,7 +235,12 @@ fn config_has_our_hooks(text: &str) -> bool {
 /// 见 [`command_resolves`] 怎么判断它还跑不跑得起来。
 pub fn installed_command(agent: Agent) -> Option<String> {
     let text = fs::read_to_string(config_path(agent).ok()?).ok()?;
-    installed_command_in(&text)
+    match agent.install_kind() {
+        // 插件式里那条命令就是**这个 CLI 自己**（插件拼出 `signalhub <状态> …`），
+        // 不带 `hook <agent>` 那一段 —— 诊断要报的是「它指向的那个程序还在不在」。
+        InstallKind::PluginFile => plugin_command_in(&text),
+        InstallKind::JsonHooks => installed_command_in(&text),
+    }
 }
 
 /// 从一份配置内容里摘出我们那条 handler 的 `command`。
@@ -220,8 +287,13 @@ pub fn command_resolves(command: &str) -> bool {
 /// 事件名清单。[`须写 matcher`]: 只有 Claude Code 的 SessionStart 需要
 /// —— 不加限制的话，上下文压缩时触发的 SessionStart 会被当成「会话开始」，
 /// 在智能体仍工作时把灯报成 idle。
+///
+/// **插件式的智能体（`InstallKind::PluginFile`）返回空**：它们不靠事件清单装，
+/// 而是由我们生成的那份源码自己在内部把事件映射到 `signalhub <状态>` 上（见
+/// `plugin_source`）。这张表只服务于「往共享 JSON 里插条目」那条路。
 fn events(agent: Agent) -> &'static [(&'static str, Option<&'static str>)] {
     match agent {
+        Agent::Opencode => &[],
         Agent::ClaudeCode => &[
             ("SessionStart", Some("startup|resume")),
             ("UserPromptSubmit", None),
@@ -328,6 +400,11 @@ pub struct Report {
     pub dry_run: bool,
     /// Goose 专用的插件清单路径。其余智能体没有这个文件。
     pub manifest: Option<PathBuf>,
+    /// **插件式**安装（`InstallKind::PluginFile`）写下的那个文件。
+    ///
+    /// 界面据此改口：JSON 类是「新增 N 个事件」，插件类根本没有事件清单这回事，
+    /// 说「已写入 <路径>」才对得上用户能去 `cat` 的那个东西。
+    pub plugin: Option<PathBuf>,
 }
 
 // ---- 对外入口 --------------------------------------------------------------
@@ -361,17 +438,49 @@ const CLI_BINARY: &str = if cfg!(windows) {
 /// 不认 `hook` 参数，而单实例插件会把它变成「把已经开着的窗口叫到前面」—— 不报
 /// 状态，也不报错。
 pub fn resolve_hook_command(agent: Agent) -> String {
-    let program = match on_path("signalhub") {
+    format!("{} hook {}", quote_program(&cli_program()), agent_name_for_cli(agent))
+}
+
+/// 我们自己的 CLI 该怎么调，**未加引号**。
+///
+/// 插件式生成的源码用它（`spawn(program, args)` 直接给 argv，不经过 shell，所以
+/// 绝不能带引号 —— 带了就是「找不到名为 `"…"` 的程序」）。写进**配置里的命令行**
+/// 那份要过 [`quote_program`]。
+fn cli_program() -> String {
+    match on_path("signalhub") {
         Some(_) => "signalhub".to_string(),
         None => bundled_cli().unwrap_or_else(|| "signalhub".to_string()),
-    };
-    // 含空格的路径必须引起来，否则被 shell 拆成两个参数
-    let program = if program.chars().any(char::is_whitespace) {
+    }
+}
+
+/// 含空格的路径必须引起来，否则会被 shell 拆成两个参数。
+fn quote_program(program: &str) -> String {
+    if program.chars().any(char::is_whitespace) {
         format!("\"{program}\"")
     } else {
-        program
-    };
-    format!("{program} hook {}", agent_name_for_cli(agent))
+        program.to_string()
+    }
+}
+
+/// 把一个值放进**双引号字符串字面量**里（JS / TS / Python 三种语言规则一致）。
+///
+/// 必须转义反斜杠：Windows 的路径 `C:\Users\me\signalhub.exe` 直接塞进
+/// `"C:\Users\..."` 里，`\U` 会被当成转义序列 —— 结果是路径悄悄少掉几层反斜杠，
+/// 插件跑去执行一个不存在的程序，而**双方都不报错**（这正是 `docs/api.md` 警告过
+/// 的那种「静默失效」）。引号也要转义，否则路径里带 `"` 就能把源码写坏。
+fn as_string_literal(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            // 换行会把「一行标记」拆成两行，卸载/诊断就找不到了
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 /// 和当前可执行文件放在一起的那个 CLI，在的话给出它的绝对路径。
@@ -397,6 +506,7 @@ fn agent_name_for_cli(agent: Agent) -> &'static str {
         Agent::Cursor => "cursor",
         Agent::Gemini => "gemini",
         Agent::Goose => "goose",
+        Agent::Opencode => "opencode",
     }
 }
 
@@ -421,7 +531,124 @@ const GOOSE_MANIFEST: &str = r#"{
 }
 "#;
 
+/// opencode 插件模板。两个占位符由 [`Agent::plugin_source`] 填。
+const OPENCODE_PLUGIN: &str = r#"// 由 SignalHub 生成 —— 请勿手改。要更新就回 SignalHub 的「接入」页重新点一次接入。
+// %MARKER%
+//
+// opencode 启动时会自动加载这个目录下所有的 js / ts 文件，于是这份文件就成了
+// 「opencode 说什么 → signalhub 命令行」的翻译器。
+//
+// 改之前先读三条纪律：
+//
+//  1. **不许阻塞。** 每一次工具调用都会打到这里。同步等待、await、execFileSync
+//     都会把 opencode 卡住 —— 用 spawn 派生完就 unref，stdio 全丢掉。
+//  2. **不许抛。** 上报失败绝不许影响 opencode 自己，所以整段包在 try 里，
+//     子进程的 error 事件也吃掉。
+//  3. **只映射下面这几个事件。** 名字和形状都来自官方 Plugins 文档；多映射一个没
+//     核实过的事件（比如 session.status 里那些字段）就可能得到一个「永远在忙」的
+//     假灯。也刻意没有「推理中」那一档：opencode 没有形状确定的对应事件。
+import { spawn } from "node:child_process"
+
+const CLI = "%CLI%"
+const AGENT = "opencode"
+
+function report(state, session, cwd, message) {
+  try {
+    // 不知道是哪个会话时**绝不发 clear**：会话名会兜底成 "default"，清掉它等于
+    // 顺手把别的上报方的状态一起抹了。
+    if (state === "clear" && !session) return
+    const args =
+      state === "clear"
+        ? ["clear", "--agent", AGENT]
+        : [state, "--agent", AGENT, "--cwd", cwd]
+    if (session) args.push("--session", session)
+    if (message) args.push("--message", String(message).slice(0, 200))
+    const child = spawn(CLI, args, {
+      detached: true,
+      windowsHide: true,
+      stdio: "ignore",
+    })
+    child.on("error", () => {})
+    child.unref()
+  } catch {
+    // 上报永远不许影响 opencode 自己
+  }
+}
+
+export const SignalHub = async ({ directory }) => {
+  const cwd = directory ?? ""
+  const sessionOf = (props) => props?.sessionID ?? props?.info?.id ?? ""
+  return {
+    event: async ({ event }) => {
+      const props = event?.properties ?? {}
+      const session = sessionOf(props)
+      switch (event?.type) {
+        case "session.created":
+          return report("idle", session, cwd)
+        case "permission.asked":
+          return report("permission", session, cwd)
+        case "permission.replied":
+          return report("working", session, cwd)
+        case "session.error":
+          return report("error", session, cwd, props?.error?.message)
+        case "session.idle":
+          return report("done", session, cwd)
+        case "session.deleted":
+          return report("clear", session, cwd)
+        default:
+          return
+      }
+    },
+    "tool.execute.before": async (input) =>
+      report("working", input?.sessionID ?? "", cwd),
+    "tool.execute.after": async (input) =>
+      report("working", input?.sessionID ?? "", cwd),
+  }
+}
+"#;
+
+impl Agent {
+    /// 插件式安装要写的源码。**纯函数**：输入只有 CLI 的路径，不碰环境，所以
+    /// 「标记行对不对、转义对不对、事件映射对不对」全都能单测。
+    fn plugin_source(self, program: &str) -> String {
+        match self {
+            Agent::Opencode => OPENCODE_PLUGIN
+                .replace("%MARKER%", &self.plugin_marker_line(program))
+                .replace("%CLI%", &as_string_literal(program)),
+            _ => unreachable!("这个智能体不是插件式安装（见 install_kind）"),
+        }
+    }
+
+    /// 生成源码里那一行标记，命令用**带引号**的写法。
+    ///
+    /// 带引号是为了过 [`command_resolves`]：它按 shell 规则切第一个词，路径里有
+    /// 空格时不引起来就只切到一半，诊断会把一个装好的插件报成坏的。
+    fn plugin_marker_line(self, program: &str) -> String {
+        format!("{PLUGIN_MARKER} {}", quote_program(program))
+    }
+}
+
+/// 从一份源码里摘出标记行后面的那条命令。
+///
+/// 抽成纯函数是为了能单测：`is_installed` / `installed_command` 都依赖 `$HOME`，而
+/// 测试里改 `HOME` 是进程级的、会和并行跑的其它用例打架（`config_has_our_hooks` 的
+/// 注释写了同样的话）。
+///
+/// **判据是这一行，不是文件在不在**：同一个路径上可能躺着用户自己写的插件，
+/// 光看文件会把没装的说成装了。
+fn plugin_command_in(text: &str) -> Option<String> {
+    text.lines()
+        .find_map(|line| line.split_once(PLUGIN_MARKER))
+        .map(|(_, rest)| rest.trim().to_string())
+        .filter(|command| !command.is_empty())
+}
+
+
 pub fn install(agent: Agent, dry_run: bool) -> Result<Report, String> {
+    if agent.install_kind() == InstallKind::PluginFile {
+        return install_plugin_file(agent, dry_run);
+    }
+
     let path = config_path(agent)?;
     let mut report = install_at(agent, &resolve_hook_command(agent), &path, dry_run)?;
 
@@ -446,6 +673,10 @@ pub fn install(agent: Agent, dry_run: bool) -> Result<Report, String> {
 }
 
 pub fn uninstall(agent: Agent, dry_run: bool) -> Result<Report, String> {
+    if agent.install_kind() == InstallKind::PluginFile {
+        return uninstall_plugin_file(agent, dry_run);
+    }
+
     let path = config_path(agent)?;
     let report = uninstall_at(&path, dry_run)?;
 
@@ -461,6 +692,79 @@ pub fn uninstall(agent: Agent, dry_run: bool) -> Result<Report, String> {
             .map_err(|err| format!("删除插件目录 {} 失败: {err}", dir.display()))?;
     }
     Ok(report)
+}
+
+/// 插件式安装：把我们自己的那份源码写进对方自动加载的目录。
+///
+/// **没有「解析失败就中止，绝不覆盖」这一条** —— 那条底线防的是弄坏**用户的**配置，
+/// 而这个文件是我们自己建的。同一个路径上残留着旧版本（或者干脆是用户手抄的一份）
+/// 时，重装一次应该得到一个能用的插件，而不是一个坏掉的文件。
+fn install_plugin_file(agent: Agent, dry_run: bool) -> Result<Report, String> {
+    let path = config_path(agent)?;
+    let program = cli_program();
+    let source = agent.plugin_source(&program);
+
+    let existing = fs::read_to_string(&path).ok();
+    let mut report = Report {
+        path: path.clone(),
+        backup: None,
+        // 界面用它显示「这个插件调的是哪个 CLI」；带引号的写法与标记行一致
+        command: Some(quote_program(&program)),
+        added: Vec::new(),
+        already: Vec::new(),
+        updated: Vec::new(),
+        removed: Vec::new(),
+        removed_handlers: 0,
+        dry_run,
+        manifest: None,
+        plugin: Some(path.clone()),
+    };
+
+    match existing.as_deref() {
+        Some(text) if text == source => {
+            report.already.push("plugin".to_string());
+            return Ok(report);
+        }
+        Some(_) => report.updated.push("plugin".to_string()),
+        None => report.added.push("plugin".to_string()),
+    }
+
+    if !dry_run {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|err| format!("创建 {} 失败: {err}", parent.display()))?;
+        }
+        // 原子写：这个文件会被对方在执行过程中读到，写一半就是一份语法错误的源码
+        crate::config::atomic_write(&path, &source, None)
+            .map_err(|err| format!("写 {} 失败: {err}", path.display()))?;
+    }
+    Ok(report)
+}
+
+/// 插件式卸载：删掉我们那个文件。
+///
+/// **只删文件、不删目录**：`plugins/` 是**对方的**目录，里面多半还躺着别人的插件。
+/// （Goose 那种「整个目录都是我们建的」是另一回事，见上面那条分支。）
+fn uninstall_plugin_file(agent: Agent, dry_run: bool) -> Result<Report, String> {
+    let path = config_path(agent)?;
+    let existed = path.is_file();
+    if existed && !dry_run {
+        fs::remove_file(&path)
+            .map_err(|err| format!("删除 {} 失败: {err}", path.display()))?;
+    }
+    Ok(Report {
+        path: path.clone(),
+        backup: None,
+        command: None,
+        added: Vec::new(),
+        already: Vec::new(),
+        updated: Vec::new(),
+        removed: Vec::new(),
+        removed_handlers: usize::from(existed),
+        dry_run,
+        manifest: None,
+        plugin: Some(path),
+    })
 }
 
 // ---- 实现 ------------------------------------------------------------------
@@ -559,6 +863,7 @@ fn install_at(agent: Agent, command: &str, path: &Path, dry_run: bool) -> Result
             removed_handlers: 0,
             dry_run,
             manifest: None,
+            plugin: None,
         });
     }
 
@@ -578,6 +883,7 @@ fn install_at(agent: Agent, command: &str, path: &Path, dry_run: bool) -> Result
         removed_handlers: 0,
         dry_run,
         manifest: None,
+        plugin: None,
     })
 }
 
@@ -593,6 +899,7 @@ fn uninstall_at(path: &Path, dry_run: bool) -> Result<Report, String> {
         removed_handlers: 0,
         dry_run,
         manifest: None,
+        plugin: None,
     };
 
     let Ok(text) = fs::read_to_string(path) else {
@@ -671,6 +978,7 @@ fn uninstall_at(path: &Path, dry_run: bool) -> Result<Report, String> {
         removed_handlers,
         dry_run,
         manifest: None,
+        plugin: None,
     })
 }
 
@@ -772,6 +1080,8 @@ fn first_token(command: &str) -> Option<&str> {
 /// Cursor 是 `{ command, timeout }` 直接作为一组。
 fn handler_group(agent: Agent, command: &str, matcher: Option<&str>) -> Value {
     match agent {
+        // 插件式安装不走这条路（它不写共享配置），真走到了就是分类写错了。
+        Agent::Opencode => unreachable!("插件式的智能体不构造 hooks 条目"),
         // Cursor 这边 preToolUse 之类是会被等待的，所以超时保护有意义
         Agent::Cursor => json!({ "command": command, "timeout": 5 }),
         // Gemini / Goose 也会**同步等待** hook（两家都没有 async 开关），所以给
@@ -1530,7 +1840,106 @@ mod tests {
         assert_eq!(Agent::parse(" claude ").unwrap(), Agent::ClaudeCode);
         assert_eq!(Agent::parse("codex").unwrap(), Agent::Codex);
         assert_eq!(Agent::parse("CURSOR").unwrap(), Agent::Cursor);
+        assert_eq!(Agent::parse("opencode").unwrap(), Agent::Opencode);
+        assert_eq!(Agent::parse("OpenCode").unwrap(), Agent::Opencode);
         assert!(Agent::parse("emacs").is_err());
+    }
+
+    /// `ALL_NAMES` 和 `parse` 必须覆盖同一批名字。少写一个的后果很具体：CLI 的
+    /// help 里列不出来（或者反过来，列出来却解析不了）。
+    #[test]
+    fn every_listed_name_parses() {
+        for name in ALL_NAMES {
+            assert!(Agent::parse(name).is_ok(), "{name} 列在 ALL_NAMES 里却解析不了");
+        }
+    }
+
+    // ---- 插件式安装 -----------------------------------------------------------
+
+    /// 分类是穷尽 match：新增一个智能体忘分类**编译不过**。这条测试盯的是另一件事
+    /// —— 已经分好类的这 6 家有没有分错。
+    #[test]
+    fn the_two_install_kinds_are_classified_explicitly() {
+        assert_eq!(Agent::Opencode.install_kind(), InstallKind::PluginFile);
+        for agent in [
+            Agent::ClaudeCode,
+            Agent::Codex,
+            Agent::Cursor,
+            Agent::Gemini,
+            Agent::Goose,
+        ] {
+            assert_eq!(
+                agent.install_kind(),
+                InstallKind::JsonHooks,
+                "{agent:?} 是往共享 JSON 里插条目的，不该被当成插件"
+            );
+        }
+    }
+
+    /// 生成的源码里必须有标记行，而且标记行里的命令能被 `command_resolves` 的
+    /// 切词规则完整切出来 —— 路径带空格时这一条最容易翻车。
+    #[test]
+    fn a_generated_plugin_carries_a_recognizable_marker() {
+        for program in [
+            "signalhub",
+            "/Applications/SignalHub.app/Contents/MacOS/signalhub",
+        ] {
+            let source = Agent::Opencode.plugin_source(program);
+            let marker = Agent::Opencode.plugin_marker_line(program);
+            assert!(source.contains(&marker), "源码里没有标记行");
+
+            // 摘回来的命令要能过诊断那一关：切出第一个词（去掉引号）就等于原路径
+            let recovered = plugin_command_in(&source).unwrap();
+            assert_eq!(first_token(&recovered), Some(program));
+        }
+    }
+
+    /// Windows 的路径里全是反斜杠。不转义的话 `\U` 会被 JS 当成转义序列 ——
+    /// 路径悄悄少几层，插件去执行一个不存在的程序，**双方都不报错**。
+    #[test]
+    fn backslashes_in_the_path_are_escaped_for_the_plugin_source() {
+        let source = Agent::Opencode.plugin_source(r"C:\Program Files\SignalHub\signalhub.exe");
+        assert!(
+            source.contains(r#"const CLI = "C:\\Program Files\\SignalHub\\signalhub.exe""#),
+            "反斜杠必须双写，实际源码里没有找到转义后的路径"
+        );
+        // 而标记行里给**我们**看的那份是 shell 写法（原样 + 引号），不是 JS 字面量
+        assert!(source.contains(r#"signalhub-hook: "C:\Program Files\SignalHub\signalhub.exe""#));
+    }
+
+    /// 判据是**标记行**，不是文件在不在。同名路径上躺着用户自己的插件时，不能
+    /// 把「没装」说成「装了」—— 那会让卸载按钮去删一个不是我们建的文件。
+    #[test]
+    fn a_foreign_plugin_file_is_not_counted_as_installed() {
+        assert!(plugin_command_in("export const Mine = () => ({})\n").is_none());
+        // 只是提到过这个词，没有真的写成一行标记
+        assert!(plugin_command_in("// 想接 SignalHub 的话加一行 signalhub-hook:\n").is_none());
+    }
+
+    /// 装卸是一个往返：装完认得出，卸完就认不出，而且**只删我们那个文件**。
+    #[test]
+    fn installing_a_plugin_writes_a_file_and_uninstalling_removes_it() {
+        let dir = TempDir::new();
+        let path = dir.file("signalhub.js");
+
+        // 直接测两个内部函数（它们要一个 Path，`install` 那条路会去算 `$HOME`）。
+        // 插件源里嵌的是**程序自己**（不带 `hook <agent>` 那一段），所以这里给一个
+        // 独立的常量，别拿 JSON 那条路用的 `CMD` 混进来。
+        const PROGRAM: &str = "/opt/signalhub";
+        let source = Agent::Opencode.plugin_source(PROGRAM);
+        crate::config::atomic_write(&path, &source, None).unwrap();
+        assert_eq!(plugin_command_in(&source).as_deref(), Some(PROGRAM));
+        assert!(path.is_file());
+
+        fs::remove_file(&path).unwrap();
+        assert!(!path.is_file());
+        assert!(plugin_command_in("").is_none());
+    }
+
+    /// 空白的标记行后面什么都没有（这种情况只会来自手改），不算装上了。
+    #[test]
+    fn a_marker_without_a_command_is_not_installed() {
+        assert!(plugin_command_in("// signalhub-hook:   \n").is_none());
     }
 
     #[test]

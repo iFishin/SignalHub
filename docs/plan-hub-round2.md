@@ -241,12 +241,15 @@ def register(ctx):
   `~/.signalhub/hook.log` 里能看到入站记录。
 - 前端**不用改**：`detect_agents` 读的是 `ALL_NAMES`，新三家自动出现在「接入」页。
 
-### 1.5 拆成 4 个 commit
+### 1.5 拆成 3 个 commit
 
-1. `R1-a` 机制：`InstallKind` + `plugin_source` 骨架 + 单测（不含具体三家）。
-2. `R1-b` opencode。
-3. `R1-c` Pi。
-4. `R1-d` Hermes + `docs/api.md` §4.15「插件式接入」+ 已知边界。
+1. `R1-a` 机制 + opencode：`InstallKind` + `plugin_source` + 单测 + `docs/api.md` §4.15。
+2. `R1-b` Pi。
+3. `R1-c` Hermes + 已知边界。
+
+**机制和第一个 agent 合并成一个提交**（原计划是分开的）：只有机制而没有 agent 的提交
+既没有用户可见的效果，也没法端到端验证 —— 机制的正确性恰恰要靠「一份真实生成的源码」
+来证明。opencode 就是那份源码。
 
 ---
 
@@ -478,15 +481,14 @@ fn compose(preset: HttpPreset, summary: &str, url: &str, headers: &BTreeMap<Stri
 
 | 顺序 | 提交 | 内容 |
 |---|---|---|
-| 1 | `R1-a` | 插件式安装机制（`InstallKind`） |
-| 2 | `R1-b` | opencode |
-| 3 | `R1-c` | Pi |
-| 4 | `R1-d` | Hermes + 文档 |
-| 5 | `R2` | 牌上删除 + 会话粒度删除 |
-| 6 | `R3` | 牌上就地改名 |
-| 7 | `R4-a` | 转发预设 + 摘要 + headers |
-| 8 | `R4-b` | 测试命令 + 结果落盘 |
-| 9 | `R4-c` | 转发界面的预设与测试 |
+| 1 | `R1-a` | 插件式安装机制（`InstallKind`）+ opencode |
+| 2 | `R1-b` | Pi |
+| 3 | `R1-c` | Hermes + 文档 |
+| 4 | `R2` | 牌上删除 + 会话粒度删除 |
+| 5 | `R3` | 牌上就地改名 |
+| 6 | `R4-a` | 转发预设 + 摘要 + headers |
+| 7 | `R4-b` | 测试命令 + 结果落盘 |
+| 8 | `R4-c` | 转发界面的预设与测试 |
 
 每步一步一提交，提交信息用中文、说清「为什么」；`git commit -- <paths>` 限定路径
 （多个会话共用这个检出）；push 用

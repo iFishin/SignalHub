@@ -43,6 +43,13 @@ export interface HookChange {
   config: string;
   /** 备份文件路径，没有备份就是 null */
   backup: string | null;
+  /**
+   * **插件式**接入写下的那个文件（opencode 这类）。
+   *
+   * 非 null 时界面改口说「已写入 <路径>」，而不是「新增 N 个事件」—— 插件式没有
+   * 事件清单这回事（它在生成的源码里自己映射事件），说事件数对不上任何东西。
+   */
+  plugin: string | null;
 }
 
 /**

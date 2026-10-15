@@ -789,6 +789,58 @@ PreToolUse  tool_name=Bash  tool_input={command: "cargo test --all"}
 
 要自己给一句话，仍然用 `--message`；命令行上显式给的**优先于**自动生成的这句。
 
+### 4.15 插件式接入（opencode / Pi / Hermes）
+
+有几家智能体**不支持往共享配置里插 hook 条目**，但支持「启动时自动加载某个目录下的
+文件」。对这几家，接入方式是**写一份我们自己的插件源码**进去 —— 不需要解析用户的任何
+文件，卸载就是删掉那个文件。
+
+这比前几节的 JSON 路线安全得多，所以是**优先选择**：没有「解析失败就中止，绝不覆盖」
+那一步（那个文件本来就是我们的），也没有「用户手写的内容被重写」的风险。
+
+| 智能体 | 装在哪 | 对方怎么加载它 |
+|---|---|---|
+| **opencode** | `~/.config/opencode/plugins/signalhub.js` | 启动时自动加载该目录下所有 js / ts |
+| Pi | `~/.pi/agent/extensions/signalhub.ts` | 启动时自动发现该目录下的扩展 |
+| Hermes | `~/.hermes/plugins/signalhub/` | 启动时扫描 `~/.hermes/plugins/` 下的插件目录 |
+
+生成的源码里嵌入的是**我们自己解析出来的 CLI 路径**（`install hooks` 时算的那一个，
+见 `hooks.rs::cli_program`；PATH 上有 `signalhub` 就用裸名字）。它把对方的事件翻译成
+一条命令行：
+
+```
+signalhub <状态> --agent <名字> --session <会话> --cwd <目录> [--message <一句话>]
+```
+
+**所以这几家不需要新的 payload 映射**：走的是和 `run` / 手抄命令行完全相同的入口。
+出站那条路（`signalhub clear --session <id>`）也一样。
+
+**「装了没有」的判据是一行标记**（`signalhub-hook: <命令>`），不是「文件在不在」——
+同一个路径上可能躺着用户自己写的插件，光看文件会把没装的说成装了。那一行同时也回答
+「这条接入还跑得起来吗」：命令指向的程序被挪走之后，插件不报错、灯也不亮，两边都很
+安静（同 §4.5 末尾那条警告）。
+
+#### opencode
+
+事件与状态的映射（只有这几个 —— 名字和形状都来自官方 Plugins 文档）：
+
+| opencode 事件 | 状态 |
+|---|---|
+| `session.created` | `idle` |
+| `permission.asked` | `permission` |
+| `permission.replied` | `working` |
+| `session.error` | `error`（带 `properties.error.message`） |
+| `session.idle` | `done` |
+| `session.deleted` | 清除该会话 |
+| `tool.execute.before` / `tool.execute.after` | `working` |
+
+**没有 `thinking`**：opencode 没有形状确定的对应事件（`session.status` 里那些字段
+官方文档没写全，猜错会得到一个「永远在忙」的假灯）。宁缺勿错。
+
+**三条约束**（生成的源码里也写着）：不许阻塞（每次工具调用都会打到这里，所以用
+`spawn` + `unref`，stdio 全丢掉）、不许抛（上报失败绝不影响 opencode）、不许在不知道
+会话 id 时发 `clear`（会话名会兜底成 `default`，清掉它等于把别的上报方的状态一起抹了）。
+
 ---
 
 ## 5. 降级通道（v1.1，未实现）

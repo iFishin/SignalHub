@@ -851,6 +851,11 @@ struct HookChange {
     removed_handlers: usize,
     config: String,
     backup: Option<String>,
+    /// 插件式接入（`hooks::InstallKind::PluginFile`）写下的那个文件。
+    ///
+    /// 界面据此改口成「已写入 <路径>」：JSON 类是「新增 N 个事件」，而插件类没有
+    /// 事件清单这回事，说「新增 1 个事件」对不上用户能去 `cat` 的那个东西。
+    plugin: Option<String>,
 }
 
 impl From<hooks::Report> for HookChange {
@@ -863,6 +868,9 @@ impl From<hooks::Report> for HookChange {
             config: report.path.to_string_lossy().into_owned(),
             backup: report
                 .backup
+                .map(|path| path.to_string_lossy().into_owned()),
+            plugin: report
+                .plugin
                 .map(|path| path.to_string_lossy().into_owned()),
         }
     }

@@ -217,6 +217,12 @@ export interface Messages {
   tryItTitle: string;
   tryItHint: string;
   hookResult: (change: HookResult) => string;
+  /**
+   * 插件式接入的结果。**不并进 `hookResult`**：那个函数数的是「几个事件」，
+   * 而插件没有事件清单 —— 它写的是**一个文件**，用户能去 `cat` 的那个。
+   */
+  hookPluginWritten: (path: string) => string;
+  hookPluginRemoved: (path: string) => string;
 
   // 通知转发页
   noHooks: string;
@@ -537,6 +543,8 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       }
       return parts.join("，");
     },
+    hookPluginWritten: (path) => `已写入插件：${path}`,
+    hookPluginRemoved: (path) => `已删除插件：${path}`,
 
     noHooks: "还没有钩子。加一条，就能在状态变化时 POST 到某个地址或跑一条命令。",
     hookN: (n) => `钩子 ${n}`,
@@ -847,6 +855,8 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
       }
       return parts.join(", ");
     },
+    hookPluginWritten: (path) => `Plugin written: ${path}`,
+    hookPluginRemoved: (path) => `Plugin removed: ${path}`,
 
     noHooks: "No hooks yet. Add one to POST to a URL or run a command on state changes.",
     hookN: (n) => `Hook ${n}`,

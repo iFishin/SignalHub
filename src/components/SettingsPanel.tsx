@@ -1465,12 +1465,18 @@ export function SettingsPanel({ snapshot }: Props) {
                       )}
                       {change && (
                         <span className="agent-result muted-text">
-                          {m.hookResult({
-                            added: change.added.length,
-                            updated: change.updated.length,
-                            already: change.already.length,
-                            removed: change.removed_handlers,
-                          })}
+                          {/* 插件式接入：说「写到哪个文件」而不是「几个事件」——
+                              插件没有事件清单，那个数字对不上任何东西。 */}
+                          {change.plugin
+                            ? agent.installed
+                              ? m.hookPluginWritten(change.plugin)
+                              : m.hookPluginRemoved(change.plugin)
+                            : m.hookResult({
+                                added: change.added.length,
+                                updated: change.updated.length,
+                                already: change.already.length,
+                                removed: change.removed_handlers,
+                              })}
                         </span>
                       )}
                     </div>
