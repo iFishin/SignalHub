@@ -725,6 +725,63 @@ pub(crate) fn set_group_muted(
     persist_settings(app, Settings { muted_groups, ..(*settings).clone() })
 }
 
+/// 清掉某一组的全部会话。
+///
+/// 这是「这个组的状态卡住了」的解药：上报方崩了、或者用户直接关掉了那个智能体会话、
+/// 没发收尾事件时，灯会一直停在最后一个状态上，等 TTL 到期要好几分钟。清除是立刻的。
+///
+/// **两条入口共用它**：灯上那块牌的 `×`（命令 `clear_group_state`）和右键菜单里的
+/// 「清除该组的状态」（`menu.rs`）。和 `set_group_muted` 一样的道理 —— 同一件事有两条
+/// 入口时，各写一遍行为迟早分叉。
+///
+/// 返回清掉了几个会话，供界面报数。
+pub(crate) fn clear_group(app: &tauri::AppHandle, group: &str) -> usize {
+    let store = app.state::<SharedStore>();
+    let (removed, changed, snapshot) = {
+        let mut guard = store.lock().expect("state store poisoned");
+        let (removed, changed) = guard.clear_group(group, std::time::Instant::now());
+        (removed, changed, guard.snapshot())
+    };
+
+    // 一个会话都没清掉就不推前端 —— 和 Store 各处「没变化不推」的规矩一致
+    if changed {
+        notify::push(app, &snapshot);
+    }
+    removed
+}
+
+/// 清掉某一组的全部会话（灯上那块牌右上角的 `×`）。
+///
+/// 与右键菜单里的「清除该组的状态」走同一个函数（[`clear_group`]）。**不做二次
+/// 确认**：这是低频、幂等的操作 —— 智能体下次上报就会回来，而且它本来就是
+/// 「状态卡住了，赶紧清掉」这条路上的动作，加个确认框只会让紧急的事变慢。
+#[tauri::command]
+fn clear_group_state(app: tauri::AppHandle, group: String) -> usize {
+    clear_group(&app, &group)
+}
+
+/// 清掉某一个会话（设置 →「状态」页每一行末尾的 `×`）。
+///
+/// 粒度比 [`clear_group_state`] 细一档：一组里跑着三个会话、卡住一个的时候，
+/// 不必把其它两个也清掉。HTTP 的 `DELETE /v1/sessions/{id}` 用的是同一个
+/// `Store::remove_session`。
+///
+/// 清一个不存在的会话**静默幂等**（返回 `false`，不报错）—— HTTP 那条已经在依赖
+/// 这个语义，两条入口不该有两种脾气。
+#[tauri::command]
+fn clear_session(app: tauri::AppHandle, session: String) -> bool {
+    let store = app.state::<SharedStore>();
+    let (removed, changed, snapshot) = {
+        let mut guard = store.lock().expect("state store poisoned");
+        let (removed, changed) = guard.remove_session(&session, std::time::Instant::now());
+        (removed, changed, guard.snapshot())
+    };
+    if changed {
+        notify::push(&app, &snapshot);
+    }
+    removed
+}
+
 /// 最近上报过的消息，从旧到新。前端要倒序显示就自己 reverse。
 #[tauri::command]
 fn get_messages(store: tauri::State<'_, SharedStore>) -> Vec<state::MessageEntry> {
@@ -1710,6 +1767,8 @@ pub fn run() {
             install_agent_hooks,
             uninstall_agent_hooks,
             toggle_collapsed,
+            clear_group_state,
+            clear_session,
             open_group_menu,
             open_lamp_menu,
             set_palette_colors,

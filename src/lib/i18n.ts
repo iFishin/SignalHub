@@ -290,6 +290,10 @@ export interface Messages {
   collapseNow: string;
   /** 持续可见的状态指示 */
   lampPaused: string;
+  /** 牌右上角那枚 × 的悬停提示 */
+  lampClearGroup: string;
+  /** 会话行尾那枚 × 的悬停提示 */
+  clearSessionHint: string;
   lampPassThrough: string;
   /** 「+N」截断后，tooltip 里列出被收起来的组之前的引导 */
   moreGroupsLead: string;
@@ -604,6 +608,8 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     expandNow: "已展开",
     collapseNow: "已折叠",
     lampPaused: "已暂停监控",
+    lampClearGroup: "清除该组的状态（智能体下次上报会回来）",
+    clearSessionHint: "清掉这个会话（智能体下次上报会回来）",
     lampPassThrough: "点击穿透",
     moreGroupsLead: "被收起来的组：",
 
@@ -917,6 +923,8 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     expandNow: "Expanded",
     collapseNow: "Collapsed",
     lampPaused: "Monitoring paused",
+    lampClearGroup: "Clear this group's state (the agent will report again next time)",
+    clearSessionHint: "Clear this session (the agent will report again next time)",
     lampPassThrough: "Click-through",
     moreGroupsLead: "Hidden groups: ",
 

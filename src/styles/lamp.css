@@ -81,6 +81,10 @@ body,
 
 .sign {
   box-sizing: border-box;
+  /* 牌尾那几枚小动作绝对定位挂在这儿 —— **绝不能参与 flex 布局**：牌的宽高是
+     Rust（`config.rs::sign_width` / `sign_height`）和这里算出的同一个值，多一个
+     参与布局的子元素就会让两边分叉，然后被 `overflow: hidden` 裁掉。 */
+  position: relative;
   width: calc(var(--size) * 7 * var(--sign-w-mult, 1));
   height: calc(var(--size) * 3 / 2 * var(--sign-h-mult, 1));
   flex: none;
@@ -108,6 +112,47 @@ body,
 .sign-body {
   flex: 1;
   min-width: 0;
+}
+
+/* 牌右上角的动作区：**只在悬停时出现**。折叠态没有牌面，所以没有它。
+   `position: absolute` + 不参与布局 = 牌的宽高一个像素都不变。 */
+.sign-actions {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+  gap: calc(var(--size) * 0.12);
+  padding: calc(var(--size) * 0.12);
+  opacity: 0;
+  /* 藏着的时候也点不到 —— 否则盲点会点掉一组的状态 */
+  pointer-events: none;
+}
+
+.sign:hover .sign-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.sign-action {
+  box-sizing: border-box;
+  /* max() 兜住下限：尺寸调小时这枚也得留得住能点中的面积 */
+  width: max(14px, calc(var(--size) * 0.62));
+  height: max(14px, calc(var(--size) * 0.62));
+  padding: 0;
+  border: 1px solid var(--sign-line);
+  border-radius: 50%;
+  background: var(--sign-bg);
+  color: var(--sign-fg);
+  font-family: inherit;
+  font-size: max(10px, calc(var(--size) * 0.44));
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sign-action:hover {
+  /* 悬停只换配色，不动尺寸 —— 常驻窗口的动画只许动 opacity（见文件头） */
+  border-color: var(--state, var(--sign-fg));
+  color: var(--state, var(--sign-fg));
 }
 
 .sign-line {

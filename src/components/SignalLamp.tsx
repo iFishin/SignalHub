@@ -124,6 +124,15 @@ function progressStyle(group: GroupView): React.CSSProperties | undefined {
  *
  * 只认主键，所以右键原地就能弹菜单，不会顺带被当成一次点击。
  */
+/** 牌尾那几枚小动作必须**吃掉鼠标事件**。
+ *
+ *  `useDragOrClick` 挂在 `.lamp-root` 上：事件冒上去，按下会开始记拖拽原点、松开
+ *  会被当成「点了一下灯」→ 折叠/展开。所以 mousedown / mouseup / click 三个都要拦。
+ */
+function stopMouse(event: React.MouseEvent) {
+  event.stopPropagation();
+}
+
 function useDragOrClick(onClick: () => void) {
   const origin = useRef<{ x: number; y: number } | null>(null);
   const dragging = useRef(false);
@@ -299,6 +308,14 @@ export function SignalLamp({ aggregate, groups, settings, paused }: Props) {
 
   const drag = useDragOrClick(toggle);
 
+  const clearGroup = (group: string) => {
+    if (!inTauri) return;
+    // 和右键菜单「清除该组的状态」走同一个命令（Rust 侧同一个函数），两条入口
+    // 不会分叉。**不做二次确认**：这是低频、幂等的操作，智能体下次上报就回来了，
+    // 而它本来就是「状态卡住了，赶紧清掉」这条路上的动作。
+    invoke("clear_group_state", { group }).catch(console.error);
+  };
+
   // 服务端已按**紧急度**排好，这里只叠一层用户的置顶偏好。规则必须和 Rust 侧的
   // `visible_groups` 逐字一致（窗口高度按「哪几块可见」算，两边算出不同的组就会
   // 裁掉最后一块牌）—— 所以它住在 `lib/lampSort.ts` 里、有单测盯着，见那边的说明。
@@ -398,6 +415,27 @@ export function SignalLamp({ aggregate, groups, settings, paused }: Props) {
               )}
             </div>
             {show.age && <span className="sign-age">{formatAge(group.since_ms, now)}</span>}
+            {/* 「状态卡住了」的解药：上报方崩了、或者用户直接关掉了那个智能体会话，
+                灯会一直停在最后一个状态上，等 TTL 到期要好几分钟。
+                占位那块（name 为空）不对应任何真实的组，不挂这枚。 */}
+            {group.name !== "" && (
+              <span className="sign-actions">
+                <button
+                  type="button"
+                  className="sign-action"
+                  title={m.lampClearGroup}
+                  aria-label={m.lampClearGroup}
+                  onMouseDown={stopMouse}
+                  onMouseUp={stopMouse}
+                  onClick={(event) => {
+                    stopMouse(event);
+                    clearGroup(group.name);
+                  }}
+                >
+                  ×
+                </button>
+              </span>
+            )}
             {flag && index === rows.length - 1 && (
               <span
                 className="sign-flag"

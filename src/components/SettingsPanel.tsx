@@ -760,6 +760,18 @@ export function SettingsPanel({ snapshot }: Props) {
       .finally(() => setBusyAgent(null));
   };
 
+  /**
+   * 清掉某一个会话。
+   *
+   * 清一个**不存在**的会话是幂等的（Rust 侧返回 false、不报错）—— 和 HTTP 的
+   * `DELETE /v1/sessions/{id}` 一个脾气。清完不用手动刷新列表：Rust 会把新快照
+   * 广播回来，两个窗口一起更新。
+   */
+  const clearSession = (session: string) => {
+    setError(null);
+    invoke<boolean>("clear_session", { session }).catch(reported);
+  };
+
   const sessionCount = snapshot.groups.reduce(
     (sum, group) => sum + group.sessions.length,
     0,
@@ -1017,6 +1029,16 @@ export function SettingsPanel({ snapshot }: Props) {
                               <div className="message">{session.message}</div>
                             )}
                           </div>
+                          {/* 会话粒度的清除。比牌上那枚细一档：一组里跑着三个会话、
+                              卡住一个时，不必把另外两个也清掉。 */}
+                          <button
+                            type="button"
+                            className="btn btn-tiny session-clear"
+                            title={m.clearSessionHint}
+                            onClick={() => clearSession(session.id)}
+                          >
+                            ×
+                          </button>
                         </li>
                       ))}
                     </ul>

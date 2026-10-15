@@ -190,7 +190,7 @@ pub fn handle(app: &AppHandle, id: &str) -> bool {
             crate::set_group_muted(app, &group, !muted).map(|_| ())
         }
         CLEAR => {
-            clear_group(app, &group);
+            crate::clear_group(app, &group);
             Ok(())
         }
         TOGGLE => {
@@ -234,25 +234,6 @@ fn hide_group(app: &AppHandle, group: &str) -> Result<(), String> {
         crate::config::Settings { hidden_groups, ..(*settings).clone() },
     )
     .map(|_| ())
-}
-
-/// 清掉某一组的全部会话。
-///
-/// 这是「这个组的状态卡住了」的解药：上报方崩了或者没发收尾事件时，灯会一直
-/// 停在最后一个状态上，等 TTL 到期要好几分钟。清除是立刻的。
-fn clear_group(app: &AppHandle, group: &str) -> usize {
-    let store = app.state::<crate::SharedStore>();
-    let (removed, changed, snapshot) = {
-        let mut guard = store.lock().expect("state store poisoned");
-        let (removed, changed) = guard.clear_group(group, std::time::Instant::now());
-        (removed, changed, guard.snapshot())
-    };
-
-    // 一个会话都没清掉就不推前端 —— 和 Store 各处「没变化不推」的规矩一致
-    if changed {
-        crate::notify::push(app, &snapshot);
-    }
-    removed
 }
 
 fn menu_err(err: tauri::Error) -> String {
