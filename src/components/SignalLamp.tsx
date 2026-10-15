@@ -5,6 +5,7 @@ import { inTauri } from "../lib/env";
 import { signalLabel } from "../lib/signals";
 import { useLang, useMessages, type Messages, type Lang } from "../lib/i18n";
 import { lampVars, resolveShapes } from "../lib/lampStyle";
+import { transitions, type AggregateMap } from "../lib/lampTransitions";
 import { labelOf, orderVisible } from "../lib/lampSort";
 import { useNow } from "../lib/useNow";
 import { useToggles } from "../lib/useToggles";
@@ -15,6 +16,8 @@ import type { GroupView, SignalState } from "../lib/types";
 const MAX_SIGNS = 4;
 /** 超过这个位移就算拖窗口，否则算点击。 */
 const DRAG_THRESHOLD_PX = 4;
+/** 跃迁脉冲的时长（ms）。必须和 lamp.css 里 `pulse-in` 的一致。 */
+const PULSE_MS = 420;
 
 interface Props {
   aggregate: SignalState;
@@ -211,6 +214,38 @@ export function SignalLamp({ aggregate, groups, settings, paused }: Props) {
     };
   }, [collapsed]);
 
+  // 跃迁脉冲：哪一块牌刚**换了状态**就闪一下。判据在 `lib/lampTransitions.ts`
+  // （纯函数、有单测）：拿上一帧的每组聚合和这一帧比。**首帧不闪** —— ref 初值
+  // 是空表，第一帧没有任何组「变了」。
+  const prevAggregates = useRef<AggregateMap>({});
+  const [pulses, setPulses] = useState<string[]>([]);
+  const pulseTimer = useRef<number | null>(null);
+
+  useEffect(() => {
+    const { changed, next } = transitions(prevAggregates.current, groups);
+    prevAggregates.current = next;
+    if (changed.length === 0) return;
+
+    setPulses(changed);
+    if (pulseTimer.current !== null) window.clearTimeout(pulseTimer.current);
+    // 到时把 data-pulse 摘掉：一次性动画挂着不放，同一组再变时就不会重新触发
+    pulseTimer.current = window.setTimeout(() => {
+      pulseTimer.current = null;
+      setPulses([]);
+    }, PULSE_MS);
+    // **没有 cleanup**：这条 effect 只是把「谁刚变了」记下来，摘掉脉冲由上面那个
+    // 超时负责。在这里返回清理函数的话，下一帧一进来就把上一个计时器清掉、脉冲
+    // 永远摘不掉了。
+  }, [groups]);
+
+  // 卸载时兜一下，别让计时器在组件没了之后还回调 setState
+  useEffect(
+    () => () => {
+      if (pulseTimer.current !== null) window.clearTimeout(pulseTimer.current);
+    },
+    [],
+  );
+
   // 穿透优先于暂停：那个状态下窗口点不动、拖不动，用户得先知道自己在里面。
   const flag = paused || toggles.pass_through;
   const flagTitle = toggles.pass_through
@@ -303,6 +338,9 @@ export function SignalLamp({ aggregate, groups, settings, paused }: Props) {
             key={group.name || index}
             className="sign"
             data-has-message={show.message && group.message ? "true" : "false"}
+            // 刚换了状态就闪一下（`pulses` 是这一帧跃迁的组名）。折叠态的点不带
+            // 这个 —— 点的状态动画本身就会重放，重复闪反而糊。
+            data-pulse={pulses.includes(group.name) || undefined}
             onContextMenu={(event) => openGroupMenu(event, group.name)}
           >
             <span

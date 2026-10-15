@@ -79,8 +79,9 @@ describe("resolveAnimations", () => {
     expect(anim.permission).toBe("pulse 900ms ease-in-out infinite");
     // error 用 steps 硬切做频闪，一眼和 permission 的平滑闪烁分开
     expect(anim.error).toBe("pulse 340ms steps(2, end) infinite");
-    // done 是**一次性**的入场脉冲，不是无限循环
-    expect(anim.done).toBe("pop 380ms ease-out 1");
+    // done 是**常亮** —— 它原来那次性感的入场脉冲（transform 的 pop）已经删掉，
+    // 「落定」改由通用的跃迁脉冲承担（任何状态变化都会闪）
+    expect(anim.done).toBe("none");
   });
 
   /** idle / stale / offline / off 本来就不闪，靠不透明度区分。 */
@@ -112,7 +113,7 @@ describe("resolveAnimations", () => {
   /**
    * 显式节奏给的是**朴素 pulse** —— 用户要的是「某个节奏」。
    *
-   * 所以连 `done` 那种一次性的 `pop`，只要用户给它设了节奏，也会变成一个真的会闪的灯。
+   * 所以连 `done` 这种默认常亮的状态，只要用户给它设了节奏，也会变成一个真的会闪的灯。
    */
   it("turns any explicit rhythm into a plain pulse", () => {
     const anim = resolveAnimations(withSettings({ styles: { done: { blink_ms: 500 } } }));

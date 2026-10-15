@@ -262,6 +262,26 @@ body,
   }
 }
 
+/* ---- 跃迁脉冲：哪块牌刚换了状态就闪一下 -------------------------------- */
+
+/* 判据在前端（`lib/lampTransitions.ts`），它把「这一帧变了的组」翻成 `data-pulse`。
+   动画**只动 opacity**（红线 2）：从 0.35 淡到 1，一次，约 420ms。
+   这里原来是 `done` 那条 `pop`（`transform: scale`）——**本项目唯一的 transform
+   违例**，会令牌这个常驻窗口每帧重排。现在「完成」的落定观感由这条脉冲承担，
+   `pop` 整个删掉。 */
+.lamp-root .sign[data-pulse] {
+  animation: pulse-in 420ms ease-out 1;
+}
+
+@keyframes pulse-in {
+  0% {
+    opacity: 0.35;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
 /* ---- 灯珠 ---------------------------------------------------------------- */
 
 /* 牌里的点和折叠后的裸点是**同一个东西**，只是尺度不同：折叠态的 DOM 上同时挂着
@@ -340,10 +360,11 @@ body,
   animation: var(--anim-working, pulse 1600ms ease-in-out infinite);
 }
 
-/* 完成：常亮 + 一次入场脉冲。这一下**默认不跟着节奏走** —— 它是一次性的
-   「收到」。用户显式给它设了节奏，才会变成真的闪烁。 */
+/* 完成：常亮。原来那一下入场脉冲（`pop`）已经删掉 —— 它是唯一的 transform 违例，
+   「落定」的观感现在由**跃迁脉冲**（上面的 `[data-pulse]`）承担，而那一下更通用：
+   任何状态变化都会闪，不只 done。 */
 .dot[data-state="done"] {
-  animation: var(--anim-done, pop 380ms ease-out 1);
+  animation: var(--anim-done, none);
 }
 
 .dot[data-state="attention"] {
@@ -414,18 +435,6 @@ body,
   }
 }
 
-@keyframes pop {
-  0% {
-    transform: scale(0.6);
-  }
-  60% {
-    transform: scale(1.12);
-  }
-  100% {
-    transform: scale(1);
-  }
-}
-
 /* 无障碍：系统开了「减少动态效果」时，闪烁一律降级为常亮，由颜色承载语义。
    这里必须赢过按状态写的那条 `animation: var(--anim-x, ...)`。用 !important：
    作者样式表里的 !important 会盖过普通声明（连内联 style 也盖），而且动画变量
@@ -433,6 +442,11 @@ body,
    一定生效，用户设的节奏也压不过它。 */
 @media (prefers-reduced-motion: reduce) {
   .dot {
+    animation: none !important;
+  }
+  /* 跃迁脉冲也算动态效果，一并降级：变化仍然看得见（颜色 / 状态文字变了），
+     只是不闪。 */
+  .lamp-root .sign[data-pulse] {
     animation: none !important;
   }
 }

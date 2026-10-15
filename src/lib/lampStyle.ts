@@ -58,8 +58,11 @@ const BASE_ANIMATION: Record<
   attention: { name: "pulse", timing: "ease-in-out", iterations: "infinite", ms: 1000 },
   permission: { name: "pulse", timing: "ease-in-out", iterations: "infinite", ms: 900 },
   error: { name: "pulse", timing: "steps(2, end)", iterations: "infinite", ms: 340 },
-  // 完成：常亮 + 一次入场脉冲。这一下**不跟着节奏走** —— 它是一次性的「收到」。
-  done: { name: "pop", timing: "ease-out", iterations: "1", ms: 380 },
+  // 完成：常亮。原来那一下入场脉冲（`pop`）已经删掉 —— 它动的是 transform，
+  // 是这个常驻窗口唯一的 CPU 违例（红线 2）。「落定」的观感现在由**跃迁脉冲**
+  // 承担（见 SignalLamp 的 `data-pulse` / lamp.css 的 `pulse-in`），而它更通用：
+  // 任何状态变化都会闪，不只 done。
+  done: null,
   idle: null,
   stale: null,
   offline: null,
@@ -71,8 +74,8 @@ const BASE_ANIMATION: Record<
  *
  * 优先级：
  *   1. 用户显式设了 `blink_ms`：0 = 常亮；> 0 = 一个朴素的 pulse。
- *      用户要的是**某个节奏**，就给最朴素的那种 —— 于是 done 那种一次性
- *      `pop`，只要用户给它设了节奏，也会变成一个真的会闪的灯。
+ *      用户要的是**某个节奏**，就给最朴素的那种 —— 于是 `done` 这种默认常亮
+ *      的状态，只要用户给它设了节奏，也会变成一个真的会闪的灯。
  *   2. 没设：用基础配方，时长除以全局倍率。
  *
  * 全局倍率**只作用于用户没单独设节奏的状态**，这样「我把 error 调成 300ms」
