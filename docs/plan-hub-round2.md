@@ -509,6 +509,24 @@ fn compose(preset: HttpPreset, summary: &str, url: &str, headers: &BTreeMap<Stri
 一句「这个名字已经有了」。Rust 侧只做去空白、丢空键、上限 16 条（按键的字典序截断，
 所以丢哪几条是确定的）。
 
+### 4.6 补充：PushDeer（实施后追加，d0dfc55）
+
+用户追加要求接入 PushDeer。接的过程里撞出一个**比 PushDeer 本身更重要**的问题，所以
+把它单记在这里：
+
+- **`200` 也会撒谎。** PushDeer 一个失效的 key 实测回 `200 {"code":80501,"error":"错误的Key"}`，
+  而 `post` 原来只把状态码带回来 —— 填错的 key 在面板上是绿色「✓ 200」而手机一声不响，
+  正是 §4 开头那条「疑似」里最难查的一类。于是 `post` 之后加了
+  `verdict(preset, status, body)`：出错也回 200 的那几家读一眼响应体里的信封，在 200 里
+  说了失败就按失败记，并带上服务自己给的原话。顺手覆盖了飞书 / 企业微信 / 钉钉 / Slack
+  （它们的信封键名各不相同），而「认不出形状就不当失败」「只读前 8KB」这两条边界写进了
+  `docs/architecture.md` §3.10 和单测。`Request` 因此带上 `preset`。
+- **PushDeer 的形状有两处实测结论**（不是照文档猜的）：`pushkey` 留在 URL 的查询串上
+  （两边都会被读）；只填服务器地址时补 `/message/push`（POST 到根路径实测 405）；正文固定
+  `type=text`（它默认按 markdown 渲染，摘要里的 `·` `—` 会被吃成标记）。
+- **占位符改成按预设给。** 原来无论选哪个预设，地址框里提示的都是 ntfy —— 光看「PushDeer」
+  猜不出该填什么，而填错地址是这一列里最常见的失败。
+
 ---
 
 ## 5. 实施顺序与提交
@@ -525,6 +543,7 @@ fn compose(preset: HttpPreset, summary: &str, url: &str, headers: &BTreeMap<Stri
 | 6 | `R4-a` | 转发预设 + 摘要 + headers + 测试发送 | 5ece827 |
 | 7 | `R4-b` | 结果落盘 | defee00 |
 | 8 | `R4-c` | 转发界面的预设与测试 | 234ffdd |
+| 9 | `R4-d` | PushDeer 预设 + 「200 里的错误信封」判定 + 占位符按预设（§4.6） | d0dfc55 |
 
 每步一步一提交，提交信息用中文、说清「为什么」；`git commit -- <paths>` 限定路径
 （多个会话共用这个检出）；push 用
