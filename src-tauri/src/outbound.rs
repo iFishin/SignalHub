@@ -383,11 +383,15 @@ fn record(log: &OutboundLog, target: String, ok: bool, detail: &str) {
         format!("失败: {detail}")
     };
 
-    // 和入站（智能体调 CLI）写的是同一个文件，`→` 是出站的标记
-    crate::config::append_hook_log(&format!(
-        "{}  → {target:<44} {outcome}\n",
-        crate::config::utc_hms()
-    ));
+    // 和入站（智能体调 CLI）写的是同一个文件，`→` 是出站的标记。
+    // **测试里不写**：那是开发者真实的 `~/.signalhub/hooks.log`，跑一次 `cargo test`
+    // 就往上添几行跟谁都不相干的东西（同下面 `persist` 的理由）。
+    if !cfg!(test) {
+        crate::config::append_hook_log(&format!(
+            "{}  → {target:<44} {outcome}\n",
+            crate::config::utc_hms()
+        ));
+    }
     if !ok {
         eprintln!("[signalhub] 钩子执行失败（{target}）: {detail}");
     }
@@ -458,6 +462,13 @@ fn load_from(path: &Path) -> VecDeque<Attempt> {
 /// 写一份到磁盘。**失败只打 stderr**：记不住一条历史结果不该影响转发本身 ——
 /// 那是用户真正要的事，而且这条路径已经在后台线程上，报错也没人接。
 fn persist(attempts: &VecDeque<Attempt>) {
+    // 测试里不落盘：`log_file()` 是**真实的** `~/.signalhub/outbound.json`，
+    // 跑一次 `cargo test` 就把开发者自己那份历史结果盖掉了。文件那一半（`write_log`
+    // / `load_from`）由各自的测试拿临时路径直接测，所以这里跳过不丢覆盖面。
+    if cfg!(test) {
+        return;
+    }
+
     let Ok(path) = log_file() else {
         return;
     };
@@ -644,6 +655,80 @@ mod tests {
             (LOG_CAPACITY + 4) as u64,
             "最新的那条必须在"
         );
+    }
+
+    /// 出站是异步的（`spawn_blocking`），所以日志不是立刻就有。等它一下 ——
+    /// 上限 5 秒，超时就让断言失败，而不是挂住。
+    fn wait_for_attempt(log: &OutboundLog) -> Attempt {
+        for _ in 0..500 {
+            if let Some(attempt) = log.lock().expect("outbound log poisoned").back().cloned() {
+                return attempt;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("等了 5 秒也没等到那次出站的结果");
+    }
+
+    /// **「发送测试」整条路都真的跑一遍**：组装 → 发出去 → 记进日志。
+    ///
+    /// 这条测试的存在理由和这一轮本身一样：出站是「看不见」的，「点了没反应」和
+    /// 「其实发出去了」从外面看一模一样。所以它同时盯着三件事 —— 请求真的到了，
+    /// 摘要**看起来就像测试**（不然用户会以为真出事了），结果真的进了界面读的那份
+    /// 日志（不然点了等于没点）。
+    #[test]
+    fn the_test_button_really_sends_and_records() {
+        let (addr, server) = one_shot_server("HTTP/1.1 200 OK");
+
+        let settings = Settings {
+            hooks: vec![
+                Hook {
+                    when: vec!["permission".into()],
+                    groups: Vec::new(),
+                    action: HookAction::Http {
+                        url: format!("http://{addr}/ntfy"),
+                        headers: [("X-Token".to_string(), "t".to_string())]
+                            .into_iter()
+                            .collect(),
+                        preset: HttpPreset::Ntfy,
+                    },
+                },
+                // 目标没填的那条要跳过（同 fire）：否则用户会收到一条空请求，
+                // 而那条请求的失败原因跟他的配置毫无关系
+                hook(&[], HookAction::http("   ")),
+            ],
+            ..Settings::default()
+        };
+        // 一条会话都没有的快照：主语退回全局聚合
+        let snapshot = Snapshot {
+            aggregate: Signal::Permission,
+            paused: false,
+            since_ms: now_ms() - 60_000,
+            message: Some("等你批准".into()),
+            groups: Vec::new(),
+        };
+        let log = OutboundLog::default();
+
+        assert_eq!(
+            test_all(&settings, &snapshot, Lang::Zh, &log),
+            1,
+            "只该发那条填了目标的"
+        );
+
+        let seen = server.join().unwrap();
+        assert!(seen.starts_with("POST /ntfy "), "实际请求: {seen}");
+        let lower = seen.to_ascii_lowercase();
+        assert!(lower.contains("x-token: t"), "自定义头没带上: {seen}");
+        assert!(
+            lower.contains("content-type: text/plain"),
+            "预设没生效: {seen}"
+        );
+        assert!(seen.contains("SignalHub \u{6d4b}\u{8bd5}"), "测试消息要看起来就像测试: {seen}");
+        assert!(seen.contains("(1m)"), "摘要该带上已经多久了: {seen}");
+
+        let attempt = wait_for_attempt(&log);
+        assert!(attempt.ok, "结果该是成功的: {attempt:?}");
+        assert_eq!(attempt.detail, "200");
+        assert_eq!(attempt.target, format!("http://{addr}/ntfy"));
     }
 
     fn hook(when: &[&str], action: HookAction) -> Hook {
