@@ -1749,7 +1749,9 @@ pub fn run() {
         // 统计从盘上读回来：灯球是常驻的，但「常驻」不等于「永不重启」——
         // 改设置、升级、崩了重来，用户对「今天等了多久」的期待是跨重启的。
         .manage(Arc::new(Mutex::new(stats::Stats::load())))
-        .manage(SharedOutbound::default())
+        // 启动时把上次的转发结果读回来：日志原来是纯内存的，重启一次界面就显示
+        // 「从未触发」—— 用户重启一次就会以为转发坏了。
+        .manage(outbound::load_log())
         .manage(SharedPalette::default())
         .manage(alerts::LocalHour::default())
         .manage(lang::LocalLang::default())

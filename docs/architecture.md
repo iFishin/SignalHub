@@ -384,10 +384,13 @@ pub struct StateStyle {
 入口本来就是通用的（HTTP + CLI，任何程序都能报，8 个状态词是共享词汇表），但出口最初只有**一条 webhook**，而且只转发「需要注意」的三种状态。要做成信号中枢，出口必须是**多条带过滤的钩子**：
 
 ```json
-{ "when": ["permission", "error"], "type": "http",    "url": "https://ntfy.sh/x" }
-{ "when": ["done"],               "type": "command", "command": "say 完成" }
-{ "when": [],                     "type": "http",    "url": "http://localhost:9000/ingest" }
+{ "when": ["permission", "error"], "type": "http", "url": "https://ntfy.sh/x", "preset": "ntfy" }
+{ "when": ["permission"],          "type": "http", "url": "https://ntfy.sh/y", "preset": "slack", "headers": { "X-Token": "…" } }
+{ "when": ["done"],                "type": "command", "command": "say 完成" }
+{ "when": [],                      "type": "http", "url": "http://localhost:9000/ingest" }
 ```
+
+`preset` 省略时是 `raw`（原样发 SignalHub 自己的 JSON 快照），`headers` 省略时是空 —— 两者都靠 `#[serde(default)]`，所以老的 `{"type":"http","url":…}` 一个字节都不用改。
 
 `when` 空数组 = 任何变化都触发。模型和触发在 `outbound.rs`（注意和 `hooks.rs` 方向相反：那个是入站，把智能体的 hook 装进它们的配置文件）。
 
@@ -401,6 +404,20 @@ pub struct StateStyle {
 **安全性：`type: "command"` 会执行本地命令，没有额外开关。** 信任模型和 git hooks / npm scripts 一样——配置文件在用户自己的主目录里，能改它就能执行任何东西。加一个开关只会给人一种「关掉就安全」的错觉，而文件本来就在用户手里。文档里写明了这一点，并提醒不要把别人的 `config.json` 直接拿来用。
 
 **一次迁移：** 旧的单条 `webhook_url` 在启动时会被搬成一条 `when = [permission, attention, error]` 的 HTTP 钩子，字段本身标了 `skip_serializing` 永不写回。不搬的话，用户已经配好的转发会在升级后静默失效——而那正是最难发现的一类回归。出口只保留一种表达，不让「单条 webhook」和「钩子列表」并存。
+
+**R4：从「能做」到「好用」。** 一条真实反馈是「转发疑似不可用」。查下来**通路是好的**（本轮补的端到端测试证明 `post` 真的把请求发出去了、非 2xx 也真的带着状态码回来），坏的是它发出去的东西和它周围的体验。四条一起补：
+
+1. **服务预设（`HttpPreset`）。** body 一直是 SignalHub 自己的 JSON 快照，而做通知的那些服务（ntfy / Bark / Slack / Discord / Telegram / 飞书 / 企业微信 / 钉钉）要的是「一个 URL + 一段文字」—— 用户照着 ntfy 的占位符填一条，手机收到一坨看不懂的 JSON。于是 `outbound::compose()` 按预设组装请求：**纯函数**，输入 (预设, 摘要, url, 头)，输出最终要发的 URL / 头 / content-type / body。每个服务的形状都只有这一处实现，也都测在这一处。默认 `raw`（原样发 JSON），老配置靠 `#[serde(default)]` 落到它，行为一个字不变。
+
+   **Telegram 那一格要解释一下：`chat_id` 按官方文档是查询参数**，所以用户填的地址必然是 `…/sendMessage?chat_id=123`，而 sendMessage 只认表单体 —— 于是整条查询串要**搬进 body**，URL 上不留。裸的 `…/sendMessage` 也允许：Telegram 会回 400，而那条状态码正好通过「非 2xx 带码回来」显示给用户。
+
+2. **一行摘要（`summarize`）**：`[SignalHub] 需要授权 · 构建 — 等你批准 (2m)`。组名用**用户看到的那个**（`Settings::display_label`，三级规则同前端 `labelOf`）—— 用户在灯上把 `build-1` 改成了「构建」，转发里却还是 `build-1`，那就是两处真值打架。**不加 emoji**：Rust 这边没有状态 emoji 表，新加一份就是第三处「状态长什么样」的真值，而这类漂移最难自查；收件人读的是文字。
+
+3. **自定义请求头（`Http::headers`）。** 任何要鉴权的地址（`Authorization: Bearer …`、ntfy 的 `X-Token`）原先根本配不了。`clamped()` 里规整：去空白、丢空键、上限 16 条（按键的字典序截断，所以丢哪几条是确定的）。**不做「只差大小写」的去重**：HTTP 头名大小写不敏感，但要判断 `Authorization` 和 `authorization` 哪个是后写的，得知道用户写下的顺序，而 `BTreeMap` 已经把顺序排掉了 —— 任何胜者都是任意挑的。宁可两条都发（服务器会用状态码告诉我们它不接受），也不要悄悄丢掉一条用户明确写下的鉴权头；编辑界面在输入那一层挡重复的键，那里顺序还在。
+
+4. **发送测试（`test_hooks` → `outbound::test_all`）。** 忽略 `when` / 组过滤 / 跃迁判据，把已配置的每条各发一遍。没有它，用户配完只能等下一次真实跃迁 —— 而「等不到」和「发失败」从外面看一模一样，这就是「疑似」的来源。它和真实触发走**同一条路**（同一个 `compose`、同一个 `post`、同一份日志），只有前缀不同（`SignalHub 测试`）—— 测试消息必须看起来就像测试，否则用户会以为真出事了。摘要写的是**当前最紧急的那一组**，这样一条测试消息能当样本看（「真出事时手机上大概长这样」）。
+
+**出站日志落盘（`~/.signalhub/outbound.json`）。** 日志原来是纯内存的环形缓冲，重启一次界面就显示「从未触发」—— 用户重启一次就会以为转发坏了。和 `lamp-positions.json` 一个路子：内存里留一份（界面要立刻读到），`record` 时顺手写一份。**落盘失败只打 stderr**：记不住一条历史结果不该影响转发本身。读回来时文件不在 / 格式坏了都当空的（它只是历史记录），但坏文件会留一行 stderr —— 静默吞掉的话，「转发结果一直是空的」会变成一个查不出来的现象。
 
 ### 3.11 今日状态时长统计
 
@@ -965,6 +982,8 @@ SignalHub/
 ├─ config.json   用户设置（圆点大小、是否置顶）
 ├─ stats.json    每日状态时长（按本地日期分桶，保留最近 30 天）
 ├─ hooks.log     hook 调用日志 + 崩溃记录（每次调用一行，UTC 时间戳，512KB 轮转）
+├─ lamp-positions.json  每盏灯窗拖到哪儿了（见 §3.7 的多灯布局）
+├─ outbound.json 最近几次出站结果（重启后界面上还看得到「上次发成功没有」）
 └─ pending.jsonl 可选：app 未运行时的暂存事件，启动时回放（v1.1）
 ```
 

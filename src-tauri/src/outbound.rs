@@ -13,9 +13,12 @@
 use crate::config::{Hook, HookAction, HttpPreset, Lang, Settings};
 use crate::lang;
 use crate::state::{Signal, Snapshot};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{BTreeMap, VecDeque};
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -352,7 +355,7 @@ fn form_encode(text: &str) -> String {
 ///
 /// 存在的理由很具体：「我的服务器没收到」这件事，光看 stderr 是查不出来的（从
 /// Dock 启动的话 stderr 根本没地方去）。界面上要能回答「发出去没有、对方回了几」。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Attempt {
     pub at_ms: u64,
     /// 目标（网址或命令）。
@@ -389,16 +392,83 @@ fn record(log: &OutboundLog, target: String, ok: bool, detail: &str) {
         eprintln!("[signalhub] 钩子执行失败（{target}）: {detail}");
     }
 
-    let mut log = log.lock().expect("outbound log poisoned");
-    log.push_back(Attempt {
-        at_ms,
-        target,
-        ok,
-        detail: detail.to_string(),
-    });
+    // 锁**只拿着推一条**，落盘在锁外做：写文件比拷贝 200 条记录慢得多，而这条
+    // 路径已经跑在后台线程上了，没有理由再让别的线程在锁上等一次磁盘。
+    let snapshot = {
+        let mut guard = log.lock().expect("outbound log poisoned");
+        push_capped(
+            &mut guard,
+            Attempt {
+                at_ms,
+                target,
+                ok,
+                detail: detail.to_string(),
+            },
+        );
+        guard.clone()
+    };
+    persist(&snapshot);
+}
+
+/// 推进环形缓冲并保持上限。**单独的纯函数**，好让「上限怎么起作用」能被测到 ——
+/// 不然它只能靠往用户的 `~/.signalhub` 里写东西来验证。
+fn push_capped(log: &mut VecDeque<Attempt>, attempt: Attempt) {
+    log.push_back(attempt);
     while log.len() > LOG_CAPACITY {
         log.pop_front();
     }
+}
+
+/// `~/.signalhub/outbound.json`。
+///
+/// 和 `lamps.rs` 的 `lamp-positions.json` 一个路子：内存里留一份（界面要立刻读到），
+/// 同时落盘一份（重启后还在）。**落盘那半是必须的**：日志原来是纯内存的，重启一次
+/// 界面就显示「从未触发」—— 用户重启一次就会以为转发坏了，而这正是这一轮要消灭的
+/// 那种「疑似」。
+fn log_file() -> io::Result<PathBuf> {
+    Ok(crate::config::data_dir()?.join("outbound.json"))
+}
+
+/// 启动时把上次的尾巴读回内存。
+pub fn load_log() -> OutboundLog {
+    let attempts = log_file().map(|path| load_from(&path)).unwrap_or_default();
+    Arc::new(Mutex::new(attempts))
+}
+
+/// 从磁盘读回一份，**读不出来就当空的**。
+///
+/// 这只是历史记录：文件不在（第一次跑）、格式坏了（手改过）、没有权限，都不该拦住
+/// 程序起来。坏文件会打一行 stderr —— 静默吞掉的话，「转发结果一直是空的」会变成
+/// 一个查不出来的现象。
+fn load_from(path: &Path) -> VecDeque<Attempt> {
+    match fs::read_to_string(path) {
+        // 第一次跑：文件本来就不该在，不算异常
+        Err(err) if err.kind() == io::ErrorKind::NotFound => VecDeque::new(),
+        Err(err) => {
+            eprintln!("[signalhub] 读转发结果失败（{}）: {err}", path.display());
+            VecDeque::new()
+        }
+        Ok(text) => serde_json::from_str(&text).unwrap_or_else(|err| {
+            eprintln!("[signalhub] 转发结果文件坏了（{}）: {err}", path.display());
+            VecDeque::new()
+        }),
+    }
+}
+
+/// 写一份到磁盘。**失败只打 stderr**：记不住一条历史结果不该影响转发本身 ——
+/// 那是用户真正要的事，而且这条路径已经在后台线程上，报错也没人接。
+fn persist(attempts: &VecDeque<Attempt>) {
+    let Ok(path) = log_file() else {
+        return;
+    };
+    if let Err(err) = write_log(&path, attempts) {
+        eprintln!("[signalhub] 记转发结果失败（{}）: {err}", path.display());
+    }
+}
+
+fn write_log(path: &Path, attempts: &VecDeque<Attempt>) -> io::Result<()> {
+    let json = serde_json::to_string_pretty(attempts)?;
+    crate::config::atomic_write(path, &json, None)
 }
 
 #[derive(serde::Serialize)]
@@ -486,6 +556,95 @@ fn now_ms() -> u64 {
 mod tests {
     use super::*;
     use crate::config::HookAction;
+
+    /// 每个用例一个独立目录（同 `config.rs` 的测试）。
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static COUNTER: AtomicUsize = AtomicUsize::new(0);
+            let unique = format!(
+                "signalhub-outbound-{}-{}",
+                std::process::id(),
+                COUNTER.fetch_add(1, Ordering::SeqCst)
+            );
+            let dir = std::env::temp_dir().join(unique);
+            fs::create_dir_all(&dir).unwrap();
+            TempDir(dir)
+        }
+
+        fn file(&self, name: &str) -> PathBuf {
+            self.0.join(name)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn attempt(at_ms: u64, target: &str, ok: bool) -> Attempt {
+        Attempt {
+            at_ms,
+            target: target.to_string(),
+            ok,
+            detail: if ok { "200".into() } else { "连接被拒".into() },
+        }
+    }
+
+    /// 结果**要能扛过一次重启**。日志原来是纯内存的，重启一次界面就显示「从未触发」
+    /// —— 用户重启一次就以为转发坏了，而这正是这一轮要消灭的那种「疑似」。
+    #[test]
+    fn the_outbound_log_survives_a_restart() {
+        let dir = TempDir::new();
+        let path = dir.file("outbound.json");
+
+        let mut written = VecDeque::new();
+        written.push_back(attempt(1_700_000_000_000, "https://ntfy.sh/x", true));
+        written.push_back(attempt(1_700_000_001_000, "curl http://x", false));
+        write_log(&path, &written).unwrap();
+
+        assert_eq!(load_from(&path), written, "写出去再读回来必须一模一样");
+    }
+
+    /// 读不出来的那份**当空的**，不让它挡住程序起来 —— 它只是历史记录。
+    /// 但也不能静默：坏文件和「第一次跑」是两回事，前者要留一行 stderr。
+    #[test]
+    fn a_missing_or_corrupt_outbound_log_reads_as_empty() {
+        let dir = TempDir::new();
+
+        // 第一次跑：文件本来就不该在
+        assert!(load_from(&dir.file("nope.json")).is_empty());
+
+        // 手改坏了 / 被别的程序覆盖了：也只当空的
+        let corrupt = dir.file("corrupt.json");
+        fs::write(&corrupt, "{ 这不是 json").unwrap();
+        assert!(load_from(&corrupt).is_empty());
+
+        // 合法 JSON 但形状不对（例如整个对象而不是数组）：同样当空的
+        let wrong_shape = dir.file("wrong.json");
+        fs::write(&wrong_shape, r#"{"at_ms":1}"#).unwrap();
+        assert!(load_from(&wrong_shape).is_empty());
+    }
+
+    /// 上限：只留最近的 `LOG_CAPACITY` 条，丢的是**最旧的**那几条。
+    #[test]
+    fn the_outbound_log_keeps_only_the_newest_entries() {
+        let mut log = VecDeque::new();
+        for index in 0..(LOG_CAPACITY + 5) {
+            push_capped(&mut log, attempt(index as u64, "https://x/y", true));
+        }
+
+        assert_eq!(log.len(), LOG_CAPACITY);
+        assert_eq!(log.front().unwrap().at_ms, 5, "丢的该是最旧的几条");
+        assert_eq!(
+            log.back().unwrap().at_ms,
+            (LOG_CAPACITY + 4) as u64,
+            "最新的那条必须在"
+        );
+    }
 
     fn hook(when: &[&str], action: HookAction) -> Hook {
         Hook {
