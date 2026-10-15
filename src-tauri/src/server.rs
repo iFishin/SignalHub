@@ -332,8 +332,8 @@ mod tests {
         port: u16,
         token: String,
         notifications: Arc<AtomicUsize>,
-        /// 服务器手里**那一份**设置。测试直接改它，就是在模拟用户在设置面板里
-        /// 拨开关 —— 走的是同一条共享路径，不是另造一个快照。
+        /// 服务器手里**那一份**设置。测试通过 `set_group_by` 改它，就是在模拟
+        /// 用户在设置面板里拨开关 —— 走的是同一条共享路径，不是另造一个快照。
         settings: crate::SharedSettings,
     }
 
@@ -341,7 +341,7 @@ mod tests {
         let notifications = Arc::new(AtomicUsize::new(0));
         let counter = notifications.clone();
         let settings: crate::SharedSettings =
-            Arc::new(Mutex::new(crate::config::Settings::default()));
+            Arc::new(Mutex::new(Arc::new(crate::config::Settings::default())));
 
         let ctx = Ctx {
             store: Arc::new(Mutex::new(Store::default())),
@@ -360,6 +360,18 @@ mod tests {
         });
 
         TestServer { port, token: "s3cret".to_string(), notifications, settings }
+    }
+
+    impl TestServer {
+        /// 模拟用户在设置面板里拨「按目录 / 按会话分组」——改的是服务器手里那一份，
+        /// 走的是同一条共享路径，不是另造一个快照。
+        ///
+        /// 设置是 `Arc<Mutex<Arc<Settings>>>`，所以这里换一个新的 `Arc`（和
+        /// `persist_settings` 一样），而不是就地去改它指向的内容。
+        fn set_group_by(&self, by: crate::config::GroupBy) {
+            *self.settings.lock().unwrap() =
+                Arc::new(crate::config::Settings { group_by: by, ..Default::default() });
+        }
     }
 
     /// 手写一个 HTTP/1.1 请求，就为了几个测试引入一个 HTTP 客户端依赖不划算。
@@ -537,7 +549,7 @@ mod tests {
     #[tokio::test]
     async fn cwd_mode_makes_one_sign_per_directory() {
         let server = start().await;
-        server.settings.lock().unwrap().group_by = crate::config::GroupBy::Cwd;
+        server.set_group_by(crate::config::GroupBy::Cwd);
 
         post_state(&server, r#"{"state":"working","session":"a","cwd":"/proj/api"}"#).await;
         let (status, body) =
@@ -560,7 +572,7 @@ mod tests {
     #[tokio::test]
     async fn session_mode_gives_each_session_its_own_sign() {
         let server = start().await;
-        server.settings.lock().unwrap().group_by = crate::config::GroupBy::Session;
+        server.set_group_by(crate::config::GroupBy::Session);
 
         post_state(
             &server,
@@ -585,7 +597,7 @@ mod tests {
     /// 上报自己带的 `group` 仍然优先 —— 开关是兜底，不是覆盖。
     #[tokio::test]
     async fn cwd_mode_does_not_override_an_explicit_group() {        let server = start().await;
-        server.settings.lock().unwrap().group_by = crate::config::GroupBy::Cwd;
+        server.set_group_by(crate::config::GroupBy::Cwd);
 
         post_state(
             &server,
@@ -602,7 +614,7 @@ mod tests {
     #[tokio::test]
     async fn cwd_mode_still_falls_back_to_default_without_a_cwd() {
         let server = start().await;
-        server.settings.lock().unwrap().group_by = crate::config::GroupBy::Cwd;
+        server.set_group_by(crate::config::GroupBy::Cwd);
 
         post_state(&server, r#"{"state":"idle","session":"a"}"#).await;
 

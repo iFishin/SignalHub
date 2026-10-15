@@ -205,7 +205,7 @@ fn hide_group(app: &AppHandle, group: &str) -> Result<(), String> {
 
     crate::persist_settings(
         app,
-        crate::config::Settings { hidden_groups, ..settings },
+        crate::config::Settings { hidden_groups, ..(*settings).clone() },
     )
     .map(|_| ())
 }

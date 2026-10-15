@@ -41,6 +41,9 @@ pub fn compose(app: tauri::AppHandle) -> Notifier {
     let last_groups: Arc<Mutex<HashMap<String, Signal>>> = Arc::new(Mutex::new(HashMap::new()));
 
     Arc::new(move |snapshot: &Snapshot| {
+        // **克隆的是 `Arc`，不是整份设置**（见 `SharedSettings`）：这条闭包在每一次
+        // 状态推送里跑，一秒可能好几次。`.clone()` 通过 `MutexGuard` 解引用到里层
+        // 的 `Arc<Settings>`，只是一次指针拷贝。
         let settings = app
             .state::<SharedSettings>()
             .lock()

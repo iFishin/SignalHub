@@ -32,7 +32,13 @@ type SharedStore = Arc<Mutex<Store>>;
 /// 共享的设置。**和 `SharedStore` 一样是 `Arc`，不是裸 `Mutex`** ——
 /// HTTP 上报那条路径也要读设置（`group_by` 兜底分组），而 `server::spawn`
 /// 拿到的是在那之前就构造好的 ctx，只能靠 Arc 共享同一份，不能再 manage 一个。
-type SharedSettings = Arc<Mutex<Settings>>;
+///
+/// **里层那个 `Arc<Settings>` 是刻意的**：状态推送的热路径（`notify::compose`）
+/// 每次都要一份设置来算窗口尺寸和聚合。整份 `Settings` 深拷贝一次是几十个字段
+/// 加若干张表，而推送一秒可能好几次 —— 多灯之后还要 ×N（见 docs/plan-lamp-expansion.md
+/// 的 P0-2）。所以设置**改**的时候（很少）换一个新的 `Arc`，**读**的时候只克隆
+/// 那个 `Arc`（一次指针拷贝）。两条路径都拿得到一份可用、不可变的快照。
+type SharedSettings = Arc<Mutex<Arc<Settings>>>;
 
 /// 瞬态的界面开关。**不是设置，所以不落盘** —— 尤其是 `pass_through`：
 /// 重启后必须回到可点击状态，否则用户一开机就面对一个点不动、拖不动的圆点。
@@ -43,6 +49,34 @@ struct UiFlags {
 }
 
 type SharedUi = Mutex<UiFlags>;
+
+/// 悬浮窗几何的缓存。**存在的理由：热路径上不许问窗口。**
+///
+/// `apply_window_size` 在每一次状态推送里跑（一秒可能好几次），而
+/// `window.scale_factor()` / `inner_size()` 都是**阻塞主线程的同步往返**
+/// （tauri-runtime-wry 的 `window_getter!`）。这两样其实都能自己记住：
+///
+/// - `scale`：窗口创建时取一次，之后跟着 `ScaleFactorChanged` 事件更新
+///   （把窗口拖到另一块缩放比不同的屏幕时会触发）；
+/// - `size`：**上一次 `set_size` 下去的逻辑尺寸**。要不要 resize 只需拿新算的
+///   尺寸和它比，不必回读窗口（`set_size` 是往事件循环投消息，紧接着读到的
+///   还是旧值，回读本来也不可靠）。
+#[derive(Debug)]
+struct Geometry {
+    /// 缩放比。默认 1.0 —— 万一 `wire_main_window` 没跑成，也不至于算出一个
+    /// 0 倍的物理尺寸把窗口夹到左上角。
+    scale: f64,
+    /// 上次设下去的逻辑尺寸；`None` = 还没设过（启动后第一次必然重设一次）。
+    size: Option<(u16, u16)>,
+}
+
+impl Default for Geometry {
+    fn default() -> Self {
+        Self { scale: 1.0, size: None }
+    }
+}
+
+type SharedGeometry = Mutex<Geometry>;
 
 /// 前端算好的「状态名 → `#rrggbb`」颜色表，供托盘图标取色。
 ///
@@ -243,7 +277,7 @@ fn set_paused(
 
 #[tauri::command]
 fn get_settings(settings: tauri::State<'_, SharedSettings>) -> Settings {
-    settings.lock().expect("settings poisoned").clone()
+    settings.lock().expect("settings poisoned").as_ref().clone()
 }
 
 /// 校验前端传来的设置。
@@ -330,7 +364,10 @@ pub(crate) fn persist_settings(
 
     // 先落盘再改内存和界面：保存失败时不该出现「界面变了但重启就没了」
     config::save_settings(&settings).map_err(|err| format!("保存设置失败: {err}"))?;
-    *app.state::<SharedSettings>().lock().expect("settings poisoned") = settings.clone();
+    // 换一个新的 `Arc` 而不是就地改：读取方（状态热路径）只克隆那个 `Arc`，
+    // 拿到的永远是一份**一致**的设置（见 `SharedSettings`）。这里深拷贝一次
+    // 无所谓 —— 改设置是用户手点出来的低频操作。
+    *app.state::<SharedSettings>().lock().expect("settings poisoned") = Arc::new(settings.clone());
 
     let snapshot = app
         .state::<SharedStore>()
@@ -343,7 +380,10 @@ pub(crate) fn persist_settings(
 }
 
 /// 读出当前设置。
-pub(crate) fn current_settings(app: &tauri::AppHandle) -> Settings {
+///
+/// 返回 `Arc<Settings>`：调用方多半只是拿它看一眼（算尺寸、判断静音），克隆一次
+/// `Arc` 比深拷贝整份设置便宜得多，而且是给状态热路径用的（见 `SharedSettings`）。
+pub(crate) fn current_settings(app: &tauri::AppHandle) -> Arc<Settings> {
     app.state::<SharedSettings>()
         .lock()
         .expect("settings poisoned")
@@ -603,9 +643,9 @@ pub(crate) fn set_collapsed(app: &tauri::AppHandle, collapsed: bool) -> Result<S
     let current = current_settings(app);
     if current.collapsed == collapsed {
         // 没变就别写盘、别广播 —— 左键连点两下不该产生两次磁盘写入
-        return Ok(current);
+        return Ok((*current).clone());
     }
-    persist_settings(app, Settings { collapsed, ..current })
+    persist_settings(app, Settings { collapsed, ..(*current).clone() })
 }
 
 /// 灯上左键点击：折叠 ↔ 展开。前端靠 `signalhub://settings` 广播重画，
@@ -635,7 +675,7 @@ pub(crate) fn set_group_muted(
         muted_groups.retain(|name| name != group);
     }
 
-    persist_settings(app, Settings { muted_groups, ..settings })
+    persist_settings(app, Settings { muted_groups, ..(*settings).clone() })
 }
 
 /// 最近上报过的消息，从旧到新。前端要倒序显示就自己 reverse。
@@ -1011,6 +1051,9 @@ fn ui_flag_count(app: &tauri::AppHandle) -> usize {
 ///
 /// 只在尺寸真的变了才 `set_size`：状态变化一秒可能好几次，每次都 resize
 /// 是没必要的系统调用。
+///
+/// **热路径上不问窗口**（见 `SharedGeometry`）：缩放比和上次设下去的尺寸都
+/// 从缓存读，一次 `inner_size` / `scale_factor` 的同步往返都不做。
 fn apply_window_size(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapshot) {
     let Some(window) = app.get_webview_window("main") else {
         return;
@@ -1028,21 +1071,20 @@ fn apply_window_size(app: &tauri::AppHandle, settings: &Settings, snapshot: &Sna
         settings.window_size(&sign_heights(settings, &groups))
     };
 
-    // inner_size 给的是物理像素，要除掉缩放比才能和逻辑尺寸比较
-    let scale = window.scale_factor().unwrap_or(1.0);
-    let needs_resize = window
-        .inner_size()
-        .map(|size| {
-            (size.width as f64 / scale).round() as u16 != width
-                || (size.height as f64 / scale).round() as u16 != height
-        })
-        .unwrap_or(true);
+    // 和上次设下去的尺寸一样就收工。**这是热路径**：拿缓存比，不问窗口。
+    let scale = {
+        let handle = app.state::<SharedGeometry>();
+        let mut geometry = handle.lock().expect("geometry poisoned");
+        if geometry.size == Some((width, height)) {
+            return;
+        }
+        geometry.size = Some((width, height));
+        geometry.scale
+    };
 
-    if needs_resize {
-        let _ = window.set_size(LogicalSize::new(width, height));
-        // 尺寸变了才可能越界，所以放在这个分支里
-        keep_on_screen(&window, width, height);
-    }
+    let _ = window.set_size(LogicalSize::new(width, height));
+    // 尺寸变了才可能越界，所以放在这个分支里
+    keep_on_screen(&window, width, height, scale);
 }
 
 /// 尺寸变了之后，把窗口推回屏幕内。
@@ -1059,9 +1101,11 @@ fn apply_window_size(app: &tauri::AppHandle, settings: &Settings, snapshot: &Sna
 /// 循环投一条消息，紧接着读 `outer_size()` 拿到的还是旧值，用它算会把窗口夹到错的
 /// 位置。所以这里自己换算成物理像素。
 ///
+/// `scale` 由调用方传入（缓存的那份），这里不再问窗口 —— 见 `SharedGeometry`。
+///
 /// 用工作区（`work_area`）而不是整块屏幕：任务栏 / Dock 占掉的那一条不算可用空间，
 /// 按整屏算的话，贴着底边的窗口会有一截压在任务栏底下。
-fn keep_on_screen(window: &tauri::WebviewWindow, width: u16, height: u16) {
+fn keep_on_screen(window: &tauri::WebviewWindow, width: u16, height: u16, scale: f64) {
     let (Ok(Some(monitor)), Ok(position)) = (window.current_monitor(), window.outer_position())
     else {
         // 拿不到显示器信息（多屏拔插的瞬间、无头环境）就什么都不做 ——
@@ -1069,7 +1113,6 @@ fn keep_on_screen(window: &tauri::WebviewWindow, width: u16, height: u16) {
         return;
     };
 
-    let scale = window.scale_factor().unwrap_or(1.0);
     let size = (
         (width as f64 * scale).round() as i32,
         (height as f64 * scale).round() as i32,
@@ -1138,6 +1181,37 @@ fn mutate(
         notify::push(app, &snapshot);
     }
     snapshot
+}
+
+/// 记下主窗口的缩放比，之后跟着 DPI 变化更新。
+///
+/// 缩放比原本每次推送都要问窗口（`scale_factor()` 是**阻塞主线程的同步往返**），
+/// 而 `apply_window_size` 在状态热路径上。取一次、随 `ScaleFactorChanged` 更新，
+/// 热路径上就再也不用问窗口了（见 `SharedGeometry`）。
+///
+/// 只在启动时调一次；`apply_settings` 必须排在它后面 —— 否则第一次算尺寸时缓存里
+/// 还是默认的 1.0，在 2× 屏上会把窗口的物理尺寸算错一半。
+fn wire_main_window(app: &tauri::App) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+
+    let scale = window.scale_factor().unwrap_or(1.0);
+    app.state::<SharedGeometry>()
+        .lock()
+        .expect("geometry poisoned")
+        .scale = scale;
+
+    let app_handle = app.handle().clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::ScaleFactorChanged { scale_factor, .. } = event {
+            app_handle
+                .state::<SharedGeometry>()
+                .lock()
+                .expect("geometry poisoned")
+                .scale = *scale_factor;
+        }
+    });
 }
 
 /// 设置窗被关掉时只隐藏、不销毁，下次打开不用重建；同时把激活策略切回
@@ -1227,6 +1301,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(SharedStore::new(Mutex::new(Store::default())))
         .manage(SharedUi::default())
+        .manage(SharedGeometry::default())
         .manage(SharedBind::default())
         // 统计从盘上读回来：灯球是常驻的，但「常驻」不等于「永不重启」——
         // 改设置、升级、崩了重来，用户对「今天等了多久」的期待是跨重启的。
@@ -1281,7 +1356,12 @@ pub fn run() {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             let settings = config::load_settings();
-            app.manage(Arc::new(Mutex::new(settings.clone())));
+            app.manage(Arc::new(Mutex::new(Arc::new(settings.clone()))));
+
+            // **先取一次缩放比**（唯一的同步查询），再套用尺寸：否则
+            // `apply_window_size` 会拿默认的 1.0 去算物理尺寸，在 2× 屏上把
+            // 窗口夹到错的位置。之后热路径只用缓存的值。
+            wire_main_window(app);
 
             // 先套用尺寸和置顶，再显示：否则会先按配置里的默认尺寸闪一下
             let initial = app
