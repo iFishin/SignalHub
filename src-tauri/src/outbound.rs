@@ -172,7 +172,12 @@ fn subject<'a>(
     if !hook.groups.is_empty() {
         let winner = changes
             .iter()
-            .filter(|(name, _)| hook.groups.iter().any(|group| group == name))
+            .filter(|(name, state)| {
+                // 判据和 `Hook::fires` **同源**：这条钩子是为**哪一个**变化触发的。
+                // 只用 `groups` 过滤的话，「ci 组变成 idle 了」也会被选成主语 ——
+                // 而那条变化根本不是这条钩子关心的事（它的 `when` 里没有 idle）。
+                hook.groups.iter().any(|group| group == name) && hook.matches(state.name())
+            })
             .max_by_key(|(_, state)| state.priority());
         if let Some((name, state)) = winner
             && let Some(group) = snapshot.groups.iter().find(|group| &group.name == name)
@@ -655,6 +660,96 @@ mod tests {
             (LOG_CAPACITY + 4) as u64,
             "最新的那条必须在"
         );
+    }
+
+    fn group_view(name: &str, aggregate: Signal, message: Option<&str>) -> crate::state::GroupView {
+        crate::state::GroupView {
+            name: name.to_string(),
+            default_label: None,
+            aggregate,
+            message: message.map(str::to_string),
+            since_ms: 1_700_000_000_000,
+            stale_progress: None,
+            sessions: Vec::new(),
+        }
+    }
+
+    /// 摘要的主语是**触发这条钩子的那个变化**，不是「它盯的组里最紧急的那个」。
+    ///
+    /// 这两者多数时候是同一个，但钩子的 `when` 和 `groups` 能各自设：「盯 ci 组、只在
+    /// 出错时触发」的钩子，在 `ci` 变成 `idle` 时**不该**触发 —— 也就没有什么可写的。
+    /// 要是只按 `groups` 选主语，「ci 变成 idle」这一条也会被选中，于是手机上收到一条
+    /// 「会话空闲 · ci」，而用户配的是「ci 出错时告诉我」。
+    #[test]
+    fn the_subject_is_the_change_that_actually_triggered_the_hook() {
+        let snapshot = Snapshot {
+            aggregate: Signal::Error,
+            paused: false,
+            since_ms: 1_700_000_000_000,
+            message: Some("整体出错".into()),
+            groups: vec![
+                group_view("ci", Signal::Error, Some("测试挂了")),
+                group_view("deploy", Signal::Idle, Some("坐等")),
+            ],
+        };
+        let settings = Settings::default();
+        let hook = Hook {
+            when: vec!["error".into()],
+            groups: vec!["ci".into()],
+            action: HookAction::http("https://x/y"),
+        };
+
+        // ci 出了错：主语是 ci 那一条，不是更紧急/更不紧急的别的组
+        let picked = subject(
+            &hook,
+            &snapshot,
+            &[("deploy".into(), Signal::Idle), ("ci".into(), Signal::Error)],
+            &settings,
+        );
+        assert_eq!(picked.state, Signal::Error);
+        assert_eq!(picked.label, "ci");
+        assert_eq!(picked.message, Some("测试挂了"));
+        assert_eq!(picked.since_ms, 1_700_000_000_000);
+
+        // ci 变成 idle（`when` 里没有 idle）：没有匹配的变化，退回全局聚合 ——
+        // 宁可写得不那么具体，也不要写一个和触发原因不相干的状态
+        let picked = subject(
+            &hook,
+            &snapshot,
+            &[("ci".into(), Signal::Idle), ("deploy".into(), Signal::Error)],
+            &settings,
+        );
+        assert_eq!(picked.state, Signal::Error, "退回的是全局聚合");
+        assert_eq!(picked.label, "");
+        assert_eq!(picked.message, Some("整体出错"));
+    }
+
+    /// 摘要里的组名用**用户改的名字**（`Settings::display_label`），不是原始组名。
+    #[test]
+    fn the_subject_label_is_what_the_user_renamed_it_to() {
+        let snapshot = Snapshot {
+            aggregate: Signal::Error,
+            paused: false,
+            since_ms: 1_700_000_000_000,
+            message: None,
+            groups: vec![group_view("build-1", Signal::Error, None)],
+        };
+        let mut settings = Settings::default();
+        settings.group_meta.insert(
+            "build-1".to_string(),
+            crate::config::GroupMeta {
+                name: Some("构建".into()),
+                order: None,
+            },
+        );
+        let hook = Hook {
+            when: Vec::new(),
+            groups: vec!["build-1".into()],
+            action: HookAction::http("https://x/y"),
+        };
+
+        let picked = subject(&hook, &snapshot, &[("build-1".into(), Signal::Error)], &settings);
+        assert_eq!(picked.label, "构建", "转发里该用用户在灯上起的名字");
     }
 
     /// 出站是异步的（`spawn_blocking`），所以日志不是立刻就有。等它一下 ——
