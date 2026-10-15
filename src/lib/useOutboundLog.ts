@@ -28,7 +28,7 @@ const REFRESH_MS = 15_000;
  * 的钩子看的是**各组自己**的跃迁，那不一定改变聚合 —— 所以还要靠定时兜底把这类
  * 结果捞上来。
  */
-export function useOutboundLog(aggregate: SignalState): Attempt[] {
+export function useOutboundLog(aggregate: SignalState, nonce = 0): Attempt[] {
   const [attempts, setAttempts] = useState<Attempt[]>([]);
 
   useEffect(() => {
@@ -43,7 +43,10 @@ export function useOutboundLog(aggregate: SignalState): Attempt[] {
     load();
     const timer = window.setInterval(load, REFRESH_MS);
     return () => window.clearInterval(timer);
-  }, [aggregate]);
+    // `nonce` 只是个「现在重取一次」的信号（「发送测试」按钮点完就加一）。
+    // 单靠 aggregate 和定时兜底的话，用户点完测试要等最多 15 秒才看到结果 ——
+    // 而「点了没反应」正是这一轮要消灭的那种体验。
+  }, [aggregate, nonce]);
 
   return attempts;
 }

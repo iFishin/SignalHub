@@ -552,6 +552,60 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   margin-bottom: 0;
 }
 
+/* 服务预设的下拉。`.select` 默认 84px 宽（那是灯效页那张表对齐用的），而这几个
+   预设名是词、不是两三个字符 —— 宽度跟着内容走，上限是整行。 */
+.hook-preset {
+  width: auto;
+  min-width: 132px;
+  max-width: 100%;
+}
+
+/* 请求头：小标题 + 若干「名字 · 值 · 删」的行 + 一个添加按钮。
+   和上面的组过滤一样单独成块，免得和目标的输入框看成一排。 */
+.hook-headers {
+  margin-bottom: 8px;
+}
+
+/* 和 `.hook-groups-label` 是同一套（小、灰、块级），但 CSS 没有 mixin —— 两个各自
+   四行比共用一个叫「组过滤」的类名好。 */
+.hook-headers-label {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.hook-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hook-header + .hook-header {
+  margin-top: 4px;
+}
+
+/* 名字那一格窄、等宽，35%：它是个 HTTP 头名（`Authorization`），而值才是变长的那
+   个。两格都用 .input 但把内边距和字号收到和「各组的显示」那种小输入一致。 */
+.hook-header-name,
+.hook-header-value {
+  min-width: 0;
+  padding: 3px 7px;
+  font-size: 11.5px;
+}
+
+.hook-header-name {
+  flex: 0 0 35%;
+}
+
+.hook-header-value {
+  flex: 1;
+}
+
+.hook-headers > .btn-tiny {
+  margin-top: 6px;
+}
+
 /* 最近一次出站结果：`✓ 200 · 2m前`。小、灰、等宽（字体来自 .mono）。
    等宽数字免得时间那一截在重取时左右抖。 */
 .hook-result {

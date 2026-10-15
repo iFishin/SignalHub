@@ -1,11 +1,21 @@
-import { useEffect, useState } from "react";
+import {
+  useEffect,
+  useState,
+  type ChangeEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { inTauri } from "../lib/env";
 import { signalLabel } from "../lib/signals";
 import { labelOf } from "../lib/lampSort";
+import {
+  commitHeader,
+  withoutHeader,
+  MAX_HOOK_HEADERS,
+} from "../lib/hookHeaders";
 import { useLang, useMessages, type Lang, type Messages } from "../lib/i18n";
-import { useSettings, updateSettings, type Settings, type Shape, type Palette, type Hook, type StateStyle, type GroupMeta } from "../lib/useSettings";
+import { useSettings, updateSettings, HTTP_PRESETS, type Settings, type Shape, type Palette, type HttpPreset, type Hook, type StateStyle, type GroupMeta } from "../lib/useSettings";
 import {
   useToggles,
   setAutostart,
@@ -649,6 +659,23 @@ function NotifyPermission({ m, enabled }: { m: Messages; enabled: boolean }) {
   );
 }
 
+/**
+ * 请求头输入框的两个按键。
+ *
+ * **Esc 不失焦**，只把草稿丢掉：失焦会触发 blur → 提交，那就成了「按 Esc 反而把它
+ * 存了进去」。丢完草稿后输入框还在焦点上，但显示的是存着的那个值 —— 接着打字就是
+ * 一次新的修改。
+ *
+ * Enter 也不自己提交，只失焦 —— 提交只走 blur 那一条路，免得同一个草稿被提交两次
+ * （第一次改完了，第二次还拿着旧的那份去重算）。
+ */
+function headerKeys(cancel: () => void) {
+  return (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Enter") event.currentTarget.blur();
+    if (event.key === "Escape") cancel();
+  };
+}
+
 export function SettingsPanel({ snapshot }: Props) {
   const settings = useSettings();
   const toggles = useToggles();
@@ -656,7 +683,10 @@ export function SettingsPanel({ snapshot }: Props) {
   const timeline = useTimeline(snapshot.aggregate);
   const { days: historyDays, refresh: refreshHistory } = useHistory();
   const feed = useMessageFeed(snapshot.aggregate);
-  const outboundLog = useOutboundLog(snapshot.aggregate);
+  // 「发送测试」点完就加一，逼 `useOutboundLog` 立刻重取一次。没有它的话结果最多
+  // 要等 15 秒（定时兜底）才出现 ——「点了没反应」正是这一轮要消灭的那种体验。
+  const [outboundNonce, setOutboundNonce] = useState(0);
+  const outboundLog = useOutboundLog(snapshot.aggregate, outboundNonce);
   const { agents, refresh: refreshAgents } = useAgents();
   const { lines: logLines, refresh: refreshLog } = useHookLog();
   const m = useMessages();
@@ -900,7 +930,16 @@ export function SettingsPanel({ snapshot }: Props) {
       ...settings.hooks,
       // 目标先留空：空目标不算错（不触发），用户填了才开始工作。
       // groups 也先空着 = 看全局聚合，这是原有语义，新钩子不该默认变成按组过滤
-      { when: ["permission", "attention", "error"], groups: [], type: "http", url: "" },
+      // preset / headers 写成默认值：从 command 切过来的钩子没有这两样，写全了
+      // 界面就不用到处 `?? {}` 兜底（Rust 侧也有 serde(default) 兜着）。
+      {
+        when: ["permission", "attention", "error"],
+        groups: [],
+        type: "http",
+        url: "",
+        headers: {},
+        preset: "raw",
+      },
     ]);
 
   const commitHookDraft = () => {
@@ -913,6 +952,66 @@ export function SettingsPanel({ snapshot }: Props) {
     const current = hook.type === "http" ? hook.url : hook.command;
     if (next === (current ?? "").trim()) return; // 没改就别白存一次
     updateHook(index, hook.type === "http" ? { url: next } : { command: next });
+  };
+
+  // ---- 请求头 ---------------------------------------------------------------
+  //
+  // 和钩子目标一样是「草稿 + 失焦提交」：每敲一个字存一次会把半截头名写进配置，
+  // 而半截的头名（`Authoriz`）是一个**真的会被发出去**的请求头 —— 比半截 URL
+  // 更糟，因为那个只是发不出去。
+  //
+  // 这里只留草稿**怎么来、往哪去**；「能不能提交」那几条规则都在 `lib/hookHeaders.ts`
+  // 里（改名 = 删旧插新、头名不区分大小写、空名字 = 删行），有单测。
+  // `from` 是这一行的**原键名**，新加的一行是 `null`。
+  const [headerDraft, setHeaderDraft] = useState<{
+    index: number;
+    from: string | null;
+    name: string;
+    value: string;
+  } | null>(null);
+
+  const headersOf = (index: number): Record<string, string> => {
+    const hook = settings.hooks[index];
+    return hook?.type === "http" ? hook.headers : {};
+  };
+
+  const setHeaders = (index: number, headers: Record<string, string>) =>
+    updateHook(index, { headers });
+
+  const addHeader = (index: number) => {
+    setError(null);
+    // 已经有一行新行杵在那儿了就别再加第二行 —— 两行空名字谁也分不清哪行是哪个
+    if (headerDraft?.index === index && headerDraft.from === null) return;
+    setHeaderDraft({ index, from: null, name: "", value: "" });
+  };
+
+  const commitHeaderDraft = () => {
+    if (!headerDraft) return;
+    const { index, from, name, value } = headerDraft;
+    setHeaderDraft(null);
+    const result = commitHeader(headersOf(index), from, { name, value });
+    // 撞名：报一句，**保持原样** —— 悄悄丢掉用户刚敲的那个头名比报错更糟
+    if (!result) {
+      setError(m.headerDuplicate);
+      return;
+    }
+    // `changed: false`（名字空着的新行、或者什么都没改）就不必白跑一趟 set_settings
+    if (result.changed) setHeaders(index, result.headers);
+  };
+
+  // 「发送测试」：让 Rust 把所有已配置的转发各发一遍（忽略 when / 组过滤 / 跃迁），
+  // 再立刻重取日志。就地显示「发出几条」——「点了什么都不显示」和「真的没配转发」
+  // 从外面看是一样的。
+  const [testNotice, setTestNotice] = useState<string | null>(null);
+
+  const sendTest = () => {
+    setError(null);
+    invoke<number>("test_hooks")
+      .then((sent) => {
+        setTestNotice(sent === 0 ? m.testNothing : m.testSent(sent));
+        setOutboundNonce((nonce) => nonce + 1);
+      })
+      .catch(reported);
   };
 
   const setPaused = (paused: boolean) => {
@@ -1889,6 +1988,12 @@ export function SettingsPanel({ snapshot }: Props) {
                 ? lastAttemptFor(outboundLog, target)
                 : undefined;
 
+              // 正在新加的那一行请求头（还没进设置 —— 空名字的行存了也会被 Rust 丢掉）
+              const pendingHeader =
+                headerDraft && headerDraft.index === index && headerDraft.from === null
+                  ? headerDraft
+                  : null;
+
               return (
                 <div className="hook" key={index}>
                   <div className="hook-head">
@@ -1961,7 +2066,14 @@ export function SettingsPanel({ snapshot }: Props) {
                       <button
                         type="button"
                         data-active={hook.type === "http"}
-                        onClick={() => updateHook(index, { type: "http", url: "" })}
+                        onClick={() =>
+                          updateHook(index, {
+                            type: "http",
+                            url: "",
+                            headers: {},
+                            preset: "raw",
+                          })
+                        }
                       >
                         HTTP
                       </button>
@@ -1993,6 +2105,149 @@ export function SettingsPanel({ snapshot }: Props) {
                     }}
                   />
 
+                  {/* 服务预设：决定发出去的 body 长什么样。默认「原样 JSON」是
+                      原先那条路 —— 老钩子升级过来一个字都不用改。 */}
+                  {hook.type === "http" && (
+                    <>
+                      <Row label={m.hookPreset}>
+                        <select
+                          className="select hook-preset"
+                          value={hook.preset}
+                          onChange={(event) =>
+                            updateHook(index, {
+                              preset: event.target.value as HttpPreset,
+                            })
+                          }
+                        >
+                          {HTTP_PRESETS.map((preset) => (
+                            <option key={preset} value={preset}>
+                              {m.presetNames[preset]}
+                            </option>
+                          ))}
+                        </select>
+                      </Row>
+
+                      {/* 请求头：鉴权靠它。**空名字的行只活在草稿里**（见 addHeader）
+                          —— 存进设置的话会被 Rust 的 clamp 丢掉，表现出来就是
+                          「刚点出来的那一行自己没了」。 */}
+                      <div className="hook-headers">
+                        <span className="hook-headers-label">{m.hookHeaders}</span>
+                        {Object.entries(hook.headers).map(([name, value]) => {
+                          const draft =
+                            headerDraft?.index === index &&
+                            headerDraft.from === name
+                              ? headerDraft
+                              : null;
+                          const onEdit = (field: "name" | "value") => (
+                            event: ChangeEvent<HTMLInputElement>,
+                          ) => {
+                            // 从这一行的原值出发改一个字段，另一个字段保持用户
+                            // 当前看到的那个（否则点了名字再点值会把名字改回去）
+                            setHeaderDraft({
+                              index,
+                              from: name,
+                              name:
+                                field === "name"
+                                  ? event.target.value
+                                  : (draft?.name ?? name),
+                              value:
+                                field === "value"
+                                  ? event.target.value
+                                  : (draft?.value ?? value),
+                            });
+                          };
+                          return (
+                            <div className="hook-header" key={name}>
+                              <input
+                                className="input mono hook-header-name"
+                                spellCheck={false}
+                                placeholder={m.headerNamePlaceholder}
+                                value={draft ? draft.name : name}
+                                onChange={onEdit("name")}
+                                onFocus={() =>
+                                  setHeaderDraft({ index, from: name, name, value })
+                                }
+                                onBlur={commitHeaderDraft}
+                                onKeyDown={headerKeys(() => setHeaderDraft(null))}
+                              />
+                              <input
+                                className="input hook-header-value"
+                                spellCheck={false}
+                                placeholder={m.headerValuePlaceholder}
+                                value={draft ? draft.value : value}
+                                onChange={onEdit("value")}
+                                onFocus={() =>
+                                  setHeaderDraft({ index, from: name, name, value })
+                                }
+                                onBlur={commitHeaderDraft}
+                                onKeyDown={headerKeys(() => setHeaderDraft(null))}
+                              />
+                              <button
+                                type="button"
+                                className="btn btn-tiny"
+                                onClick={() =>
+                                  updateHook(index, {
+                                    headers: withoutHeader(hook.headers, name),
+                                  })
+                                }
+                              >
+                                {m.delete}
+                              </button>
+                            </div>
+                          );
+                        })}
+
+                        {/* 正在新加的那一行 */}
+                        {pendingHeader && (
+                          <div className="hook-header">
+                            <input
+                              className="input mono hook-header-name"
+                              spellCheck={false}
+                              autoFocus
+                              placeholder={m.headerNamePlaceholder}
+                              value={pendingHeader.name}
+                              onChange={(event) =>
+                                setHeaderDraft({
+                                  ...pendingHeader,
+                                  name: event.target.value,
+                                })
+                              }
+                              onBlur={commitHeaderDraft}
+                              onKeyDown={headerKeys(() => setHeaderDraft(null))}
+                            />
+                            <input
+                              className="input hook-header-value"
+                              spellCheck={false}
+                              placeholder={m.headerValuePlaceholder}
+                              value={pendingHeader.value}
+                              onChange={(event) =>
+                                setHeaderDraft({
+                                  ...pendingHeader,
+                                  value: event.target.value,
+                                })
+                              }
+                              onBlur={commitHeaderDraft}
+                              onKeyDown={headerKeys(() => setHeaderDraft(null))}
+                            />
+                          </div>
+                        )}
+                        {/* 到上限就禁用：Rust 的 clamp 是按键的字典序截断的（确定，
+                            但用户看不见），先在这里挡住 —— 不然「加了一条，存下去之后
+                            它自己没了」会是一个查不出来的现象。 */}
+                        <button
+                          type="button"
+                          className="btn btn-tiny"
+                          disabled={
+                            Object.keys(hook.headers).length >= MAX_HOOK_HEADERS
+                          }
+                          onClick={() => addHeader(index)}
+                        >
+                          {m.addHeader}
+                        </button>
+                      </div>
+                    </>
+                  )}
+
                   {/* 最近一次结果。目标为空时无从匹配，不渲染 —— 宁可什么都不显示，
                       也不要拿别的钩子的结果显示在这里。 */}
                   {configured && (
@@ -2004,11 +2259,21 @@ export function SettingsPanel({ snapshot }: Props) {
               );
             })}
 
+            {/* 「发送测试」是这一轮补上的**关键**一件：没有它，用户配完只能等
+                下一次真实跃迁，而「等不到」和「发失败」从外面看一模一样。 */}
+            <div className="row">
+              <button type="button" className="btn" onClick={sendTest}>
+                {m.sendTest}
+              </button>
+              {testNotice && <span className="hint">{testNotice}</span>}
+            </div>
             <button type="button" className="btn" onClick={addHook}>
               {m.addHook}
             </button>
             <p className="hint">{m.hooksHint}</p>
+            <p className="hint">{m.presetHint}</p>
             <p className="hint">{m.hookGroupsHint}</p>
+            <p className="hint">{m.headersHint}</p>
           </>
         );
       }

@@ -9,9 +9,59 @@ export type Shape = "circle" | "rounded" | "ring";
 /** 配色预设。给预设而不是任意取色 —— 红=危险、黄=注意是有语义的。 */
 export type Palette = "default" | "colorblind" | "vivid";
 
+/**
+ * HTTP 转发的**服务预设**：决定 content-type 和 body 形状。
+ *
+ * Rust 侧是同名的枚举（`serde(rename_all = "lowercase")`），所以这里的字符串就是
+ * 配置文件里那个值。`raw` 是默认 —— 原样发 SignalHub 自己的 JSON 快照。
+ *
+ * 除了 `raw`，其余每一个都只发**一行文字**：那些服务（ntfy / Bark / Slack /
+ * Discord / 飞书 / 企业微信 / 钉钉 / Telegram）的形状本来就是「一个 URL + 一段
+ * 文字」，服务端自己决定怎么排版。给它们发结构化数据，用户收到的是一坨看不懂的
+ * JSON —— 而「转发看起来什么都没发生」正是 R4 要解决的问题。
+ */
+export type HttpPreset =
+  | "raw"
+  | "text"
+  | "ntfy"
+  | "bark"
+  | "slack"
+  | "discord"
+  | "lark"
+  | "wecom"
+  | "dingtalk"
+  | "telegram";
+
+/**
+ * 预设的选项顺序。**和 Rust 的 `HttpPreset` 枚举顺序一致** —— 两边列出来的顺序
+ * 不一样时，用户按记忆去找「上次那个」就会找不到。
+ */
+export const HTTP_PRESETS: HttpPreset[] = [
+  "raw",
+  "text",
+  "ntfy",
+  "bark",
+  "slack",
+  "discord",
+  "lark",
+  "wecom",
+  "dingtalk",
+  "telegram",
+];
+
 /** 钩子能做的事。`command` 会执行本地命令，见 docs/api.md 里的安全说明。 */
 export type HookAction =
-  | { type: "http"; url: string }
+  | {
+      type: "http";
+      url: string;
+      /**
+       * 额外请求头 —— 鉴权靠它（`Authorization: Bearer …`、ntfy 的 `X-Token`）。
+       * Rust 侧已经规整过：去空白、丢空键、上限 16 条。
+       */
+      headers: Record<string, string>;
+      /** 发什么形状，见 `HttpPreset`。 */
+      preset: HttpPreset;
+    }
   | { type: "command"; command: string };
 
 /**

@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { inTauri } from "./env";
-import { useSettings, type Settings } from "./useSettings";
+import { useSettings, type HttpPreset, type Settings } from "./useSettings";
 import type { SignalState } from "./types";
 
 export type Lang = "zh" | "en";
@@ -243,6 +243,28 @@ export interface Messages {
   groupNotReporting: string;
   /** 从没触发过的钩子 */
   neverFired: string;
+
+  // 通知转发页（R4：预设 / 请求头 / 发送测试）
+  /** 「发什么形状」那一行的标签 */
+  hookPreset: string;
+  /** 预设显示名。键是 Rust `HttpPreset` 的 serde 名（= `HTTP_PRESETS` 里的值）。 */
+  presetNames: Record<HttpPreset, string>;
+  /** 预设说明：`raw` 之外每一个都只发一行文字 */
+  presetHint: string;
+  /** 请求头那一节的标题 */
+  hookHeaders: string;
+  headerNamePlaceholder: string;
+  headerValuePlaceholder: string;
+  addHeader: string;
+  headersHint: string;
+  /** 头名重复（大小写不敏感）。添加按钮据此禁用 —— 顺序在这一层还在，能挡住。 */
+  headerDuplicate: string;
+  /** 「发送测试」按钮 */
+  sendTest: string;
+  /** 一条都没发出去（没有填好目标的转发） */
+  testNothing: string;
+  /** 发了 n 条，结果看下面每条的最近一次结果 */
+  testSent: (n: number) => string;
   /** 「多久以前」的后缀，如「2m前」/「2m ago」 */
   firedAgo: (age: string) => string;
   /** 提醒页里指向通知转发页的一行 */
@@ -571,6 +593,32 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     neverFired: "还没触发过",
     firedAgo: (age) => `${age}前`,
 
+    hookPreset: "发什么形状",
+    presetNames: {
+      raw: "原样 JSON（自建接收端）",
+      text: "纯文本",
+      ntfy: "ntfy",
+      bark: "Bark",
+      slack: "Slack",
+      discord: "Discord",
+      lark: "飞书",
+      wecom: "企业微信",
+      dingtalk: "钉钉",
+      telegram: "Telegram",
+    },
+    presetHint:
+      "除了「原样 JSON」，其余都只发下面那行文字 —— 那些服务要的就是「一个地址 + 一句话」，服务端自己排版。选完先用「发送测试」看一眼手机收到的是什么。",
+    hookHeaders: "请求头（鉴权用）",
+    headerNamePlaceholder: "Authorization",
+    headerValuePlaceholder: "Bearer …",
+    addHeader: "+ 添加请求头",
+    headersHint:
+      "要鉴权的地址靠它，例如 Authorization: Bearer …、ntfy 的 X-Token。最多 16 条。",
+    headerDuplicate: "这个名字已经有了（头名不区分大小写）",
+    sendTest: "发送测试",
+    testNothing: "还没有填好目标的转发",
+    testSent: (n) => `已发出 ${n} 条 —— 结果在下面每条自己的那一行`,
+
     alwaysOnTop: "保持在最前",
     trayFollowsState: "托盘跟随状态",
     launchAtLogin: "开机自启",
@@ -886,6 +934,32 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     groupNotReporting: "This group is not reporting right now, but is still on the hook",
     neverFired: "Not fired yet",
     firedAgo: (age) => `${age} ago`,
+
+    hookPreset: "Body format",
+    presetNames: {
+      raw: "Raw JSON (your own endpoint)",
+      text: "Plain text",
+      ntfy: "ntfy",
+      bark: "Bark",
+      slack: "Slack",
+      discord: "Discord",
+      lark: "Lark",
+      wecom: "WeCom",
+      dingtalk: "DingTalk",
+      telegram: "Telegram",
+    },
+    presetHint:
+      "Everything except Raw JSON sends just the one line below — those services want a URL and a sentence, and they do the formatting. Pick one and hit Send test to see what lands on your phone.",
+    hookHeaders: "Headers (for auth)",
+    headerNamePlaceholder: "Authorization",
+    headerValuePlaceholder: "Bearer …",
+    addHeader: "+ Add header",
+    headersHint:
+      "Endpoints that need auth go here — Authorization: Bearer …, ntfy's X-Token. Up to 16.",
+    headerDuplicate: "That name is already here (header names are case-insensitive)",
+    sendTest: "Send test",
+    testNothing: "No forwarding target filled in yet",
+    testSent: (n) => `Sent ${n} — results are on each hook's own line below`,
 
     alwaysOnTop: "Always on top",
     trayFollowsState: "Tray follows state",
