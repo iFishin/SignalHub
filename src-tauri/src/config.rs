@@ -1581,7 +1581,8 @@ mod tests {
             "group_meta": { "builds": { "name": "构建" } },
             "hooks": [
                 { "type": "http", "url": "https://x/y", "preset": "Slack" },
-                { "type": "http", "url": "https://x/z", "preset": "webhook" }
+                { "type": "http", "url": "https://x/z", "preset": "webhook" },
+                { "type": "http", "url": "https://api2.pushdeer.com/message/push?pushkey=K", "preset": "pushdeer" }
             ]
         }"#;
         let settings = serde_json::from_str::<Settings>(raw)
@@ -1590,7 +1591,7 @@ mod tests {
         assert_eq!(settings.group_meta["builds"].name.as_deref(), Some("构建"));
         assert_eq!(
             settings.hooks.len(),
-            2,
+            3,
             "钩子也不该被丢掉 —— 它们只是多发一坨 JSON"
         );
         // 大小写写错的那个能认出来，完全没见过的落到 raw
@@ -1603,6 +1604,17 @@ mod tests {
             }
         );
         assert_eq!(settings.hooks[1].action.target(), "https://x/z");
+        // **每个预设的名字都得认得出来**：认不出来的会静默落到 `raw`，于是
+        // 「配了 PushDeer」变成「发了一坨 JSON 过去」—— 手机一声不响，而面板上
+        // 那个下拉显示的却是「原样 JSON」，用户得自己发现。
+        assert_eq!(
+            settings.hooks[2].action,
+            HookAction::Http {
+                url: "https://api2.pushdeer.com/message/push?pushkey=K".into(),
+                headers: BTreeMap::new(),
+                preset: HttpPreset::Pushdeer,
+            }
+        );
     }
 
     /// 请求头的规整：去空白、丢掉空键、按上限截断（**确定的**截断）。
