@@ -142,10 +142,14 @@ export function stateOverridden(style: StateStyle | undefined): boolean {
 }
 
 /**
- * 全部外观变量（颜色 + 动画），挂到窗口根元素上。
+ * 全部外观变量（颜色 + 动画 + 透明度），挂到窗口根元素上。
  *
  * 挂根上一次就都生效了：一个窗口里可能有多个状态点（灯球多点、设置面板的
  * 会话列表）。颜色变量由 palettes 产出，这里只补上动画变量。
+ *
+ * **`--sign-alpha` 也从这里出**（它原来是 `SignalLamp` 自己加在内联样式里的）。
+ * 设置面板里那张预览牌要复用同一套变量 —— 两处各写一遍的话，预览显示的透明
+ * 度迟早和真正的灯对不上，而「预览和灯不一样」比没有预览更糟。
  */
 export function lampVars(settings: Settings): React.CSSProperties {
   const style: Record<string, string> = {
@@ -155,6 +159,8 @@ export function lampVars(settings: Settings): React.CSSProperties {
     // 1.0（默认）时是恒等，不改变任何现有几何。
     "--sign-w-mult": String(settings.sign_w_mult),
     "--sign-h-mult": String(settings.sign_h_mult),
+    // 背景透明度：CSS 里当 `--sign-bg` 的 alpha 用（0 = 全透明，1 = 不透明）
+    "--sign-alpha": String(settings.sign_opacity / 100),
   };
   for (const [state, anim] of Object.entries(resolveAnimations(settings))) {
     style[`--anim-${state}`] = anim;

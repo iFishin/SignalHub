@@ -224,6 +224,63 @@ html[data-window="settings"] #root {
   text-transform: uppercase;
 }
 
+/* 「牌长这样」的实时预览（外观页顶部）。
+   **它用的就是灯自己那张牌**（同一套 CSS 变量和类名，见 `LampPreview`），所以这里
+   只需要给一块画布和一层底色：牌面是半透明的（默认 86%），落在纯白面板上看不出
+   「透」，用 `--hover` 垫一层才看得出来。 */
+.settings .lamp-preview {
+  min-height: 132px;
+  margin-bottom: 6px;
+  padding: 6px 0;
+  border-radius: 8px;
+  background: var(--hover);
+  /* 预览不是控件：吃指针会显得能拖、能选、还能右键弹出灯的那张菜单 */
+  pointer-events: none;
+}
+
+.settings .lamp-preview .lamp-root {
+  /* 灯窗里它是 `width/height: 100%`（整窗口就是它）；这里得按内容长高 */
+  height: auto;
+  cursor: default;
+}
+
+/* 一行设置。`flex-wrap` + 行内说明占满整行：说明要落在它解释的那一行**下面**，
+   而不是页尾那堆和谁都对不上的灰字。 */
+.settings .row-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 「这一行改过」的信号 + 一键还原。默认值是 `DEFAULTS` 那一份（见 resetFor），
+   所以它和导出 / 导入、以及 Rust 的 Default 永远一致。 */
+.settings .row-reset {
+  padding: 0 2px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.settings .row-reset:hover {
+  background: var(--hover);
+  color: var(--fg);
+  opacity: 1;
+}
+
+.settings .row-hint {
+  flex: 1 0 100%;
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 /* 可折叠的一节（目前只有「外观」页的「逐个状态覆盖」）。
    长得像 `.section-title`，但整行可点、右侧还挂一行摘要 —— 收起时也得让人
    看得出里面有没有东西，否则「收起来」就等于「藏起来了」。 */
@@ -266,6 +323,8 @@ html[data-window="settings"] #root {
 
 .row {
   display: flex;
+  /* 行内说明（`.row-hint`）要能占满下一整行 —— 见 `Row` 组件的注释 */
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;

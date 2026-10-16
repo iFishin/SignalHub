@@ -9,14 +9,14 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { inTauri } from "../lib/env";
 import { signalLabel } from "../lib/signals";
 import { labelOf } from "../lib/lampSort";
-import { signTextInverted, stateOverridden } from "../lib/lampStyle";
+import { signTextInverted, stateOverridden, lampVars, resolveShapes } from "../lib/lampStyle";
 import {
   commitHeader,
   withoutHeader,
   MAX_HOOK_HEADERS,
 } from "../lib/hookHeaders";
 import { useLang, useMessages, type Lang, type Messages } from "../lib/i18n";
-import { useSettings, updateSettings, HTTP_PRESETS, type Settings, type Shape, type Palette, type HttpPreset, type Hook, type StateStyle, type GroupMeta } from "../lib/useSettings";
+import { useSettings, updateSettings, DEFAULTS, HTTP_PRESETS, type Settings, type Shape, type Palette, type HttpPreset, type Hook, type StateStyle, type GroupMeta } from "../lib/useSettings";
 import {
   useToggles,
   setAutostart,
@@ -253,11 +253,126 @@ function Switch({ on, onChange }: { on: boolean; onChange: (on: boolean) => void
   );
 }
 
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
+/**
+ * 一行的「当前值偏离默认了吗」。偏离了就给出「恢复默认」的回调，否则 `undefined`。
+ *
+ * 判据是模块级的 `DEFAULTS`（`lib/useSettings.ts`）—— 导出 / 导入、Rust 的
+ * `Default::default()` 用的都是它，所以不存在「第二个默认值」。值可能是数组或
+ * 对象（牌上显示哪几段、勿扰时段、分组偏好），所以用 JSON 比 —— 这几个都是
+ * 小对象，比一次的代价远小于维护一份「本行对应哪个字段」的映射。
+ *
+ * **凡是背后是 `Settings` 字段的行都该有它**。没有的只有两类：背后是运行期状态
+ * 的（点击穿透、开机自启、通知权限）和「一次改好几个字段」的预设那行 —— 给预设
+ * 挂一个 ↺，会让人以为撤销的是「上一个预设」，其实会把那几项一起拉回默认。
+ */
+function resetFor<K extends keyof Settings>(
+  settings: Settings,
+  key: K,
+  patch: (next: Partial<Settings>) => void,
+): (() => void) | undefined {
+  if (JSON.stringify(settings[key]) === JSON.stringify(DEFAULTS[key])) return undefined;
+  return () => patch({ [key]: DEFAULTS[key] } as Partial<Settings>);
+}
+
+/**
+ * 「牌长这样」的实时预览。
+ *
+ * **为什么要有它**：改外观的时候你不一定看得见那盏灯 —— 它可能被别的窗口挡住、
+ * 可能收成了一排点、可能在你正看着的这块屏之外。没有预览，「牌宽 ×1.4」就是在盲改。
+ *
+ * 它用的是**真的那套 CSS 变量和类名**（`lampVars` + `.lamp-root` / `.sign` / `.dot`），
+ * 所以大小、形态、形状、配色、透明度、闪烁节奏、牌宽高倍率全都跟着变，一个都不用
+ * 在这里重算。代价是这份标记是**照着 `SignalLamp` 写的**：那边改了结构，这里要手动
+ * 跟上（跟不上的后果止于观感，不会出错）。
+ */
+function LampPreview({ settings }: { settings: Settings }) {
+  const m = useMessages();
+  const lang = useLang();
+  const shapes = resolveShapes(settings);
+  // 画两块：一块「忙碌 + 说明」、一块「等你批准」。后者顺带演示了形状那条特判
+  // （全局选了圆，permission / error 仍画圆角方），那是外观页里最容易改坏的东西。
+  const cards: { state: SignalState; message?: string }[] = [
+    { state: "working", message: m.previewMessage },
+    { state: "permission" },
+  ];
+
   return (
-    <div className="row">
-      <span>{label}</span>
+    <div className="lamp-preview">
+      <div
+        className="lamp-root"
+        style={
+          { "--size": `${settings.size}px`, ...lampVars(settings) } as React.CSSProperties
+        }
+        data-sign-translucent={signTextInverted(settings.sign_opacity) || undefined}
+      >
+        {cards.map((card) => (
+          <div
+            key={card.state}
+            className="sign"
+            data-has-message={settings.show.message && card.message ? "true" : "false"}
+          >
+            <span className="dot" data-state={card.state} data-shape={shapes[card.state]} />
+            <div className="sign-body">
+              <div className="sign-line">
+                {settings.show.name && <span className="sign-name">{m.previewGroup}</span>}
+                {settings.show.state && (
+                  <span className="sign-state">{signalLabel(lang, card.state)}</span>
+                )}
+              </div>
+              {settings.show.message && card.message && (
+                <div className="sign-message">{card.message}</div>
+              )}
+            </div>
+            {settings.show.age && <span className="sign-age">{m.seconds(12)}</span>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 一行设置：左边名字，右边控件。
+ *
+ * `hint` 是**这一行**的说明，写在名字下面 —— 堆在页尾的那些说明和它解释的那一行
+ * 隔了十几行，读的时候根本连不上。`title` 是鼠标停上去的一句话，给「一行放不下、
+ * 又不值得单占一行」的补充。
+ */
+function Row({
+  label,
+  hint,
+  title,
+  onReset,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  title?: string;
+  /** 偏离默认时传进来（见 `resetFor`），行尾出现一个 ↺ */
+  onReset?: () => void;
+  children: React.ReactNode;
+}) {
+  const m = useMessages();
+  return (
+    <div className="row" title={title}>
+      <span className="row-label">
+        {label}
+        {/* ↺ 紧跟在名字后面，而不是压在右边控件的后面：控件的位置于是不会因为
+            「这一行改过没有」而左右跳。 */}
+        {onReset && (
+          <button
+            type="button"
+            className="row-reset"
+            title={m.resetToDefault}
+            aria-label={m.resetToDefault}
+            onClick={onReset}
+          >
+            ↺
+          </button>
+        )}
+      </span>
       {children}
+      {hint && <p className="row-hint">{hint}</p>}
     </div>
   );
 }
@@ -1245,13 +1360,16 @@ export function SettingsPanel({ snapshot }: Props) {
       case "behavior":
         return (
           <>
-            <Row label={m.quietMode}>
+            <Row label={m.quietMode} onReset={resetFor(settings, "quiet", patch)}>
               <Switch on={settings.quiet} onChange={(on) => patch({ quiet: on })} />
             </Row>
-            <Row label={m.snapToEdge}>
+            <Row
+              label={m.snapToEdge}
+              hint={m.snapToEdgeHint}
+              onReset={resetFor(settings, "snap_to_edge", patch)}
+            >
               <Switch on={settings.snap_to_edge} onChange={(on) => patch({ snap_to_edge: on })} />
             </Row>
-            <p className="hint">{m.snapToEdgeHint}</p>
             <Row label={m.clickThrough}>
               <Switch
                 on={toggles.pass_through}
@@ -1261,13 +1379,13 @@ export function SettingsPanel({ snapshot }: Props) {
                 }}
               />
             </Row>
-            <Row label={m.alwaysOnTop}>
+            <Row label={m.alwaysOnTop} onReset={resetFor(settings, "always_on_top", patch)}>
               <Switch
                 on={settings.always_on_top}
                 onChange={(on) => patch({ always_on_top: on })}
               />
             </Row>
-            <Row label={m.trayFollowsState}>
+            <Row label={m.trayFollowsState} onReset={resetFor(settings, "tray_follows_state", patch)}>
               <Switch
                 on={settings.tray_follows_state}
                 onChange={(on) => patch({ tray_follows_state: on })}
@@ -1279,6 +1397,11 @@ export function SettingsPanel({ snapshot }: Props) {
       case "look":
         return (
           <>
+            {/* 预览放最上面：这一页改的就是它。放在最底下的话，调完「牌宽」
+                还得往下滚一次才知道改成了什么。 */}
+            <div className="section-title">{m.previewTitle}</div>
+            <LampPreview settings={settings} />
+            <p className="hint">{m.previewHint}</p>
             <Row label={m.presets}>
               {/* 同上：一组里选一个，所以是 seg 不是 chip。 */}
               <div className="seg">
@@ -1295,7 +1418,7 @@ export function SettingsPanel({ snapshot }: Props) {
                 ))}
               </div>
             </Row>
-            <Row label={m.form}>
+            <Row label={m.form} onReset={resetFor(settings, "collapsed", patch)}>
               <div className="seg">
                 <button
                   type="button"
@@ -1313,7 +1436,7 @@ export function SettingsPanel({ snapshot }: Props) {
                 </button>
               </div>
             </Row>
-            <Row label={m.size}>
+            <Row label={m.size} onReset={resetFor(settings, "size", patch)}>
               <div className="seg">
                 {sizes.map((size) => (
                   <button
@@ -1327,7 +1450,11 @@ export function SettingsPanel({ snapshot }: Props) {
                 ))}
               </div>
             </Row>
-            <Row label={m.shape}>
+            <Row
+              label={m.shape}
+              hint={m.lookHint}
+              onReset={resetFor(settings, "shape", patch)}
+            >
               <div className="seg">
                 {shapes.map((shape) => (
                   <button
@@ -1343,7 +1470,7 @@ export function SettingsPanel({ snapshot }: Props) {
             </Row>
             {/* 配色方案和形状、节奏倍率是一类东西：都是「没被逐个状态覆盖时用哪个」。
                 所以放这一页，逐状态的覆盖在「灯效」页。 */}
-            <Row label={m.palette}>
+            <Row label={m.palette} onReset={resetFor(settings, "palette", patch)}>
               <div className="seg">
                 {palettes.map((palette) => (
                   <button
@@ -1357,7 +1484,11 @@ export function SettingsPanel({ snapshot }: Props) {
                 ))}
               </div>
             </Row>
-            <Row label={m.signOpacity}>
+            <Row
+              label={m.signOpacity}
+              hint={signTextInverted(settings.sign_opacity) ? m.signOpacityHint : undefined}
+              onReset={resetFor(settings, "sign_opacity", patch)}
+            >
               <Slider
                 value={settings.sign_opacity}
                 min={0}
@@ -1366,15 +1497,10 @@ export function SettingsPanel({ snapshot }: Props) {
                 format={(value) => `${value}%`}
               />
             </Row>
-            {/* 解释只在会生效的那一档出现：平时不占地方，而字突然变深恰恰需要一句话
-                —— 否则用户会当成 bug。阈值和灯上用的是同一个函数，不会两边对不上。 */}
-            {signTextInverted(settings.sign_opacity) && (
-              <p className="hint">{m.signOpacityHint}</p>
-            )}
             {/* 长宽倍率：只放大 / 缩小**展开态**的牌本身（字号、点径、间距仍由
                 「大小」决定）。窗口尺寸照旧按内容算，所以这两个滑杆不会把窗口
                 拖成一块空白。折叠态是一排正方形点，不受影响。 */}
-            <Row label={m.signWidth}>
+            <Row label={m.signWidth} onReset={resetFor(settings, "sign_w_mult", patch)}>
               <Slider
                 value={settings.sign_w_mult}
                 min={SIGN_MULT_RANGE.min}
@@ -1384,7 +1510,7 @@ export function SettingsPanel({ snapshot }: Props) {
                 format={(value) => `×${value.toFixed(1)}`}
               />
             </Row>
-            <Row label={m.signHeight}>
+            <Row label={m.signHeight} onReset={resetFor(settings, "sign_h_mult", patch)}>
               <Slider
                 value={settings.sign_h_mult}
                 min={SIGN_MULT_RANGE.min}
@@ -1394,7 +1520,7 @@ export function SettingsPanel({ snapshot }: Props) {
                 format={(value) => `×${value.toFixed(1)}`}
               />
             </Row>
-            <Row label={m.blinkSpeed}>
+            <Row label={m.blinkSpeed} onReset={resetFor(settings, "blink_speed", patch)}>
               <Slider
                 value={settings.blink_speed}
                 min={BLINK_RANGE.min}
@@ -1403,7 +1529,7 @@ export function SettingsPanel({ snapshot }: Props) {
                 format={(value) => `${value}%`}
               />
             </Row>
-            <Row label={m.onSign}>
+            <Row label={m.onSign} onReset={resetFor(settings, "show", patch)}>
               <div className="chips chips-tight">
                 {fields.map((field) => (
                   <button
@@ -1418,8 +1544,6 @@ export function SettingsPanel({ snapshot }: Props) {
                 ))}
               </div>
             </Row>
-            <p className="hint">{m.lookHint}</p>
-
             {/* 逐状态覆盖和上面的全局项是**两层**：上面是「没被覆盖时用哪个」，
                 这里是「某个状态单独长什么样」。默认收起 —— 十行表和上面那九行
                 不是一个量级，全摊开会把这一页淹掉，而它回答的其实是「外观」的
@@ -1579,17 +1703,17 @@ export function SettingsPanel({ snapshot }: Props) {
 
         return (
           <>
-            <Row label={m.notifyWhenNeeded}>
+            <Row label={m.notifyWhenNeeded} onReset={resetFor(settings, "notify", patch)}>
               <Switch on={settings.notify} onChange={(on) => patch({ notify: on })} />
             </Row>
-            <Row label={m.soundWithNotify}>
+            <Row label={m.soundWithNotify} onReset={resetFor(settings, "sound", patch)}>
               <Switch on={settings.sound} onChange={(on) => patch({ sound: on })} />
             </Row>
 
             {/* 通知关着的时候不显示权限状态 —— 那时候它不说明任何问题 */}
             {settings.notify && <NotifyPermission m={m} enabled={settings.notify} />}
 
-            <Row label={m.alertAfter}>
+            <Row label={m.alertAfter} onReset={resetFor(settings, "alert_after_secs", patch)}>
               <select
                 className="select"
                 title={m.alertAfterHint}
@@ -1608,7 +1732,7 @@ export function SettingsPanel({ snapshot }: Props) {
                 )}
               </select>
             </Row>
-            <Row label={m.quietHours}>
+            <Row label={m.quietHours} onReset={resetFor(settings, "quiet_hours", patch)}>
               <div className="hours">
                 <Switch
                   on={settings.quiet_hours.enabled}
@@ -2423,7 +2547,7 @@ export function SettingsPanel({ snapshot }: Props) {
               />
             </Row>
             {/* 语言：auto 跟随系统，由前端把 navigator.language 解析成 zh / en 后推给 Rust */}
-            <Row label={m.language}>
+            <Row label={m.language} onReset={resetFor(settings, "locale", patch)}>
               <div className="seg">
                 <button
                   type="button"

@@ -130,6 +130,14 @@ export interface Messages {
   snapToEdge: string;
   snapToEdgeHint: string;
   lookHint: string;
+  /** 行尾那个 ↺ 的提示语。整份设置的默认值只有一份（`DEFAULTS`）。 */
+  resetToDefault: string;
+  /** 外观页里那张「牌长这样」的实时预览的标题。 */
+  previewTitle: string;
+  previewHint: string;
+  /** 预览牌里那个示例组名 / 示例消息（就是画出来的样子，不是真的数据）。 */
+  previewGroup: string;
+  previewMessage: string;
   sizeSmall: string;
   sizeMedium: string;
   sizeLarge: string;
@@ -492,6 +500,11 @@ export const MESSAGES: Record<Lang, Messages> = {
     snapToEdgeHint: "拖到屏幕左 / 右边缘附近松手时自动贴齐（上下不吸 —— 任务栏和 Dock 在那边）。",
     lookHint:
       "形状只影响灯珠：改成圆角方或环会让 permission / error 的方角区分失效，此时建议配合色盲友好配色。",
+    resetToDefault: "恢复默认",
+    previewTitle: "预览",
+    previewHint: "改上面的东西，这里立刻跟着变 —— 灯被挡住、收起来、或在另一块屏上时，这里是唯一看得见效果的地方。画的是「有活动时」的样子：安静模式压暗只在真的灯上发生。",
+    previewGroup: "订单服务",
+    previewMessage: "正在跑测试",
     sizeSmall: "小",
     sizeMedium: "中",
     sizeLarge: "大",
@@ -854,6 +867,12 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       "Snap flush to the left or right screen edge when released nearby (top and bottom are left alone — the taskbar and Dock live there).",
     lookHint:
       "Shape affects only the light: rounded or ring drops the square-corner cue for permission / error, so pair it with the colourblind palette.",
+    resetToDefault: "Reset to default",
+    previewTitle: "Preview",
+    previewHint:
+      "Change anything above and this follows immediately — it is the only place you can see the effect while the lamp is hidden, collapsed, or on another screen. This draws the active look; quiet mode dimming only happens on the real lamp.",
+    previewGroup: "orders",
+    previewMessage: "running tests",
     sizeSmall: "Small",
     sizeMedium: "Medium",
     sizeLarge: "Large",

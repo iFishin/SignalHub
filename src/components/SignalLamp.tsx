@@ -388,7 +388,6 @@ export function SignalLamp({ aggregate, groups, settings, paused }: Props) {
       style={
         {
           "--size": `${size}px`,
-          "--sign-alpha": String(sign_opacity / 100),
           ...lampVars(settings),
         } as React.CSSProperties
       }
