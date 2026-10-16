@@ -67,6 +67,18 @@ body,
   -webkit-user-select: none;
 }
 
+/* 牌面淡过一半：牌里的字翻成深色。
+   **阈值不在这里** —— 它是 `lampStyle.ts::SIGN_TRANSLUCENT_BELOW`（`SignalLamp.tsx`
+   按它挂这个属性）。这里只负责「翻成哪几个颜色」，数字只有那一份。
+   为什么翻：α 低到一半以下时透出来的桌面比牌面还显眼，近白的字落在浅色桌面/窗口上
+   就没了，深字反而读得出来。注意这治不了深色桌面那一半 —— 那种情况下唯一的解是给
+   文字垫底色，而那是装饰（见文件头的「朴素简约」）。 */
+.lamp-root[data-sign-translucent] {
+  --sign-fg: #1c1c20;
+  --sign-muted: #5c5c64;
+  --sign-line: rgba(28, 28, 32, 0.16);
+}
+
 .lamp-root:active {
   cursor: grabbing;
 }

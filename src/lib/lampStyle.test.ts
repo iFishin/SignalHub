@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { lampVars, resolveAnimations, resolveShapes } from "./lampStyle";
+import {
+  lampVars,
+  resolveAnimations,
+  resolveShapes,
+  signTextInverted,
+  SIGN_TRANSLUCENT_BELOW,
+} from "./lampStyle";
 import { DEFAULTS, type Settings } from "./useSettings";
 
 const withSettings = (patch: Partial<Settings>): Settings => ({ ...DEFAULTS, ...patch });
@@ -160,5 +166,27 @@ describe("lampVars", () => {
     const vars = lampVars(DEFAULTS) as Record<string, string>;
     expect(vars["--sign-w-mult"]).toBe("1");
     expect(vars["--sign-h-mult"]).toBe("1");
+  });
+});
+
+describe("signTextInverted", () => {
+  /**
+   * 钉住那条线本身：**50 不翻，49 翻**。
+   *
+   * 这条边界是灯（`SignalLamp.tsx` 挂 `data-sign-translucent`）和样式表
+   * （`lamp.css` 里那组深色变量）唯一的接口 —— 一边改成 `<=`、另一边还是 `<`，
+   * 表现就是「滑杆停在 50，设置页说字已经翻深色了，灯上却没翻」。之所以判据写在
+   * TS 里而不是 CSS 里：纯 CSS 没法比较数值，而阈值必须跟着设置值走。
+   */
+  it("flips below the line, not at it", () => {
+    expect(signTextInverted(SIGN_TRANSLUCENT_BELOW - 1)).toBe(true);
+    expect(signTextInverted(SIGN_TRANSLUCENT_BELOW)).toBe(false);
+  });
+
+  /** 两端：全透明（0）要翻，默认那档（86）和满不透明都不翻。 */
+  it("covers both ends", () => {
+    expect(signTextInverted(0)).toBe(true);
+    expect(signTextInverted(DEFAULTS.sign_opacity)).toBe(false);
+    expect(signTextInverted(100)).toBe(false);
   });
 });

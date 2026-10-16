@@ -114,6 +114,7 @@ export interface Messages {
   shape: string;
   palette: string;
   signOpacity: string;
+  signOpacityHint: string;
   signWidth: string;
   signHeight: string;
   blinkSpeed: string;
@@ -464,6 +465,8 @@ export const MESSAGES: Record<Lang, Messages> = {
     shape: "形状",
     palette: "配色方案",
     signOpacity: "背景透明度",
+    signOpacityHint:
+      "牌面淡过一半，近白的字就压不住了 —— 现在牌里的字自动改用深色。",
     signWidth: "牌宽",
     signHeight: "牌高",
     blinkSpeed: "闪烁节奏",
@@ -815,6 +818,8 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     shape: "Shape",
     palette: "Palette",
     signOpacity: "Sign opacity",
+    signOpacityHint:
+      "Past half transparency the panel is too faint to carry light text, so the text in the sign switches to dark.",
     signWidth: "Sign width",
     signHeight: "Sign height",
     blinkSpeed: "Blink speed",

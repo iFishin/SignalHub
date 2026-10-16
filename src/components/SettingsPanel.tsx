@@ -9,6 +9,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { inTauri } from "../lib/env";
 import { signalLabel } from "../lib/signals";
 import { labelOf } from "../lib/lampSort";
+import { signTextInverted } from "../lib/lampStyle";
 import {
   commitHeader,
   withoutHeader,
@@ -1275,6 +1276,11 @@ export function SettingsPanel({ snapshot }: Props) {
                 format={(value) => `${value}%`}
               />
             </Row>
+            {/* 解释只在会生效的那一档出现：平时不占地方，而字突然变深恰恰需要一句话
+                —— 否则用户会当成 bug。阈值和灯上用的是同一个函数，不会两边对不上。 */}
+            {signTextInverted(settings.sign_opacity) && (
+              <p className="hint">{m.signOpacityHint}</p>
+            )}
             {/* 长宽倍率：只放大 / 缩小**展开态**的牌本身（字号、点径、间距仍由
                 「大小」决定）。窗口尺寸照旧按内容算，所以这两个滑杆不会把窗口
                 拖成一块空白。折叠态是一排正方形点，不受影响。 */}

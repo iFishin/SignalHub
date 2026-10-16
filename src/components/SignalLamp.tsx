@@ -4,7 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { inTauri } from "../lib/env";
 import { signalLabel } from "../lib/signals";
 import { useLang, useMessages, type Messages, type Lang } from "../lib/i18n";
-import { lampVars, resolveShapes } from "../lib/lampStyle";
+import { lampVars, resolveShapes, signTextInverted } from "../lib/lampStyle";
 import { transitions, type AggregateMap } from "../lib/lampTransitions";
 import { labelOf, orderVisible } from "../lib/lampSort";
 import { nameChanged, withGroupName } from "../lib/groupMeta";
@@ -394,6 +394,10 @@ export function SignalLamp({ aggregate, groups, settings, paused }: Props) {
       }
       data-aggregate={aggregate}
       data-quiet={quiet && !toggles.pass_through}
+      /* 牌面淡过一半就把牌里的字翻成深色（阈值见 `lampStyle.ts`，颜色在 `lamp.css`）。
+         挂属性而不是推内联变量：和旁边这几个 `data-*` 开关同一套做法，
+         那组颜色也就仍然只有 CSS 一个出处。 */
+      data-sign-translucent={signTextInverted(sign_opacity) || undefined}
       data-paused={paused || undefined}
       data-pass-through={toggles.pass_through || undefined}
       data-collapsed={!expanded}
