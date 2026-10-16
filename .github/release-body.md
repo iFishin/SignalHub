@@ -1,3 +1,23 @@
+### 本次更新（0.2.5）
+
+**修 opencode 的「一键接入」在 opencode V2 上根本不工作。**
+
+opencode 自己会报 `Server plugin error` / `Plugin must export a default definition
+with an id and an effect or setup function.`。根因是 V2 换了插件 API：插件得**默认
+导出**一个 `{ id, setup }` 定义，我们生成的还是 V1 的「具名导出 = 插件」写法，于是
+整份文件被拒绝加载 —— 文件在、标记行在、「接入」页照样显示已接入，**但灯从来没亮过**。
+
+这一版把生成的插件源码改成 V2 的形状，事件映射也照 V2 重写：`session.idle` 在 V2 里
+**不再发**（一轮结束的信号换成了 `session.execution.succeeded` / `.failed` /
+`.interrupted`），照旧写会得到一盏永远停在「工作中」的假灯 —— 而且两边都不报错。
+新的事件名是在 opencode 2.0.29 上逐条实测出来的，不是照着文档猜的。
+
+**已经在用 opencode 的人请注意**：只更新应用**不会**自动改那份插件文件（那是
+opencode 目录下的文件，不是应用自己的）。更新到 0.2.5 之后，到「设置 → 接入」页对着
+opencode **再点一次「接入」**，然后重启 opencode，灯才会亮。
+
+其余部分与 0.2.4 相同。
+
 ### 安装
 
 **macOS** —— 下载 `.dmg`，把 SignalHub 拖进「应用程序」。
