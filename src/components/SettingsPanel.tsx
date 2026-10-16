@@ -9,7 +9,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { inTauri } from "../lib/env";
 import { signalLabel } from "../lib/signals";
 import { labelOf } from "../lib/lampSort";
-import { signTextInverted } from "../lib/lampStyle";
+import { signTextInverted, stateOverridden } from "../lib/lampStyle";
 import {
   commitHeader,
   withoutHeader,
@@ -144,29 +144,73 @@ function alertDelayOptions(m: Messages): { label: string; value: number }[] {
 }
 
 /**
- * 页签。
+ * 页签：**三组 + 一个沉底的「系统」**。
  *
- * **七个，不再有「灯效」**：那一页和「外观」是同一件事的两层（全局默认 + 逐状态
- * 覆盖），分成两个页签只会让人在两个之间来回找「改颜色到底在哪」。
+ * 分组不是为了好看，是因为原来那八个平铺按钮之间的**轴不一致**：「安静模式」
+ * 「贴边吸附」在【外观】，而同层概念的「点击穿透」却在【系统】；「语言」也在
+ * 【系统】。于是「这个开关在哪儿」的答案取决于它当初加进哪个文件，而不是它在
+ * 讲什么 —— 用户只能一页一页找（而改动本身是三个人三次加的，谁都不是故意）。
  *
- * 「指南」排在接入之后、系统之前 —— 它是一份手册，属于「看」而不是「调」，放在
- * 一堆开关中间会打断手感。
+ * 现在的轴是**这一页在回答什么问题**：
+ *
+ * - 看：只读的观察（现在 / 这几天）
+ * - 灯：它长什么样（外观）、怎么动（行为）、每个组怎么显示（分组）
+ * - 通知：怎么告诉你（提醒 = 系统通知，转发 = 发出站钩子）
+ * - 开始用：怎么把它接上（接入 + 那份手册）
+ *
+ * 「系统」不属于上面任何一类 —— 语言、开机自启、导入导出是**这台机器上的这个
+ * 应用**，所以由左栏单独渲染在最下面（常见的「齿轮位」）。
  */
-type Tab = "status" | "history" | "look" | "alert" | "connect" | "hooks" | "guide" | "system";
+type Tab =
+  | "status"
+  | "history"
+  | "look"
+  | "behavior"
+  | "groups"
+  | "alert"
+  | "hooks"
+  | "connect"
+  | "guide"
+  | "system";
 
-function tabOptions(m: Messages): { id: Tab; label: string }[] {
+function tabGroups(m: Messages): { title: string; entries: { id: Tab; label: string }[] }[] {
   return [
-    { id: "status", label: m.tabStatus },
-    // 紧挨着「状态」：一个是「现在怎么样」，一个是「这几天怎么样」，同一件事的
-    // 两个时间尺度，分开只是因为合在一页会把「现在」淹掉（那一页自己写着
-    // 「只回答现在发生了什么」）。
-    { id: "history", label: m.tabHistory },
-    { id: "look", label: m.tabLook },
-    { id: "alert", label: m.tabAlert },
-    { id: "connect", label: m.tabConnect },
-    { id: "hooks", label: m.tabHooks },
-    { id: "guide", label: m.tabGuide },
-    { id: "system", label: m.tabSystem },
+    {
+      title: m.railWatch,
+      entries: [
+        { id: "status", label: m.tabStatus },
+        // 紧挨着「状态」：一个是「现在怎么样」，一个是「这几天怎么样」，同一件事的
+        // 两个时间尺度，分开只是因为合在一页会把「现在」淹掉（那一页自己写着
+        // 「只回答现在发生了什么」）。
+        { id: "history", label: m.tabHistory },
+      ],
+    },
+    {
+      title: m.railLamp,
+      entries: [
+        { id: "look", label: m.tabLook },
+        // 「行为」是这一轮从「外观」和「系统」里切出来的：那两页各拿着一半同层的
+        // 东西（安静模式 / 贴边吸附 ↔ 点击穿透 / 保持在最前 / 托盘跟随）。
+        { id: "behavior", label: m.tabBehavior },
+        // 「分组」原先挂在「外观」的末尾，是那一页唯一**会随会话数变长**的一节 ——
+        // 而「灯长什么样」是固定的九行。搬走之后两边都回到各自的量级。
+        { id: "groups", label: m.tabGroups },
+      ],
+    },
+    {
+      title: m.railNotify,
+      entries: [
+        { id: "alert", label: m.tabAlert },
+        { id: "hooks", label: m.tabHooks },
+      ],
+    },
+    {
+      title: m.railConnect,
+      entries: [
+        { id: "connect", label: m.tabConnect },
+        { id: "guide", label: m.tabGuide },
+      ],
+    },
   ];
 }
 
@@ -698,8 +742,14 @@ export function SettingsPanel({ snapshot }: Props) {
   const fields = fieldOptions(m);
   const blinkChoices = blinkOptions(m);
   const alertChoices = alertDelayOptions(m);
-  const tabs = tabOptions(m);
+  const groups = tabGroups(m);
   const [tab, setTab] = useState<Tab>("status");
+  // 逐状态那张表默认收起（十行表和上面九行不是一个量级）。它记的是**用户**的
+  // 展开意图，所以放在 state 里；切走再切回来会保留（组件没卸载）。
+  const [perStateOpen, setPerStateOpen] = useState(false);
+  // 收起时那一行摘要要用：有几个状态被单独设过。判据和表里那个 `stateOverridden`
+  // 是同一个（见它的说明），所以摘要和表格不可能对不上。
+  const perStateCount = SIGNALS.filter((state) => stateOverridden(settings.styles[state])).length;
 
   // 「多久以前」要跟着时间走。**只在真的显示这两段的页签上开钟**（消息流在
   // 「状态」、出站结果在「转发」），其它五页一个定时器都不起 —— 这块面板一秒
@@ -1186,6 +1236,46 @@ export function SettingsPanel({ snapshot }: Props) {
           </>
         );
 
+      // 「灯怎么动」——这些是**行为**，不是外观：安静模式怎么压暗、拖到边上吸不吸、
+      // 鼠标能不能点到它、它在别的窗口上面还是下面、托盘图标跟不跟状态走。
+      //
+      // 它们原先一半在「外观」、一半在「系统」，而「安静模式」和「点击穿透」是同层
+      // 概念（都决定鼠标碰到灯时发生什么）却被拆到两页 —— 想找「点击穿透」的人不会
+      // 想到去「系统」里翻。
+      case "behavior":
+        return (
+          <>
+            <Row label={m.quietMode}>
+              <Switch on={settings.quiet} onChange={(on) => patch({ quiet: on })} />
+            </Row>
+            <Row label={m.snapToEdge}>
+              <Switch on={settings.snap_to_edge} onChange={(on) => patch({ snap_to_edge: on })} />
+            </Row>
+            <p className="hint">{m.snapToEdgeHint}</p>
+            <Row label={m.clickThrough}>
+              <Switch
+                on={toggles.pass_through}
+                onChange={(on) => {
+                  setError(null);
+                  setPassThrough(on).catch(reported);
+                }}
+              />
+            </Row>
+            <Row label={m.alwaysOnTop}>
+              <Switch
+                on={settings.always_on_top}
+                onChange={(on) => patch({ always_on_top: on })}
+              />
+            </Row>
+            <Row label={m.trayFollowsState}>
+              <Switch
+                on={settings.tray_follows_state}
+                onChange={(on) => patch({ tray_follows_state: on })}
+              />
+            </Row>
+          </>
+        );
+
       case "look":
         return (
           <>
@@ -1328,32 +1418,46 @@ export function SettingsPanel({ snapshot }: Props) {
                 ))}
               </div>
             </Row>
-            <Row label={m.quietMode}>
-              <Switch on={settings.quiet} onChange={(on) => patch({ quiet: on })} />
-            </Row>
-            <Row label={m.snapToEdge}>
-              <Switch on={settings.snap_to_edge} onChange={(on) => patch({ snap_to_edge: on })} />
-            </Row>
-            <p className="hint">{m.snapToEdgeHint}</p>
             <p className="hint">{m.lookHint}</p>
 
-            {/* 逐状态覆盖和上面的全局项是**两层**，所以单独起一个标题分开 ——
-                混在一起会让人以为改颜色是全局的。 */}
-            <div className="section-title">{m.perStateStyle}</div>
-            <PerStateStyles
-              settings={settings}
-              patch={patch}
-              m={m}
-              lang={lang}
-              shapes={shapes}
-              blinkChoices={blinkChoices}
-            />
+            {/* 逐状态覆盖和上面的全局项是**两层**：上面是「没被覆盖时用哪个」，
+                这里是「某个状态单独长什么样」。默认收起 —— 十行表和上面那九行
+                不是一个量级，全摊开会把这一页淹掉，而它回答的其实是「外观」的
+                一个子问题。收起时留一行摘要，免得让人以为这里什么都没有。 */}
+            <button
+              type="button"
+              className="disclosure"
+              aria-expanded={perStateOpen}
+              onClick={() => setPerStateOpen((open) => !open)}
+            >
+              <span className="caret" aria-hidden="true">
+                {perStateOpen ? "▾" : "▸"}
+              </span>
+              <span className="disclosure-title">{m.perStateStyle}</span>
+              <span className="disclosure-note">
+                {perStateCount > 0 ? m.perStateSome(perStateCount) : m.perStateNone}
+              </span>
+            </button>
+            {perStateOpen && (
+              <PerStateStyles
+                settings={settings}
+                patch={patch}
+                m={m}
+                lang={lang}
+                shapes={shapes}
+                blinkChoices={blinkChoices}
+              />
+            )}
+          </>
+        );
 
-            {/* 各组的显示。和上面那张表是**两层**：那张表是「某个状态长什么样」，
-                这一节是「哪个组叫什么、排在哪、上不上灯、响不响」。原先这些散在
-                「状态」页的组卡上，和只读的实时会话混在一起 —— 那一页因此成了
-                最长的一页，而两者的刷新频率和心智模型都不一样。 */}
-            <div className="section">
+      // 各组的显示：显示名 / 置顶 / 隐藏 / 静音。**独立成页**是因为它是整个面板里
+      // 唯一**随会话数变长**的一节（按会话分组时一个会话一行），而「灯长什么样」
+      // 是固定的九行 —— 混在一起，后者会被前者一点点推走。
+      case "groups":
+        return (
+          <>
+            <div className="section section-flush">
               <div className="section-title">{m.groupDisplayTitle}</div>
               {knownGroups.length === 0 ? (
                 <p className="muted-text">{m.groupDisplayEmpty}</p>
@@ -2309,33 +2413,12 @@ export function SettingsPanel({ snapshot }: Props) {
       case "system":
         return (
           <>
-            <Row label={m.alwaysOnTop}>
-              <Switch
-                on={settings.always_on_top}
-                onChange={(on) => patch({ always_on_top: on })}
-              />
-            </Row>
-            <Row label={m.trayFollowsState}>
-              <Switch
-                on={settings.tray_follows_state}
-                onChange={(on) => patch({ tray_follows_state: on })}
-              />
-            </Row>
             <Row label={m.launchAtLogin}>
               <Switch
                 on={toggles.autostart}
                 onChange={(on) => {
                   setError(null);
                   setAutostart(on).catch(reported);
-                }}
-              />
-            </Row>
-            <Row label={m.clickThrough}>
-              <Switch
-                on={toggles.pass_through}
-                onChange={(on) => {
-                  setError(null);
-                  setPassThrough(on).catch(reported);
                 }}
               />
             </Row>
@@ -2460,24 +2543,46 @@ export function SettingsPanel({ snapshot }: Props) {
         </p>
       )}
 
-      {/* 两栏：左栏是「去哪儿」（七个页签 + 底部的全局开关），右栏是内容。
+      {/* 两栏：左栏是「去哪儿」（三组页签 + 沉底的「系统」 + 底部的全局开关），
+          右栏是内容。
           原先页签横排在顶部、内容区写死 495px 高 —— 那个高度得手写一个「够大
           又不过分大」的数，改内容就得重新量。改成 flex 之后这条性质由结构保证。 */}
       <div className="settings-body">
         <nav className="rail">
           <div className="rail-nav">
-            {tabs.map((entry) => (
+            {groups.map((group) => (
+              <div className="rail-group" key={group.title}>
+                {/* 分组标题只是标题，不是按钮 —— 点它什么都不该发生（点一下
+                    「灯」而跳到某一页会让人以为漏了一层）。 */}
+                <div className="rail-group-title">{group.title}</div>
+                {group.entries.map((entry) => (
+                  <button
+                    key={entry.id}
+                    type="button"
+                    className="rail-item"
+                    data-active={tab === entry.id}
+                    aria-current={tab === entry.id ? "page" : undefined}
+                    onClick={() => setTab(entry.id)}
+                  >
+                    {entry.label}
+                  </button>
+                ))}
+              </div>
+            ))}
+
+            {/* 系统沉在最下面：它不属于上面任何一组，塞进去就得为它编一个它并不
+                属于的标题。 */}
+            <div className="rail-bottom">
               <button
-                key={entry.id}
                 type="button"
                 className="rail-item"
-                data-active={tab === entry.id}
-                aria-current={tab === entry.id ? "page" : undefined}
-                onClick={() => setTab(entry.id)}
+                data-active={tab === "system"}
+                aria-current={tab === "system" ? "page" : undefined}
+                onClick={() => setTab("system")}
               >
-                {entry.label}
+                {m.tabSystem}
               </button>
-            ))}
+            </div>
           </div>
 
           {/* 全局入口压在最下面：它不是一个页签，是一个开关 —— 放在这一组里

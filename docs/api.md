@@ -569,7 +569,7 @@ hook 模式会把每次调用追加到 `~/.signalhub/hooks.log`：
 
 这是唯一一个方向相反的接口：配置若干条**钩子**，聚合变化时按条件触发。用于手机推送（ntfy / Bark / PushDeer）、团队频道（Slack）、跑脚本、或接进自建服务。
 
-在设置面板的「通知转发」页配置，也可以直接写 `~/.signalhub/config.json`：
+在设置面板的「转发」页配置，也可以直接写 `~/.signalhub/config.json`：
 
 ```json
 {

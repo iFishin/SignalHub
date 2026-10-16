@@ -107,8 +107,41 @@ html[data-window="settings"] #root {
 
 .settings .rail-nav {
   display: flex;
+  flex: 1;
   flex-direction: column;
   gap: 2px;
+}
+
+/* 「看 / 灯 / 通知 / 开始用」四组。
+   组标题是**标题不是按钮**：它只负责把「这一页在回答什么问题」写在页签上面，
+   点了不该有任何反应（点一下「灯」却跳到某一页，会让人以为漏了一层）。
+   样式和 `.section-title` 同一套（11px / 灰 / 加字距），但这里没有
+   `text-transform: uppercase` —— 中文没有大小写，套上去只是白设。 */
+.settings .rail-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings .rail-group + .rail-group {
+  margin-top: 10px;
+}
+
+.settings .rail-group-title {
+  padding: 0 10px 2px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+
+/* 「系统」沉在底部：它不属于上面任何一组。和 `.rail-foot` 一样用一道细线分开，
+   区别是它**能选中**（是个页签），所以线在上面、文字仍是 `.rail-item`。
+   `margin-top: auto` 把它推到 `.rail-foot` 上面。 */
+.settings .rail-bottom {
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
 }
 
 /* 与 `.btn` 同一套：12px、6px 圆角、hover 才出底色。
@@ -172,8 +205,15 @@ html[data-window="settings"] #root {
   margin-top: 14px;
 }
 
-/* 小节标题。分组交给左栏页签之后，一页里**仍然**要分小节 —— 「外观」页的
-   「逐个状态覆盖」和「各组的显示」就是两层不同的东西，混在一起会被读成一层。
+/* 一节自己就是一整页时（「分组」页）：上面没有别的东西要分开，那道细线和
+   14px 的顶距就成了浮在页面顶端的多余一根线。 */
+.settings .section-flush {
+  padding-top: 0;
+  border-top: 0;
+}
+
+/* 小节标题。分组交给左栏页签之后，一页里**仍然**要分小节 —— 「外观」页里
+   「全局项」和「逐个状态覆盖」就是两层不同的东西，混在一起会被读成一层。
    所以这条不是备而未用。 */
 .section-title {
   margin-bottom: 8px;
@@ -182,6 +222,46 @@ html[data-window="settings"] #root {
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+
+/* 可折叠的一节（目前只有「外观」页的「逐个状态覆盖」）。
+   长得像 `.section-title`，但整行可点、右侧还挂一行摘要 —— 收起时也得让人
+   看得出里面有没有东西，否则「收起来」就等于「藏起来了」。 */
+.settings .disclosure {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  margin-top: 16px;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings .disclosure .caret {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.settings .disclosure .disclosure-title {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+
+.settings .disclosure .disclosure-note {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.settings .disclosure:hover .disclosure-title,
+.settings .disclosure:hover .caret {
+  color: var(--fg);
 }
 
 .row {

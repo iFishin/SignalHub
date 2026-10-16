@@ -33,6 +33,11 @@ export interface Messages {
   shortSignal: Record<SignalState, string>;
 
   // 页签
+  /** 左栏的分组标题。页的「轴」在这里写着（见 SettingsPanel 的 tabGroups）。 */
+  railWatch: string;
+  railLamp: string;
+  railNotify: string;
+  railConnect: string;
   tabStatus: string;
   tabHistory: string;
   /** 「历史」页的正文 */
@@ -41,6 +46,8 @@ export interface Messages {
   historyToday: string;
   historyEmpty: string;
   tabLook: string;
+  tabBehavior: string;
+  tabGroups: string;
   tabAlert: string;
   tabConnect: string;
   tabHooks: string;
@@ -148,6 +155,9 @@ export interface Messages {
   resetToGlobal: string;
   styleHint: string;
   perStateStyle: string;
+  /** 逐状态那段收起时的摘要：「3 个状态单独设过」 */
+  perStateSome: (count: number) => string;
+  perStateNone: string;
   groupDisplayTitle: string;
   groupDisplayEmpty: string;
 
@@ -227,7 +237,7 @@ export interface Messages {
   hookPluginWritten: (path: string) => string;
   hookPluginRemoved: (path: string) => string;
 
-  // 通知转发页
+  // 转发页
   noHooks: string;
   hookN: (n: number) => string;
   noTarget: string;
@@ -245,7 +255,7 @@ export interface Messages {
   /** 从没触发过的钩子 */
   neverFired: string;
 
-  // 通知转发页（R4：预设 / 请求头 / 发送测试）
+  // 转发页（R4：预设 / 请求头 / 发送测试）
   /** 「发什么形状」那一行的标签 */
   hookPreset: string;
   /** 预设显示名。键是 Rust `HttpPreset` 的 serde 名（= `HTTP_PRESETS` 里的值）。 */
@@ -273,7 +283,7 @@ export interface Messages {
   testSent: (n: number) => string;
   /** 「多久以前」的后缀，如「2m前」/「2m ago」 */
   firedAgo: (age: string) => string;
-  /** 提醒页里指向通知转发页的一行 */
+  /** 提醒页里指向转发页的一行 */
   alertForwardHint: string;
 
   // 系统页
@@ -382,6 +392,10 @@ export const MESSAGES: Record<Lang, Messages> = {
       off: "暂停",
     },
 
+    railWatch: "看",
+    railLamp: "灯",
+    railNotify: "通知",
+    railConnect: "开始用",
     tabStatus: "状态",
     tabHistory: "历史",
     historyTitle: "近 7 天",
@@ -390,9 +404,11 @@ export const MESSAGES: Record<Lang, Messages> = {
     historyToday: "今天",
     historyEmpty: "还没有历史数据 —— 用过一天之后这里就有了。",
     tabLook: "外观",
+    tabBehavior: "行为",
+    tabGroups: "分组",
     tabAlert: "提醒",
     tabConnect: "接入",
-    tabHooks: "通知转发",
+    tabHooks: "转发",
     tabGuide: "指南",
     tabSystem: "系统",
 
@@ -500,6 +516,8 @@ export const MESSAGES: Record<Lang, Messages> = {
     resetToGlobal: "恢复成跟随全局",
     styleHint: "「跟随」= 用「外观」页选的那两项（形状、节奏倍率）。",
     perStateStyle: "逐个状态覆盖",
+    perStateSome: (count) => `${count} 个状态单独设过`,
+    perStateNone: "未单独设置",
     groupDisplayTitle: "各组的显示",
     groupDisplayEmpty: "还没有任何分组 —— 接上智能体、或调用上报接口之后，它们会出现在这里。",
 
@@ -511,7 +529,7 @@ export const MESSAGES: Record<Lang, Messages> = {
     alertHint:
       "需要授权、需要关注或出错时弹一条系统通知。声音挂在通知上，所以关掉通知也就没有声音。勿扰时段里不弹也不出声，灯照常显示 —— 而且不补发：早上醒来收到一堆昨晚的通知，正是勿扰想避免的。",
     delayNow: "立刻",
-    alertForwardHint: "想让状态变化转发到服务器，或跑一条命令？在「通知转发」页。",
+    alertForwardHint: "想让状态变化转发到服务器，或跑一条命令？在「转发」页。",
 
     pauseMonitoring: "暂停监控",
     openConfigDir: "配置目录",
@@ -519,7 +537,7 @@ export const MESSAGES: Record<Lang, Messages> = {
     pauseHint: "暂停后灯球显示为熄灭，但会话仍在记录 —— 恢复时立刻回到真实状态",
     outboundHooks: "通知转发",
     configure: "去配置",
-    connectHookHint: "状态变化时转发到你的服务器，或跑一条本地命令 —— 在「通知转发」页配置。",
+    connectHookHint: "状态变化时转发到你的服务器，或跑一条本地命令 —— 在「转发」页配置。",
     groupBy: "分组方式",
     groupByNone: "不分组",
     groupByCwd: "按目录",
@@ -734,6 +752,10 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       off: "Paused",
     },
 
+    railWatch: "Overview",
+    railLamp: "Lamp",
+    railNotify: "Notifications",
+    railConnect: "Getting started",
     tabStatus: "Status",
     tabHistory: "History",
     historyTitle: "Last 7 days",
@@ -742,6 +764,8 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     historyToday: "Today",
     historyEmpty: "No history yet — it fills in after a day of use.",
     tabLook: "Look",
+    tabBehavior: "Behavior",
+    tabGroups: "Groups",
     tabAlert: "Alerts",
     tabConnect: "Connect",
     tabHooks: "Forwarding",
@@ -854,6 +878,8 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     resetToGlobal: "Reset to follow global",
     styleHint: '"Follow" = use the two chosen on the Look tab (shape, blink speed).',
     perStateStyle: "Per-state overrides",
+    perStateSome: (count) => `${count} state${count === 1 ? "" : "s"} customized`,
+    perStateNone: "not customized",
     groupDisplayTitle: "Per-group display",
     groupDisplayEmpty: "No groups yet — they show up here once an agent or the report API tells us about one.",
 

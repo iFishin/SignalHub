@@ -1,4 +1,4 @@
-import type { Settings, Shape } from "./useSettings";
+import type { Settings, Shape, StateStyle } from "./useSettings";
 import { SIGNALS, type SignalState } from "./types";
 import { colorVars } from "./palettes";
 
@@ -127,6 +127,18 @@ export const SIGN_TRANSLUCENT_BELOW = 50;
 /** 这一档透明度下，牌里的字要不要翻成深色。边界（50 本身）**不翻**。 */
 export function signTextInverted(sign_opacity: number): boolean {
   return sign_opacity < SIGN_TRANSLUCENT_BELOW;
+}
+
+/**
+ * 这个状态有没有被单独设过。
+ *
+ * 「设过」= 表里至少有一个字段不是 null。**判据必须和 `PerStateStyles` 里
+ * 「空了就删掉整条」那一处一致**：两边不一致就会出现「摘要说 3 个状态设过、
+ * 表里却只有 2 行是彩色的」这种对不上的现象，而这种对不上最难查。
+ */
+export function stateOverridden(style: StateStyle | undefined): boolean {
+  if (!style) return false;
+  return style.color != null || style.shape != null || style.blink_ms != null;
 }
 
 /**
