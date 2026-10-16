@@ -55,6 +55,16 @@ mod receipts;
 #[path = "../diagnose.rs"]
 mod diagnose;
 
+// hook payload → 状态的映射表，和 app 侧的 HTTP 接入共用同一份（见 hookmap.rs 顶部）。
+#[allow(dead_code)]
+#[path = "../hookmap.rs"]
+mod hookmap;
+
+use hookmap::{
+    clip, cwd_of, event_name, map_event, session_id, tool_target, tool_verb, Action, Verb,
+    TOOL_NAME_MAX,
+};
+
 // CLI 自己的文案（中英各一份）。**故意不挂进 `lib.rs` 的模块树**：只有这个二进制
 // 用它，挂到 app 那侧换来的是一片 dead_code（而 CI 是 `-D warnings`）。
 #[path = "../cli_text.rs"]
@@ -921,10 +931,6 @@ fn hook_body(
     body
 }
 
-/// 这一行本来就窄，再长也会被 CSS 截断；在源头截短是为了让**消息流**和通知正文
-/// 也别被一条长命令撑开。
-const TARGET_MAX: usize = 32;
-const TOOL_NAME_MAX: usize = 24;
 
 /// 从工具事件生成一句「正在做什么」，填进上报的 `message`。
 ///
@@ -945,92 +951,23 @@ fn tool_summary(text: &CliText, payload: &Value) -> Option<String> {
     if name.is_empty() {
         return None;
     }
-    match (tool_verb(text, name), tool_target(&payload["tool_input"])) {
-        (Some(verb), Some(target)) => Some(fill(text.tool_doing, &[verb, &target])),
-        (Some(verb), None) => Some(verb.to_string()),
+    match (tool_verb(name), tool_target(&payload["tool_input"])) {
+        (Some(verb), Some(target)) => Some(fill(text.tool_doing, &[verb_text(text, verb), &target])),
+        (Some(verb), None) => Some(verb_text(text, verb).to_string()),
         (None, _) => Some(clip(name, TOOL_NAME_MAX)),
     }
 }
 
-/// 工具名 → 动词。**用精确匹配而不是包含关键字**：`TodoWrite` 里有 "write"、
-/// `ExitPlanMode` 里有 "plan"，按关键字来会一路认错，而认错比认不出来更糟。
-///
-/// 表里的名字是按各家文档和实际事件收的；漏了哪个只会让那个工具显示成原名。
-fn tool_verb(text: &CliText, name: &str) -> Option<&'static str> {
-    // `run-terminal-cmd` / `Run Terminal Cmd` 都归一到下划线小写
-    let normalized = name.to_ascii_lowercase().replace(['-', ' '], "_");
-    match normalized.as_str() {
-        "bash" | "bashoutput" | "killshell" | "killbash" | "shell" | "localshell" | "exec"
-        | "run_terminal_cmd" | "execute_command" | "run_command" | "run_shell_command" => {
-            Some(text.tool_v_exec)
-        }
-        "edit" | "write" | "multiedit" | "notebookedit" | "str_replace" | "str_replace_editor"
-        | "apply_patch" | "edit_file" | "create_file" | "write_file" | "replace" => {
-            Some(text.tool_v_edit)
-        }
-        "read" | "read_file" | "view" | "cat" | "readfile" => Some(text.tool_v_read),
-        "grep" | "grep_search" | "glob" | "search" | "search_files" | "search_file_content"
-        | "codebase_search" | "list_dir" | "ls" | "find" => Some(text.tool_v_search),
-        "webfetch" | "web_fetch" | "websearch" | "web_search" | "fetch" => Some(text.tool_v_net),
-        _ => None,
+/// 动词分类 → 这个词。分类在共享模块（`hookmap`），词在这里 —— 因为这句话要进
+/// 灯、系统通知和消息流，那三处都要说用户的语言。
+fn verb_text(text: &CliText, verb: Verb) -> &'static str {
+    match verb {
+        Verb::Exec => text.tool_v_exec,
+        Verb::Edit => text.tool_v_edit,
+        Verb::Read => text.tool_v_read,
+        Verb::Search => text.tool_v_search,
+        Verb::Net => text.tool_v_net,
     }
-}
-
-/// 从 `tool_input` 里挑一个能代表「在干嘛」的短词。按可信度排：路径和搜索词最稳定，
-/// 命令要清洗，URL 要拆主机名。
-fn tool_target(input: &Value) -> Option<String> {
-    // 路径：只取末段 —— 整条路径又长又会把牌上别的信息挤掉，而末段才是有区分度的
-    for key in ["file_path", "filePath", "path", "target_file", "notebook_path"] {
-        if let Some(raw) = input[key].as_str() {
-            let name = config::project_name(raw.trim());
-            if !name.is_empty() && name != "/" && name != "\\" {
-                return Some(clip(&name, TARGET_MAX));
-            }
-        }
-    }
-    for key in ["pattern", "query", "regex"] {
-        if let Some(raw) = input[key].as_str() {
-            let text = raw.trim();
-            if !text.is_empty() {
-                return Some(clip(text, TARGET_MAX));
-            }
-        }
-    }
-    for key in ["command", "cmd"] {
-        if let Some(word) = input[key].as_str().and_then(first_word) {
-            return Some(clip(&word, TARGET_MAX));
-        }
-    }
-    input["url"].as_str().and_then(host_of).map(|host| clip(&host, TARGET_MAX))
-}
-
-/// 一条命令的「第一个实词」：跳过 `A=1` 这类环境变量赋值，只留可执行文件名。
-///
-/// 这是那条**不把整条命令打出去**的规则的落点 —— `API_KEY=xxx curl ...` 里
-/// 有意义的只是 `curl`。
-fn first_word(command: &str) -> Option<String> {
-    command
-        .split_whitespace()
-        .find(|word| !word.contains('='))
-        .map(config::project_name)
-        .filter(|word| !word.is_empty())
-}
-
-/// URL 的主机名。`https://docs.rs/tauri/latest` → `docs.rs`。
-fn host_of(url: &str) -> Option<String> {
-    let rest = url.split("://").nth(1).unwrap_or(url);
-    let host = rest.split(['/', '?', '#']).next().unwrap_or("").trim();
-    (!host.is_empty()).then(|| host.to_string())
-}
-
-/// 截断。**按字符而不是字节** —— 按字节切会把一个汉字切成半个，那是无效 UTF-8。
-fn clip(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        return text.to_string();
-    }
-    let mut out: String = text.chars().take(max).collect();
-    out.push('…');
-    out
 }
 
 /// hook 路径上**不允许**出现任何 `println!`。见文件头的约束 1。
@@ -1156,158 +1093,6 @@ fn log_hook(agent: &str, event: &str, session: &str, outcome: &str) {
     ));
 }
 
-enum Action {
-    Report(&'static str),
-    Clear,
-}
-
-fn map_event(agent: &str, payload: &Value) -> Option<Action> {
-    let event = event_name(payload)?;
-    match agent {
-        "claude-code" => map_claude(event, payload),
-        "codex" => map_codex(event),
-        "cursor" => map_cursor(event, payload),
-        "gemini" => map_gemini(event),
-        "goose" => map_goose(event),
-        _ => None,
-    }
-}
-
-/// payload 里「事件叫什么」的字段名。
-///
-/// 只有 **Goose 用 `event`**，其余几家都是 `hook_event_name`。这里按顺序试，
-/// 而不是按 agent 分支：字段名是 payload 的属性，不是 agent 的属性，多试一个
-/// 不会有副作用（同一个 payload 里不会两个都有且冲突）。
-fn event_name(payload: &Value) -> Option<&str> {
-    ["hook_event_name", "event"]
-        .iter()
-        .find_map(|key| payload[*key].as_str())
-}
-
-/// Gemini CLI（docs/hooks/reference.md）。PascalCase，语义与 Claude Code 那一族一致。
-///
-/// **它没有「需要授权」事件** —— 权限点是靠 hook 的返回值决定的，而上报型 hook
-/// 不返回值。所以红色只能靠 `Notification` 兜：那个事件的确切触发条件官方参考
-/// 里没写，这里按「通知 = 有事要你看一眼」映射成 `attention`（最轻的那一档）。
-/// 映射错了的表现是多几盏黄灯，不会漏掉真正的异常。
-fn map_gemini(event: &str) -> Option<Action> {
-    Some(match event {
-        "SessionStart" => Action::Report("idle"),
-        "BeforeAgent" | "PreCompress" => Action::Report("thinking"),
-        "BeforeTool" | "AfterTool" => Action::Report("working"),
-        "AfterAgent" => Action::Report("done"),
-        "Notification" => Action::Report("attention"),
-        "SessionEnd" => Action::Clear,
-        _ => return None,
-    })
-}
-
-/// Goose 的插件 hook。事件名与 Claude Code 同构。
-///
-/// 同样**没有 `PermissionRequest`**：Goose 的授权也是靠 PreToolUse 的返回值
-/// （`decision: "block"`）实现的，上报型 hook 不返回值。
-fn map_goose(event: &str) -> Option<Action> {
-    Some(match event {
-        "SessionStart" => Action::Report("idle"),
-        "UserPromptSubmit" => Action::Report("thinking"),
-        "PreToolUse" | "PostToolUse" => Action::Report("working"),
-        "PostToolUseFailure" => Action::Report("attention"),
-        "Stop" => Action::Report("done"),
-        "SessionEnd" => Action::Clear,
-        _ => return None,
-    })
-}
-
-/// 映射表见 docs/api.md §4.2，含**明确忽略**的事件清单 ——
-/// TaskCreated / FileChanged 这类事件频繁且与「一轮工作」无关，误用会让灯球乱闪。
-fn map_claude(event: &str, payload: &Value) -> Option<Action> {
-    Some(match event {
-        "SessionStart" => {
-            // 只有 startup / resume 才该报 idle。compact / fork / clear 是会话中途
-            // 发生的，此时智能体仍在工作，报 idle 是错的。
-            // 字段名在不同版本上可能不同，所以只排除明确知道不该报的那几个，
-            // 其余一律按 idle 处理 —— 宁可多报也不要在版本差异下静默丢事件。
-            match payload["source"].as_str() {
-                Some("compact" | "fork" | "clear") => return None,
-                _ => Action::Report("idle"),
-            }
-        }
-        "UserPromptSubmit" | "SubagentStart" | "PreCompact" => Action::Report("thinking"),
-        "PreToolUse" | "PostToolUse" | "PermissionDenied" | "PostCompact" => {
-            Action::Report("working")
-        }
-        "PostToolUseFailure" => Action::Report("attention"),
-        "PermissionRequest" => Action::Report("permission"),
-        "Notification" => match payload["notification_type"].as_str().unwrap_or("") {
-            "permission_prompt" => Action::Report("permission"),
-            "agent_needs_input" | "idle_prompt" => Action::Report("attention"),
-            "agent_completed" => Action::Report("done"),
-            _ => return None,
-        },
-        "Stop" => Action::Report("done"),
-        "StopFailure" => Action::Report("error"),
-        "TeammateIdle" => Action::Report("attention"),
-        "SessionEnd" => Action::Clear,
-        _ => return None,
-    })
-}
-
-/// Codex 用 PascalCase，事件集与 Claude Code 同构（docs/api.md §4.6）。
-fn map_codex(event: &str) -> Option<Action> {
-    Some(match event {
-        "SessionStart" => Action::Report("idle"),
-        "UserPromptSubmit" | "SubagentStart" | "PreCompact" => Action::Report("thinking"),
-        "PreToolUse" | "PostToolUse" | "PostCompact" => Action::Report("working"),
-        "PermissionRequest" => Action::Report("permission"),
-        "Stop" => Action::Report("done"),
-        "Interrupt" | "SessionEnd" => Action::Clear,
-        _ => return None,
-    })
-}
-
-/// Cursor 用 camelCase（docs/api.md §4.7）。
-/// 注意它没有可映射的「需要授权」事件 —— 那要靠 hook 返回 permission 字段实现，
-/// 上报型 hook 不返回该字段，所以这里确实没有对应项，不是漏了。
-fn map_cursor(event: &str, payload: &Value) -> Option<Action> {
-    Some(match event {
-        "sessionStart" => Action::Report("idle"),
-        "beforeSubmitPrompt" | "afterAgentThought" | "subagentStart" | "preCompact" => {
-            Action::Report("thinking")
-        }
-        "preToolUse" | "postToolUse" | "beforeShellExecution" | "afterShellExecution" => {
-            Action::Report("working")
-        }
-        "postToolUseFailure" => Action::Report("attention"),
-        "afterAgentResponse" => Action::Report("done"),
-        // 三家里只有 Cursor 的结束事件带 status，能直接区分正常结束和异常中断
-        "stop" => match payload["status"].as_str() {
-            Some("error" | "aborted") => Action::Report("error"),
-            _ => Action::Report("done"),
-        },
-        "sessionEnd" => Action::Clear,
-        _ => return None,
-    })
-}
-
-/// 三家用的字段名不同，做宽容匹配。Codex 老式 `notify` 用 kebab 的 `thread-id`。
-fn session_id(payload: &Value) -> Option<String> {
-    ["session_id", "conversation_id", "thread_id", "thread-id"]
-        .iter()
-        .find_map(|key| payload[*key].as_str())
-        .map(str::to_string)
-}
-
-/// Claude Code / Codex 用 `cwd`；Cursor 给的是 `workspace_roots` 数组。
-/// 各家 payload 里「当前工作目录」的字段名不同，做宽容匹配：
-/// Claude Code / Codex / Gemini / Cursor 用 `cwd`，**Goose 用 `working_dir`**，
-/// Cursor 的项目级配置用 `workspace_roots` 数组。
-fn cwd_of(payload: &Value) -> Option<String> {
-    payload["cwd"]
-        .as_str()
-        .or_else(|| payload["working_dir"].as_str())
-        .or_else(|| payload["workspace_roots"].as_array()?.first()?.as_str())
-        .map(str::to_string)
-}
 
 fn help() -> String {
     // 正文在 `cli_text.rs`（中英各一份），这里只把版本号和智能体名单填进去。
@@ -1321,6 +1106,8 @@ fn help() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // 只有这条用例用得着（非测试构建里是死代码，所以不放进上面的导入表）
+    use crate::hookmap::TARGET_MAX;
 
     fn event(name: &str) -> Value {
         json!({ "hook_event_name": name, "session_id": "s-1", "cwd": "/proj" })
