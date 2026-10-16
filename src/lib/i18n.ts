@@ -223,6 +223,15 @@ export interface Messages {
   agentMissing: string;
   /** 「已接入」但配置里那条命令现在跑不起来了 —— 静默失效，最该被看见的一种 */
   agentCommandBroken: string;
+  /** 接入行上的回执：最近一次上报（多久以前 + 报的是什么状态） */
+  agentReceiptAgo: (age: string, state: string) => string;
+  /** 接入行上的回执：本次运行以来收到多少条 */
+  agentReceiptCount: (n: number) => string;
+  /** 接入行上的回执：装了、但一条上报都没收到过 */
+  agentReceiptNever: string;
+  /** 「其它信号源」一节：收到过上报、但不在智能体清单里的 */
+  otherSourcesTitle: string;
+  otherSourcesHint: string;
   /** 「系统」页：hook 调用记录的尾巴 */
   diagLogTitle: string;
   diagLogHint: string;
@@ -611,6 +620,13 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     agentMissing: "未检测到",
     agentCommandBroken:
       "接入是装上了，但配置里那条命令现在跑不起来 —— 智能体不会报错，灯也不会亮。多半是应用被挪走或删掉了，重新点一次「接入」就会改写成当前路径：",
+    agentReceiptAgo: (age, state) => `最近上报 ${age}前 · ${state}`,
+    agentReceiptCount: (n) => `本次运行 ${n} 条`,
+    agentReceiptNever:
+      "还没有收到过它的上报 —— 用它一次；要是灯还是不亮，看下面「最近的 hook 调用」有没有行。",
+    otherSourcesTitle: "其它信号源",
+    otherSourcesHint:
+      "收到过上报、但不在上面清单里的（你自己的脚本、curl、别的机器……）。有这一行就说明上报通道是通的。",
     diagLogTitle: "最近的 hook 调用",
     diagLogHint:
       "每次 hook 被调用都会记一行（也在这里记下调用失败）。所以：接了却完全不亮时先看这里 —— 一行都没有，说明事件根本没从智能体那边打过来（多半是那条命令跑不起来，见「接入」页的红色提示）；有行但都写着失败，说明打过来了、只是没送到应用。",
@@ -1002,6 +1018,13 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     agentMissing: "Not detected",
     agentCommandBroken:
       "Installed, but the command in the config no longer runs — the agent will not complain and the lamp will not light. Usually the app was moved or deleted; clicking Install again rewrites it to the current path:",
+    agentReceiptAgo: (age, state) => `Last report ${age} ago · ${state}`,
+    agentReceiptCount: (n) => `${n} this run`,
+    agentReceiptNever:
+      "No report received from it yet — use it once; if the lamp stays dark, check Recent hook calls below for a line.",
+    otherSourcesTitle: "Other sources",
+    otherSourcesHint:
+      "Sources we have received reports from that are not in the list above (your own scripts, curl, another machine…). A line here means the reporting path works.",
     diagLogTitle: "Recent hook calls",
     diagLogHint:
       "Every hook invocation is logged here, including failures. So when something is wired up but the lamp stays dark, look here first: no lines at all means the events never left the agent (usually that command does not run — see the red warning on the Connect page); lines that all say failed mean they did leave, but never arrived.",

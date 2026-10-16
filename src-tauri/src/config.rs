@@ -213,6 +213,14 @@ pub fn stats_file() -> io::Result<PathBuf> {
     Ok(data_dir()?.join("stats.json"))
 }
 
+/// 每个信号源「最近一次上报」的落盘位置（见 `receipts.rs`）。
+///
+/// 和 `stats.json` 一样是**机器攒的运行数据**，不塞进 `config.json`（那份是用户手改
+/// 的偏好，混进来会让配置文件里冒出一坨没人看得懂、又不敢删的东西）。
+pub fn receipts_file() -> io::Result<PathBuf> {
+    Ok(data_dir()?.join("receipts.json"))
+}
+
 /// 日志时间戳。用 UTC 并在值上标 `Z`：不引入时区数据依赖，且不会含糊。
 pub fn utc_hms() -> String {
     let secs = std::time::SystemTime::now()

@@ -5,6 +5,7 @@ mod menu;
 mod notify;
 mod open;
 mod outbound;
+mod receipts;
 mod server;
 mod state;
 mod stats;
@@ -115,6 +116,12 @@ type SharedStats = Arc<Mutex<stats::Stats>>;
 ///
 /// 和 `SharedStore` 一样是 `Arc`：`server::spawn` 要拿到一个能活过它自己的句柄。
 type SharedBind = Arc<Mutex<bool>>;
+
+/// 每个信号源「最近一次上报」的凭证（见 `receipts.rs`）。
+///
+/// 需要 `Arc` 共享：上报路径（HTTP 服务）要写它，接入页要读它 —— 两份真值就会
+/// 撒谎，所以只能有一份。
+type SharedReceipts = Arc<receipts::Receipts>;
 
 /// 最近几次出站钩子的执行结果。界面上要能回答「我的服务器到底收到没有」——
 /// 光看 stderr 是查不出来的（从 Dock 启动的话根本没地方看）。
@@ -950,6 +957,16 @@ fn get_hook_log(limit: usize) -> Vec<String> {
         .collect();
     lines.reverse();
     lines
+}
+
+/// 每个信号源「最近一次上报」的凭证。
+///
+/// 接入页靠它回答那个真正的问题：**它到底有没有在报**。以前能说的只有「配置文件里
+/// 写着我们的命令」，而那只说明我们写过了 —— 「装了却没反应」的接入看起来一模一样
+/// （见 `receipts.rs`）。
+#[tauri::command]
+fn agent_receipts(receipts: tauri::State<'_, SharedReceipts>) -> Vec<receipts::ReceiptView> {
+    receipts.view()
 }
 
 /// 一次接入 / 卸载改了什么。
@@ -1854,6 +1871,9 @@ pub fn run() {
         // 位置记忆从盘上读回来（`LampWindows::load`），这样组灯一开就在上次的位置
         .manage(Mutex::new(lamps::LampWindows::load()))
         .manage(SharedBind::default())
+        // 每个信号源「最近一次上报」的凭证：接入页要能回答「到底有没有在报」，
+        // 而不是只说一句「文件写进去了」。
+        .manage(Arc::new(receipts::Receipts::load()))
         // 统计从盘上读回来：灯球是常驻的，但「常驻」不等于「永不重启」——
         // 改设置、升级、崩了重来，用户对「今天等了多久」的期待是跨重启的。
         .manage(Arc::new(Mutex::new(stats::Stats::load())))
@@ -1896,6 +1916,7 @@ pub fn run() {
             get_notify_permission,
             request_notify_permission,
             detect_agents,
+            agent_receipts,
             get_hook_log,
             update::get_update_state,
             update::check_update,
@@ -2002,6 +2023,8 @@ pub fn run() {
                 app.state::<SharedSettings>().inner().clone(),
                 // 实际绑到哪了，回填给界面判断「那个开关生效了没有」
                 app.state::<SharedBind>().inner().clone(),
+                // 每个信号源的最近一次上报 —— 和上报路径共用同一份
+                app.state::<SharedReceipts>().inner().clone(),
                 token,
             );
 

@@ -1216,6 +1216,19 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   font-size: 11px;
 }
 
+/* 「它到底有没有在报」的回执。
+   有回执时用正常前景色（这是一条好消息，该看得见），没有时压成 muted（那只是
+   还没发生，不该看起来像错误）。 */
+.agent-receipt {
+  font-size: 11px;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+
+.agent-receipt[data-on="false"] {
+  color: var(--muted);
+}
+
 /* hook 日志的尾巴。等宽 + 可横向滚动：那些行本来就是定宽对齐的（见
    `config::append_hook_log` 的格式串），换行反而更难扫。 */
 .hooklog {

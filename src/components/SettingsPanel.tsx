@@ -27,7 +27,7 @@ import { useHistory, type DayRow } from "../lib/useHistory";
 import { useTimeline, type TimelineSegment } from "../lib/useTimeline";
 import { useOutboundLog, lastAttemptFor, type Attempt } from "../lib/useOutboundLog";
 import { useNow } from "../lib/useNow";
-import { useAgents, useHookLog, type AgentStatus, type HookChange } from "../lib/useAgents";
+import { useAgents, useHookLog, useReceipts, type AgentStatus, type HookChange } from "../lib/useAgents";
 import { useStateTtls } from "../lib/useStateTtls";
 import { percent, progressLabel } from "../lib/updateProgress";
 import { useUpdate } from "../lib/useUpdate";
@@ -441,6 +441,18 @@ function formatAge(atMs: number, now: number): string {
   if (minutes < 60) return `${minutes}m`;
   const hours = Math.floor(minutes / 60);
   return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
+}
+
+/**
+ * 上报里的状态名（`working`）→ 界面上的说法（「执行中」）。
+ *
+ * 认不出来就**照原样显示**：上报方可以自己发明状态名？不 —— `Signal::parse` 只收
+ * 那几个。但回执是「盘上读回来的历史」，而状态名随版本增删过，所以旧文件里可能有
+ * 一个现在不认得的名字。显示原文（它至少是真的）比显示空白好。
+ */
+function signalText(m: Messages, state: string): string {
+  const names = m.signal as unknown as Record<string, string>;
+  return names[state] ?? state;
 }
 
 /**
@@ -934,6 +946,9 @@ export function SettingsPanel({ snapshot }: Props) {
   const [outboundNonce, setOutboundNonce] = useState(0);
   const outboundLog = useOutboundLog(snapshot.aggregate, outboundNonce);
   const { agents, refresh: refreshAgents } = useAgents();
+  // 「它到底有没有在报」——接入页以前回答不了的那个问题。和时间有关，所以跟着
+  // 上面那个会走的钟（`useNow`）一起算。
+  const { receipts, refresh: refreshReceipts } = useReceipts();
   const { lines: logLines, refresh: refreshLog } = useHookLog();
   const m = useMessages();
   const lang = useLang();
@@ -956,11 +971,13 @@ export function SettingsPanel({ snapshot }: Props) {
   // 是同一个（见它的说明），所以摘要和表格不可能对不上。
   const perStateCount = SIGNALS.filter((state) => stateOverridden(settings.styles[state])).length;
 
-  // 「多久以前」要跟着时间走。**只在真的显示这两段的页签上开钟**（消息流在
-  // 「状态」、出站结果在「转发」），其它五页一个定时器都不起 —— 这块面板一秒
-  // 重绘一次不便宜，没显示的东西不值得为它重绘。
+  // 「多久以前」要跟着时间走。**只在真的显示这几段的页签上开钟**（消息流在
+  // 「状态」、出站结果在「转发」、回执在「接入」），其它几页一个定时器都不起 ——
+  // 这块面板一秒重绘一次不便宜，没显示的东西不值得为它重绘。
   const visible = useVisible();
-  const now = useNow(visible && (tab === "status" || tab === "hooks"));
+  const now = useNow(
+    visible && (tab === "status" || tab === "hooks" || tab === "connect"),
+  );
 
   const [endpoint, setEndpoint] = useState<Endpoint | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1042,6 +1059,9 @@ export function SettingsPanel({ snapshot }: Props) {
       .then((change) => {
         setAgentChanges((prev) => ({ ...prev, [agent.id]: change }));
         refreshAgents();
+        // 回执也要重取：装完之后那一行该立刻从「没有回执」变成真实状态，而
+        // 「刚接入」这几秒里它多半还是「还没有收到过它的上报」——那正是实话。
+        refreshReceipts();
       })
       .catch(reported)
       .finally(() => setBusyAgent(null));
@@ -1896,6 +1916,13 @@ export function SettingsPanel({ snapshot }: Props) {
         const sortedAgents = [...agents].sort(
           (a, b) => agentRank(a) - agentRank(b),
         );
+        // 「回执」按信号源名字查：上报方给的名字（`claude-code`）和清单里的 id
+        // 是同一套拼写。
+        const receiptFor = (id: string) => receipts.find((r) => r.agent === id);
+        // 收到过上报、但不在上面清单里的信号源，**不能扔掉**：用户自己的脚本、
+        // 另一台机器、手写的一条 curl 都在这一类里，而它们恰恰证明上报通道是通的。
+        const knownIds = new Set(agents.map((a) => a.id));
+        const otherSources = receipts.filter((r) => !knownIds.has(r.agent));
 
         return (
           <>
@@ -1909,6 +1936,7 @@ export function SettingsPanel({ snapshot }: Props) {
               {sortedAgents.map((agent) => {
                 const busy = busyAgent === agent.id;
                 const change = agentChanges[agent.id];
+                const receipt = receiptFor(agent.id);
                 const status = agent.installed
                   ? m.agentInstalled
                   : agent.detected
@@ -1953,6 +1981,17 @@ export function SettingsPanel({ snapshot }: Props) {
                               })}
                         </span>
                       )}
+                      {/* **「它到底有没有在报」—— 这一页此前唯一缺的东西。**
+                          装好和装坏以前长得一模一样（都只是「配置里写着我们的
+                          命令」），而智能体执行一条不存在的命令是**不会报错**的。
+                          有回执才是真的通了。 */}
+                      {agent.installed && (
+                        <span className="agent-receipt" data-on={!!receipt}>
+                          {receipt
+                            ? `${m.agentReceiptAgo(formatAge(receipt.last_epoch_ms, now), signalText(m, receipt.state))} · ${m.agentReceiptCount(receipt.count)}`
+                            : m.agentReceiptNever}
+                        </span>
+                      )}
                     </div>
                     <button
                       type="button"
@@ -1966,6 +2005,34 @@ export function SettingsPanel({ snapshot }: Props) {
                 );
               })}
             </div>
+
+            {/* ---- 收到过上报、但不在清单里的信号源 ----
+                单独一节而不是并进上面的列表：那一排每一行都有「接入 / 卸载」
+                按钮，而这一类我们无从接入（它不是我们认识的智能体）——混进去
+                会让人以为按钮没渲染出来。它有它自己的价值：**它是「上报通道是通的」
+                的活证据**，用户自己写的脚本、另一台机器、手抄的一条 curl 都在这里。 */}
+            {otherSources.length > 0 && (
+              <div className="section">
+                <div className="section-title">{m.otherSourcesTitle}</div>
+                <p className="hint">{m.otherSourcesHint}</p>
+                {otherSources.map((source) => (
+                  <div className="agent" key={source.agent}>
+                    <div className="agent-info">
+                      <div className="agent-line">
+                        <span className="agent-name mono">{source.agent}</span>
+                      </div>
+                      <span className="agent-receipt" data-on>
+                        {m.agentReceiptAgo(
+                          formatAge(source.last_epoch_ms, now),
+                          signalText(m, source.state),
+                        )}{" "}
+                        · {m.agentReceiptCount(source.count)}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
 
             {/* ---- 只用命令行的智能体 ----
                 单独一节、不混进上面那个列表：那一排每一行都有「接入 / 卸载」

@@ -25,6 +25,8 @@ struct Ctx {
     /// 上报路径要读 `group_by`（兜底分组）。和 `store` 一样是**共享的同一份**，
     /// 不是启动时的快照 —— 用户在设置面板里一改开关，下一次上报就得生效。
     settings: crate::SharedSettings,
+    /// 每个信号源「最近一次上报」的凭证。接入页靠它回答「到底有没有在报」。
+    receipts: Arc<crate::receipts::Receipts>,
     token: String,
     started: Instant,
 }
@@ -40,6 +42,7 @@ pub fn spawn(
     store: Arc<Mutex<Store>>,
     settings: crate::SharedSettings,
     bind: crate::SharedBind,
+    receipts: Arc<crate::receipts::Receipts>,
     token: String,
 ) {
     // 监听地址**在启动时定一次**。设置里那个开关改了要重启才生效 —— 理由见
@@ -47,7 +50,7 @@ pub fn spawn(
     let lan = settings.lock().expect("settings poisoned").lan_access;
     let host = bind_host(lan);
 
-    let ctx = Ctx { store, notify, settings, token, started: Instant::now() };
+    let ctx = Ctx { store, notify, settings, receipts, token, started: Instant::now() };
 
     tauri::async_runtime::spawn(async move {
         let listener = match tokio::net::TcpListener::bind((host, PREFERRED_PORT)).await {
@@ -294,6 +297,13 @@ fn ingest(ctx: &Ctx, report: Report, ttl: Option<Duration>) -> (bool, Snapshot) 
 /// 推一次（见 [`replay_spool`]）—— 但**聚合和分组解析只有这一份**，重放不会走
 /// 到另一套逻辑上去。
 fn ingest_core(ctx: &Ctx, mut report: Report, ttl: Option<Duration>) -> (bool, Snapshot) {
+    // 先记凭证：**这里是上报的唯一入口**，所以 HTTP、CLI 钩子、spool 重放全都
+    // 会留下痕迹（见 `receipts.rs`）。放在最前面是有意的 —— 哪怕后面这条上报
+    // 因为某种原因没能改变状态，用户也该看到「它确实调过我们」，这正是接入页
+    // 要回答的问题。
+    if let Some(agent) = report.agent.as_deref() {
+        ctx.receipts.record(agent, report.state.name());
+    }
     // 兜底分组。**放在这里，因为这是唯一的上报入口** —— `/v1/state` 和
     // `/v1/sessions/{id}/state` 都走它，所以下面那两个 handler 不可能漏掉一个。
     //
@@ -500,6 +510,9 @@ mod tests {
                 counter.fetch_add(1, Ordering::SeqCst);
             }),
             settings: settings.clone(),
+            // 不落盘（`None`）：单测绝不能写开发者真实的 `~/.signalhub`。
+            // 上报路径会顺手记凭证，所以这里必须真的给一个，不能用 `Default`。
+            receipts: Arc::new(crate::receipts::Receipts::in_memory()),
             token: "s3cret".to_string(),
             started: Instant::now(),
         };

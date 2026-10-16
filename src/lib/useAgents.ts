@@ -30,6 +30,42 @@ export interface AgentStatus {
   command_ok: boolean;
 }
 
+/** 与 Rust 侧 receipts.rs 的 ReceiptView 对应。 */
+export interface Receipt {
+  /** CLI 里用的信号源名字（`claude-code` / `opencode` / 你自己的脚本名） */
+  agent: string;
+  /** 最后一次上报的墙上时刻（Unix 毫秒）。`0` = 从来没收到过。 */
+  last_epoch_ms: number;
+  /** 最后一次上报的状态名（`working` / `permission` …），没报过是空串 */
+  state: string;
+  /** 本次运行以来收到多少条 */
+  count: number;
+}
+
+/**
+ * 每个信号源「最近一次上报」的凭证。
+ *
+ * **它回答的是接入页以前回答不了的那个问题**：接入到底有没有在报。以前只能说
+ * 「配置文件里写着我们的命令」——而装了却没反应的接入看起来一模一样。
+ *
+ * 只在挂载和手动 `refresh()` 时取：这份数据不由状态快照驱动，定时轮询只是白打
+ * IPC。相对时间由调用方用 `formatAge(last_epoch_ms, now)` 算（见 `useNow`）。
+ */
+export function useReceipts() {
+  const [receipts, setReceipts] = useState<Receipt[]>([]);
+
+  const refresh = useCallback(() => {
+    if (!inTauri) return;
+    invoke<Receipt[]>("agent_receipts")
+      .then(setReceipts)
+      .catch((err) => console.error("agent_receipts 失败", err));
+  }, []);
+
+  useEffect(refresh, [refresh]);
+
+  return { receipts, refresh };
+}
+
 /** 与 Rust 侧 lib.rs 的 HookChange 对应。 */
 export interface HookChange {
   /** 本次新写入的事件名 */
