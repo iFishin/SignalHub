@@ -372,6 +372,16 @@ R5 的真机验证与 R6 的产物验证，做完要在本文件末尾追加「�
 （要真发一版更高的版本才能测，而发一版内容相同的没有意义 —— 真想验的话，下一次
 正常发版就是那次验收）。
 
+**顺手学到、值得记一笔**：`plugins.updater.endpoints` 里写非 `https` 的地址，应用**启动
+时就会 panic**（`PluginInitialization("updater", "…must use a secure protocol like
+https")`）—— 想在本机起个 http 服务去验这条路是走不通的。（插件另有一个
+`dangerousInsecureTransportProtocol` 开关，别开。）
+
+**日志卫生**：上面那几行证据（`[update] 有新版本 …`、`[TEST] …`、以及那次 http 端点导致的
+启动 panic）都是**只为这台机器编的测试二进制**打出来的，事后已从 `~/.signalhub/hooks.log`
+里清掉 —— 留着会让人以为应用会自己装、或者以为它启动会 panic。清之前的原始副本在
+`/tmp/hooks.log.bak-2026-10-16`。
+
 **R5 的边界（如实说，别对外说成「三个平台都能自动更新」）**：只有 macOS。
 Windows 是**上游卡死的**（插件的 `zip` feature 要 `zip = "^4"`，而 zip ≤ 9.0.2 在
 RUSTSEC-2025-0168 之后被全量 yank，`^4` 无解）；Linux 是**「做得通但没验过」**
