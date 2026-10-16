@@ -12,6 +12,7 @@
 //! 见 docs/plan-lamp-expansion.md 的 P2。
 
 use crate::config;
+use crate::Bounds;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
@@ -104,16 +105,53 @@ pub trait LampHost {
 pub struct TauriHost<'a>(pub &'a AppHandle);
 
 impl TauriHost<'_> {
+    /// 鼠标所在（或最近）的那块屏的工作区 + 缩放比。
+    fn cursor_area(&self) -> Option<(Bounds, f64)> {
+        let cursor = self.0.cursor_position().ok()?;
+        crate::nearest_screen(self.0, (cursor.x.round() as i32, cursor.y.round() as i32))
+    }
+
+    /// 主屏的工作区 + 缩放比。拿不到就是 `None`。
+    fn primary_area(&self) -> Option<(Bounds, f64)> {
+        let monitor = self.0.primary_monitor().ok().flatten()?;
+        Some((crate::work_bounds(&monitor), monitor.scale_factor()))
+    }
+
+    /// 把记忆中的位置夹回可见区。
+    ///
+    /// **为什么必须夹**：位置是按物理坐标存进 `lamp-positions.json` 的，而那个坐标
+    /// 可能落在**一块已经不在了的屏幕上** —— 拔掉外接屏、改分辨率、换显示器布局都会
+    /// 这样。灯于是出现在屏幕外，用户**再也点不到它**（它没有 Dock 图标、托盘也只能
+    /// 打开设置，最后只能去删配置文件）。拔掉外接屏的人不会想到「灯被留在了那块屏上」。
+    ///
+    /// 判据与主灯的 `keep_on_screen` 完全一致（`crate::clamp_to_area` + 就近挑屏，
+    /// 用工作区而不是整块屏）。所以**完全在屏内的位置一个像素都不动** —— 这里只处理
+    /// 「屏没了」。
+    fn clamp_to_visible(&self, at: (i32, i32), size: (u16, u16)) -> (i32, i32) {
+        let Some((bounds, scale)) = crate::nearest_screen(self.0, at) else {
+            // 拿不到显示器信息就原样用 —— 和 `default_position` 一个态度：不硬编坐标
+            return at;
+        };
+        // `size` 是逻辑像素，存下来的位置是物理像素 —— 夹之前得换算（Retina 上差一倍）
+        let physical = (
+            (f64::from(size.0) * scale).round() as i32,
+            (f64::from(size.1) * scale).round() as i32,
+        );
+        crate::clamp_to_area(at, physical, bounds)
+    }
+
     /// 一盏灯**第一次**出现、又没记着位置时的默认摆放：贴屏幕**右缘**从上往下
     /// 堆叠，间距取半个点径。第几盏按「此刻已经开着几盏灯」算 —— 已记着位置的灯
     /// 回原位、不重排，新灯自然接在现有灯下面。
     ///
+    /// 挑哪块屏：**鼠标所在的那块**（多屏用户的第一盏灯该出现在他正看着的地方，
+    /// 而不是「永远主屏」）。拿不到鼠标位置就退回主屏。
+    ///
     /// 拿不到显示器信息就返回 `None`（交回系统默认摆放），不硬编一个坐标：多屏 /
     /// 远程桌面上编出来的点可能落在根本不存在的屏幕上。
     fn default_position(&self, size: (u16, u16)) -> Option<(i32, i32)> {
-        let monitor = self.0.primary_monitor().ok().flatten()?;
-        let area = monitor.work_area();
-        let scale = monitor.scale_factor();
+        let (bounds, scale) = self.cursor_area().or_else(|| self.primary_area())?;
+        let ((_left, top), (right, bottom)) = bounds;
         let width = (f64::from(size.0) * scale).round() as i32;
         let height = (f64::from(size.1) * scale).round() as i32;
         let gap = (f64::from(size.0) * scale / 2.0).round() as i32;
@@ -123,10 +161,10 @@ impl TauriHost<'_> {
             .keys()
             .filter(|label| label.starts_with(LABEL_PREFIX))
             .count() as i32;
-        let x = area.position.x + area.size.width as i32 - width - gap;
-        let y = area.position.y + gap + index * (height + gap);
+        let x = right - width - gap;
+        let y = top + gap + index * (height + gap);
         // 堆到屏幕底下就停在最下面（keep_on_screen 的兜底）
-        let y = y.min(area.position.y + area.size.height as i32 - height - gap);
+        let y = y.min(bottom - height - gap);
         Some((x, y))
     }
 }
@@ -139,8 +177,12 @@ impl LampHost for TauriHost<'_> {
             return;
         }
         let url = format!("index.html?window=light&group={}", encode_query(group));
-        // 记着位置就回原位；第一次出现就贴右缘堆叠（拿不到屏幕信息则交回系统）。
-        let position = at.or_else(|| self.default_position(size));
+        // 记着位置就回原位 —— **但先夹回可见区**（那块屏可能已经不在了，见
+        // `clamp_to_visible`）；第一次出现就贴右缘堆叠（鼠标所在的那块屏）。
+        // 两种情况都拿不到屏幕信息时交回系统摆放。
+        let position = at
+            .map(|saved| self.clamp_to_visible(saved, size))
+            .or_else(|| self.default_position(size));
         // 跟着全局的「总在最前」—— 组灯不该和主灯设置不一致。建窗是低频操作，
         // 这里读一次设置无所谓。
         let always_on_top = app

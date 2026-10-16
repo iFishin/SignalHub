@@ -1393,11 +1393,33 @@ fn keep_on_screen(
     previous: Option<(u16, u16)>,
     scale: f64,
 ) {
-    let (Ok(Some(monitor)), Ok(position)) = (window.current_monitor(), window.outer_position())
-    else {
-        // 拿不到显示器信息（多屏拔插的瞬间、无头环境）就什么都不做 ——
-        // 这只是个兜底，失败不该有任何副作用
+    let Ok(position) = window.outer_position() else {
+        // 拿不到位置就什么都不做 —— 这只是个兜底，失败不该有任何副作用
         return;
+    };
+    // 窗口盖在哪块屏上；拿不到就退回「离它最近的那块」。
+    //
+    // **这一条的退路必须有**：拔掉外接屏之后，窗口的坐标还留在那块不存在的屏上，
+    // 而 `current_monitor()` 对「一块屏都没盖住」的窗口给 `None` —— 原来直接
+    // `return`，于是这条兜底在**最需要它的时候**（正是屏没了的时候）恰好失效，
+    // 灯永远留在屏幕外，用户再也点不到它。
+    let bounds = match window.current_monitor() {
+        Ok(Some(monitor)) => work_bounds(&monitor),
+        // 屏不见了（拔掉外接屏 / 改分辨率 / 换布局）：`current_monitor()` 给不出屏，
+        // 就退回「离它最近的那一块」。这条路平时不走，所以留一行记录 —— 「我的灯
+        // 怎么跑到这边来了」得有个地方查。
+        _ => match nearest_screen(window.app_handle(), (position.x, position.y)) {
+            Some((bounds, _)) => {
+                config::append_hook_log(&format!(
+                    "{} [lamp] 当前屏幕不可用，({}, {}) 就近回到 {bounds:?}\n",
+                    config::utc_hms(),
+                    position.x,
+                    position.y,
+                ));
+                bounds
+            }
+            None => return,
+        },
     };
 
     let to_physical = |size: (u16, u16)| {
@@ -1407,14 +1429,6 @@ fn keep_on_screen(
         )
     };
     let size = to_physical((width, height));
-    let area = monitor.work_area();
-    let bounds = (
-        (area.position.x, area.position.y),
-        (
-            area.position.x + area.size.width as i32,
-            area.position.y + area.size.height as i32,
-        ),
-    );
 
     // 先按「贴边就往里长」挪，再夹回区内兜底（窗口比工作区还大时只有夹这一步管用）
     let anchored = match previous {
@@ -1469,7 +1483,11 @@ fn grow_away_from_edges(
 /// `bounds` 是 `((左, 上), (右, 下))`。抽成纯函数是为了能单测 —— 边界情况（窗口
 /// 比工作区还大、副屏在左侧时的负坐标）是这里最容易写错的地方，而它们在真机上
 /// 很难复现。
-fn clamp_to_area(
+///
+/// **组灯也用它**（`lamps.rs::TauriHost::clamp_to_visible`）：那边记着的位置同样会
+/// 落在已经不在了的屏幕上，判据必须和主灯的 `keep_on_screen` 是同一套，否则会出现
+/// 「主灯拉回来了、组灯还丢在屏外」。
+pub(crate) fn clamp_to_area(
     position: (i32, i32),
     size: (i32, i32),
     bounds: ((i32, i32), (i32, i32)),
@@ -1481,6 +1499,50 @@ fn clamp_to_area(
     let max_x = (right - size.0).max(left);
     let max_y = (bottom - size.1).max(top);
     (position.0.clamp(left, max_x), position.1.clamp(top, max_y))
+}
+
+/// 一块屏的工作区，`((左, 上), (右, 下))`，物理像素 —— 和 `clamp_to_area` /
+/// `snap_to_edges` 是同一套坐标准则。
+pub(crate) type Bounds = ((i32, i32), (i32, i32));
+
+/// 某块屏的工作区（物理像素）。任务栏 / Dock 占掉的那条不算可用空间。
+pub(crate) fn work_bounds(monitor: &tauri::Monitor) -> Bounds {
+    let area = monitor.work_area();
+    (
+        (area.position.x, area.position.y),
+        (
+            area.position.x + area.size.width as i32,
+            area.position.y + area.size.height as i32,
+        ),
+    )
+}
+
+/// 点到矩形（闭区间）的距离平方。点在矩形内为 0。用来「挑离它最近的那块屏」。
+fn distance_to_bounds(((left, top), (right, bottom)): Bounds, (x, y): (i32, i32)) -> i64 {
+    let dx = i64::from((left - x).max(0).max(x - right));
+    let dy = i64::from((top - y).max(0).max(y - bottom));
+    dx * dx + dy * dy
+}
+
+/// 在若干块屏里挑离 `at` 最近的那块，返回下标（并列时取先出现的）。
+fn nearest_index(areas: &[Bounds], at: (i32, i32)) -> Option<usize> {
+    (0..areas.len()).min_by_key(|index| distance_to_bounds(areas[*index], at))
+}
+
+/// 离 `at` 最近的那块屏的工作区 + 缩放比。
+///
+/// **为什么不直接用 `current_monitor()`**：那个函数问的是「窗口盖在哪块屏上」，而
+/// 窗口的坐标可能落在一块**已经不在了**的屏上（拔掉外接屏 / 改分辨率 / 换布局）——
+/// 那一刻它给 `None`，于是「把窗口拉回屏幕内」这条兜底会整条失效，灯就永远留在
+/// 屏幕外。这里换成「点到矩形的距离」，任何坐标都挑得出一块最近的屏。
+///
+/// 主灯（`keep_on_screen`）和组灯（`lamps.rs`）共用它，两边的判据必须一致。
+/// 拿不到显示器信息（无头环境、多屏拔插的瞬间）返回 `None`。
+pub(crate) fn nearest_screen(app: &tauri::AppHandle, at: (i32, i32)) -> Option<(Bounds, f64)> {
+    let monitors = app.available_monitors().ok()?;
+    let areas: Vec<Bounds> = monitors.iter().map(work_bounds).collect();
+    let index = nearest_index(&areas, at)?;
+    Some((areas[index], monitors[index].scale_factor()))
 }
 
 /// 吸附判定：窗口边缘离工作区边缘这么近就贴齐（物理像素）。
@@ -1903,7 +1965,8 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        clamp_to_area, grow_away_from_edges, pass_through_shortcut_label, shortcut_label,
+        clamp_to_area, distance_to_bounds, grow_away_from_edges, nearest_index,
+        pass_through_shortcut_label, shortcut_label,
         shortcut_label_for, snap_to_edges, validate_settings, visible_groups, KeyStyle,
         PASS_THROUGH_SHORTCUT, TEST_REPORT_TTL_MS,
     };
@@ -2151,6 +2214,39 @@ mod tests {
                 "{position:?} 吸到 {snapped:?} 之后又被夹了"
             );
         }
+    }
+
+    // ---- 挑屏（灯不能丢在屏幕外）----------------------------------------------
+
+    /// 挑最近的屏靠这个：点在矩形内为 0，在外就是到最近边的平方距离。
+    #[test]
+    fn distance_to_bounds_is_zero_inside_and_squared_outside() {
+        let area = ((0, 0), (1920, 1080));
+        assert_eq!(distance_to_bounds(area, (500, 500)), 0, "区内为 0");
+        assert_eq!(distance_to_bounds(area, (0, 0)), 0, "边界也算在内");
+        assert_eq!(distance_to_bounds(area, (1920, 1080)), 0);
+        assert_eq!(distance_to_bounds(area, (-30, 500)), 900, "左边出去 30 → 30²");
+        assert_eq!(distance_to_bounds(area, (1950, 500)), 900, "右边出去 30");
+        assert_eq!(distance_to_bounds(area, (500, -20)), 400, "上边出去 20");
+        assert_eq!(distance_to_bounds(area, (500, 1100)), 400, "下边出去 20");
+        assert_eq!(distance_to_bounds(area, (-3, -4)), 25, "角上按勾股");
+    }
+
+    /// 一块**已经不在了**的屏上那个坐标，必须挑一块最近的屏 —— 这就是「灯丢在
+    /// 屏幕外」那条 bug 的判据本身：`current_monitor()` 对这种情况给 `None`，
+    /// 而 `nearest_index` 总给得出一块。
+    #[test]
+    fn nearest_index_picks_the_closest_screen() {
+        // 主屏 (0,0)-(1920,1080)，副屏挂在**左边** (-1920,0)-(0,1080)
+        let areas = [((0, 0), (1920, 1080)), ((-1920, 0), (0, 1080))];
+        assert_eq!(nearest_index(&areas, (500, 500)), Some(0), "主屏正中");
+        assert_eq!(nearest_index(&areas, (-500, 500)), Some(1), "左副屏正中");
+        assert_eq!(nearest_index(&areas, (-1900, 540)), Some(1), "左副屏边缘内");
+        // 右边那块拔掉之后留下的坐标：离主屏最近，于是被夹回主屏
+        assert_eq!(nearest_index(&areas, (9000, 500)), Some(0));
+        assert_eq!(nearest_index(&areas, (-2000, 540)), Some(1), "只出界一点，还是副屏");
+        assert_eq!(nearest_index(&areas, (-3000, 540)), Some(1), "更左仍然是副屏最近");
+        assert_eq!(nearest_index(&[], (0, 0)), None, "一块屏都没有");
     }
 
     // ---- 贴边生长 -------------------------------------------------------------
