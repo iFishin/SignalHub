@@ -1,5 +1,6 @@
 mod alerts;
 mod diagnose;
+mod hookmap;
 mod lang;
 mod lamps;
 mod menu;
@@ -117,6 +118,13 @@ type SharedStats = Arc<Mutex<stats::Stats>>;
 ///
 /// 和 `SharedStore` 一样是 `Arc`：`server::spawn` 要拿到一个能活过它自己的句柄。
 type SharedBind = Arc<Mutex<bool>>;
+
+/// 当前界面语言的**共享**句柄。
+///
+/// 要 `Arc` 是因为 HTTP 上报那条路也要它：HTTP 式 hook（`POST /v1/hooks/{agent}`）
+/// 由**应用自己**生成「正在执行 npm」那一行（命令式那边是 CLI 生成的），而那句话
+/// 得说用户的语言。
+type SharedLang = Arc<lang::LocalLang>;
 
 /// 每个信号源「最近一次上报」的凭证（见 `receipts.rs`）。
 ///
@@ -1272,7 +1280,7 @@ fn set_lang(app: tauri::AppHandle, lang: String) -> Result<(), String> {
     let Some(lang) = config::Lang::parse(&lang) else {
         return Err(format!("不认识的语言 {lang:?}；可用 zh / en"));
     };
-    app.state::<lang::LocalLang>().set(lang);
+    app.state::<SharedLang>().set(lang);
     // 落一份给 CLI 读：它是独立进程，挑不了自己那些文案的语言（`auto` 的解析只有
     // 前端做得了）。见 `config::lang_file`。
     if let Err(err) = config::write_lang(lang) {
@@ -1284,7 +1292,7 @@ fn set_lang(app: tauri::AppHandle, lang: String) -> Result<(), String> {
 
 /// 把语言应用到所有原生界面。语言变了就调它。
 pub(crate) fn apply_lang(app: &tauri::AppHandle) {
-    let lang = app.state::<lang::LocalLang>().get();
+    let lang = app.state::<SharedLang>().get();
     // 托盘菜单是启动时建好就一直挂着的，换语言得整个重建
     tray::rebuild_menu(app, lang);
     // 通知的动作按钮也带文案，重新注册一次（同 id 覆盖）
@@ -1297,7 +1305,7 @@ pub(crate) fn apply_lang(app: &tauri::AppHandle) {
 
 /// 当前语言。命令和托盘菜单共用。
 pub(crate) fn current_lang(app: &tauri::AppHandle) -> config::Lang {
-    app.state::<lang::LocalLang>().get()
+    app.state::<SharedLang>().get()
 }
 
 /// 前端把算好的颜色表推过来 —— 托盘图标用它取色。
@@ -2080,7 +2088,7 @@ pub fn run() {
         .manage(outbound::load_log())
         .manage(SharedPalette::default())
         .manage(alerts::LocalHour::default())
-        .manage(lang::LocalLang::default())
+        .manage(Arc::new(lang::LocalLang::default()))
         // 最近一条告警通知说的是谁 —— 动作按钮回调时要用，见 alerts::LastAlert
         .manage(alerts::LastAlert::default())
         // 更新检查的结果（不联网，纯粹给界面读的一张快照）
@@ -2225,6 +2233,8 @@ pub fn run() {
                 app.state::<SharedBind>().inner().clone(),
                 // 每个信号源的最近一次上报 —— 和上报路径共用同一份
                 app.state::<SharedReceipts>().inner().clone(),
+                // 当前界面语言：HTTP 式 hook 要用它生成「正在做什么」那行
+                app.state::<SharedLang>().inner().clone(),
                 token,
             );
 

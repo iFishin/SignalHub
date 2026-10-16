@@ -1,7 +1,7 @@
 use crate::config;
 use crate::notify::Notifier;
 use crate::spool;
-use crate::state::{state_ttl, Report, Snapshot, Store};
+use crate::state::{state_ttl, Report, Signal, Snapshot, Store};
 use axum::{
     extract::{rejection::JsonRejection, Path, Request, State},
     http::{header, StatusCode},
@@ -27,6 +27,12 @@ struct Ctx {
     settings: crate::SharedSettings,
     /// 每个信号源「最近一次上报」的凭证。接入页靠它回答「到底有没有在报」。
     receipts: Arc<crate::receipts::Receipts>,
+    /// 实际绑到哪了（`true` = 0.0.0.0 / 局域网）。**HTTP 式 hook 那条免鉴权的端点
+    /// 靠它决定开不开**：绑到回环时本地进程本来就能读 token 文件，多一个只写状态的
+    /// 端点不改变信任边界；绑到局域网时它就是给全网开的一扇门。
+    bind: crate::SharedBind,
+    /// 当前界面语言。HTTP 式 hook 的「正在做什么」那行由应用自己生成。
+    lang: Arc<crate::lang::LocalLang>,
     token: String,
     started: Instant,
 }
@@ -43,6 +49,7 @@ pub fn spawn(
     settings: crate::SharedSettings,
     bind: crate::SharedBind,
     receipts: Arc<crate::receipts::Receipts>,
+    lang: Arc<crate::lang::LocalLang>,
     token: String,
 ) {
     // 监听地址**在启动时定一次**。设置里那个开关改了要重启才生效 —— 理由见
@@ -50,7 +57,18 @@ pub fn spawn(
     let lan = settings.lock().expect("settings poisoned").lan_access;
     let host = bind_host(lan);
 
-    let ctx = Ctx { store, notify, settings, receipts, token, started: Instant::now() };
+    let ctx = Ctx {
+        store,
+        notify,
+        settings,
+        receipts,
+        // 记「实际绑到哪了」和给 handler 看的是**同一份**：handler 要按它决定
+        // 免鉴权那条端点开不开，两处各存一个就会有一边撒谎
+        bind: bind.clone(),
+        lang,
+        token,
+        started: Instant::now(),
+    };
 
     tauri::async_runtime::spawn(async move {
         let listener = match tokio::net::TcpListener::bind((host, PREFERRED_PORT)).await {
@@ -135,9 +153,11 @@ pub fn local_ip() -> Option<String> {
     (!ip.is_loopback()).then(|| ip.to_string())
 }
 
+/// 只有 health 和 HTTP 式 hook **免鉴权**，其余整组挂上中间件。
+///
+/// 免鉴权的那两个各自的理由见 [`hook_report`] 的注释 —— 尤其是第二条：它只在绑到
+/// 回环时可用，所以「局域网访问」打开时它自己会关掉。
 fn router(ctx: Ctx) -> Router {
-    // 只有 health 免鉴权，其余整组挂上中间件。
-    // 用中间件而不是在每个 handler 里手写一次检查：漏掉一处就是一个安全洞。
     let protected = Router::new()
         .route("/v1/state", get(read_state).post(report_state))
         .route("/v1/sessions", get(list_sessions))
@@ -149,8 +169,16 @@ fn router(ctx: Ctx) -> Router {
             require_auth,
         ));
 
+    // HTTP 式 hook 的落点。**body 限长**：这个端点不需要 token，任何本地进程都能
+    // POST 进来，而 axum 的默认上限（2MB）在这里没有理由 —— hook 的 payload 里带着
+    // 工具输入，几 KB 到几十 KB，256KB 足够放下任何真实事件。
+    let hooks = Router::new()
+        .route("/v1/hooks/{agent}", post(hook_report))
+        .layer(axum::extract::DefaultBodyLimit::max(HOOK_BODY_MAX));
+
     Router::new()
         .route("/v1/health", get(health))
+        .merge(hooks)
         .merge(protected)
         .with_state(ctx)
 }
@@ -201,6 +229,135 @@ async fn health(State(ctx): State<Ctx>) -> Json<Value> {
         "version": env!("CARGO_PKG_VERSION"),
         "uptime_s": ctx.started.elapsed().as_secs(),
     }))
+}
+
+/// HTTP 式 hook 的 body 上限。见 [`router`] 里的说明。
+const HOOK_BODY_MAX: usize = 256 * 1024;
+
+/// HTTP 式接入的落点：**智能体的进程直接 POST 过来**（装出来的配置见
+/// `hooks::install_http`，目前只给 Claude Code 用）。
+///
+/// 它和命令式接入的差别只有一个：不需要一个「能跑起来的命令」。于是**整类
+/// 「命令不在 PATH 上 / 应用被挪走了」的失败都不存在** —— 那是接入页红色提示里
+/// 最常见的那一条。
+///
+/// 三条硬约束（见 `docs/plan-round4.md` §9）：
+///
+/// 1. **不需要 token，但只在绑回环时可用。** 这个端点不能要 token：Claude Code 的
+///    HTTP hook 配置写在用户的 `settings.json` 里（那是个会被 commit 的文件，而
+///    token 是每台机器一份的秘密）。代之以两条防线：**绑到 0.0.0.0 时一律 403**
+///    （那时它就是给全网开的一扇门），以及上面的 body 限长。
+/// 2. **绝不阻塞、绝不把错误抛给智能体。** 任何情况都回 200 `{}`：这是上报端点，
+///    我们没有任何决定要交给它。装上时的 `onFailure: "continue"` +
+///    `timeout: 5` 只是第二道保险（连不上时对方也不该卡住）。
+/// 3. **只写状态。** payload 只用来映射事件、拿会话名和 cwd；里面的工具输入不会
+///    被存下来（`message` 只取一个短词，见 `hookmap::tool_target`）。
+async fn hook_report(
+    State(ctx): State<Ctx>,
+    Path(agent): Path<String>,
+    body: axum::body::Bytes,
+) -> Result<Json<Value>, ApiError> {
+    if *ctx.bind.lock().expect("bind poisoned") {
+        // 开了局域网访问。这里**刻意不静默工作**：让请求方拿到明确的 403，接不上的
+        // 人至少能看出是「端点关着」，而不是「什么都没发生」。
+        return Err(ApiError::forbidden(
+            "hook endpoint disabled while LAN access is on",
+        ));
+    }
+
+    let event = match serde_json::from_slice::<Value>(&body) {
+        Ok(payload) => apply_hook(&ctx, &agent, &payload),
+        Err(err) => {
+            // 早返回：这一条已经有自己的日志了，落到下面会把「读不出 JSON」再记成
+            // 「unknown agent」—— 两条互相矛盾的记录比没有记录更坏
+            log_http_hook(&agent, "?", "?", &format!("body 不是 JSON: {err}"));
+            return Ok(Json(json!({})));
+        }
+    };
+
+    match event {
+        Some((name, session, outcome)) => log_http_hook(&agent, &name, &session, &outcome),
+        // 不明智能体（路径写错了）：留痕，让人能自己看出来
+        None => log_http_hook(&agent, "?", "?", "unknown agent"),
+    }
+    // **永远回 200 空对象**：这是上报端点，没有任何决定要交给智能体；报错只会在
+    // 对方的界面上留下一行属于我们的故障。上面那个 403 是唯一的例外，而且它只
+    // 发生在端点整个关着的时候（那种情况下请求方本来就该知道）。
+    Ok(Json(json!({})))
+}
+
+/// 把一条 hook payload 送进状态机。返回 `(事件名, 会话名, 结果)` 供记日志 ——
+/// **日志和副作用都在这一个函数里决定**，免得两个地方各判一次「这个事件认不认得」。
+fn apply_hook(ctx: &Ctx, agent: &str, payload: &Value) -> Option<(String, String, String)> {
+    // 不认识的智能体名：什么也不做。`map_event` 本来就只认那五家，这里提前返回
+    // 是为了在日志里区分「名字写错了」和「这个事件我们明确忽略」。
+    if !crate::hooks::ALL_NAMES.contains(&agent) {
+        return None;
+    }
+    let name = crate::hookmap::event_name(payload).unwrap_or("?").to_string();
+    let session = crate::hookmap::session_id(payload).unwrap_or_else(|| agent.to_string());
+
+    let Some(action) = crate::hookmap::map_event(agent, payload) else {
+        // 明确忽略的事件：一次状态都不改，但日志里要留痕（和命令式那条路一样）
+        return Some((name, session, "ignored".to_string()));
+    };
+
+    match action {
+        crate::hookmap::Action::Clear => {
+            let (_, changed, snapshot) = drop_session(ctx, &session);
+            if changed {
+                (ctx.notify)(&snapshot);
+            }
+            Some((name, session, "clear".to_string()))
+        }
+        crate::hookmap::Action::Report(state) => {
+            let report = Report {
+                state: Signal::parse(state).ok()?,
+                session: Some(session.clone()),
+                // 组不填：交给 `ingest_core` 按用户的兜底设置解析（按目录 / 按会话），
+                // 和 HTTP 上报完全同一条路
+                group: None,
+                agent: Some(agent.to_string()),
+                cwd: crate::hookmap::cwd_of(payload),
+                message: hook_message(ctx, payload),
+                ttl_ms: None,
+            };
+            ingest(ctx, report, None);
+            Some((name, session, state.to_string()))
+        }
+    }
+}
+
+/// HTTP 式 hook 的「正在做什么」那一行。
+///
+/// 命令式的同一句话由 CLI 生成（`bin/signalhub.rs` 的 `tool_summary`），词表在
+/// `lang.rs` —— **和 CLI 那套词必须一致**，否则同一个工具在两种接入方式下会显示成
+/// 两个说法（见 `hookmap::Verb` 的注释）。
+fn hook_message(ctx: &Ctx, payload: &Value) -> Option<String> {
+    let tool = payload["tool_name"].as_str()?.trim();
+    if tool.is_empty() {
+        return None;
+    }
+    let lang = ctx.lang.get();
+    match (
+        crate::hookmap::tool_verb(tool),
+        crate::hookmap::tool_target(&payload["tool_input"]),
+    ) {
+        (Some(verb), Some(target)) => Some(crate::lang::tool_doing(lang, verb, &target)),
+        (Some(verb), None) => Some(crate::lang::tool_verb(lang, verb).to_string()),
+        // 认不出来就把工具原名照实写出来（和 CLI 一样：认不出来比认错好）
+        (None, _) => Some(crate::hookmap::clip(tool, crate::hookmap::TOOL_NAME_MAX)),
+    }
+}
+
+/// 给 HTTP 式 hook 记一行。**格式和命令式那条路完全一致** —— 「最近的 hook 调用」
+/// 那张表得能同时显示两种接入方式的记录，否则 HTTP 式接入的人在自己的日志里
+/// 什么也看不到。末尾多一个 `(http)` 只是为了让人一眼分清是谁写的那一行。
+fn log_http_hook(agent: &str, event: &str, session: &str, outcome: &str) {
+    config::append_hook_log(&format!(
+        "{}  {agent:<12} {event:<20} session={session:<38} {outcome} (http)\n",
+        config::utc_hms()
+    ));
 }
 
 async fn read_state(State(ctx): State<Ctx>) -> Json<Snapshot> {
@@ -443,6 +600,10 @@ impl ApiError {
     fn unauthorized(message: impl Into<String>) -> Self {
         Self { status: StatusCode::UNAUTHORIZED, message: message.into() }
     }
+
+    fn forbidden(message: impl Into<String>) -> Self {
+        Self { status: StatusCode::FORBIDDEN, message: message.into() }
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -480,10 +641,12 @@ mod tests {
         /// 服务器手里**那一份**设置。测试通过 `set_group_by` 改它，就是在模拟
         /// 用户在设置面板里拨开关 —— 走的是同一条共享路径，不是另造一个快照。
         settings: crate::SharedSettings,
+        /// 和服务器共用的「实际绑到哪了」。测试用它模拟「局域网访问开着」。
+        bind: crate::SharedBind,
     }
 
     async fn start() -> TestServer {
-        let (ctx, notifications, settings) = test_ctx();
+        let (ctx, notifications, settings, bind) = test_ctx();
 
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -491,18 +654,20 @@ mod tests {
             axum::serve(listener, router(ctx)).await.unwrap();
         });
 
-        TestServer { port, token: "s3cret".to_string(), notifications, settings }
+        TestServer { port, token: "s3cret".to_string(), notifications, settings, bind }
     }
 
     /// 一个不经 HTTP 的 ctx + 通知计数 + 那份共享设置。
     ///
     /// 重放那几条用例（`replay_spool`）不需要真的起服务器 —— 重放本来就不走网络，
     /// 它是「把盘上的东西补进状态机」。
-    fn test_ctx() -> (Ctx, Arc<AtomicUsize>, crate::SharedSettings) {
+    fn test_ctx() -> (Ctx, Arc<AtomicUsize>, crate::SharedSettings, crate::SharedBind) {
         let notifications = Arc::new(AtomicUsize::new(0));
         let counter = notifications.clone();
         let settings: crate::SharedSettings =
             Arc::new(Mutex::new(Arc::new(crate::config::Settings::default())));
+        // 回环（`false`）：HTTP 式 hook 那条端点默认开着，才测得到它
+        let bind: crate::SharedBind = Arc::new(Mutex::new(false));
 
         let ctx = Ctx {
             store: Arc::new(Mutex::new(Store::default())),
@@ -513,10 +678,12 @@ mod tests {
             // 不落盘（`None`）：单测绝不能写开发者真实的 `~/.signalhub`。
             // 上报路径会顺手记凭证，所以这里必须真的给一个，不能用 `Default`。
             receipts: Arc::new(crate::receipts::Receipts::in_memory()),
+            bind: bind.clone(),
+            lang: Arc::new(crate::lang::LocalLang::default()),
             token: "s3cret".to_string(),
             started: Instant::now(),
         };
-        (ctx, notifications, settings)
+        (ctx, notifications, settings, bind)
     }
 
     impl TestServer {
@@ -529,6 +696,121 @@ mod tests {
             *self.settings.lock().unwrap() =
                 Arc::new(crate::config::Settings { group_by: by, ..Default::default() });
         }
+
+        /// 模拟「局域网访问开着」—— 启动时 `spawn` 就是在 bind 成功之后写这个值的。
+        fn set_lan(&self, lan: bool) {
+            *self.bind.lock().unwrap() = lan;
+        }
+    }
+
+    /// HTTP 式 hook：**不带 token** 就该能上报。它是这个端点存在的全部理由 ——
+    /// 要求 token 就得把每台机器一份的秘密写进用户的 `settings.json`。
+    #[tokio::test]
+    async fn the_http_hook_reports_without_a_token() {
+        let server = start().await;
+        let payload = json!({
+            "hook_event_name": "PreToolUse",
+            "session_id": "probe-1",
+            "cwd": "/proj/signalhub",
+            "tool_name": "Bash",
+            "tool_input": { "command": "npm test" },
+        })
+        .to_string();
+
+        let (status, body) = call(
+            &server,
+            "POST",
+            "/v1/hooks/claude-code",
+            None,
+            false,
+            Some(&payload),
+        )
+        .await;
+        assert_eq!(status, 200, "body: {body}");
+        assert_eq!(body.trim(), "{}", "回给智能体的必须是空对象（没有决定要说）");
+
+        // 状态真的进去了，而且**「正在做什么」那一行也在**（默认语言是中文，
+        // 和命令式接入生成的是同一句话）
+        let (_, state) = call(&server, "GET", "/v1/state", Some(&server.token), false, None).await;
+        assert!(state.contains("working"), "state: {state}");
+        assert!(state.contains("执行 npm"), "state: {state}");
+    }
+
+    /// **认不出来也绝不报错给智能体。** 这是上报端点，我们没有任何决定要交给它；
+    /// 一个 4xx 会让 hook 在对方的界面上留下一行报错，而那是我们的问题，不是它的。
+    #[tokio::test]
+    async fn the_http_hook_answers_ok_to_everything_it_cannot_use() {
+        let server = start().await;
+        let cases = [
+            // 事件名不认识（明确忽略）
+            ("claude-code", json!({ "hook_event_name": "SomethingNew" }).to_string()),
+            // payload 不合法
+            ("claude-code", "{ 这不是 json".to_string()),
+            // 路径里的智能体名写错了
+            ("nope", json!({ "hook_event_name": "PreToolUse" }).to_string()),
+            // 空的
+            ("claude-code", String::new()),
+        ];
+        for (agent, body) in cases {
+            let (status, text) = call(
+                &server,
+                "POST",
+                &format!("/v1/hooks/{agent}"),
+                None,
+                false,
+                Some(&body),
+            )
+            .await;
+            assert_eq!(status, 200, "agent={agent} body={body} → {text}");
+            assert_eq!(text.trim(), "{}", "agent={agent}");
+        }
+
+        // 一条状态都不该被写进去
+        let (_, state) = call(&server, "GET", "/v1/state", Some(&server.token), false, None).await;
+        assert!(!state.contains("working"), "state: {state}");
+    }
+
+    /// `SessionEnd` 是清除：会话没了，而不是留一块牌。
+    #[tokio::test]
+    async fn the_http_hook_clears_sessions() {
+        let server = start().await;
+        let working = json!({ "hook_event_name": "PreToolUse", "session_id": "s-9" }).to_string();
+        call(&server, "POST", "/v1/hooks/claude-code", None, false, Some(&working)).await;
+
+        let end = json!({ "hook_event_name": "SessionEnd", "session_id": "s-9" }).to_string();
+        let (status, _) =
+            call(&server, "POST", "/v1/hooks/claude-code", None, false, Some(&end)).await;
+        assert_eq!(status, 200);
+
+        let (_, sessions) =
+            call(&server, "GET", "/v1/sessions", Some(&server.token), false, None).await;
+        assert!(!sessions.contains("s-9"), "sessions: {sessions}");
+    }
+
+    /// **开了局域网访问就关掉这个端点。** 它不需要 token，绑到 0.0.0.0 时等于给
+    /// 全网开了一扇能写状态的门；那时唯一诚实的做法是拒绝，并说明为什么。
+    #[tokio::test]
+    async fn the_http_hook_is_refused_while_lan_access_is_on() {
+        let server = start().await;
+        server.set_lan(true);
+
+        let payload = json!({ "hook_event_name": "PreToolUse", "session_id": "s-1" }).to_string();
+        let (status, body) = call(
+            &server,
+            "POST",
+            "/v1/hooks/claude-code",
+            None,
+            false,
+            Some(&payload),
+        )
+        .await;
+        assert_eq!(status, 403, "body: {body}");
+        assert!(body.contains("LAN"), "body: {body}");
+
+        // 带 token 的常规上报不受影响（局域网模式下它照常工作）
+        let with_token = json!({ "state": "working", "session": "s-1" }).to_string();
+        let (status, _) = post_state(&server, &with_token).await;
+        assert_eq!(status, 200);
     }
 
     /// 手写一个 HTTP/1.1 请求，就为了几个测试引入一个 HTTP 客户端依赖不划算。
@@ -904,7 +1186,7 @@ mod tests {
     /// 攒在盘上的记录补进状态机，然后**文件清掉** —— 不然下次启动会再补一遍。
     #[test]
     fn a_replay_applies_the_records_and_removes_the_file() {
-        let (ctx, notifications, _settings) = test_ctx();
+        let (ctx, notifications, _settings, _bind) = test_ctx();
         let path = spool::temp_path("spool.jsonl");
         spool::append_at(
             &path,
@@ -959,7 +1241,7 @@ mod tests {
     /// 过了 TTL 的记录**直接丢**，不要补出一块「沉默」的牌。
     #[test]
     fn a_replay_drops_records_that_already_expired() {
-        let (ctx, notifications, _settings) = test_ctx();
+        let (ctx, notifications, _settings, _bind) = test_ctx();
         let path = spool::temp_path("spool.jsonl");
         // `done` 的 TTL 是 30 秒，这条是五分钟前的 —— 它早就不该在灯上了
         spool::append_at(
@@ -988,7 +1270,7 @@ mod tests {
     /// 在灯上多待四分钟。
     #[test]
     fn a_replay_keeps_the_remaining_life_of_a_record() {
-        let (ctx, _notifications, _settings) = test_ctx();
+        let (ctx, _notifications, _settings, _bind) = test_ctx();
         let path = spool::temp_path("spool.jsonl");
         spool::append_at(
             &path,
@@ -1013,7 +1295,7 @@ mod tests {
     /// 坏行跳过，好行照补 —— 文件会被手改、被截断、被交错写花。
     #[test]
     fn a_replay_skips_junk_without_losing_the_rest() {
-        let (ctx, _notifications, _settings) = test_ctx();
+        let (ctx, _notifications, _settings, _bind) = test_ctx();
         let path = spool::temp_path("spool.jsonl");
         std::fs::write(
             &path,

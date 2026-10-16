@@ -61,6 +61,32 @@ pub fn signal_label(lang: Lang, state: Signal) -> &'static str {
     }
 }
 
+/// 工具动词的分类 → 这个词（HTTP 式 hook 生成「正在做什么」那一行要用）。
+///
+/// **和 CLI 侧那张表（`cli_text.rs` 的 `tool_v_*`）必须是同一组词。** 同一个工具在
+/// 命令式接入下由 CLI 生成这句话、在 HTTP 式接入下由应用生成，两边的说法不一致
+/// 会让人以为它们在做不同的事。
+pub fn tool_verb(lang: Lang, verb: crate::hookmap::Verb) -> &'static str {
+    use crate::hookmap::Verb;
+    match (lang, verb) {
+        (Lang::Zh, Verb::Exec) => "执行",
+        (Lang::Zh, Verb::Edit) => "改",
+        (Lang::Zh, Verb::Read) => "读",
+        (Lang::Zh, Verb::Search) => "找",
+        (Lang::Zh, Verb::Net) => "访问",
+        (Lang::En, Verb::Exec) => "Running",
+        (Lang::En, Verb::Edit) => "Editing",
+        (Lang::En, Verb::Read) => "Reading",
+        (Lang::En, Verb::Search) => "Searching",
+        (Lang::En, Verb::Net) => "Fetching",
+    }
+}
+
+/// 「正在执行 npm」那一句。模板跟着 CLI 的 `tool_doing`（`{} {}`）。
+pub fn tool_doing(lang: Lang, verb: crate::hookmap::Verb, target: &str) -> String {
+    format!("{} {}", tool_verb(lang, verb), target)
+}
+
 /// 原生界面上的全部文案。
 ///
 /// 收在一个结构里而不是散成一堆函数：改语言时要重建的东西**正好就是这些**，
