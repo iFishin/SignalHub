@@ -18,7 +18,7 @@ pub mod hooks;
 
 use config::{LampLayout, Settings};
 use notify::Notifier;
-use state::{GroupView, Report, Signal, Snapshot, Store};
+use state::{state_ttl, GroupView, Report, Signal, Snapshot, Store};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -236,7 +236,8 @@ fn set_state(
         message,
         ttl_ms: None,
     };
-    Ok(mutate(&app, &store, |guard, now| guard.apply(now, req)))
+    let ttl = report_ttl(&app, &req);
+    Ok(mutate(&app, &store, |guard, now| guard.apply(now, req, ttl)))
 }
 
 /// 测试上报的存活时间。
@@ -276,7 +277,9 @@ fn send_test_report(
         message: None,
         ttl_ms: Some(TEST_REPORT_TTL_MS),
     };
-    Ok(mutate(&app, &store, |guard, now| guard.apply(now, req)))
+    // 显式给了 `ttl_ms`，所以设置里的值压不过它（`state_ttl` 的第一级）
+    let ttl = report_ttl(&app, &req);
+    Ok(mutate(&app, &store, |guard, now| guard.apply(now, req, ttl)))
 }
 
 #[tauri::command]
@@ -291,6 +294,25 @@ fn set_paused(
 #[tauri::command]
 fn get_settings(settings: tauri::State<'_, SharedSettings>) -> Settings {
     settings.lock().expect("settings poisoned").as_ref().clone()
+}
+
+/// 每个状态**内置**的停留时长（毫秒）：`{ "working": 300000, "done": 30000, ... }`。
+///
+/// **为什么要有这个命令**：「逐个状态覆盖」那张表里，「跟随」那一项如果只写「跟随」两个字，
+/// 用户没法知道跟随的是什么 —— 而这一列问的恰恰是「这个状态静默多久算过期」，那是他看这一列
+/// 唯一想知道的数。标成「跟随 5m」就得有这个数，而它的真值在 Rust（`Signal::default_ttl`）；
+/// 前端硬写一份的话，改了那边这边不会报错，只会**悄悄显示错的**。
+///
+/// 拿不到就退化成「跟随」两个字，不影响功能（见前端的 `useStateTtls`）。
+#[tauri::command]
+fn state_ttl_defaults() -> std::collections::HashMap<&'static str, u64> {
+    Signal::ALL_NAMES
+        .iter()
+        .filter_map(|name| {
+            let state = Signal::from_name(name)?;
+            Some((*name, state.default_ttl().as_millis() as u64))
+        })
+        .collect()
 }
 
 /// 校验前端传来的设置。
@@ -1599,6 +1621,14 @@ pub(crate) fn reveal_settings(app: &tauri::AppHandle) {
     let _ = window.set_focus();
 }
 
+/// 这次上报该活多久：**显式给的 > 用户为这个状态设的 > 内置默认**（见 `state_ttl`）。
+///
+/// 单独一个函数而不是把设置传进 `apply`：`apply` 是在**持着状态锁**的时候调的，
+/// 而设置是另一个锁 —— 在那里再去拿它，就多了一处锁序要维护。
+fn report_ttl(app: &tauri::AppHandle, req: &Report) -> Duration {
+    state_ttl(req.state, req.ttl_ms, &current_settings(app))
+}
+
 /// 改状态 -> 有变化才推前端。返回最新快照，省掉前端再拉一次。
 fn mutate(
     app: &tauri::AppHandle,
@@ -1827,6 +1857,7 @@ pub fn run() {
             send_test_report,
             set_paused,
             get_settings,
+            state_ttl_defaults,
             set_settings,
             export_settings,
             import_settings,
@@ -1968,10 +1999,10 @@ mod tests {
         clamp_to_area, distance_to_bounds, grow_away_from_edges, nearest_index,
         pass_through_shortcut_label, shortcut_label,
         shortcut_label_for, snap_to_edges, validate_settings, visible_groups, KeyStyle,
-        PASS_THROUGH_SHORTCUT, TEST_REPORT_TTL_MS,
+        state_ttl_defaults, PASS_THROUGH_SHORTCUT, TEST_REPORT_TTL_MS,
     };
-    use crate::config::{GroupMeta, Settings, StateStyle};
-    use crate::state::{GroupView, Report, Signal, Snapshot, Store};
+    use crate::config::{GroupMeta, Settings, StateStyle, MAX_STATE_TTL_MS, MIN_STATE_TTL_MS};
+    use crate::state::{state_ttl, GroupView, Report, Signal, Snapshot, Store};
     use std::time::{Duration, Instant};
     use tauri_plugin_global_shortcut::{Code, Modifiers};
 
@@ -1998,6 +2029,8 @@ mod tests {
                 message: None,
                 ttl_ms: Some(TEST_REPORT_TTL_MS),
             },
+            // 显式 TTL 是最高那一级，所以这里给个空设置也走它
+            state_ttl(Signal::Permission, Some(TEST_REPORT_TTL_MS), &Settings::default()),
         );
 
         let snapshot = store.snapshot_at(t);
@@ -2014,6 +2047,27 @@ mod tests {
             Signal::Stale,
             "测试上报要很快过期，否则它会变成一块看不懂的牌"
         );
+    }
+
+    // ---- 停留时长的内置默认 ---------------------------------------------------
+
+    /// 「跟随 5m」里那个 `5m` 由后端给（`state_ttl_defaults`），前端不存第二份。
+    ///
+    /// 钉两件事：**每个状态都有**（漏一个，那一格就只能显示成「跟随」两个字 ——
+    /// 而这一列问的恰恰是「到底多久」），以及**每个内置值都落在用户能选的区间里**
+    /// （否则「跟随」和手选档位分属两个世界：一个被 `clamped()` 夹过，一个夹不到）。
+    #[test]
+    fn ttl_defaults_cover_every_state_and_fit_the_range() {
+        let defaults = state_ttl_defaults();
+        assert_eq!(defaults.len(), Signal::ALL_NAMES.len(), "每个状态都要有一档");
+        assert_eq!(defaults["working"], 300_000);
+        assert_eq!(defaults["done"], 30_000);
+        for (name, ms) in &defaults {
+            assert!(
+                (u64::from(MIN_STATE_TTL_MS)..=u64::from(MAX_STATE_TTL_MS)).contains(ms),
+                "{name} 的内置停留时长 {ms}ms 不在用户可选的区间里"
+            );
+        }
     }
 
     // ---- 导入的校验 -----------------------------------------------------------

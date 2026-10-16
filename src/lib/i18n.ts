@@ -160,6 +160,9 @@ export interface Messages {
   lightColor: string;
   lightShape: string;
   blinkInterval: string;
+  /** 逐状态表里「这个状态静默多久算过期」那一列 */
+  stayDuration: string;
+  stayDurationHint: string;
   resetToGlobal: string;
   styleHint: string;
   perStateStyle: string;
@@ -526,8 +529,12 @@ export const MESSAGES: Record<Lang, Messages> = {
     lightColor: "灯珠颜色",
     lightShape: "灯珠形状",
     blinkInterval: "闪烁间隔",
+    stayDuration: "停留时长",
+    stayDurationHint:
+      "这个状态静默多久算过期。没有「永不过期」—— 不会自己熄灭的灯等于一条永远不撤的告警。改动只在下一次上报时生效，不会追溯已经亮着的牌。",
     resetToGlobal: "恢复成跟随全局",
-    styleHint: "「跟随」= 用「外观」页选的那两项（形状、节奏倍率）。",
+    styleHint:
+      "「跟随」= 形状和节奏用「外观」页选的那两项，停留时长用内置默认（跟在每一项里）。停留时长指的是「智能体不出声之后，这块牌还在灯上待多久」—— 它只在「下一次上报」时生效，不会追溯已经亮着的牌。",
     perStateStyle: "逐个状态覆盖",
     perStateSome: (count) => `${count} 个状态单独设过`,
     perStateNone: "未单独设置",
@@ -894,8 +901,12 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     lightColor: "Light colour",
     lightShape: "Light shape",
     blinkInterval: "Blink interval",
+    stayDuration: "Expiry",
+    stayDurationHint:
+      "How long this state survives silence. There is no “never expire” — a light that never goes out is an alert nobody can withdraw. A change applies from the next report; it is not retroactive.",
     resetToGlobal: "Reset to follow global",
-    styleHint: '"Follow" = use the two chosen on the Look tab (shape, blink speed).',
+    styleHint:
+      '"Follow" means shape and blink speed come from the Look tab, and the expiry is the built-in default (shown on each row). Expiry is how long a card stays on the lamp after its agent goes quiet — it takes effect on the *next* report, not retroactively.',
     perStateStyle: "Per-state overrides",
     perStateSome: (count) => `${count} state${count === 1 ? "" : "s"} customized`,
     perStateNone: "not customized",

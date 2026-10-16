@@ -1,6 +1,6 @@
 use crate::config;
 use crate::notify::Notifier;
-use crate::state::{Report, Snapshot, Store};
+use crate::state::{state_ttl, Report, Snapshot, Store};
 use axum::{
     extract::{rejection::JsonRejection, Path, Request, State},
     http::{header, StatusCode},
@@ -252,15 +252,22 @@ fn apply(ctx: &Ctx, path_session: Option<String>, mut report: Report) -> Result<
     // 根本表达不了；而且改服务端就顺带覆盖了 curl / CI / 手写脚本，还不用去动
     // 用户自己的智能体配置文件。
     let session = report.session_id().to_string();
-    let resolved = {
+    // 分组的解析和停留时长的兜底**共用这一次加锁**：两者都要看设置，而下面马上要拿
+    // 状态锁 —— 先设置、后状态，和 `persist_settings` 那边是同一个顺序（反过来就是死锁）。
+    //
+    // 兜底停留时长：显式 `ttl_ms` > 用户为这个状态设的 > 内置默认（见 `state_ttl`）。
+    let (resolved, ttl) = {
         let settings = ctx.settings.lock().expect("settings poisoned");
-        settings.resolve_group(report.group.as_deref(), report.cwd.as_deref(), &session)
+        let resolved =
+            settings.resolve_group(report.group.as_deref(), report.cwd.as_deref(), &session);
+        let ttl = state_ttl(report.state, report.ttl_ms, &settings);
+        (resolved, ttl)
     };
     report.group = resolved;
 
     let (changed, snapshot) = {
         let mut guard = ctx.store.lock().expect("state store poisoned");
-        let changed = guard.apply(Instant::now(), report);
+        let changed = guard.apply(Instant::now(), report, ttl);
         (changed, guard.snapshot())
     };
     if changed {

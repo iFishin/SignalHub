@@ -28,6 +28,7 @@ import { useTimeline, type TimelineSegment } from "../lib/useTimeline";
 import { useOutboundLog, lastAttemptFor, type Attempt } from "../lib/useOutboundLog";
 import { useNow } from "../lib/useNow";
 import { useAgents, useHookLog, type AgentStatus, type HookChange } from "../lib/useAgents";
+import { useStateTtls } from "../lib/useStateTtls";
 import { colorVars, resolveColors } from "../lib/palettes";
 import { presets, isActivePreset, stylePresets, isActiveStylePreset } from "../lib/presets";
 import { nameChanged, withGroupName } from "../lib/groupMeta";
@@ -627,6 +628,42 @@ function shortDay(day: string): string {
  * **三样都没设就把整条记录删掉。** 留一条全 null 的空记录会让「当前是哪套预设」
  * 判断不出来（预设比的是整份表），而它本身没有任何作用。
  */
+/**
+ * 停留时长的可选档位（毫秒）。**没有「永不过期」** —— 理由在 Rust 那边写着
+ * （`config::MIN_STATE_TTL_MS`）：一盏不会自己熄灭的灯就是一条永远不撤的告警。
+ *
+ * 和节奏那一列同一套做法：窄列里放一个数字输入框，既难调（要自己算毫秒）又容易
+ * 输错（0 到底是「不过期」还是「立刻」）。档位全部落在后端允许的区间内。
+ */
+const TTL_CHOICES_MS = [
+  30_000,
+  60_000,
+  120_000,
+  300_000,
+  600_000,
+  1_800_000,
+  3_600_000,
+  14_400_000,
+  86_400_000,
+];
+
+/**
+ * 开放「停留时长」的状态。
+ *
+ * `off` / `offline` 永远不会成为会话状态（前者在 `apply` 里等价于清除会话，后者是
+ * 汇总产物），拿了也没用；`stale` 是**静默超时之后**的派生状态，它自己那一段宽限期
+ * 是固定的，而且细环画的就是那一段的剩余比例 —— 让它可调就得连那个环的算法一起改。
+ */
+const TTL_STATES: readonly SignalState[] = [
+  "idle",
+  "done",
+  "thinking",
+  "working",
+  "attention",
+  "permission",
+  "error",
+];
+
 function PerStateStyles({
   settings,
   patch,
@@ -634,6 +671,7 @@ function PerStateStyles({
   lang,
   shapes,
   blinkChoices,
+  ttlDefaults,
 }: {
   settings: Settings;
   patch: (next: Partial<Settings>) => void;
@@ -641,14 +679,21 @@ function PerStateStyles({
   lang: Lang;
   shapes: { label: string; value: Shape }[];
   blinkChoices: { label: string; value: string }[];
+  /** 状态 → 内置停留时长（毫秒）。空表也能跑，只是「跟随」后面不带那个数。 */
+  ttlDefaults: Record<string, number>;
 }) {
   const resolved = resolveColors(settings);
 
   const setStyle = (state: string, next: Partial<StateStyle>) => {
     const merged = { ...(settings.styles[state] ?? {}), ...next };
     const styles = { ...settings.styles };
+    // 判据和读侧的 `stateOverridden` 必须一致，否则会出现「摘要说 3 个状态设过、
+    // 表里却只有 2 行是彩色的」这种对不上的现象（见 `lampStyle.ts` 的说明）。
     const empty =
-      merged.color == null && merged.shape == null && merged.blink_ms == null;
+      merged.color == null &&
+      merged.shape == null &&
+      merged.blink_ms == null &&
+      merged.ttl_ms == null;
     if (empty) delete styles[state];
     else styles[state] = merged;
     patch({ styles });
@@ -685,19 +730,30 @@ function PerStateStyles({
         <span className="style-name">{m.state}</span>
         <span className="style-col">{m.shape}</span>
         <span className="style-col">{m.rhythm}</span>
+        <span className="style-col style-col-tight">{m.stayDuration}</span>
         <span className="style-reset" />
       </div>
 
       <div className="styles">
         {SIGNALS.map((state) => {
           const style = settings.styles[state] ?? {};
-          const overridden =
-            style.color != null || style.shape != null || style.blink_ms != null;
+          // 「这一行被改过吗」用共享判据（`stateOverridden`）—— 收起时那行摘要用的
+          // 是同一个，两边不一致就会出现摘要和表格对不上的现象。
+          const overridden = stateOverridden(style);
           const blink = style.blink_ms == null ? "" : String(style.blink_ms);
           // 手改配置文件可能写出选项里没有的毫秒数，临时补一个选项，
           // 否则 select 会显示成空白 —— 看起来像「没设」，其实设了
           const extraBlink =
             blink !== "" && !blinkChoices.some((o) => o.value === blink) ? blink : null;
+          const ttl = style.ttl_ms == null ? "" : String(style.ttl_ms);
+          const extraTtl =
+            ttl !== "" && !TTL_CHOICES_MS.includes(Number(ttl)) ? ttl : null;
+          // 「跟随」后面跟一句内置默认（`跟随 5m`）：这一列问的就是「到底多久」，
+          // 只写「跟随」两个字等于没答。数由后端给（`state_ttl_defaults`），拿不到
+          // 就退回纯「跟随」。
+          const builtinTtl = ttlDefaults[state];
+          const ttlLabel =
+            builtinTtl == null ? m.follow : `${m.follow} ${formatDuration(builtinTtl / 1000)}`;
 
           return (
             <div className="style-row" key={state} data-state={state}>
@@ -746,6 +802,34 @@ function PerStateStyles({
                 ))}
                 {extraBlink && <option value={extraBlink}>{extraBlink}ms</option>}
               </select>
+              {/* 停留时长：只对**会被上报的状态**开放，其余三行这一格留白
+                  （理由见 `TTL_STATES`）。留白而不是禁用，是因为禁用看起来像
+                  「现在不能改」，而事实是「这一档对它没有意义」。 */}
+              {TTL_STATES.includes(state) ? (
+                <select
+                  className="select style-col style-col-tight"
+                  title={m.stayDurationHint}
+                  value={ttl}
+                  onChange={(event) =>
+                    setStyle(state, {
+                      ttl_ms:
+                        event.target.value === "" ? null : Number(event.target.value),
+                    })
+                  }
+                >
+                  <option value="">{ttlLabel}</option>
+                  {TTL_CHOICES_MS.map((ms) => (
+                    <option key={ms} value={String(ms)}>
+                      {formatDuration(ms / 1000)}
+                    </option>
+                  ))}
+                  {extraTtl && (
+                    <option value={extraTtl}>{formatDuration(Number(extraTtl) / 1000)}</option>
+                  )}
+                </select>
+              ) : (
+                <span className="style-col style-col-tight" />
+              )}
               <button
                 type="button"
                 className="btn btn-tiny style-reset"
@@ -857,6 +941,7 @@ export function SettingsPanel({ snapshot }: Props) {
   const fields = fieldOptions(m);
   const blinkChoices = blinkOptions(m);
   const alertChoices = alertDelayOptions(m);
+  const ttlDefaults = useStateTtls();
   const groups = tabGroups(m);
   const [tab, setTab] = useState<Tab>("status");
   // 逐状态那张表默认收起（十行表和上面九行不是一个量级）。它记的是**用户**的
@@ -1570,6 +1655,7 @@ export function SettingsPanel({ snapshot }: Props) {
                 lang={lang}
                 shapes={shapes}
                 blinkChoices={blinkChoices}
+                ttlDefaults={ttlDefaults}
               />
             )}
           </>

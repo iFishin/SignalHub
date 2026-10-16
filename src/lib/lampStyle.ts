@@ -138,7 +138,12 @@ export function signTextInverted(sign_opacity: number): boolean {
  */
 export function stateOverridden(style: StateStyle | undefined): boolean {
   if (!style) return false;
-  return style.color != null || style.shape != null || style.blink_ms != null;
+  return (
+    style.color != null ||
+    style.shape != null ||
+    style.blink_ms != null ||
+    style.ttl_ms != null
+  );
 }
 
 /**

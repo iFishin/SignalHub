@@ -580,6 +580,12 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   width: 84px;
 }
 
+/* 「停留时长」那一列比别的窄：里面的字是 `30s` / `5m` / `24h` 这种紧凑写法，
+   不需要 84px；省下来的宽度留给状态名（它已经要在 4 列中间挤出地方了）。 */
+.style-col-tight {
+  width: 68px;
+}
+
 /* 「恢复成跟随全局」。没被覆盖过时藏起来但**保留位置** ——
    否则 10 行的状态名列会参差不齐，表就散了。 */
 .style-reset {

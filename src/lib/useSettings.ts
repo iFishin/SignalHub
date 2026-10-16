@@ -103,6 +103,14 @@ export interface StateStyle {
   shape?: Shape | null;
   /** 闪烁周期（毫秒）。**0 = 常亮**。没写 = 按全局节奏倍率算默认周期 */
   blink_ms?: number | null;
+  /**
+   * 停留时长（毫秒）：这个状态**静默多久算过期**。没写 = 用内置默认
+   * （`working` 5 分钟、`idle` 10 分钟…，由后端 `state_ttl_defaults` 提供）。
+   *
+   * 它不是外观：它决定「智能体不出声之后，这块牌还在灯上待多久」。**只在下次上报时
+   * 生效**，不追溯已经亮着的牌（那边 `expires_at` 是上报那一刻写死的）。
+   */
+  ttl_ms?: number | null;
 }
 
 /**

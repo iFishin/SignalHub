@@ -4,6 +4,7 @@ import {
   resolveAnimations,
   resolveShapes,
   signTextInverted,
+  stateOverridden,
   SIGN_TRANSLUCENT_BELOW,
 } from "./lampStyle";
 import { DEFAULTS, type Settings } from "./useSettings";
@@ -166,6 +167,38 @@ describe("lampVars", () => {
     const vars = lampVars(DEFAULTS) as Record<string, string>;
     expect(vars["--sign-w-mult"]).toBe("1");
     expect(vars["--sign-h-mult"]).toBe("1");
+  });
+
+  /**
+   * 背景透明度也从这里出（它原本是 `SignalLamp` 自己加的内联变量）。
+   *
+   * 这一条钉的是**设置页那张预览牌和真正的灯用的是同一份变量** —— 两边各写一遍
+   * 的话，预览显示的透明度和灯迟早对不上，而「预览和灯不一样」比没有预览更糟。
+   */
+  it("carries the sign alpha for the settings preview", () => {
+    const vars = lampVars(withSettings({ sign_opacity: 40 })) as Record<string, string>;
+    expect(vars["--sign-alpha"]).toBe("0.4");
+  });
+});
+
+describe("stateOverridden", () => {
+  /**
+   * 「这个状态被单独设过吗」有**两处**在问：逐状态表里那个 ↺ 按钮，和「外观」页
+   * 收起时那行摘要（`3 个状态单独设过`）。判据只有这一份，所以不可能对不上 ——
+   * 这条测试就是钉住「只有一份」这件事。
+   *
+   * 四样都算数，包括后加的**停留时长**：漏掉它的后果是所有「只改了停留时长」的
+   * 行看起来没设过，而 Rust 那边的 `is_empty()` 会把整条条目删掉 —— 用户设的值
+   * 会在下一次保存设置时凭空消失。
+   */
+  it("counts every field, including the stay length", () => {
+    expect(stateOverridden(undefined)).toBe(false);
+    expect(stateOverridden({})).toBe(false);
+    expect(stateOverridden({ color: "#ff0000" })).toBe(true);
+    expect(stateOverridden({ shape: "ring" })).toBe(true);
+    // 0 是「常亮」，它是一个**值**而不是「没设」
+    expect(stateOverridden({ blink_ms: 0 })).toBe(true);
+    expect(stateOverridden({ ttl_ms: 30_000 })).toBe(true);
   });
 });
 

@@ -3,6 +3,8 @@ use std::collections::{HashMap, VecDeque};
 use std::str::FromStr;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::config::Settings;
+
 /// 会话静默超时后转入 `stale`（而不是直接消失）并再保留多久。
 ///
 /// 这一段存在的意义是把「智能体不说话了」和「智能体空闲待命」分开显示。
@@ -208,6 +210,30 @@ pub struct MessageEntry {
     pub message: String,
 }
 
+/// 这次上报的状态该活多久。
+///
+/// **三级优先**：上报方显式给的 `ttl_ms`（CLI 的 `--ttl`、HTTP 字段）>
+/// 用户在「逐个状态覆盖」里为这个状态设的 `ttl_ms` > 内置默认（`Signal::default_ttl`）。
+///
+/// 用户设的为什么排在显式之后：显式值来自**那一次调用**（`signalhub report --ttl 30s`、
+/// 包装器心跳、测试上报），它比「我一般想让工作态活 5 分钟」更具体。反过来就是
+/// 「设置里改过之后 `--ttl` 再也不生效」—— 那是个很难查的坑。
+///
+/// 它只在**上报进来的那一刻**算一次：已存在的会话不会被追溯（`expires_at` 是上报时
+/// 写死的）。追溯会让「刚才还亮着的牌突然消失」，而它消失的理由（你改了配置）在灯上
+/// 根本看不见。
+pub fn state_ttl(state: Signal, explicit_ms: Option<u64>, settings: &Settings) -> Duration {
+    if let Some(ms) = explicit_ms {
+        return Duration::from_millis(ms);
+    }
+    settings
+        .styles
+        .get(state.name())
+        .and_then(|style| style.ttl_ms)
+        .map(|ms| Duration::from_millis(u64::from(ms)))
+        .unwrap_or_else(|| state.default_ttl())
+}
+
 /// 一次状态上报。HTTP 请求体与 CLI 参数都归一化成它。
 #[derive(Debug, Clone, Deserialize)]
 pub struct Report {
@@ -365,7 +391,12 @@ pub struct Store {
 }
 
 impl Store {
-    pub fn apply(&mut self, now: Instant, req: Report) -> bool {
+    /// 记一次上报。
+    ///
+    /// `ttl` 由调用方算好（`state_ttl`），不在这里读设置：生产路径上设置是**另一个
+    /// 锁**（`SharedSettings`），在这个已经持着状态锁的地方再去拿它会多一对锁序，
+    /// 而算它只需要一次不涉及状态的纯计算。
+    pub fn apply(&mut self, now: Instant, req: Report, ttl: Duration) -> bool {
         // 先取出会话名和组名，之后就只移动 req 的各个字段，不再整体借用它
         let session = req.session_id().to_string();
         let group = req.group_id().to_string();
@@ -386,10 +417,6 @@ impl Store {
             Some(p) if p.state == req.state => p.since,
             _ => SystemTime::now(),
         };
-        let ttl = req
-            .ttl_ms
-            .map(Duration::from_millis)
-            .unwrap_or_else(|| req.state.default_ttl());
         let expires_at = now + ttl;
 
         // 消息流只在**消息真的变了**时记一笔。一轮工具调用里同一条说明会被反复
@@ -804,7 +831,8 @@ mod tests {
     fn rep(s: &mut Store, t: Instant, session: &str, state: Signal) -> bool {
         let mut req = Report::new(state);
         req.session = Some(session.to_string());
-        s.apply(t, req)
+        let ttl = ttl_of(req.state, req.ttl_ms);
+        s.apply(t, req, ttl)
     }
 
     /// 指定组的版本，多组场景（如 clear_group 的用例）用它。
@@ -812,7 +840,14 @@ mod tests {
         let mut req = Report::new(state);
         req.session = Some(session.to_string());
         req.group = Some(group.to_string());
-        s.apply(t, req)
+        let ttl = ttl_of(req.state, req.ttl_ms);
+        s.apply(t, req, ttl)
+    }
+
+    /// 测试里的 TTL：**内置默认那一档**（`Settings::default()` 没有任何逐状态覆盖）。
+    /// 要测「用户设的覆盖」和「显式 `ttl_ms` 覆盖」就自己调 `state_ttl`。
+    fn ttl_of(state: Signal, explicit_ms: Option<u64>) -> Duration {
+        state_ttl(state, explicit_ms, &Settings::default())
     }
 
     /// 造一个会话视图 —— 这几个用例只看 `session_label` 关心的 `id` / `agent` / `cwd`。
@@ -956,12 +991,14 @@ mod tests {
         let mut first = Report::new(Signal::Working);
         first.session = Some("a".into());
         first.message = Some("npm test".into());
-        s.apply(t, first);
+        let ttl = ttl_of(first.state, first.ttl_ms);
+        s.apply(t, first, ttl);
 
         let mut second = Report::new(Signal::Working);
         second.session = Some("a".into());
         second.message = Some("cargo build".into());
-        assert!(s.apply(t, second), "tooltip 文本变了，UI 需要更新");
+        let ttl = ttl_of(second.state, second.ttl_ms);
+        assert!(s.apply(t, second, ttl), "tooltip 文本变了，UI 需要更新");
         assert_eq!(s.snapshot().message.as_deref(), Some("cargo build"));
     }
 
@@ -973,11 +1010,13 @@ mod tests {
         first.agent = Some("claude-code".into());
         first.cwd = Some("/proj".into());
         first.message = Some("npm test".into());
-        s.apply(t, first);
+        let ttl = ttl_of(first.state, first.ttl_ms);
+        s.apply(t, first, ttl);
 
         let mut second = Report::new(Signal::Thinking);
         second.session = Some("a".into());
-        s.apply(t, second);
+        let ttl = ttl_of(second.state, second.ttl_ms);
+        s.apply(t, second, ttl);
 
         let v = &sessions(&s.snapshot())[0];
         assert_eq!(v.agent.as_deref(), Some("claude-code"));
@@ -1008,11 +1047,52 @@ mod tests {
         let mut req = Report::new(Signal::Working);
         req.session = Some("long".into());
         req.ttl_ms = Some(3_600_000); // 一小时
-        s.apply(t, req);
+        let ttl = ttl_of(req.state, req.ttl_ms);
+        s.apply(t, req, ttl);
 
         // 半小时后仍然活着 —— 按 `Working` 的默认值（5 分钟）早该转 stale 了
         assert!(!s.expire(t + Duration::from_secs(1800)));
         assert_eq!(s.aggregate(), Signal::Working);
+    }
+
+    /// 设置里写的停留时长（`styles.<状态>.ttl_ms`）：压过内置默认，压不过显式。
+    ///
+    /// 从 JSON 建而不是手搭结构体：这顺带钉住了**配置里的字段名和形状**
+    /// （`styles` 是个按状态名索引的对象、缺的字段有 `#[serde(default)]` 兜底）。
+    #[test]
+    fn a_user_ttl_beats_the_builtin_but_not_an_explicit_one() {
+        let settings: Settings =
+            serde_json::from_str(r#"{"styles":{"working":{"ttl_ms":60000}}}"#).unwrap();
+
+        assert_eq!(
+            state_ttl(Signal::Working, None, &settings),
+            Duration::from_secs(60)
+        );
+        // 显式给的仍然最高：CLI 的 `--ttl`、包装器心跳、测试上报都靠这一条
+        assert_eq!(
+            state_ttl(Signal::Working, Some(7_000), &settings),
+            Duration::from_secs(7)
+        );
+        // 没被覆盖的状态照旧走内置默认
+        assert_eq!(
+            state_ttl(Signal::Idle, None, &settings),
+            Signal::Idle.default_ttl()
+        );
+    }
+
+    /// 用户设的停留时长要**真的作用在过期上**，不只是算出来一个数。
+    #[test]
+    fn a_user_ttl_changes_when_the_session_expires() {
+        let settings: Settings =
+            serde_json::from_str(r#"{"styles":{"working":{"ttl_ms":20000}}}"#).unwrap();
+        let (mut s, t) = (Store::default(), Instant::now());
+        let mut req = Report::new(Signal::Working);
+        req.session = Some("a".into());
+        s.apply(t, req, state_ttl(Signal::Working, None, &settings));
+
+        // 20 秒这一档比默认的 5 分钟短得多 —— 过期时刻要跟着它走
+        assert!(!s.expire(t + Duration::from_secs(19)));
+        assert!(s.expire(t + Duration::from_secs(20)));
     }
 
     /// idle 会话静默过久也会转 stale。早先它没有 TTL（半小时才回收），
@@ -1150,13 +1230,15 @@ mod tests {
         slow.session = Some("slow".into());
         slow.group = Some("g".into());
         slow.cwd = Some("/tmp/slow".into());
-        s.apply(t, slow);
+        let ttl = ttl_of(slow.state, slow.ttl_ms);
+        s.apply(t, slow, ttl);
         // `working` 比 `done` 优先，所以 winner 是 busy
         let mut busy = Report::new(Signal::Working);
         busy.session = Some("busy".into());
         busy.group = Some("g".into());
         busy.cwd = Some("/tmp/busy".into());
-        s.apply(t, busy);
+        let ttl = ttl_of(busy.state, busy.ttl_ms);
+        s.apply(t, busy, ttl);
 
         assert_eq!(s.winner_cwd_in("g").as_deref(), Some("/tmp/busy"), "取 winner 的目录");
         assert_eq!(s.winner_cwd_in("nope"), None, "没有这一组就没有目录");
@@ -1165,7 +1247,8 @@ mod tests {
         let mut bare = Report::new(Signal::Working);
         bare.session = Some("bare".into());
         bare.group = Some("empty".into());
-        s.apply(t, bare);
+        let ttl = ttl_of(bare.state, bare.ttl_ms);
+        s.apply(t, bare, ttl);
         assert_eq!(s.winner_cwd_in("empty"), None);
     }
 
@@ -1388,7 +1471,8 @@ mod tests {
         let mut req = Report::new(state);
         req.session = Some(session.to_string());
         req.message = Some(message.to_string());
-        s.apply(t, req)
+        let ttl = ttl_of(req.state, req.ttl_ms);
+        s.apply(t, req, ttl)
     }
 
     #[test]

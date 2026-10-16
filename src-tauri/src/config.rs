@@ -547,13 +547,22 @@ pub struct StateStyle {
     pub shape: Option<Shape>,
     /// 闪烁周期（毫秒）。**0 = 常亮**。没写 = 按全局节奏倍率算默认周期。
     pub blink_ms: Option<u16>,
+    /// 停留时长（毫秒）：这个状态**静默多久算过期**。没写 = 用内置默认
+    /// （`state::Signal::default_ttl`，如工作态 5 分钟、空闲态 10 分钟）。
+    ///
+    /// 和上面三样不同，它**不是外观**：它决定「智能体不出声之后，它的牌还在灯上
+    /// 待多久」。放在同一张表里是因为调节它的场景就是「我盯着某一个状态觉得它
+    /// 消失得太早 / 太晚」—— 那时人已经在看这张表了。
+    ///
+    /// 它只在**上报进来的那一刻**算一次，不追溯已存在的会话（见 `state::state_ttl`）。
+    pub ttl_ms: Option<u32>,
 }
 
 impl StateStyle {
-    /// 三样都没写。这种条目没有任何作用，`clamped()` 会把它们丢掉 ——
+    /// 一样都没写。这种条目没有任何作用，`clamped()` 会把它们丢掉 ——
     /// 留着会让「预设是否还生效」的判断无谓地失败。
     pub fn is_empty(&self) -> bool {
-        self.color.is_none() && self.shape.is_none() && self.blink_ms.is_none()
+        self.color.is_none() && self.shape.is_none() && self.blink_ms.is_none() && self.ttl_ms.is_none()
     }
 }
 
@@ -909,6 +918,19 @@ pub const MAX_BLINK_SPEED: u16 = 200;
 pub const MIN_BLINK_MS: u16 = 120;
 pub const MAX_BLINK_MS: u16 = 4000;
 
+/// 单个状态的**停留时长**（毫秒）的可调范围：这个状态静默多久后算过期。
+///
+/// **刻意没有「永不过期」这一档。** 一盏不会自己熄灭的灯等于一条永远不撤的
+/// 告警：智能体被强杀（`SessionEnd` 没触发）之后它会一直亮着，用户拿它没办法。
+/// 早先 `idle` 没有 TTL，一个忘关的会话能在灯上挂半小时 —— 那还只是半小时。
+///
+/// 下界 1 秒：比一次上报还短的 TTL 等于「报完立刻消失」，那不是设置，是自相矛盾。
+/// 上界 24 小时：有理由要很久（跨夜跑的任务），但不能没有边 —— 灯最终必须能回到
+/// 「没有智能体上报」。上界同时受 `Signal::default_ttl` 那条注释约束：放宽的代价
+/// 是「崩溃的智能体」更晚被发现。
+pub const MIN_STATE_TTL_MS: u32 = 1_000;
+pub const MAX_STATE_TTL_MS: u32 = 24 * 60 * 60 * 1_000;
+
 /// 「持续多久才弹通知」的上限（秒）。一小时已经远超任何有意义的等待。
 pub const MAX_ALERT_DELAY_SECS: u16 = 3600;
 
@@ -1068,8 +1090,12 @@ impl Settings {
             if let Some(ms) = style.blink_ms {
                 style.blink_ms = Some(if ms == 0 { 0 } else { ms.clamp(MIN_BLINK_MS, MAX_BLINK_MS) });
             }
+            // 停留时长没有「常驻」这一档，所以直接夹（见 MIN_STATE_TTL_MS 的注释）
+            if let Some(ms) = style.ttl_ms {
+                style.ttl_ms = Some(ms.clamp(MIN_STATE_TTL_MS, MAX_STATE_TTL_MS));
+            }
         }
-        // 三样都没写的条目没有任何作用，留着只会让「预设是否还生效」的判断无谓失败
+        // 一样都没写的条目没有任何作用，留着只会让「预设是否还生效」的判断无谓失败
         self.styles.retain(|_, style| !style.is_empty());
         // 显示名去空白、空串归一成 None；两样都没写的条目同样丢掉
         for meta in self.group_meta.values_mut() {
@@ -1508,6 +1534,7 @@ mod tests {
                     color: Some("#ff0000".into()),
                     shape: Some(Shape::Rounded),
                     blink_ms: Some(0),
+                    ttl_ms: None,
                 },
             )]
             .into_iter()
