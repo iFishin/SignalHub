@@ -244,6 +244,7 @@ signalhub {} —— 桌面悬浮状态灯的上报客户端
   signalhub on | off                 monitor 的简写
   signalhub install hooks <智能体>   把 hook 写进智能体的配置文件
   signalhub uninstall hooks <智能体> 移除本工具写进去的 hook
+  signalhub diagnose [智能体]        打印一段排查文本（接不上时先跑它）
 
 状态:
   idle thinking working done attention permission error off
@@ -392,6 +393,7 @@ Usage:
   signalhub on | off                 Shorthand for monitor
   signalhub install hooks <agent>    Write hooks into an agent's config file
   signalhub uninstall hooks <agent>  Remove the hooks this tool wrote
+  signalhub diagnose [agent]         Print a troubleshooting block (run this first)
 
 States:
   idle thinking working done attention permission error off

@@ -545,6 +545,15 @@ pub fn install_kind(agent: Agent) -> InstallKind {
     agent.install_kind()
 }
 
+/// 上报 / 日志里用的短名字（`claude-code`）。
+///
+/// 和 `Agent::name()`（给人看的品牌名 `Claude Code`）分开：那个出现在牌面文案里，
+/// 这个出现在 hooks.log 的行里和上报的 `agent` 字段里。诊断文本要按它去日志里找
+/// 这个智能体的行，所以得从外面拿得到。
+pub fn cli_name(agent: Agent) -> &'static str {
+    agent_name_for_cli(agent)
+}
+
 /// 「试一下」用的一条**真实的**事件 payload。
 ///
 /// **必须真的能被 `map_event` 认出来。** 认不出来时那条命令什么也不做（日志里只

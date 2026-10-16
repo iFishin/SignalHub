@@ -1,4 +1,5 @@
 mod alerts;
+mod diagnose;
 mod lang;
 mod lamps;
 mod menu;
@@ -967,6 +968,21 @@ fn get_hook_log(limit: usize) -> Vec<String> {
 #[tauri::command]
 fn agent_receipts(receipts: tauri::State<'_, SharedReceipts>) -> Vec<receipts::ReceiptView> {
     receipts.view()
+}
+
+/// 一键诊断：一段可复制的排查文本（见 `diagnose.rs`）。
+///
+/// `agent` 给 `Some` 时只写那一个 —— 用户问「opencode 怎么接不上」时，他最想看到
+/// 的就是那一段，而不是八个智能体一起。
+#[tauri::command]
+fn diagnose(
+    receipts: tauri::State<'_, SharedReceipts>,
+    agent: Option<String>,
+) -> Result<String, String> {
+    let filter = agent
+        .map(|name| hooks::Agent::parse(&name))
+        .transpose()?;
+    Ok(diagnose::text(&receipts, filter))
 }
 
 /// 一次接入 / 卸载改了什么。
@@ -2106,6 +2122,7 @@ pub fn run() {
             install_agent_hooks,
             uninstall_agent_hooks,
             try_agent,
+            diagnose,
             toggle_collapsed,
             clear_group_state,
             clear_session,

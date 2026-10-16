@@ -242,6 +242,9 @@ export interface Messages {
   agentTryRanFailed: (command: string, code: string, output: string) => string;
   /** 插件式接入：只能内部注入，证不了对方会不会调我们 */
   agentTryPlugin: (states: string) => string;
+  /** 接入页底部「复制诊断信息」按钮 */
+  diagnoseCopy: string;
+  diagnoseHint: string;
   /** 「系统」页：hook 调用记录的尾巴 */
   diagLogTitle: string;
   diagLogHint: string;
@@ -637,7 +640,7 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     otherSourcesTitle: "其它信号源",
     otherSourcesHint:
       "收到过上报、但不在上面清单里的（你自己的脚本、curl、别的机器……）。有这一行就说明上报通道是通的。",
-    agentTry: "试一下",
+    agentTry: "自检",
     agentTryBusy: "试…",
     agentTryRanOk: (command) =>
       `真的跑了一遍配置里那条命令（${command}）—— 命令跑起来了。`,
@@ -645,6 +648,9 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       `跑配置里那条命令（${command}）失败了${code ? `（退出码 ${code}）` : ""}${output ? `：${output}` : "。"}`,
     agentTryPlugin: (states) =>
       `这条接入是插件式，没有能单独运行的东西 —— 刚才是由应用内部注入了一遍 ${states}，证明灯和状态机是好的；它会不会调用我们，看上面那行回执。`,
+    diagnoseCopy: "复制诊断信息",
+    diagnoseHint:
+      "一段纯文本：版本、上报端口、待补报条数、每个信号源的配置路径与那条命令还跑不跑得起来、最近的上报、最近的 hook 日志。接不上时先复制它 —— 该看的东西都在里面，不用在三个页签之间翻。",
     diagLogTitle: "最近的 hook 调用",
     diagLogHint:
       "每次 hook 被调用都会记一行（也在这里记下调用失败）。所以：接了却完全不亮时先看这里 —— 一行都没有，说明事件根本没从智能体那边打过来（多半是那条命令跑不起来，见「接入」页的红色提示）；有行但都写着失败，说明打过来了、只是没送到应用。",
@@ -1043,13 +1049,16 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     otherSourcesTitle: "Other sources",
     otherSourcesHint:
       "Sources we have received reports from that are not in the list above (your own scripts, curl, another machine…). A line here means the reporting path works.",
-    agentTry: "Try it",
+    agentTry: "Self-check",
     agentTryBusy: "Trying…",
     agentTryRanOk: (command) => `Ran the command from your config (${command}) — it works.`,
     agentTryRanFailed: (command, code, output) =>
       `Running the command from your config (${command}) failed${code ? ` (exit ${code})` : ""}${output ? `: ${output}` : "."}`,
     agentTryPlugin: (states) =>
       `This integration is a plugin — there is nothing we can run on its own. What you just saw was the app injecting ${states} itself, which proves the lamp and the state machine work; whether it calls us at all is what the receipt above answers.`,
+    diagnoseCopy: "Copy diagnostics",
+    diagnoseHint:
+      "A plain-text block: version, report port, pending reports, each source's config path and whether its command still runs, last reports received, recent hook log. When something will not connect, copy this first — everything worth looking at is in it, and you do not have to hunt across three tabs.",
     diagLogTitle: "Recent hook calls",
     diagLogHint:
       "Every hook invocation is logged here, including failures. So when something is wired up but the lamp stays dark, look here first: no lines at all means the events never left the agent (usually that command does not run — see the red warning on the Connect page); lines that all say failed mean they did leave, but never arrived.",

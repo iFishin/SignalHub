@@ -43,6 +43,18 @@ mod state;
 #[path = "../spool.rs"]
 mod spool;
 
+// 每个信号源「最近一次上报」的凭证。app 侧由上报路径写、接入页读；CLI 侧的
+// `diagnose` 只读它 —— 同一份文件、同一份解析代码，不另写一遍。
+#[allow(dead_code)]
+#[path = "../receipts.rs"]
+mod receipts;
+
+// 一键诊断的正文。**CLI 和 app 共用这一份**：接不上的人里，有人只开了终端；
+// 而两处各写一遍的话，用户贴出来的那段迟早和界面上显示的对不上。
+#[allow(dead_code)]
+#[path = "../diagnose.rs"]
+mod diagnose;
+
 // CLI 自己的文案（中英各一份）。**故意不挂进 `lib.rs` 的模块树**：只有这个二进制
 // 用它，挂到 app 那侧换来的是一片 dead_code（而 CI 是 `-D warnings`）。
 #[path = "../cli_text.rs"]
@@ -304,6 +316,9 @@ fn run(args: &[String]) -> Result<(), Failure> {
                 &["uninstall", other.unwrap_or(t().nothing)],
             ))),
         },
+        // `rest` 是**子命令之后**的位置参数，所以 `diagnose opencode` 里智能体在
+        // `rest[0]`（不像 `install hooks <agent>` 那样在第 1 位）
+        "diagnose" => run_diagnose(rest.first().map(String::as_str)),
         state => {
             if !rest.is_empty() {
                 return Err(Failure::other(fill(t().too_many_args, &[&rest.join(" ")])));
@@ -771,6 +786,22 @@ fn required_agent<'a>(rest: &'a [String], what: &str) -> Result<&'a str, Failure
     rest.get(1).map(String::as_str).ok_or_else(|| {
         Failure::other(fill(t().agent_needed, &[what, what]))
     })
+}
+
+/// 一键诊断：打印一段排查用的文本（不发送、不修改任何东西）。
+///
+/// **给谁用**：接不上的人里有一部分只开终端。它和设置面板里那个「复制诊断信息」
+/// 按钮走的是**同一份代码**（`diagnose::text`），所以贴出来的东西和界面上的一致 ——
+/// 两处各写一遍的话，用户贴出来的那段迟早会和界面对不上。
+///
+/// 位置参数可选：`signalhub diagnose opencode` 只看那一个。
+fn run_diagnose(agent: Option<&str>) -> Result<(), Failure> {
+    let filter = match agent {
+        Some(name) => Some(hooks::Agent::parse(name).map_err(Failure::other)?),
+        None => None,
+    };
+    print!("{}", diagnose::text(&receipts::Receipts::load(), filter));
+    Ok(())
 }
 
 fn install_hooks(agent: &str, flags: &Flags) -> Result<(), Failure> {

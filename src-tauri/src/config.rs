@@ -253,7 +253,17 @@ pub fn append_hook_log(line: &str) {
     }
 
     use std::io::Write;
-    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(&path) {
+    // **0600**，和 token 一个待遇：这份日志里记着出站钩子的完整 URL（带推送服务的
+    // 密钥），不该让同一台机器上别的用户读得到（见 issue #2）。只在**建文件**时生效；
+    // 已经存在的老文件保持原样（不偷偷改用户的文件权限）。
+    let mut options = fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    if let Ok(mut file) = options.open(&path) {
         let _ = file.write_all(line.as_bytes());
     }
 }

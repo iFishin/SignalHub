@@ -1380,6 +1380,20 @@ export function SettingsPanel({ snapshot }: Props) {
   };
   const copyLabel = (what: string) => (copied === what ? m.copied : m.copy);
 
+  /**
+   * 复制诊断信息。**先取再复制**：那段文本是现拼的（要读配置文件、日志、回执），
+   * 所以不能像别的复制按钮那样把字面量直接递给 `copy`。
+   *
+   * 不带 `agent`：一次给全部。用户问「opencode 怎么接不上」时，贴出去的这段里
+   * 也带着别的信号源的状态 —— 那恰好能区分「只有它不行」和「全都不行」。
+   */
+  const copyDiagnosis = () => {
+    setError(null);
+    invoke<string>("diagnose", { agent: null })
+      .then((text) => copy("diag", text))
+      .catch(reported);
+  };
+
   // 每个页签的内容。写成函数而不是子组件，是为了免去把十几个 prop 一路传下去。
   const page = () => {
     switch (tab) {
@@ -2151,6 +2165,20 @@ export function SettingsPanel({ snapshot }: Props) {
                 </button>
               </div>
               <p className="hint">{m.cliAgentsHint}</p>
+            </div>
+
+            {/* ---- 一键诊断 ----
+                放在智能体列表之后、试一下之前：上面两节是「怎么接」和「接完怎么看」，
+                这一节回答的是「接不上时拿什么去问」——把散在三个页签里的东西一次
+                拼成一段可以复制出去的文本。 */}
+            <div className="section">
+              <div className="row">
+                <span>{m.diagnoseCopy}</span>
+                <button type="button" className="btn btn-tiny" onClick={copyDiagnosis}>
+                  {copyLabel("diag")}
+                </button>
+              </div>
+              <p className="hint">{m.diagnoseHint}</p>
             </div>
 
             {/* ---- 试一下 ----
