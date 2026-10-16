@@ -4,6 +4,7 @@ use crate::state::{Signal, Snapshot};
 use crate::tray;
 use crate::{SharedPalette, SharedSettings, SharedStats, SharedStore};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
@@ -32,6 +33,56 @@ pub type Notifier = Arc<dyn Fn(&Snapshot) + Send + Sync>;
 /// HTTP。表现是「通知和 webhook 从来不发」，但两边都不报错，极难发现。
 /// 只有一个入口就不会再出现这种事。
 pub fn compose(app: tauri::AppHandle) -> Notifier {
+    coalesce(compose_now(app))
+}
+
+/// 合帧窗口。见 [`coalesce`]。
+///
+/// 100ms 的来由：一轮里并行发起几个工具调用是常态，它们之间只隔几毫秒；而人眼对
+/// 「灯变了」的分辨率就在 100ms 上下 —— 比这更短没有任何人能看出来，更长就开始
+/// 显得迟钝。
+const COALESCE_MS: u64 = 100;
+
+/// 把 100ms 内的多次推送**合成一帧**（尾沿触发）。
+///
+/// 为什么值得：上面那段「每次变化都要做六件事」里，有序列化快照、IPC 到两个 webview、
+/// 前端整棵树的重渲染、各组灯的核对、统计记录 —— 一轮并行工具调用会在几十毫秒里
+/// 推好几帧，而那些中间帧**人根本看不到**（灯上的说明文字在这一轮里本来就一直在变）。
+///
+/// **尾沿而不是首沿**：首沿会让状态变化晚 100ms 才出现在灯上，而尾沿把「最后那一帧」
+/// 送出去 —— 也就是真正该被看见的那一帧。中间帧被丢掉是安全的，因为每一帧都是
+/// **整份快照**（不是增量），丢掉中间帧不会丢状态。
+///
+/// 送出去的保证：`take()` 拿的永远是最新的那一份，而旗子先放下、再取快照（反过来
+/// 会丢掉恰好在这两步之间到达的那一次 —— 那时旗子还是「已有一帧在路上」，没人再来取）。
+fn coalesce(inner: Notifier) -> Notifier {
+    let pending: Arc<Mutex<Option<Snapshot>>> = Arc::new(Mutex::new(None));
+    let scheduled = Arc::new(AtomicBool::new(false));
+
+    Arc::new(move |snapshot: &Snapshot| {
+        *pending.lock().expect("pending poisoned") = Some(snapshot.clone());
+
+        // 已经有一帧在路上：它会把这一份一起带走，直接返回
+        if scheduled.swap(true, Ordering::SeqCst) {
+            return;
+        }
+
+        let pending = pending.clone();
+        let scheduled = scheduled.clone();
+        let inner = inner.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(COALESCE_MS)).await;
+            scheduled.store(false, Ordering::SeqCst);
+            let latest = pending.lock().expect("pending poisoned").take();
+            if let Some(latest) = latest {
+                inner(&latest);
+            }
+        });
+    })
+}
+
+/// 真正干活的那一版：每一次推送都把那六件事全做一遍。
+fn compose_now(app: tauri::AppHandle) -> Notifier {
     // 钩子只看**全局**聚合的跃迁：钩子是用户显式配置的程序化集成，不是「打扰」，
     // 所以静音一组不该让它的钩子失效。
     let last_aggregate: Arc<Mutex<Option<Signal>>> = Arc::new(Mutex::new(None));
@@ -300,4 +351,67 @@ fn emit(app: &tauri::AppHandle, snapshot: &Snapshot) {
 /// 给「手上已有 AppHandle」的命令和托盘用。
 pub fn push(app: &tauri::AppHandle, snapshot: &Snapshot) {
     (app.state::<Notifier>().inner())(snapshot);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::Store;
+
+    fn snapshot(aggregate: Signal) -> Snapshot {
+        Snapshot {
+            aggregate,
+            ..Store::default().snapshot()
+        }
+    }
+
+    /// 记账用的内层通知器：把每一次真的推出去的聚合值记下来。
+    fn recorder() -> (Notifier, Arc<Mutex<Vec<Signal>>>) {
+        let seen: Arc<Mutex<Vec<Signal>>> = Arc::new(Mutex::new(Vec::new()));
+        let handle = seen.clone();
+        let inner: Notifier = Arc::new(move |snapshot: &Snapshot| {
+            handle.lock().expect("seen poisoned").push(snapshot.aggregate);
+        });
+        (inner, seen)
+    }
+
+    /// 一轮并行工具调用会在几十毫秒里推好几帧 —— 它们合成一帧，而且**是最后那一帧**。
+    ///
+    /// 「最后那一帧」是这个用例真正要钉住的东西：合帧的实现只要稍微写歪一点（比如
+    /// 送出去的是第一帧），灯上就会停在一个**已经过时的**状态上，而这件事在界面上
+    /// 完全看不出来（它就是一个合法的旧状态）。
+    #[tokio::test]
+    async fn a_burst_becomes_one_frame_and_it_is_the_last_one() {
+        let (inner, seen) = recorder();
+        let notify = coalesce(inner);
+
+        notify(&snapshot(Signal::Idle));
+        notify(&snapshot(Signal::Working));
+        notify(&snapshot(Signal::Done));
+
+        assert!(seen.lock().expect("seen poisoned").is_empty(), "还在窗口里，一帧都还没推");
+        tokio::time::sleep(Duration::from_millis(COALESCE_MS * 3)).await;
+
+        let seen = seen.lock().expect("seen poisoned").clone();
+        assert_eq!(seen, vec![Signal::Done], "三帧该合成一帧，且是最后那一帧");
+    }
+
+    /// **不许丢帧**：窗口过后的下一次推送必须照样出去。
+    ///
+    /// 这条防的是那个很自然的写法 —— 「取快照」和「放下旗子」顺序反了的话，恰好
+    /// 卡在这两步之间的那一次会被判成「已有一帧在路上」，于是谁也不来取它，
+    /// 灯就永远停在上一帧上。
+    #[tokio::test]
+    async fn a_push_after_the_window_is_delivered_too() {
+        let (inner, seen) = recorder();
+        let notify = coalesce(inner);
+
+        notify(&snapshot(Signal::Working));
+        tokio::time::sleep(Duration::from_millis(COALESCE_MS * 3)).await;
+        notify(&snapshot(Signal::Error));
+        tokio::time::sleep(Duration::from_millis(COALESCE_MS * 3)).await;
+
+        let seen = seen.lock().expect("seen poisoned").clone();
+        assert_eq!(seen, vec![Signal::Working, Signal::Error]);
+    }
 }
