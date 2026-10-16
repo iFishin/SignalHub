@@ -29,7 +29,7 @@ import { useNow } from "../lib/useNow";
 import { useAgents, useHookLog, type AgentStatus, type HookChange } from "../lib/useAgents";
 import { colorVars, resolveColors } from "../lib/palettes";
 import { presets, isActivePreset, stylePresets, isActiveStylePreset } from "../lib/presets";
-import { withGroupName } from "../lib/groupMeta";
+import { nameChanged, withGroupName } from "../lib/groupMeta";
 import { SIGNALS, REPORTABLE_SIGNALS, type SignalState, type Snapshot } from "../lib/types";
 
 /**
@@ -901,14 +901,22 @@ export function SettingsPanel({ snapshot }: Props) {
 
   // 显示名也用「草稿 + 失焦提交」，理由同钩子的输入框：每敲一个字就存一次会把
   // 半截名字写进配置。
-  const [nameDraft, setNameDraft] = useState<{ group: string; value: string } | null>(null);
+  //
+  // `seed` 是**聚焦那一刻填进框里的值**，也就是这一组此刻显示的名字（用户起的 →
+  // 探测出来的 → 原始组名）。以前填的是「用户自定义名」那个字段本身，没改过名时
+  // 是空的 —— 于是用户得照着右边灰色占位里的名字重敲一遍。
+  const [nameDraft, setNameDraft] = useState<{ group: string; value: string; seed: string } | null>(
+    null,
+  );
 
   const commitNameDraft = () => {
     if (!nameDraft) return;
-    const { group, value } = nameDraft;
+    const { group, value, seed } = nameDraft;
     setNameDraft(null);
+    // 判据与灯上就地改名共用（`lib/groupMeta.ts::nameChanged`），否则会出现
+    // 「灯上点一下不会写配置，设置里点一下却写了」
     const current = settings.group_meta[group]?.name ?? "";
-    if (value.trim() === current) return;
+    if (!nameChanged(seed, value.trim(), current)) return;
     setGroupName(group, value.trim());
   };
 
@@ -1396,11 +1404,22 @@ export function SettingsPanel({ snapshot }: Props) {
                                 ? nameDraft.value
                                 : (meta?.name ?? "")
                             }
+                            /* 聚焦时把**此刻显示的名字**填进框里。它就在右边的灰色
+                               占位里明摆着，不填的话用户得照着它重敲一遍。填进来的
+                               这个值同时充当「动没动过」的判据（`nameChanged`）。 */
+                            onFocus={() =>
+                              setNameDraft((draft) =>
+                                draft?.group === name
+                                  ? draft
+                                  : { group: name, value: label, seed: label },
+                              )
+                            }
                             onChange={(event) =>
-                              setNameDraft({
+                              setNameDraft((draft) => ({
                                 group: name,
                                 value: event.target.value,
-                              })
+                                seed: draft?.group === name ? draft.seed : label,
+                              }))
                             }
                             onBlur={commitNameDraft}
                             onKeyDown={(event) => {

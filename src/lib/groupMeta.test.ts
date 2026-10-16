@@ -1,5 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { withGroupName } from "./groupMeta";
+import { nameChanged, withGroupName } from "./groupMeta";
+
+describe("nameChanged", () => {
+  // 框里的初值是「此刻显示的名字」（探测出来的也算），所以点进来又点回去
+  // 提交上来的就是它 —— 得当成没改过，否则一次误点就把探测值钉成自定义名。
+  it("没动过：不写", () => {
+    expect(nameChanged("SignalHub · opencode", "SignalHub · opencode", "")).toBe(false);
+  });
+
+  it("改成别的：写", () => {
+    expect(nameChanged("SignalHub · opencode", "构建", "")).toBe(true);
+  });
+
+  it("清空一个自定义名：写（等于回到自动）", () => {
+    expect(nameChanged("构建", "", "构建")).toBe(true);
+  });
+
+  it("清空框里的探测值：不写（本来就跟随自动）", () => {
+    expect(nameChanged("SignalHub · opencode", "", "")).toBe(false);
+  });
+});
 
 describe("withGroupName", () => {
   it("sets a custom name", () => {

@@ -7,7 +7,7 @@ import { useLang, useMessages, type Messages, type Lang } from "../lib/i18n";
 import { lampVars, resolveShapes } from "../lib/lampStyle";
 import { transitions, type AggregateMap } from "../lib/lampTransitions";
 import { labelOf, orderVisible } from "../lib/lampSort";
-import { withGroupName } from "../lib/groupMeta";
+import { nameChanged, withGroupName } from "../lib/groupMeta";
 import { useNow } from "../lib/useNow";
 import { useToggles } from "../lib/useToggles";
 import { updateSettings, type GroupMeta, type Settings } from "../lib/useSettings";
@@ -309,19 +309,33 @@ export function SignalLamp({ aggregate, groups, settings, paused }: Props) {
 
   const drag = useDragOrClick(toggle);
 
-  // 就地改名：被点开的那一组（原始组名）+ 输入框里的草稿。
+  // 就地改名：被点开的那一组（原始组名）+ 输入框里的草稿 + 打开那一刻填进去的值。
   //
   // **草稿 + 提交**，不是每敲一个字就存一次：那会把半截名字写进配置，而且灯窗
   // 每帧都在重渲染（状态推送），受控输入容易掉字。
-  const [renaming, setRenaming] = useState<{ group: string; value: string } | null>(null);
+  //
+  // `seed` 是打开那一刻**牌上显示的那个名字**（`labelOf`，三级：用户起的 →
+  // 探测出来的 → 原始组名），直接填进框里。以前填的是「用户自定义名」那个字段本身
+  // —— 没改过名时它是空的，于是点开改名看到的是一只空框，得把「SignalHub ·
+  // opencode」整个重敲一遍，而那个名字明明就挂在旁边的牌上。
+  const [renaming, setRenaming] = useState<{ group: string; value: string; seed: string } | null>(
+    null,
+  );
+
+  const startRename = (group: GroupView) => {
+    const seed = labelOf(group, settings.group_meta);
+    setRenaming({ group: group.name, value: seed, seed });
+  };
 
   const commitRename = () => {
     if (!renaming) return;
-    const { group, value } = renaming;
+    const { group, value, seed } = renaming;
     setRenaming(null);
-    // 值没变就别写设置 —— 失焦提交时这条最常命中（点一下输入框又点回来）
+    // 没动过就别写设置 —— 失焦提交时这条最常命中（点一下输入框又点回来）。
+    // 判据与设置页共用，见 `lib/groupMeta.ts::nameChanged`：写下去会把一个
+    // 探测出来的名字钉成用户自定义名。
     const current = settings.group_meta[group]?.name ?? "";
-    if (value.trim() === current) return;
+    if (!nameChanged(seed, value.trim(), current)) return;
     // **整份设置展开**：`set_settings` 是整份替换，只传 group_meta 会把其它字段
     // 回落到默认值，等于把所有设置重置一遍。改名算法与设置页共用同一个纯函数
     // （`lib/groupMeta.ts`），两处不会分叉。
@@ -442,7 +456,12 @@ export function SignalLamp({ aggregate, groups, settings, paused }: Props) {
                     onClick={stopMouse}
                     onFocus={(event) => event.currentTarget.select()}
                     onChange={(event) =>
-                      setRenaming({ group: group.name, value: event.target.value })
+                      /* `seed` 原样带着走：判「动没动过」用的还是打开那一刻的值 */
+                      setRenaming({
+                        group: group.name,
+                        value: event.target.value,
+                        seed: renaming.seed,
+                      })
                     }
                     onKeyDown={(event) => {
                       if (event.key === "Enter") commitRename();
@@ -465,10 +484,7 @@ export function SignalLamp({ aggregate, groups, settings, paused }: Props) {
                       onMouseUp={stopMouse}
                       onClick={(event) => {
                         stopMouse(event);
-                        setRenaming({
-                          group: group.name,
-                          value: settings.group_meta[group.name]?.name ?? "",
-                        });
+                        startRename(group);
                       }}
                     >
                       {labelOf(group, settings.group_meta)}
@@ -501,10 +517,7 @@ export function SignalLamp({ aggregate, groups, settings, paused }: Props) {
                     onMouseUp={stopMouse}
                     onClick={(event) => {
                       stopMouse(event);
-                      setRenaming({
-                        group: group.name,
-                        value: settings.group_meta[group.name]?.name ?? "",
-                      });
+                      startRename(group);
                     }}
                   >
                     ✎
