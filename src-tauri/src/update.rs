@@ -1,9 +1,16 @@
 //! 自动更新。
 //!
-//! **只在 macOS 上真正生效**（判据是 [`SUPPORTED`]），原因写在 `Cargo.toml` 的
-//! 依赖注释里，一句话版本：装更新要用到的 `zip` 4.x 被 crates.io 全量 yank 了，
-//! 而 macOS 那条 `.app.tar.gz` 的解包路用不到它。Linux / Windows 上返回
-//! `supported: false`，界面维持「手动下载」并如实说明。
+//! **只在 macOS 上真正生效**（判据是 [`SUPPORTED`]）。原因分两半，一半在上游、
+//! 一半在「没验过」：
+//!
+//! - **上游**：插件装更新要用 `zip`，而它要求的 `zip = "^4"` 被 crates.io 全量 yank
+//!   了（见 `Cargo.toml` 的依赖注释）—— Windows 那条路因此技术上做不了。
+//! - **没验过**：Linux 的 AppImage 那条路其实走得通（更新包是**没压缩**的 ELF，
+//!   不吃 `zip` feature），但 deb 装的那份要靠 `dpkg -i` 提权（普通用户跑不动），
+//!   而两条路都没在真机上验过。**在能动真机验收之前不打开** —— 好过一个「点了报
+//!   权限错」的按钮。
+//!
+//! 于是 Linux / Windows 上返回 `supported: false`，界面维持「手动下载」并如实说明。
 //!
 //! 三条边界（是产品判断，不是实现细节）：
 //!
@@ -27,10 +34,12 @@ pub const UPDATE_EVENT: &str = "signalhub://update";
 /// 下载进度事件名。同上的契约。
 pub const PROGRESS_EVENT: &str = "signalhub://update-progress";
 
-/// 这个平台能不能自动更新。
+/// 这个平台能不能自动更新。**只有 macOS** —— 理由（上游的 zip + Linux 没验过）
+/// 见模块头。
 ///
-/// macOS 的更新包 `.app.tar.gz` 只用 `flate2` + `tar`（插件里的**非可选**依赖）；
-/// 另外两个平台要的是被 yank 掉的 `zip`（见 `Cargo.toml`）。
+/// 要打开 Linux：`cfg!(any(target_os = "macos", target_os = "linux"))`，但先把
+/// AppImage / deb 两条路在真机上跑通（AppImage 要能替换正在跑的那个文件，deb 要
+/// 处理 `dpkg -i` 的权限）。
 pub const SUPPORTED: bool = cfg!(target_os = "macos");
 
 /// 启动后多久查第一次。

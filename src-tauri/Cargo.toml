@@ -64,18 +64,20 @@ tauri-plugin-global-shortcut = "2"
 # 校验的是「这个包确实是我们发的」，不是「Apple 认识我们」—— 所以没有证书也能做。
 #
 # ⚠️ 关掉了默认的 `zip` feature，这一条必须解释清楚（`default-features = false`）：
-# 那个 feature 的用处是拉进 `dep:zip`（Windows 装更新时解包用）与 Linux 侧的
-# `tar` / `flate2`。而它要求 `zip = "^4"` —— 2026-08 的 RUSTSEC-2025-0168
-# （解包时路径规范化不当，可任意写文件）之后，crates.io 上**所有 zip ≤ 9.0.2 都被
-# yank 了**，只剩 9.0.3 / 9.0.4，`^4` 无解，带上这个 feature 连依赖都解析不出来。
+# 那个 feature 会拉进 `dep:zip`（Windows 装更新时解包用），而它要求 `zip = "^4"`
+# —— 2026-08 的 RUSTSEC-2025-0168（解包时路径规范化不当，可任意写文件）之后，
+# crates.io 上**所有 zip ≤ 9.0.2 都被 yank 了**，只剩 9.0.3 / 9.0.4，`^4` 无解，
+# 带上这个 feature 连依赖都解析不出来。
 #
 # 好在 macOS 的更新包 `.app.tar.gz` 走的是 `flate2` + `tar`，而这两个在插件里是
-# **非可选**依赖，和这个 feature 无关 —— 所以：
-#   - macOS：自动更新完整可用（下载 + minisign 验签 + 解包 + 换 bundle）。
-#   - Linux：AppImage 更新是 `.tar.gz`，那两个依赖被这个 feature 门着，装不了。
-#   - Windows：装更新要 `zip`，装不了。
-# 于是自动更新**只在 macOS 上真正生效**（判据是 `update::SUPPORTED`），其余平台
-# 维持「手动下载」并如实说明。上游把 zip 提到 ^9 之后，把这行改回 `"2"` 即可。
+# **非可选**依赖，和这个 feature 无关 —— 所以 macOS 那条路完整可用。
+#
+# 另外两个平台**不是「都被 yank 卡住」**，别把话说错：
+#   - Windows：更新包就是 `zip` 那种，没有这个 feature 装不了 —— 上游这关过不去。
+#   - Linux：`linux-x86_64-appimage` 指的是**没压缩的 ELF AppImage**（查过 v0.2.4
+#     的实际产物），那条路走得通；但 deb 装的那份是靠 `dpkg -i` 提权的（普通用户
+#     跑不动），而且两条路都没在真机验过 —— 所以先不开。
+# 判据是 `update::SUPPORTED`（只有 macOS）。等有人能收 Linux 的验收，改那一行即可。
 tauri-plugin-updater = { version = "2", default-features = false, features = [
   "rustls-tls",
   "system-proxy",

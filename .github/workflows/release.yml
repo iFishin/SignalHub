@@ -22,19 +22,24 @@ name: Release
 # `.plugin()` 与三条命令、`tauri.conf.json` 的 `plugins.updater` +
 # `createUpdaterArtifacts`、`capabilities/default.json` 的 `updater:default`）。
 #
-# **但只有 macOS 装得上**，原因是 `zip` crate 被上游全量 yank：
+# **但只有 macOS 装得上。** 理由要分两半说，别把话说错：
 #
-#   - `tauri-plugin-updater` 的 `zip` feature 会要求 `zip = "^4"`（Windows 解包用），
-#     而 Linux 侧的 `tar` / `flate2` 也被同一个 feature 门着。2026-08 的
-#     RUSTSEC-2025-0168（解包时路径规范化不当 → 任意写文件）之后，crates.io 上
-#     **所有 zip ≤ 9.0.2 都被 yank 了**，只剩 9.0.3 / 9.0.4，`^4` 无解 ——
-#     带上这个 feature 连依赖都解析不出来（CI 会直接挂在 cargo fetch 上）。
-#   - macOS 的更新包 `.app.tar.gz` 只用 `flate2` + `tar`，这两个在插件里是**非可选**
-#     依赖，和那个 feature 无关，所以 macOS 那条路完整可用（含 minisign 验签）。
+#   - **Windows：上游这关过不去。** `tauri-plugin-updater` 的 `zip` feature 要求
+#     `zip = "^4"`，而 2026-08 的 RUSTSEC-2025-0168（解包时路径规范化不当 → 任意写
+#     文件）之后，crates.io 上**所有 zip ≤ 9.0.2 都被 yank 了**，只剩 9.0.3 / 9.0.4，
+#     `^4` 无解 —— 带上这个 feature 连依赖都解析不出来（CI 会直接挂在 cargo fetch
+#     上）。Windows 的更新包就是 `zip` 那种，所以那条路做不了。
+#   - **Linux：做得通，但没验过。** `latest.json` 里 `linux-x86_64-appimage` 指的是
+#     **没压缩的 ELF AppImage**（查过 v0.2.4 的实际产物），不吃 `zip` feature；
+#     可是 deb 装的那份要靠 `dpkg -i` 提权（普通用户跑不动），而两条路都没在真机
+#     验过 —— 先不开，好过一个「点了报权限错」的按钮。
+#   - **macOS：完整可用。** 更新包 `.app.tar.gz` 只用 `flate2` + `tar`，这两个在插件
+#     里是**非可选**依赖，和那个 feature 无关（含 minisign 验签）。
 #
-# 于是 `Cargo.toml` 里写的是 `default-features = false`，`update.rs` 的 `SUPPORTED`
-# 也只在 macOS 为真，界面在别的平台如实说「请手动下载」。**上游把 zip 提到 ^9 之后，
-# 把那个 `default-features = false` 收回去（改回 `tauri-plugin-updater = "2"`）即可。**
+# 于是 `Cargo.toml` 里写的是 `default-features = false`，判据是 `update::SUPPORTED`
+# （只有 macOS），界面在别的平台如实说「请手动下载」+ 给一个「打开发布页」。
+# **上游把 zip 提到 ^9 之后**把那行 `default-features = false` 收回即可；**Linux 要
+# 打开**则是把 `SUPPORTED` 改一行，但先把 AppImage / deb 两条路在真机上跑通。
 #
 # 签名用的密钥对（minisign）**和 Apple / Windows 代码签名证书是两套完全独立的东西**
 # —— 所以没有证书也能做自动更新。校验的是「这个包确实是我们发的」，不是「Apple 认识

@@ -12,6 +12,14 @@ xattr -dr com.apple.quarantine /Applications/SignalHub.app
 它递归清掉整个包的隔离标记 —— 应用和打包在里面的 `signalhub` 命令都覆盖到。
 （右键点图标 →「打开」→ 再点一次也可以，只是不保证覆盖到里面那个命令。）
 
+**macOS 版从 0.2.4 起支持应用内更新**：设置 →「系统」页里会显示有没有新版本，
+「下载并安装」**点了才会装**（默认**不**自动装），装完自动重启。验的是我们自己那对更新
+密钥（minisign），和 Apple 证书是两回事 —— 所以没签名也能用。万一它没成功，
+手动下载照旧可用，不会把应用弄坏。
+
+**Linux 和 Windows 这一版还只能手动下载**：Windows 那边要用的解包库被上游全量撤下了
+（安全和依赖解析都过不去），Linux 侧是还没在真机上验收过。
+
 **Windows** —— 两种拿法：
 
 - `-setup.exe`（NSIS 安装器）—— 装进 Program Files，带开始菜单和卸载项。
@@ -41,7 +49,17 @@ portable 版解压出来是**两个文件**，两个都要留着：`signalhub-ap
   `./SignalHub_*_amd64.AppImage --appimage-extract-and-run`。
 
 `signalhub` 命令同样**已经打包在里面**（「设置 → 接入」页的一键接入会自己用它），
-所以不用另外装。
+所以不用另外装：
+
+- deb 装完就在 `/usr/bin/signalhub`。
+- AppImage 是解开的目录里那个（`./SignalHub_*_amd64.AppImage --appimage-extract`，
+  和 deb 同一个布局：`usr/bin/signalhub`）。
+
+想直接在终端里用，把它链到 PATH 上：
+
+```bash
+sudo ln -sfn /usr/bin/signalhub /usr/local/bin/signalhub   # deb
+```
 
 ### 命令行
 

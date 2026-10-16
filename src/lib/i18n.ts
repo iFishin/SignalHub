@@ -733,7 +733,7 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     updateHint:
       "更新不会自动装：只有点了「下载并安装」才会下载、验签、替换并重启。启动后每天静默查一次，失败只写日志、不打扰你。",
     updateUnsupported:
-      "这个平台暂时只能手动下载。原因是更新时要用的解包依赖被上游撤下了（详见发布页），装了也只会卡在最后一步，不如说清楚。",
+      "这个平台暂时只能手动下载。Windows 上装更新要用的那个压缩库被上游全量撤下了；Linux 上两种装法还没在真机上验过（deb 那份还要管理员权限）。宁可说清楚，也不摆一个点了会报错的按钮。",
     updateFailed: (reason) => `检查失败：${reason}`,
     openReleases: "打开发布页",
 
@@ -1126,7 +1126,7 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     updateHint:
       "Updates are never installed on their own: nothing is downloaded until you click download, and the app verifies the signature, swaps itself in, and restarts. It also checks silently once a day; failures only go to the log.",
     updateUnsupported:
-      "Automatic updates aren't available on this platform yet — download manually from the releases page. The unpacking dependency the updater needs was yanked upstream, so an install would fail at the last step; better to say so plainly.",
+      "Automatic updates aren't available on this platform yet — download manually from the releases page. On Windows the archive library the updater needs was yanked upstream; on Linux neither install path has been verified on real hardware (the .deb needs root). Better to say so than to show a button that errors out.",
     updateFailed: (reason) => `Check failed: ${reason}`,
     openReleases: "Open releases page",
 

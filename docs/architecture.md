@@ -835,7 +835,12 @@ hook 上报是「一次 HTTP」。app 没在运行时（重启电脑、退出 ap
 
 **验签用的是 Tauri 自己的密钥对**（minisign）：公钥在 `tauri.conf.json` 的 `plugins.updater.pubkey`，私钥只在 GitHub Secret 里，构建时由 `tauri-action` 那一步的 env 传进去。它和 Apple / Windows 的代码签名证书是**两套完全独立的东西** —— 校验的是「这个包确实是我们发的」，不是「Apple 认识我们」，所以没有证书也能做自动更新。
 
-**只有 macOS 真的能用，另外两个平台如实说「请手动下载」。** 原因是上游的 `zip`：`tauri-plugin-updater` 的 `zip` feature 要求 `zip = "^4"`（Windows 解包用），Linux 侧需要的 `tar` / `flate2` 又被同一个 feature 门着，而 2026-08 的 RUSTSEC-2025-0168（解包时路径规范化不当 → 任意写文件）之后，crates.io 上**所有 zip ≤ 9.0.2 都被 yank 了**，`^4` 无解 —— 带着这个 feature 连依赖都解析不出来。macOS 的 `.app.tar.gz` 只用 `flate2` + `tar`（插件里的**非可选**依赖），和那个 feature 无关，所以那条路完整可用。`Cargo.toml` 里因此写的是 `default-features = false`，判据是 `update::SUPPORTED`；**上游把 zip 提到 ^9 之后把那行收回去即可**。界面按 `supported` 分流：不支持的平台不给「下载并安装」这个按钮，只给一个「打开发布页」（`open_releases`）—— 说清楚之后总得给个去处。
+**只有 macOS 真的能用，另外两个平台如实说「请手动下载」。** 理由要分两半说，别把话说错：
+
+- **Windows 是上游卡住的**：插件的 `zip` feature 要求 `zip = "^4"`，而 2026-08 的 RUSTSEC-2025-0168（解包时路径规范化不当 → 任意写文件）之后，crates.io 上**所有 zip ≤ 9.0.2 都被 yank 了**，`^4` 无解 —— 带着这个 feature 连依赖都解析不出来。Windows 的更新包就是 `zip` 那种，所以那条路技术上做不了。
+- **Linux 是「做得通但没验过」**：查过 v0.2.4 的实际产物，`latest.json` 里 `linux-x86_64-appimage` 指的是**没压缩的 ELF AppImage**，不吃 `zip` feature，那条路其实走得通；但 deb 装的那份要靠 `dpkg -i` 提权（普通用户跑不动，会变成一个「点了报权限错」的按钮），而两条路都没在真机验过。**在能动真机验收之前不打开。**
+
+macOS 的 `.app.tar.gz` 只用 `flate2` + `tar`（插件里的**非可选**依赖），和那个 feature 无关，所以那条路完整可用。`Cargo.toml` 里因此写的是 `default-features = false`，判据是 `update::SUPPORTED`（只有 macOS）；**上游把 zip 提到 ^9 之后**把那行收回去，**Linux 要打开**则是改 `SUPPORTED` 一行（先把两条装法在真机上跑通）。界面按 `supported` 分流：不支持的平台不给「下载并安装」，只给一个「打开发布页」（`open_releases`）—— 说清楚之后总得给个去处。
 
 **点「下载并安装」时会重新查一次**，而不是装「十分钟前看到的那一版」。代价是多一次网络往返，换来的是「装的一定是此刻的最新版」，也省掉了把插件的 `Update` 对象跨命令存起来（那东西带着 HTTP 客户端和一堆内部状态）。装完走 `app.restart()`：不重启的话跑着的还是旧二进制，用户点了「安装并重启」却什么都没变。
 

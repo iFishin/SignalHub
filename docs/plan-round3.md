@@ -320,3 +320,85 @@ push 用 `GIT_SSH_COMMAND='ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes' git p
 
 R5 的真机验证与 R6 的产物验证，做完要在本文件末尾追加「实施记录」一节，
 把「验过什么 / 没验出什么」写清楚 —— 尤其是 macOS 上未签名包自更新的结论。
+
+---
+
+## 实施记录（2026-10-16）
+
+六个提交按计划顺序落地，外加发布：
+
+| 提交 | 内容 |
+|---|---|
+| `3f6585c` | R2 灯的显示器适应 |
+| `be75e3d` | R1-a 设置面板 IA 重排 |
+| `2291f54` | R1-b 通用件（说明跟着行走、↺、灯预览） |
+| `7028ed0` | R3 每状态停留时长可调 |
+| `1013416` | R4 降级通道 |
+| `932f086` | R5 自动更新 |
+| `7b6c91c` | R6 Linux 出包 |
+| `5d043fe` | 发布 0.2.4（tag `v0.2.4`） |
+
+每步都过：`clippy -D warnings` 干净、`cargo test`（309 lib + 204 CLI）、
+`npm test`（65 → 72）、`npm run build`。界面改动逐张看过渲染结果（headless Chrome）。
+
+### R5 自动更新：验过什么
+
+**端到端那条链真的跑通了**，证据三层：
+
+1. **真端点、匿名取回。** 发布之后匿名拉
+   `https://github.com/iFishin/SignalHub/releases/latest/download/latest.json`：
+   HTTP 200、5.3 KB、`version: 0.2.4`；里面 `darwin-aarch64` 那个 asset URL 匿名下载
+   6 025 855 字节，**sha256 与带认证下的产物逐字节一致**。这一条正是 app 运行时走的路
+   （`Accept: application/json` 查清单、`application/octet-stream` 下载、跟随重定向）。
+2. **下载 → 验签 → 解包 → 换 bundle → 重启。** 用 CI 产出的真 `.app.tar.gz` 与真签名，
+   让一个**本机编的 0.2.3**（端点点到一份 HTTPS 清单，托管在临时 gist 里，用完已删）
+   去更新。结果：日志 `[update] 有新版本 0.2.4` → 装 → **换完之后那个包里的二进制与
+   CI 产物逐字节相同**（sha256 `4effbe27…`），进程在装机那一秒之后才起来
+   （`13:35:22Z` 装完 / `13:35:26Z` 新进程）。
+   → **未签名的包被更新替换之后能正常启动**：那条只能真机验的 Gatekeeper 疑问，
+   在这个场景下答案是「不拦」（更新过程写下的文件不带 `com.apple.quarantine`，
+   Gatekeeper 只对隔离过的包发作）。
+3. **换完之后它自己又查了一次真端点**（新包里的端点就是 `releases/latest`）：
+   没有失败行 —— 也就是静默成功、报「已是最新」。这条顺带从反面验了
+   「自动检查失败是静默的」。
+
+**验法的两处不同，必须说清**：被更新的那一份是本机编的 **0.2.3**（为了让「远端版本 >
+当前版本」和签名里的 `version:0.2.4` 对得上 —— 插件会比对这两者，拿 0.2.5 去配 0.2.4
+的签名会被它正确拒掉），清单的锚点是一个 gist 上的 HTTPS URL 而不是配置里那串
+`releases/latest`。差别只在**配置值**和**被更新的那一份是哪个构建**；
+下载、验签、解包、替换、重启这段代码路径是同一段。
+
+**没验的**：以 `releases/latest` 为锚点，把一个已发布的 0.2.4 换成「下一版」这一整条
+（要真发一版更高的版本才能测，而发一版内容相同的没有意义 —— 真想验的话，下一次
+正常发版就是那次验收）。
+
+**R5 的边界（如实说，别对外说成「三个平台都能自动更新」）**：只有 macOS。
+Windows 是**上游卡死的**（插件的 `zip` feature 要 `zip = "^4"`，而 zip ≤ 9.0.2 在
+RUSTSEC-2025-0168 之后被全量 yank，`^4` 无解）；Linux 是**「做得通但没验过」**
+（`linux-x86_64-appimage` 指向的是没压缩的 ELF，不吃那个 feature；但 deb 那份要靠
+`dpkg -i` 提权，两条路都没在真机验）。所以 `update::SUPPORTED` 只有 macOS，
+其余平台界面如实说「请手动下载」+ 给一个「打开发布页」。
+
+### R6 Linux 出包：验过什么
+
+CI 四个 job 全绿（macOS ×2 / Windows / Linux），产物 14 个（含 `latest.json` 与各平台的
+`.sig`）。**Linux 那两个包在 macOS 上跑不起来**（没有 Linux 机器，也没有容器工具），
+所以验的是结构：
+
+- `.deb` 用 `ar` + `tar` 解开看过：`/usr/bin/signalhub-app`（GUI）与 `/usr/bin/signalhub`
+  （sidecar CLI）**都在、都有执行位**，`.desktop` 与图标在，依赖是
+  `libayatana-appindicator3-1, libwebkit2gtk-4.1-0, libgtk-3-0`。
+- `.AppImage`（84 MB —— 比 deb 大一个数量级，因为把 GTK 那套整包带上了）**本机解不开**：
+  squashfs 在 macOS 上没有工具能打开（没有 `unsquashfs`，也没有容器去跑
+  `--appimage-extract`）。它在 CI 里和 deb 是同一个 job、同一份 `externalBin` 打出来的，
+  但计划里「解出来跑 `signalhub --version`」这一步**这轮没做**。
+- 发布说明里 Linux 那段标了 **beta**，写清了 Wayland（透明/置顶可能要退回
+  `GDK_BACKEND=x11`）和 FUSE（`--appimage-extract-and-run`）两条已知限制。
+
+### 一处要说清楚的偏差
+
+`Cargo.toml` / `docs/architecture.md` / `release.yml` 里关于「为什么只有 macOS」的
+解释改过一版：早先写的是「Linux 的 AppImage 更新是 `.tar.gz`，那两个解包依赖被 `zip`
+feature 门着」，**这是错的** —— 查了 v0.2.4 的实际产物，`latest.json` 里
+`linux-x86_64-appimage` 指向的是**没压缩的 ELF AppImage**。现在的说法是上面那版：
+Windows 归上游，Linux 归「没验过」。
