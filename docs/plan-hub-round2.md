@@ -561,6 +561,7 @@ fn compose(preset: HttpPreset, summary: &str, url: &str, headers: &BTreeMap<Stri
 | 7 | `R4-b` | 结果落盘 | defee00 |
 | 8 | `R4-c` | 转发界面的预设与测试 | 234ffdd |
 | 9 | `R4-d` | PushDeer 预设 + 「200 里的错误信封」判定 + 占位符按预设（§4.6） | d0dfc55 |
+| 10 | `R3-b` | 改名框预填「此刻显示的名字」+ `nameChanged` 判据（§3.5） | 3ebb9fa |
 
 每步一步一提交，提交信息用中文、说清「为什么」；`git commit -- <paths>` 限定路径
 （多个会话共用这个检出）；push 用
