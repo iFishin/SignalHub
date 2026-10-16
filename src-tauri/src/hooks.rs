@@ -556,21 +556,39 @@ const GOOSE_MANIFEST: &str = r#"{
 "#;
 
 /// opencode 插件模板。两个占位符由 [`Agent::plugin_source`] 填。
+///
+/// **形状必须是 V2 的默认导出**（`{ id, setup }`）。V1 那种「具名导出 = 插件」的
+/// 写法在 V2 里会被直接拒绝加载（`Plugin must export a default definition with an
+/// id and an effect or setup function.`），而且两种形状没法共用一份文件 —— 所以这份
+/// 只面向 V2（逐条事件在 opencode 2.0.29 上实测过，见 `docs/api.md` §4.15）。
+///
+/// 事件名与状态映射改动时**必须一起改 `docs/api.md` §4.15 的那张表**，并且重新
+/// 实测：V2 把 V1 的 `session.idle` / `event.properties` 都换掉了，照 V1 的老印象
+/// 猜事件名会得到一个永远亮着或永远不亮的灯（而不报错）。
 const OPENCODE_PLUGIN: &str = r#"// 由 SignalHub 生成 —— 请勿手改。要更新就回 SignalHub 的「接入」页重新点一次接入。
 // %MARKER%
 //
 // opencode 启动时会自动加载这个目录下所有的 js / ts 文件，于是这份文件就成了
 // 「opencode 说什么 → signalhub 命令行」的翻译器。
 //
-// 改之前先读三条纪律：
+// 这份源码按 **opencode V2 的插件形状**写：默认导出一个 `{ id, setup }` 定义。
+// V1 那种「具名导出 = 插件」在 V2 里会被直接拒绝加载，两种形状没法共用一份文件，
+// 所以这份只面向 V2（在 opencode 2.0.29 上实测过）。
 //
-//  1. **不许阻塞。** 每一次工具调用都会打到这里。同步等待、await、execFileSync
-//     都会把 opencode 卡住 —— 用 spawn 派生完就 unref，stdio 全丢掉。
-//  2. **不许抛。** 上报失败绝不许影响 opencode 自己，所以整段包在 try 里，
-//     子进程的 error 事件也吃掉。
-//  3. **只映射下面这几个事件。** 名字和形状都来自官方 Plugins 文档；多映射一个没
-//     核实过的事件（比如 session.status 里那些字段）就可能得到一个「永远在忙」的
-//     假灯。也刻意没有「推理中」那一档：opencode 没有形状确定的对应事件。
+// 改之前先读四条纪律：
+//
+//  1. **不许阻塞。** 事件流循环里只做一件事：派生一个子进程就撒手（spawn + unref，
+//     stdio 全丢掉）。同步等待、await、execFileSync 都可能把 opencode 卡住。
+//  2. **不许抛。** 上报失败绝不许影响 opencode 自己：每个事件包在 try 里，子进程的
+//     error 事件也吃掉，事件流断了也不往外扔。
+//  3. **只映射下面这几个事件。** 名字和形状都来自官方 Plugins 文档并逐条实测过；
+//     多映射一个没核实过的事件（`session.status` / `session.step.*` / 逐 token 的
+//     `session.reasoning.*` 之类）就可能得到一个「永远在忙」的假灯，或者按 token
+//     起进程。也刻意没有「推理中」那一档：V2 没有形状确定的对应事件。
+//  4. **只报自己这个目录的会话。** opencode 会**按目录**把这份插件实例化多次（项目
+//     目录一份、家目录一份…），而每个实例收到的都是**整个服务端**的事件流。不过滤
+//     的话同一个会话会被它按两个不同的 cwd 各报一遍 —— 服务端那边组名和显示名是后
+//     写覆盖的，灯上就会串成另一个目录的名字。
 import { spawn } from "node:child_process"
 
 const CLI = "%CLI%"
@@ -599,35 +617,96 @@ function report(state, session, cwd, message) {
   }
 }
 
-export const SignalHub = async ({ directory }) => {
-  const cwd = directory ?? ""
-  const sessionOf = (props) => props?.sessionID ?? props?.info?.id ?? ""
-  return {
-    event: async ({ event }) => {
-      const props = event?.properties ?? {}
-      const session = sessionOf(props)
+// 失败原因那句话。`session.execution.failed` 带的是 `{ type, message }`；助手消息
+// 那类错误则是 `{ name, data: { message } }` —— 两种都认，认不出就只报状态。
+function reason(error) {
+  if (!error) return ""
+  if (typeof error.message === "string") return error.message
+  if (typeof error.data?.message === "string") return error.data.message
+  return ""
+}
+
+export default {
+  id: "signalhub",
+  async setup(ctx) {
+    // 这个实例属于哪个目录。既用来过滤，也当上报的 cwd。
+    const home = ctx.location?.directory ?? ""
+    // 会话 id → 它属于哪个目录。opencode 的事件里**只有 `session.created` 带位置**
+    // （别的只有会话 id），所以没见过的会话要回问一次 `session.get`；问出来的结果
+    // 缓存住 —— 一个会话只问一次。
+    const owner = new Map()
+
+    async function ours(session) {
+      if (!session) return false
+      if (!home) return true // 不知道自己属于哪个目录 → 不过滤（退回「全都报」）
+      const known = owner.get(session)
+      if (known !== undefined) return known === home
+      try {
+        const dir = (await ctx.session.get({ sessionID: session }))?.location?.directory
+        if (typeof dir === "string" && dir) {
+          owner.set(session, dir)
+          return dir === home
+        }
+      } catch {
+        // 问不出来就照报：宁可多报一遍，也不要让灯黑着
+      }
+      return true
+    }
+
+    async function onEvent(event) {
+      const data = event?.data ?? {}
+      const session = typeof data.sessionID === "string" ? data.sessionID : ""
       switch (event?.type) {
-        case "session.created":
-          return report("idle", session, cwd)
+        case "session.created": {
+          // 位置只有这个事件带 —— 顺手记下来，后面的事件就不用回问了
+          const dir = data.location?.directory
+          if (typeof dir === "string" && dir && session) owner.set(session, dir)
+          if (!dir || !home || dir === home) report("idle", session, home || dir)
+          return
+        }
+        case "session.execution.started":
+          if (await ours(session)) report("working", session, home)
+          return
+        case "session.execution.succeeded":
+        case "session.execution.interrupted":
+          if (await ours(session)) report("done", session, home)
+          return
+        case "session.execution.failed":
+          if (await ours(session)) report("error", session, home, reason(data.error))
+          return
         case "permission.asked":
-          return report("permission", session, cwd)
+          if (await ours(session)) report("permission", session, home)
+          return
         case "permission.replied":
-          return report("working", session, cwd)
-        case "session.error":
-          return report("error", session, cwd, props?.error?.message)
-        case "session.idle":
-          return report("done", session, cwd)
+          if (await ours(session)) report("working", session, home)
+          return
         case "session.deleted":
-          return report("clear", session, cwd)
+          // 清一条会话**不问位置**：清错最多白清一次（服务端重复清除不报错），
+          // 而漏清会留下一盏再也不走的假灯。
+          if (session) report("clear", session, home)
+          return
         default:
           return
       }
-    },
-    "tool.execute.before": async (input) =>
-      report("working", input?.sessionID ?? "", cwd),
-    "tool.execute.after": async (input) =>
-      report("working", input?.sessionID ?? "", cwd),
-  }
+    }
+
+    const controller = new AbortController()
+    void (async () => {
+      try {
+        for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+          try {
+            await onEvent(event)
+          } catch {
+            // 单个事件处理失败绝不许影响 opencode
+          }
+        }
+      } catch {
+        // 事件流本身断了（opencode 退出/重连）也不许抛
+      }
+    })()
+
+    return () => controller.abort()
+  },
 }
 "#;
 
@@ -2177,6 +2256,64 @@ mod tests {
                 assert!(has_guard, "{agent:?} 生成的源码里少了 clear 守卫");
             }
         }
+    }
+
+    /// opencode 的插件源码必须是 **V2 的默认导出形状**（`{ id, setup }`）。
+    ///
+    /// 这条回归**用户那头不报错**：文件还在、标记行还在，「接入」页照样显示「已接入」，
+    /// 只是 opencode 一起动就报 `Server plugin error` 并且灯永远不亮 —— 所以钉死。
+    /// V2 的加载器明说：「Plugin must export a default definition with an id and an
+    /// effect or setup function.」
+    #[test]
+    fn the_opencode_plugin_uses_the_v2_definition_shape() {
+        let source = Agent::Opencode.plugin_source("signalhub");
+        assert!(
+            source.contains("export default {"),
+            "opencode 的插件得是 V2 的默认导出"
+        );
+        assert!(
+            source.contains(r#"id: "signalhub""#),
+            "V2 定义必须带一个稳定的 id"
+        );
+        assert!(
+            source.contains("async setup(ctx)"),
+            "V2 定义必须带 setup"
+        );
+        assert!(
+            !source.contains("export const"),
+            "具名导出是 V1 的形状，V2 会拒绝加载整份文件"
+        );
+        // 只报自己这个目录的会话（opencode 按目录把这份插件实例化多次，每个实例都
+        // 收得到整个服务端的事件流）—— 取位置靠这一句。
+        assert!(
+            source.contains("ctx.session.get"),
+            "少了「这个会话属于哪个目录」的回问"
+        );
+    }
+
+    /// 事件名是照着 opencode 2.0.29 实测写下的。V2 把 V1 的 `event.properties` 和
+    /// `session.idle` 都换掉了，猜错的话灯**永远亮着或永远不亮**，而两边都不报错。
+    #[test]
+    fn the_opencode_plugin_maps_the_events_verified_on_v2() {
+        let source = Agent::Opencode.plugin_source("signalhub");
+        for event in [
+            "session.created",
+            "session.execution.started",
+            "session.execution.succeeded",
+            "session.execution.interrupted",
+            "session.execution.failed",
+            "permission.asked",
+            "permission.replied",
+            "session.deleted",
+        ] {
+            assert!(source.contains(event), "少了实测过的事件 {event}");
+        }
+        // V1 的事件字段挂在 `event.properties` 上，V2 是 `event.data`
+        assert!(source.contains("event?.data"), "事件字段该从 data 上取");
+        assert!(
+            !source.contains("event?.properties"),
+            "properties 是 V1 的事件形状"
+        );
     }
 
     /// Windows 的路径里全是反斜杠。不转义的话 `\U` 会被 JS 当成转义序列 ——

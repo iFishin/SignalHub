@@ -836,7 +836,7 @@ PreToolUse  tool_name=Bash  tool_input={command: "cargo test --all"}
 
 | 智能体 | 装在哪 | 对方怎么加载它 |
 |---|---|---|
-| **opencode** | `~/.config/opencode/plugins/signalhub.js` | 启动时自动加载该目录下所有 js / ts |
+| **opencode** | `~/.config/opencode/plugins/signalhub.js` | 启动时自动加载该目录下所有 js / ts（源码按 **V2** 的插件形状写） |
 | **Pi** | `~/.pi/agent/extensions/signalhub.ts` | 启动时自动发现该目录下的扩展 |
 | **Hermes** | `~/.hermes/plugins/signalhub/`（清单 + 代码两份文件） | 启动时扫描 `~/.hermes/plugins/` 下的插件目录 |
 
@@ -861,24 +861,50 @@ signalhub <状态> --agent <名字> --session <会话> --cwd <目录> [--message
 
 #### opencode
 
-事件与状态的映射（只有这几个 —— 名字和形状都来自官方 Plugins 文档）：
+**这份源码写的是 opencode V2 的插件形状**：默认导出一个 `{ id, setup }` 定义。V1 那种
+「具名导出 = 插件」的写法在 V2 里会被**直接拒绝加载**（opencode 的报错是 `Plugin must
+export a default definition with an id and an effect or setup function.`），两种形状
+没法共用一份文件，所以这份只面向 V2（V2 特意换掉了插件 API，见官方
+`build/plugins/migrate-v1`）。**V1 未验证** —— 本机只有 V2 可测。
+
+事件与状态的映射（只有这几个 —— 名字和形状来自官方 Plugins 文档，并在
+**opencode 2.0.29** 上逐条实测过）：
 
 | opencode 事件 | 状态 |
 |---|---|
 | `session.created` | `idle` |
+| `session.execution.started` | `working` |
+| `session.execution.succeeded` | `done` |
+| `session.execution.interrupted` | `done`（被中断了，这一轮就是结束了） |
+| `session.execution.failed` | `error`（带 `data.error.message`） |
 | `permission.asked` | `permission` |
 | `permission.replied` | `working` |
-| `session.error` | `error`（带 `properties.error.message`） |
-| `session.idle` | `done` |
-| `session.deleted` | 清除该会话 |
-| `tool.execute.before` / `tool.execute.after` | `working` |
+| `session.deleted` | 清除该会话（**不问位置**，见下） |
 
-**没有 `thinking`**：opencode 没有形状确定的对应事件（`session.status` 里那些字段
-官方文档没写全，猜错会得到一个「永远在忙」的假灯）。宁缺勿错。
+**V1 的 `session.idle` 在 V2 里不再发**（实测一整轮下来一次都没有）：一轮结束的信号
+是 `session.execution.succeeded` / `.failed` / `.interrupted` 这三个（和 `session.created`
+一样是 durable 事件）。照 V1 的老印象保留 `session.idle`，得到的会是一盏**永远停在
+`working`** 的灯 —— 而且两边都不报错。
 
-**三条约束**（生成的源码里也写着）：不许阻塞（每次工具调用都会打到这里，所以用
-`spawn` + `unref`，stdio 全丢掉）、不许抛（上报失败绝不影响 opencode）、不许在不知道
-会话 id 时发 `clear`（会话名会兜底成 `default`，清掉它等于把别的上报方的状态一起抹了）。
+**没有 `thinking`**，也刻意没映射 `session.status` / `session.step.*` /
+`session.reasoning.*` / `session.text.*`：前两个的形状官方没写全（猜错就是一个
+「永远在忙」的假灯），后两个是**逐 token** 的 —— 映射它们等于按 token 起进程。
+宁缺勿错。
+
+**只报自己这个目录的会话。** opencode 会把这份插件**按目录实例化多次**（项目目录
+一份、家目录一份…），而每个实例收到的都是**整个服务端**的事件流（实测：同一条事件
+两个实例都收到）。不过滤的话，同一个会话会被它按两个不同的 cwd 各报一遍 —— 服务端
+那边组名（`resolve_group`）和显示名（`session_label`）都是**后写覆盖**的，灯上就会
+串成另一个目录的名字。位置从哪儿来：`session.created` 的 `data.location.directory`
+是**唯一**带位置的事件，别的事件只有会话 id，所以没见过的会话回问一次
+`ctx.session.get({ sessionID })`（答出来的结果缓存住，一个会话只问一次）。清会话
+**不问位置**：清错最多白清一次（服务端重复清除不报错），而漏清会留下一盏再也不走的
+假灯。
+
+**四条约束**（生成的源码里也写着）：不许阻塞（事件流循环里只 `spawn` + `unref`，stdio
+全丢掉）、不许抛（上报失败绝不影响 opencode，连事件流断了也不往外扔）、不许在不知道
+会话 id 时发 `clear`（会话名会兜底成 `default`，清掉它等于把别的上报方的状态一起抹了）、
+只报自己目录的会话。
 
 #### Pi
 
