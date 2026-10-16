@@ -213,7 +213,7 @@
 | 1 | A1 接入回执（每个信号源「最近上报 X 前」） | 完成 | `a2facf5` |
 | 2 | A2 「试一下」（真实调用接入命令 / 插件型走内部注入） | 完成 | `4d51ce2` |
 | 3 | A3 一键诊断（可复制文本 / `signalhub diagnose`） | 完成 | `2acde12` |
-| 4 | A4 Claude Code HTTP hook（`POST /v1/hooks/{agent}`，接入页可选 + `--http`） | 完成 | `待填` |
+| 4 | A4 Claude Code HTTP hook（`POST /v1/hooks/{agent}`，接入页可选 + `--http`） | 完成 | `3c80433` |
 | 5 | E1 能耗实测（有数字才改结构） | 待办 | |
 | 6 | E2 事件合帧（没变就不 emit + 合并） | 待办 | |
 | 7 | B1 信号源概念（agent/system/自定义） | 待办 | |
