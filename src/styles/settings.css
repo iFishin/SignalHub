@@ -1232,6 +1232,54 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   white-space: pre;
 }
 
+/* 发布说明。形状和 `.hooklog` 一样（一个可滚的框），但**要换行**：那是给人读的
+   一段文字（发布页的正文），不是按列对齐的日志 —— 让它在横向上滚起来会把
+   「看看改了什么」变成「左右拖着读」。 */
+.updatenotes {
+  margin: 6px 0 0;
+  padding: 8px;
+  max-height: 160px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--hover);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 下载进度条。一条 3px 的细线 —— 它只是「在动」的证据，不是主角。 */
+.update-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.update-bar {
+  flex: 1;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.update-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--muted);
+  transition: width 120ms linear;
+}
+
+/* 安装阶段换成状态色（和灯一个颜色），并且不再动 —— 那一刻它表示「别再点了，
+   马上要重启」，不是一个还在走的进度。 */
+.update-bar[data-installing="true"] > span {
+  background: var(--c-working);
+  transition: none;
+}
+
 /* ---- 状态页：最近消息 ---- */
 
 .feed {

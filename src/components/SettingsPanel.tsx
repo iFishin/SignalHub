@@ -29,6 +29,8 @@ import { useOutboundLog, lastAttemptFor, type Attempt } from "../lib/useOutbound
 import { useNow } from "../lib/useNow";
 import { useAgents, useHookLog, type AgentStatus, type HookChange } from "../lib/useAgents";
 import { useStateTtls } from "../lib/useStateTtls";
+import { percent, progressLabel } from "../lib/updateProgress";
+import { useUpdate } from "../lib/useUpdate";
 import { colorVars, resolveColors } from "../lib/palettes";
 import { presets, isActivePreset, stylePresets, isActiveStylePreset } from "../lib/presets";
 import { nameChanged, withGroupName } from "../lib/groupMeta";
@@ -942,11 +944,14 @@ export function SettingsPanel({ snapshot }: Props) {
   const blinkChoices = blinkOptions(m);
   const alertChoices = alertDelayOptions(m);
   const ttlDefaults = useStateTtls();
+  const update = useUpdate();
   const groups = tabGroups(m);
   const [tab, setTab] = useState<Tab>("status");
   // 逐状态那张表默认收起（十行表和上面九行不是一个量级）。它记的是**用户**的
   // 展开意图，所以放在 state 里；切走再切回来会保留（组件没卸载）。
   const [perStateOpen, setPerStateOpen] = useState(false);
+  // 发布说明默认收起：它是**可选阅读**（想知道改了什么才看），不该把系统页撑长
+  const [notesOpen, setNotesOpen] = useState(false);
   // 收起时那一行摘要要用：有几个状态被单独设过。判据和表里那个 `stateOverridden`
   // 是同一个（见它的说明），所以摘要和表格不可能对不上。
   const perStateCount = SIGNALS.filter((state) => stateOverridden(settings.styles[state])).length;
@@ -2620,7 +2625,30 @@ export function SettingsPanel({ snapshot }: Props) {
         );
       }
 
-      case "system":
+      case "system": {
+        // 「现在什么情况」一句话，优先级从上到下：正在装的优先级最高（它最不可
+        // 打断），然后是下载中、失败、检查中、有新版本、已是最新。没查过就什么都不
+        // 说 —— 空着好过写一句「未知」。
+        const updateNote = update.installing
+          ? m.updateInstalling
+          : update.progress
+            ? m.updateDownloading(progressLabel(update.progress))
+            : update.failure
+              ? m.updateFailed(update.failure)
+              : update.checking
+                ? m.checkingUpdate
+                : update.state.error
+                  ? m.updateFailed(update.state.error)
+                  : update.state.available
+                    ? m.updateAvailable(update.state.available.version)
+                    : update.state.checked_at_ms > 0
+                      ? m.updateLatest
+                      : null;
+        const updatePercent = update.progress
+          ? update.progress.installing
+            ? 100
+            : (percent(update.progress) ?? 0)
+          : 0;
         return (
           <>
             <Row label={m.launchAtLogin}>
@@ -2658,6 +2686,86 @@ export function SettingsPanel({ snapshot }: Props) {
                 </button>
               </div>
             </Row>
+            {/* 自动更新。**只在 macOS 上真的能用**（原因见 Rust 侧 update.rs 顶部），
+                别的平台如实说「请手动下载」，而不是摆一个点了没反应的按钮。
+                另：**装永远由用户点** —— 检查可以自动，装不行。 */}
+            <div className="section">
+              <div className="row">
+                <span>{m.updateTitle}</span>
+                {/* 版本号是 Rust 那边读的运行时常量。第一帧还没回来时**不画** ——
+                    宁可暂时空着，也不要闪一个「当前版本 v」。 */}
+                <span className="mono">
+                  {update.state.current && m.updateCurrent(update.state.current)}
+                </span>
+              </div>
+              {update.state.supported ? (
+                <>
+                  {updateNote && <p className="hint">{updateNote}</p>}
+                  {update.progress && (
+                    <div
+                      className="update-line"
+                      data-installing={update.progress.installing}
+                    >
+                      <div className="update-bar" data-installing={update.progress.installing}>
+                        <span style={{ width: `${updatePercent}%` }} />
+                      </div>
+                    </div>
+                  )}
+                  <div className="row-start">
+                    <button
+                      type="button"
+                      className="btn btn-tiny"
+                      disabled={update.checking || update.installing}
+                      onClick={update.check}
+                    >
+                      {update.checking ? m.checkingUpdate : m.checkUpdate}
+                    </button>
+                    {update.state.available && !update.installing && (
+                      <button
+                        type="button"
+                        className="btn btn-tiny"
+                        onClick={update.install}
+                      >
+                        {m.updateDownloadInstall}
+                      </button>
+                    )}
+                  </div>
+                  <p className="hint">{m.updateHint}</p>
+                  {update.state.available?.notes && (
+                    <>
+                      <button
+                        type="button"
+                        className="disclosure"
+                        aria-expanded={notesOpen}
+                        onClick={() => setNotesOpen((open) => !open)}
+                      >
+                        <span className="caret" aria-hidden="true">
+                          {notesOpen ? "▾" : "▸"}
+                        </span>
+                        <span className="disclosure-title">{m.updateNotes}</span>
+                      </button>
+                      {notesOpen && (
+                        <pre className="updatenotes mono">{update.state.available.notes}</pre>
+                      )}
+                    </>
+                  )}
+                </>
+              ) : (
+                <>
+                  <p className="hint">{m.updateUnsupported}</p>
+                  <div className="row-start">
+                    <button
+                      type="button"
+                      className="btn btn-tiny"
+                      onClick={() => invoke("open_releases").catch(reported)}
+                    >
+                      {m.openReleases}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+
             <p className="hint">{m.systemHintTray}</p>
             <p className="hint">
               {m.systemHintPassThrough(
@@ -2722,6 +2830,7 @@ export function SettingsPanel({ snapshot }: Props) {
             </div>
           </>
         );
+      }
     }
   };
 

@@ -10,6 +10,7 @@ mod state;
 mod stats;
 mod sweep;
 mod tray;
+mod update;
 
 // CLI (`src/bin/signalhub.rs`) 通过 #[path] 直接包含这几个模块的源码，
 // 因此它们是 lib 的公开 API，而不是只给 app 内部用的私有模块。
@@ -464,6 +465,10 @@ fn get_endpoint(app: tauri::AppHandle) -> serde_json::Value {
 /// 面板的「接入」页里有一份速查，跟包一起走、不联网也能看。
 const DOCS_URL: &str = "https://github.com/iFishin/SignalHub/blob/main/docs/api.md";
 
+/// 下载页。给「这个平台暂不支持自动更新」那条路用 —— 说清楚「请手动下载」之后，
+/// 总得给个去处，否则那句话等于把用户丢在原地。
+const RELEASES_URL: &str = "https://github.com/iFishin/SignalHub/releases";
+
 #[tauri::command]
 fn open_docs() -> Result<(), String> {
     open::open(DOCS_URL).map_err(|err| format!("打开浏览器失败: {err}"))
@@ -473,6 +478,11 @@ fn open_docs() -> Result<(), String> {
 ///
 /// 接入方最需要的那几样都在 `~/.signalhub/` 里（`token`、`port`、`config.json`），
 /// 而「它在哪」这件事从界面上说不清楚，直接打开最省事。
+#[tauri::command]
+fn open_releases() -> Result<(), String> {
+    open::open(RELEASES_URL).map_err(|err| format!("打开浏览器失败: {err}"))
+}
+
 #[tauri::command]
 fn open_app_dir(what: String) -> Result<(), String> {
     let path = match what.as_str() {
@@ -1836,6 +1846,8 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         // 只用来选文件（拿路径）。读写和校验都在 Rust 侧的命令里。
         .plugin(tauri_plugin_dialog::init())
+        // 自动更新。**目前只在 macOS 上真正生效**（见 update.rs 顶部）。
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(SharedStore::new(Mutex::new(Store::default())))
         .manage(SharedUi::default())
         .manage(SharedGeometry::default())
@@ -1853,6 +1865,8 @@ pub fn run() {
         .manage(lang::LocalLang::default())
         // 最近一条告警通知说的是谁 —— 动作按钮回调时要用，见 alerts::LastAlert
         .manage(alerts::LastAlert::default())
+        // 更新检查的结果（不联网，纯粹给界面读的一张快照）
+        .manage(update::SharedUpdate::default())
         // 右键菜单只记「刚点的是哪一组」，见 menu.rs
         .manage(menu::Target::default())
         .invoke_handler(tauri::generate_handler![
@@ -1867,6 +1881,7 @@ pub fn run() {
             import_settings,
             get_endpoint,
             open_docs,
+            open_releases,
             open_app_dir,
             open_settings,
             get_toggles,
@@ -1882,6 +1897,9 @@ pub fn run() {
             request_notify_permission,
             detect_agents,
             get_hook_log,
+            update::get_update_state,
+            update::check_update,
+            update::install_update,
             install_agent_hooks,
             uninstall_agent_hooks,
             toggle_collapsed,
@@ -1973,6 +1991,9 @@ pub fn run() {
             });
             tray::init(app.handle().clone())?;
             sweep::spawn(notify.clone(), app.state::<SharedStore>().inner().clone());
+            // 更新检查是**静默**的后台任务（见 update.rs 顶部）：失败只写日志，
+            // 绝不在用户没点过「检查更新」的时候弹东西。
+            update::spawn_auto_check(app.handle().clone());
             server::spawn(
                 notify,
                 app.state::<SharedStore>().inner().clone(),

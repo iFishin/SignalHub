@@ -321,6 +321,22 @@ export interface Messages {
   configImportTitle: string;
   configFilterName: string;
 
+  // 自动更新
+  updateTitle: string;
+  updateCurrent: (version: string) => string;
+  checkUpdate: string;
+  checkingUpdate: string;
+  updateLatest: string;
+  updateAvailable: (version: string) => string;
+  updateDownloadInstall: string;
+  updateDownloading: (progress: string) => string;
+  updateInstalling: string;
+  updateNotes: string;
+  updateHint: string;
+  updateUnsupported: string;
+  updateFailed: (reason: string) => string;
+  openReleases: string;
+
   // 局域网访问
   lanAccess: string;
   lanAccessHint: string;
@@ -704,6 +720,23 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     configImportTitle: "导入设置",
     configFilterName: "SignalHub 设置",
 
+    updateTitle: "自动更新",
+    updateCurrent: (version) => `当前版本 v${version}`,
+    checkUpdate: "检查更新",
+    checkingUpdate: "正在检查…",
+    updateLatest: "已经是最新版本",
+    updateAvailable: (version) => `有新版本 v${version}`,
+    updateDownloadInstall: "下载并安装",
+    updateDownloading: (progress) => `下载中 ${progress}`,
+    updateInstalling: "正在安装，装完会自动重启",
+    updateNotes: "这次改了什么",
+    updateHint:
+      "更新不会自动装：只有点了「下载并安装」才会下载、验签、替换并重启。启动后每天静默查一次，失败只写日志、不打扰你。",
+    updateUnsupported:
+      "这个平台暂时只能手动下载。原因是更新时要用的解包依赖被上游撤下了（详见发布页），装了也只会卡在最后一步，不如说清楚。",
+    updateFailed: (reason) => `检查失败：${reason}`,
+    openReleases: "打开发布页",
+
     lanAccess: "允许局域网访问",
     lanAccessHint:
       "关着的时候只有本机能上报。打开后，别的机器 / 容器 / WSL 里的智能体也能连进来 —— 代价是「同一网段里任何人只要拿到 token 就能上报」：那道拒绝带 Origin 请求的防线挡的是网页偷偷打本机端口，对 curl 这类客户端无效。所以要开的话，请确认这个网络是你信得过的（家里的、公司内网），别开在公共 WiFi 上。",
@@ -1079,6 +1112,23 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     configExportTitle: "Export settings",
     configImportTitle: "Import settings",
     configFilterName: "SignalHub settings",
+
+    updateTitle: "Updates",
+    updateCurrent: (version) => `Version v${version}`,
+    checkUpdate: "Check for updates",
+    checkingUpdate: "Checking…",
+    updateLatest: "You're up to date",
+    updateAvailable: (version) => `Version v${version} is available`,
+    updateDownloadInstall: "Download and install",
+    updateDownloading: (progress) => `Downloading ${progress}`,
+    updateInstalling: "Installing — the app will restart when it's done",
+    updateNotes: "What's new",
+    updateHint:
+      "Updates are never installed on their own: nothing is downloaded until you click download, and the app verifies the signature, swaps itself in, and restarts. It also checks silently once a day; failures only go to the log.",
+    updateUnsupported:
+      "Automatic updates aren't available on this platform yet — download manually from the releases page. The unpacking dependency the updater needs was yanked upstream, so an install would fail at the last step; better to say so plainly.",
+    updateFailed: (reason) => `Check failed: ${reason}`,
+    openReleases: "Open releases page",
 
     lanAccess: "Allow LAN access",
     lanAccessHint:

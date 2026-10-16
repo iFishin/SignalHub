@@ -60,6 +60,26 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-autostart = "2"
 # 全局快捷键是「点击穿透」模式唯一的可靠逃生通道。
 tauri-plugin-global-shortcut = "2"
+# 自动更新。**签名用的是 Tauri 自己的密钥对**（不是 Apple / Windows 证书），
+# 校验的是「这个包确实是我们发的」，不是「Apple 认识我们」—— 所以没有证书也能做。
+#
+# ⚠️ 关掉了默认的 `zip` feature，这一条必须解释清楚（`default-features = false`）：
+# 那个 feature 的用处是拉进 `dep:zip`（Windows 装更新时解包用）与 Linux 侧的
+# `tar` / `flate2`。而它要求 `zip = "^4"` —— 2026-08 的 RUSTSEC-2025-0168
+# （解包时路径规范化不当，可任意写文件）之后，crates.io 上**所有 zip ≤ 9.0.2 都被
+# yank 了**，只剩 9.0.3 / 9.0.4，`^4` 无解，带上这个 feature 连依赖都解析不出来。
+#
+# 好在 macOS 的更新包 `.app.tar.gz` 走的是 `flate2` + `tar`，而这两个在插件里是
+# **非可选**依赖，和这个 feature 无关 —— 所以：
+#   - macOS：自动更新完整可用（下载 + minisign 验签 + 解包 + 换 bundle）。
+#   - Linux：AppImage 更新是 `.tar.gz`，那两个依赖被这个 feature 门着，装不了。
+#   - Windows：装更新要 `zip`，装不了。
+# 于是自动更新**只在 macOS 上真正生效**（判据是 `update::SUPPORTED`），其余平台
+# 维持「手动下载」并如实说明。上游把 zip 提到 ^9 之后，把这行改回 `"2"` 即可。
+tauri-plugin-updater = { version = "2", default-features = false, features = [
+  "rustls-tls",
+  "system-proxy",
+] }
 axum = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
