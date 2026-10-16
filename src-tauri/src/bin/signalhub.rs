@@ -37,6 +37,12 @@ mod hooks;
 #[path = "../state.rs"]
 mod state;
 
+// spool 是**写入方**在 CLI、**读取方**在 app 的共享文件（见 spool.rs 顶部）：
+// hook 连不上 app 时把这一条攒进去，app 下次启动重放。
+#[allow(dead_code)]
+#[path = "../spool.rs"]
+mod spool;
+
 // CLI 自己的文案（中英各一份）。**故意不挂进 `lib.rs` 的模块树**：只有这个二进制
 // 用它，挂到 app 那侧换来的是一片 dead_code（而 CI 是 `-D warnings`）。
 #[path = "../cli_text.rs"]
@@ -1040,34 +1046,69 @@ fn hook(agent: &str, flags: &Flags) -> Result<(), Failure> {
         Action::Clear => "clear".to_string(),
     };
 
-    // 端口/token 解析失败也要记进日志：那是失败里最常见的一种
-    let result = match Endpoint::discover(flags) {
-        Err(err) => Err(err),
-        Ok(endpoint) => match action {
-            Action::Report(state) => {
-                let body = hook_body(t(), state, &session, agent, &payload, flags);
-                let (status, text) = read_response!(client()
-                    .post(&endpoint.url("/state"))
-                    .header("Authorization", &endpoint.auth())
-                    .header("Content-Type", "application/json")
-                    .send(body.to_string()));
-                expect_success(status, &text).map(|_| ())
-            }
-            Action::Clear => {
-                let (status, text) = read_response!(client()
-                    .delete(&endpoint.url(&format!("/sessions/{session}")))
-                    .header("Authorization", &endpoint.auth())
-                    .call());
-                expect_success(status, &text).map(|_| ())
-            }
-        },
+    // 上报的请求体**在这里构造一次**：它既是发出去的内容，也是攒下来等重放的内容。
+    // 清除没有请求体（会话名就在 URL 里），所以是 `None`。
+    let report_body = match &action {
+        Action::Report(state) => Some(hook_body(t(), state, &session, agent, &payload, flags)),
+        Action::Clear => None,
     };
+
+    let result = send_action(flags, &action, report_body.as_ref(), &session);
 
     match &result {
         Ok(()) => log_hook(agent, &event, &session, &outcome),
+        // **只在「连不上」时攒起来**，而不是任何失败：
+        // - 4xx/5xx 是这次请求本身不对（或服务端明确拒绝），重放只会再错一次；
+        // - 超时也不攒：那个请求**可能已经被处理过了**，重放会造成重复，而重复的
+        //   一条会把已经前进的状态倒回去（一次迟到的 `done` 能让 `working` 复活）。
+        // 真正要救的场景是「app 没开 / 刚重启 / 还没启动」，那时是连接被拒，
+        // 判据正好就是 `not_running`（见 `classify`）。
+        Err(err) if err.not_running => {
+            // 有请求体的一定是上报 —— `report_body` 就是照着 `action` 构造的
+            let op = match report_body {
+                Some(body) => spool::SpoolOp::Report { body },
+                None => spool::SpoolOp::Clear { session: session.clone() },
+            };
+            spool::append(&spool::Spooled::now(op));
+            log_hook(agent, &event, &session, &fill(t().hook_spooled, &[&err.message]));
+        }
         Err(err) => log_hook(agent, &event, &session, &fill(t().hook_failed, &[&err.message])),
     }
     result
+}
+
+/// 把这一条动作真的发出去。
+///
+/// **单独一个函数，而不是写在 `hook()` 里** —— 这一点很关键：`read_response!`
+/// 里有一个 `?`，而 `?` 是把失败从**当前函数**直接抛出去的。留在 `hook()` 里的话，
+/// 「连不上 app」这条**最常见的**失败会绕过调用方的日志和攒盘，一路抛到 `main`：
+/// 于是 hook 出了最该被记下来的那种故障，日志里却一个字都没有（早先正是如此 ——
+/// 只有服务端明确拒绝的那几种留得下痕）。放在这里，失败就是一个返回值，
+/// 由 `hook()` 决定怎么记、要不要攒。
+fn send_action(
+    flags: &Flags,
+    action: &Action,
+    report_body: Option<&Value>,
+    session: &str,
+) -> Result<(), Failure> {
+    let endpoint = Endpoint::discover(flags)?;
+    match action {
+        Action::Report(_) => {
+            let (status, text) = read_response!(client()
+                .post(&endpoint.url("/state"))
+                .header("Authorization", &endpoint.auth())
+                .header("Content-Type", "application/json")
+                .send(report_body.expect("上报一定有请求体").to_string()));
+            expect_success(status, &text).map(|_| ())
+        }
+        Action::Clear => {
+            let (status, text) = read_response!(client()
+                .delete(&endpoint.url(&format!("/sessions/{session}")))
+                .header("Authorization", &endpoint.auth())
+                .call());
+            expect_success(status, &text).map(|_| ())
+        }
+    }
 }
 
 /// 记一行 hook 调用。

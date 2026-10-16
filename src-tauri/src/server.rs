@@ -1,5 +1,6 @@
 use crate::config;
 use crate::notify::Notifier;
+use crate::spool;
 use crate::state::{state_ttl, Report, Snapshot, Store};
 use axum::{
     extract::{rejection::JsonRejection, Path, Request, State},
@@ -12,7 +13,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// 首选端口。被占用就退到系统分配，两种情况下都把实际端口写进 `~/.signalhub/port`。
 const PREFERRED_PORT: u16 = 41320;
@@ -76,6 +77,29 @@ pub fn spawn(
             }
         } else {
             println!("[signalhub] HTTP 服务监听 127.0.0.1:{port}");
+        }
+
+        // ---- 降级通道的补写（见 `spool`）----
+        //
+        // 位置是刻意的：**在 `axum::serve` 之前**。上面那行已经把端口文件写好了，
+        // 所以此刻可能有 CLI 正连上来、连接被内核放进 backlog 里等着 —— 但它们
+        // **一条都还没被处理**（`serve` 还没开始 poll）。于是「先把攒下的补上、
+        // 再处理新的」这个顺序是被保证的：补的每一条都比新来的旧。
+        //
+        // 补完才 `serve`，也就不会出现「新的先进状态机、旧的后进」（那会让灯的
+        // 状态往回跳）。代价是启动时多了几十毫秒 —— 上限 200 条，可以接受。
+        if let Some(path) = spool::path() {
+            let stats = replay_spool(&ctx, &path);
+            if stats.replayed > 0 || stats.expired > 0 || stats.bad > 0 {
+                // 补了东西（或者丢了东西）就要留痕：用户唯一能查的地方就是这份日志
+                config::append_hook_log(&format!(
+                    "{} [spool] 重放 {} 条，丢弃 {} 条（过期）/ {} 条（读不出）\n",
+                    config::utc_hms(),
+                    stats.replayed,
+                    stats.expired,
+                    stats.bad,
+                ));
+            }
         }
 
         if let Err(err) = axum::serve(listener, router(ctx)).await {
@@ -203,11 +227,7 @@ async fn report_state_at_path(
 }
 
 async fn clear_session(State(ctx): State<Ctx>, Path(session): Path<String>) -> Json<Value> {
-    let (removed, changed, snapshot) = {
-        let mut guard = ctx.store.lock().expect("state store poisoned");
-        let (removed, changed) = guard.remove_session(&session, std::time::Instant::now());
-        (removed, changed, guard.snapshot())
-    };
+    let (removed, changed, snapshot) = drop_session(&ctx, &session);
     if changed {
         (ctx.notify)(&snapshot);
     }
@@ -243,7 +263,37 @@ fn apply(ctx: &Ctx, path_session: Option<String>, mut report: Report) -> Result<
     if let Some(session) = path_session {
         report.session = Some(session);
     }
+    let (changed, snapshot) = ingest(ctx, report, None);
 
+    // 顺带把聚合结果回给调用方，这样一次 curl 就能看到全局状态
+    Ok(Json(json!({
+        "ok": true,
+        "aggregate": snapshot.aggregate,
+        "sessions": snapshot.all_sessions().count(),
+        "groups": snapshot.groups.len(),
+        "changed": changed,
+    })))
+}
+
+/// 记一次上报，有变化就推前端。返回 `(是否变化, 快照)`。`ttl` 见 [`ingest_core`]。
+fn ingest(ctx: &Ctx, report: Report, ttl: Option<Duration>) -> (bool, Snapshot) {
+    let (changed, snapshot) = ingest_core(ctx, report, ttl);
+    if changed {
+        (ctx.notify)(&snapshot);
+    }
+    (changed, snapshot)
+}
+
+/// 记一次上报的**核心**：解析兜底分组 → 定停留时长 → 进状态机。
+///
+/// `ttl` 给 `Some` 时**跳过算法**直接用。正常上报不给（走三级优先），只有启动时
+/// 的 spool 重放会给 —— 它要的是「从原本那一刻起算的剩余时长」，而不是从此刻
+/// 起算的整段（见 [`replay_spool`]）。
+///
+/// 不推前端：调用方决定什么时候推。HTTP 是每条都推（改完就得看见），重放是攒完
+/// 推一次（见 [`replay_spool`]）—— 但**聚合和分组解析只有这一份**，重放不会走
+/// 到另一套逻辑上去。
+fn ingest_core(ctx: &Ctx, mut report: Report, ttl: Option<Duration>) -> (bool, Snapshot) {
     // 兜底分组。**放在这里，因为这是唯一的上报入口** —— `/v1/state` 和
     // `/v1/sessions/{id}/state` 都走它，所以下面那两个 handler 不可能漏掉一个。
     //
@@ -260,29 +310,106 @@ fn apply(ctx: &Ctx, path_session: Option<String>, mut report: Report) -> Result<
         let settings = ctx.settings.lock().expect("settings poisoned");
         let resolved =
             settings.resolve_group(report.group.as_deref(), report.cwd.as_deref(), &session);
-        let ttl = state_ttl(report.state, report.ttl_ms, &settings);
+        let ttl = ttl.unwrap_or_else(|| state_ttl(report.state, report.ttl_ms, &settings));
         (resolved, ttl)
     };
     report.group = resolved;
 
-    let (changed, snapshot) = {
-        let mut guard = ctx.store.lock().expect("state store poisoned");
-        let changed = guard.apply(Instant::now(), report, ttl);
-        (changed, guard.snapshot())
-    };
-    if changed {
-        (ctx.notify)(&snapshot);
+    let mut guard = ctx.store.lock().expect("state store poisoned");
+    let changed = guard.apply(Instant::now(), report, ttl);
+    (changed, guard.snapshot())
+}
+
+/// 清掉一个会话（`DELETE /v1/sessions/{id}` 和重放共用）。
+/// 返回 `(removed, changed, 快照)`；推前端由调用方决定。
+fn drop_session(ctx: &Ctx, session: &str) -> (bool, bool, Snapshot) {
+    let mut guard = ctx.store.lock().expect("state store poisoned");
+    let (removed, changed) = guard.remove_session(session, Instant::now());
+    (removed, changed, guard.snapshot())
+}
+
+/// 启动时把 `spool.jsonl` 里攒下的上报补进状态机，然后删掉它。
+///
+/// 为什么会攒下东西：app 没在跑（重启、退出、刚装完还没启动）时，智能体的 hook
+/// 上报会**连接被拒**，那一条就永远丢了 —— 而 hook 在后台跑，用户根本不会发现。
+/// CLI 于是把它写进这个文件（见 `spool`），这里补上。
+///
+/// 四条刻意的选择：
+///
+/// - **判据是连接本身，不是「端口文件在不在」**（那是 CLI 侧的事）。这边只看文件
+///   里有没有东西 —— 进程崩过之后端口文件还在，那是常见的假阳性。
+/// - 走**[`ingest_core`]，和 HTTP 上报同一条路**：分组解析、状态机、TTL 都不另写一套。
+/// - **过了 TTL 的直接丢**。一条三小时前的 `working`（TTL 5 分钟）此刻补出来只能是
+///   一块「沉默」的牌，而且还会再挂 30 分钟宽限期 —— 它确实过期了，就别复活它。
+///   没过期的按「原本那一刻起算」给一个**缩短了的 TTL**，于是它消失的时刻和当初
+///   正常上报时**完全一致**。
+/// - **只在最后推一次前端**。逐条推的话，一次退出期间攒下的事件会让灯闪一阵子，
+///   而且每一条都会过一遍通知 / 出站钩子的判断。攒完推一次拿到的是**最终**状态，
+///   那才是用户真正该看到的。
+fn replay_spool(ctx: &Ctx, path: &std::path::Path) -> ReplayStats {
+    let (records, bad) = spool::read_all(path);
+    let mut stats = ReplayStats { bad, ..ReplayStats::default() };
+    if records.is_empty() && bad == 0 {
+        return stats;
     }
 
-    // 顺带把聚合结果回给调用方，这样一次 curl 就能看到全局状态
-    Ok(Json(json!({
-        "ok": true,
-        "aggregate": snapshot.aggregate,
-        "sessions": snapshot.all_sessions().count(),
-        "groups": snapshot.groups.len(),
-        "changed": changed,
-    })))
+    let now_ms = spool::now_ms();
+    for record in records {
+        // 记录里的时刻是**墙上时钟**（跨进程只能存这个），先折算成「过去了多久」，
+        // 再拿它去缩 TTL。`saturating_sub`：时钟被往回调过时当作「刚刚发生」，
+        // 宁可多显示一会儿，也不要算出负的时长。
+        let age = Duration::from_millis(now_ms.saturating_sub(record.at_ms));
+        match record.op {
+            spool::SpoolOp::Clear { session } => {
+                let (_, changed, _) = drop_session(ctx, &session);
+                stats.changed |= changed;
+                stats.replayed += 1;
+            }
+            spool::SpoolOp::Report { body } => {
+                let Ok(report) = serde_json::from_value::<Report>(body) else {
+                    // 请求体没能解析成 `Report`（状态名写错、或 JSON 形状不对）。
+                    // 这和坏行是一回事，记下来跳过。
+                    stats.bad += 1;
+                    continue;
+                };
+                let ttl = {
+                    let settings = ctx.settings.lock().expect("settings poisoned");
+                    state_ttl(report.state, report.ttl_ms, &settings)
+                };
+                let Some(remaining) = ttl.checked_sub(age) else {
+                    stats.expired += 1;
+                    continue;
+                };
+                let (changed, _) = ingest_core(ctx, report, Some(remaining));
+                stats.changed |= changed;
+                stats.replayed += 1;
+            }
+        }
+    }
+
+    // 攒完推一次（见上面那第四条）。没推过的话，重放的效果只落在状态机里，
+    // 灯上什么都不会变 —— 那就等于没重放。
+    if stats.changed {
+        let snapshot = ctx.store.lock().expect("state store poisoned").snapshot();
+        (ctx.notify)(&snapshot);
+    }
+    spool::remove(path);
+    stats
 }
+
+/// 一次重放的结果。写日志、写单测都要它。
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ReplayStats {
+    /// 真的应用上了的条数（含清除）
+    replayed: usize,
+    /// 因为过了 TTL 而丢掉的条数
+    expired: usize,
+    /// 读不出来的条数（坏行 + 解析不成 `Report` 的请求体）
+    bad: usize,
+    /// 是否真的改变了状态（决定要不要推前端）
+    changed: bool,
+}
+
 
 /// axum 的 Json rejection 默认给 422，而 `state` 非法应当算 400（客户端写错了）。
 fn parse_body(body: Result<Json<Report>, JsonRejection>) -> Result<Report, ApiError> {
@@ -317,6 +444,7 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::Signal;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -345,6 +473,22 @@ mod tests {
     }
 
     async fn start() -> TestServer {
+        let (ctx, notifications, settings) = test_ctx();
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(listener, router(ctx)).await.unwrap();
+        });
+
+        TestServer { port, token: "s3cret".to_string(), notifications, settings }
+    }
+
+    /// 一个不经 HTTP 的 ctx + 通知计数 + 那份共享设置。
+    ///
+    /// 重放那几条用例（`replay_spool`）不需要真的起服务器 —— 重放本来就不走网络，
+    /// 它是「把盘上的东西补进状态机」。
+    fn test_ctx() -> (Ctx, Arc<AtomicUsize>, crate::SharedSettings) {
         let notifications = Arc::new(AtomicUsize::new(0));
         let counter = notifications.clone();
         let settings: crate::SharedSettings =
@@ -359,14 +503,7 @@ mod tests {
             token: "s3cret".to_string(),
             started: Instant::now(),
         };
-
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        tokio::spawn(async move {
-            axum::serve(listener, router(ctx)).await.unwrap();
-        });
-
-        TestServer { port, token: "s3cret".to_string(), notifications, settings }
+        (ctx, notifications, settings)
     }
 
     impl TestServer {
@@ -747,5 +884,145 @@ mod tests {
         let server = start().await;
         let (status, _) = call(&server, "GET", "/v1/nope", Some(&server.token), false, None).await;
         assert_eq!(status, 404);
+    }
+
+    // ---- 降级通道的重放（见 `spool`）----------------------------------------
+
+    /// 攒在盘上的记录补进状态机，然后**文件清掉** —— 不然下次启动会再补一遍。
+    #[test]
+    fn a_replay_applies_the_records_and_removes_the_file() {
+        let (ctx, notifications, _settings) = test_ctx();
+        let path = spool::temp_path("spool.jsonl");
+        spool::append_at(
+            &path,
+            &spool::Spooled {
+                at_ms: spool::now_ms(),
+                op: spool::SpoolOp::Report {
+                    body: serde_json::json!({
+                        "state": "permission",
+                        "session": "a",
+                        "group": "work",
+                        "message": "需要授权",
+                    }),
+                },
+            },
+        );
+        spool::append_at(
+            &path,
+            &spool::Spooled {
+                at_ms: spool::now_ms(),
+                op: spool::SpoolOp::Report {
+                    body: serde_json::json!({ "state": "working", "session": "b" }),
+                },
+            },
+        );
+        spool::append_at(
+            &path,
+            &spool::Spooled {
+                at_ms: spool::now_ms(),
+                op: spool::SpoolOp::Clear { session: "b".into() },
+            },
+        );
+
+        let stats = replay_spool(&ctx, &path);
+
+        assert_eq!(stats.replayed, 3);
+        assert_eq!(stats.expired, 0);
+        assert_eq!(stats.bad, 0);
+        assert!(stats.changed);
+        assert!(!path.exists(), "补完就把文件删掉 —— 否则下次启动会再补一遍");
+
+        let snapshot = ctx.store.lock().unwrap().snapshot();
+        let sessions: Vec<&str> = snapshot
+            .all_sessions()
+            .map(|session| session.id.as_str())
+            .collect();
+        assert_eq!(sessions, vec!["a"], "b 报了又被清掉，最后不该留下");
+        assert_eq!(snapshot.aggregate, Signal::Permission);
+        // **只推一次**：逐条推的话，一次退出期间攒下的事件会让灯闪一阵子
+        assert_eq!(notifications.load(Ordering::SeqCst), 1);
+    }
+
+    /// 过了 TTL 的记录**直接丢**，不要补出一块「沉默」的牌。
+    #[test]
+    fn a_replay_drops_records_that_already_expired() {
+        let (ctx, notifications, _settings) = test_ctx();
+        let path = spool::temp_path("spool.jsonl");
+        // `done` 的 TTL 是 30 秒，这条是五分钟前的 —— 它早就不该在灯上了
+        spool::append_at(
+            &path,
+            &spool::Spooled {
+                at_ms: spool::now_ms() - 5 * 60 * 1000,
+                op: spool::SpoolOp::Report {
+                    body: serde_json::json!({ "state": "done", "session": "a" }),
+                },
+            },
+        );
+
+        let stats = replay_spool(&ctx, &path);
+
+        assert_eq!(stats.replayed, 0);
+        assert_eq!(stats.expired, 1);
+        assert!(!stats.changed, "什么都没进去，就不该推前端");
+        assert_eq!(notifications.load(Ordering::SeqCst), 0);
+        assert_eq!(ctx.store.lock().unwrap().snapshot().all_sessions().count(), 0);
+    }
+
+    /// 没到期的记录要按**「原本那一刻起算」**补，而不是从现在重新起算。
+    ///
+    /// 这条是重放的语义核心：一条四分钟前的 `working`（TTL 五分钟）补进来之后
+    /// 应该**只剩一分钟**，而不是又拿到完整五分钟 —— 后者会让一块本该消失的牌
+    /// 在灯上多待四分钟。
+    #[test]
+    fn a_replay_keeps_the_remaining_life_of_a_record() {
+        let (ctx, _notifications, _settings) = test_ctx();
+        let path = spool::temp_path("spool.jsonl");
+        spool::append_at(
+            &path,
+            &spool::Spooled {
+                at_ms: spool::now_ms() - 4 * 60 * 1000,
+                op: spool::SpoolOp::Report {
+                    body: serde_json::json!({ "state": "working", "session": "a" }),
+                },
+            },
+        );
+
+        let stats = replay_spool(&ctx, &path);
+        assert_eq!(stats.replayed, 1);
+
+        let mut store = ctx.store.lock().unwrap();
+        assert_eq!(store.snapshot().aggregate, Signal::Working);
+        // 半分多钟后还活着（还剩一分钟），两分钟后就该转 stale 了
+        assert!(!store.expire(Instant::now() + Duration::from_secs(20)));
+        assert!(store.expire(Instant::now() + Duration::from_secs(90)));
+    }
+
+    /// 坏行跳过，好行照补 —— 文件会被手改、被截断、被交错写花。
+    #[test]
+    fn a_replay_skips_junk_without_losing_the_rest() {
+        let (ctx, _notifications, _settings) = test_ctx();
+        let path = spool::temp_path("spool.jsonl");
+        std::fs::write(
+            &path,
+            format!(
+                "这不是 JSON\n{}\n{}\n",
+                serde_json::json!({
+                    "at_ms": spool::now_ms(),
+                    "op": { "kind": "report", "body": { "state": "没有这个状态" } },
+                }),
+                serde_json::json!({
+                    "at_ms": spool::now_ms(),
+                    "op": { "kind": "report", "body": { "state": "attention", "session": "a" } },
+                }),
+            ),
+        )
+        .unwrap();
+
+        let stats = replay_spool(&ctx, &path);
+
+        assert_eq!(stats.replayed, 1, "最后那条好的要补上");
+        assert_eq!(stats.bad, 2, "非 JSON 的行 + 状态名不合法的请求体");
+        assert_eq!(ctx.store.lock().unwrap().snapshot().aggregate, Signal::Attention);
+        assert!(!path.exists(), "读完了照样要清掉 —— 坏行留着只会每次都白读一遍");
     }
 }

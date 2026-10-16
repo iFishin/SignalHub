@@ -124,6 +124,8 @@ pub struct CliText {
     pub stdin_not_json: &'static str,
     /// hook 里那个「失败: …」，写进 hooks.log
     pub hook_failed: &'static str,
+    /// 同上的「失败: …」，但这一条**已经攒下来**等 app 启动后重放（`{}` 是原因）
+    pub hook_spooled: &'static str,
 
     // ---- 牌上的「正在做什么」 ----
     //
@@ -219,6 +221,7 @@ pub const ZH: CliText = CliText {
     read_stdin_failed: "读取 stdin 失败: {}",
     stdin_not_json: "stdin 不是合法 JSON: {}",
     hook_failed: "失败: {}",
+    hook_spooled: "失败: {}（已存下，app 启动后自动补上）",
 
     tool_v_exec: "执行",
     tool_v_edit: "改",
@@ -366,6 +369,7 @@ pub const EN: CliText = CliText {
     read_stdin_failed: "Could not read stdin: {}",
     stdin_not_json: "stdin is not valid JSON: {}",
     hook_failed: "failed: {}",
+    hook_spooled: "failed: {} (saved; it will be replayed when the app starts)",
 
     tool_v_exec: "Running",
     tool_v_edit: "Editing",

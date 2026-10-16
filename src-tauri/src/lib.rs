@@ -11,10 +11,14 @@ mod stats;
 mod sweep;
 mod tray;
 
-// CLI (`src/bin/signalhub.rs`) 通过 #[path] 直接包含这两个模块的源码，
+// CLI (`src/bin/signalhub.rs`) 通过 #[path] 直接包含这几个模块的源码，
 // 因此它们是 lib 的公开 API，而不是只给 app 内部用的私有模块。
+//
+// `pub` 还有个作用：**写入方**（`spool::append`）只有 CLI 用得到，app 这边只读。
+// 私有模块的话，那些函数在 lib 里就是「没人用」，而 CI 是 `-D warnings`。
 pub mod config;
 pub mod hooks;
+pub mod spool;
 
 use config::{LampLayout, Settings};
 use notify::Notifier;
