@@ -1,13 +1,16 @@
 name: Release
 
-# 打一个 `v` 开头的 tag 就出三份安装包。
+# 打一个 `v` 开头的 tag 就出四个平台的安装包。
 #
-# 为什么必须是三个 runner 而不是一台机器：**Tauri 不能交叉编译**。macOS 的
-# `.app` / `.dmg` 只能在 macOS 上打，Windows 的 `.msi` / `.exe` 只能在 Windows 上打。
-# 所以「一次出多平台安装包」唯一的路子是矩阵：每个平台各跑一台，产物汇到同一个
-# Release 里。
+# 为什么必须是四个 runner 而不是一台机器：**Tauri 不能交叉编译**。macOS 的
+# `.app` / `.dmg` 只能在 macOS 上打，Windows 的 `-setup.exe` 只能在 Windows 上打，
+# Linux 的 `.deb` / `.AppImage` 只能在 Linux 上打。所以「一次出多平台安装包」唯一
+# 的路子是矩阵：每个平台各跑一台，产物汇到同一个 Release 里。
 #
-# 现在**没有签名**（见 README 的「安装」一节）。macOS 上第一次打开会被 Gatekeeper
+# Linux 那份**标 beta**（红线）：没在真机/真发行版上长期跑过，透明和置顶在 Wayland
+# 下还可能得退回 X11 —— 用户能看到的那段说明在 `.github/release-body.md` 里。
+#
+# 现在**没有代码签名**（见 README 的「安装」一节）。macOS 上第一次打开会被 Gatekeeper
 # 拦，Windows 上会被 SmartScreen 拦一道 —— 绕法写在 `.github/release-body.md` 里，
 # 那份说明会被塞进发布页，用户看得到。
 # 以后拿到证书，在下面 `tauri-action` 那一步前面补 codesign / notarytool / signtool
@@ -133,6 +136,17 @@ jobs:
           # 失败，而 NSIS 那份本来就是 Tauri 推荐的 Windows 安装器。
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+          # Linux 只出 deb + AppImage。**不能用 `targets: "all"`**：那在 Linux 上
+          # 还会带一个 rpm，而 `rpmbuild` 不在 runner 的默认镜像里（装了也得为它
+          # 多维护一份依赖声明）。`bundle_args` 就是把这件事说死的地方。
+          #
+          # 钉 **22.04 而不是 `ubuntu-latest`**：产物的 glibc 下限跟着构建机走，
+          # 在 24.04 上打出来的包装到 22.04 上会起不来（`GLIBC_2.39 not found`），
+          # 而用 22.04 打出来的在更新的发行版上照样跑。**这是一条不能"顺手升级"
+          # 的版本号。**
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bundle_args: --bundles deb,appimage
 
     runs-on: ${{ matrix.os }}
 
@@ -167,6 +181,28 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install create-dmg
 
+      # Linux 上要一堆**系统库**，没有一个是 npm / cargo 能带进来的：webkit2gtk 是
+      # WebView 本体，appindicator 是托盘，libxdo 是全局快捷键（那个插件在 X11 下
+      # 靠它），librsvg 用来渲染图标，patchelf 是 AppImage 打包时改 rpath 用的。
+      #
+      # 照 Tauri 官方文档那份清单来，不多不少 —— 少一个的表现是构建到一半报一个
+      # 和缺的库看不出关系的错（比如 pkg-config 找不到 webkit2gtk）。
+      - name: 装 Linux 系统依赖
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            file \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf \
+            wget
+
       # 只传 `releaseId`，**不传 `tagName`**：给了 releaseId 之后 tauri-action 会跳过
       # 「查找或创建发布」那一步，直接往这个 id 上传产物 —— 这正是上面那个 job 存在的
       # 意义。（两个都给的话，tagName 会被忽略，但少写一个少一处误解。）
@@ -179,13 +215,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # 更新包（`.sig` + `latest.json`）的签名。**`createUpdaterArtifacts` 打开之后
-          # 没有它 bundler 会直接失败** —— 这个 job 的三个 runner 都要，所以放在这里
+          # 没有它 bundler 会直接失败** —— 这个 job 的每个 runner 都要，所以放在这里
           # 而不是某个 `if: runner.os == ...` 的分支里。
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
-          args: --target ${{ matrix.target }}
+          # `bundle_args` 只有 Linux 那行有，`|| ''` 让另外两行不必写一个空字段
+          args: --target ${{ matrix.target }} ${{ matrix.bundle_args || '' }}
 
       # 免安装的 portable 包（解压即用，不写注册表、不建开始菜单项）。
       #

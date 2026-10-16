@@ -64,7 +64,9 @@ signalhub error --session b --group ci
 从 [Releases](https://github.com/iFishin/SignalHub/releases) 下载：
 
 - **macOS** —— `.dmg`，拖进「应用程序」。Apple Silicon 选 `aarch64`，Intel 选 `x64`。
-- **Windows** —— `-setup.exe`（NSIS 安装器）或 `.msi`。
+- **Windows** —— `-setup.exe`（NSIS 安装器）或 `_x64_portable.zip`（解压即用）。
+- **Linux（beta）** —— `.AppImage` 或 `.deb`。透明和置顶在 Wayland 下不一定生效，
+  碰上就 `GDK_BACKEND=x11` 启动；没有 FUSE 的环境加 `--appimage-extract-and-run`。
 
 安装包**没有签名**，所以第一次打开会被拦一道。macOS 上**推荐**在终端里跑：
 
@@ -80,11 +82,15 @@ xattr -dr com.apple.quarantine /Applications/SignalHub.app
 ln -sfn /Applications/SignalHub.app/Contents/MacOS/signalhub /usr/local/bin/signalhub
 ```
 
-打一个 `v` 开头的 tag 就会自动出这三份包，见 [.github/workflows/release.yml](.github/workflows/release.yml)。
+打一个 `v` 开头的 tag 就会自动出四个平台的包，见 [.github/workflows/release.yml](.github/workflows/release.yml)。
 
 ## 从源码运行
 
 需要 Node.js 与 Rust 工具链。
+
+Linux 上还要先装一批**系统库**（Tauri 官方那份清单，和 CI 里 release.yml 装的是同一份）。
+具体清单见 `.github/workflows/release.yml` 的「装 Linux 系统依赖」那一步；少一个的表现
+是构建报一个和缺的库看不出关系的错。
 
 ```bash
 npm install

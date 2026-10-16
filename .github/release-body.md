@@ -26,6 +26,23 @@ portable 版解压出来是**两个文件**，两个都要留着：`signalhub-ap
 
 设置和状态仍然存在 `%USERPROFILE%\.signalhub`，所以它「免安装」但不「随身带配置」。
 
+**Linux（beta）** —— 两种拿法：
+
+- `.AppImage` —— 加个执行位直接跑：`chmod +x SignalHub_*_amd64.AppImage`。
+- `.deb` —— `sudo dpkg -i SignalHub_*_amd64.deb`（缺依赖就 `sudo apt-get -f install`）。
+  WebView 本体和托盘库都在依赖里，不用自己找。
+
+**这一版请当成 beta 用**：没在真机上长期跑过，已知两点：
+
+- 透明窗口和「始终置顶」在 **Wayland** 下不一定生效 —— 那是合成器的限制，不是能改
+  的开关。真碰上就用 `GDK_BACKEND=x11` 启动（走 XWayland）：
+  `GDK_BACKEND=x11 SignalHub_*_amd64.AppImage`。
+- 在没有 FUSE 的环境里（容器、部分精简发行版），AppImage 要这样跑：
+  `./SignalHub_*_amd64.AppImage --appimage-extract-and-run`。
+
+`signalhub` 命令同样**已经打包在里面**（「设置 → 接入」页的一键接入会自己用它），
+所以不用另外装。
+
 ### 命令行
 
 `signalhub` 这个命令**已经打包在应用里了**，不用另外装 —— 设置里的「接入」页

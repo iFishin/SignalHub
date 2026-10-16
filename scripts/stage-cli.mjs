@@ -19,7 +19,7 @@
 // `target/<三元组>/release/`），而「猜错」的表现是 dev 里那个命令找不到，不好查。
 
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -79,4 +79,8 @@ const to = join(root, "src-tauri", "binaries", `signalhub-${triple}${exe}`);
 
 mkdirSync(dirname(to), { recursive: true });
 copyFileSync(from, to);
+// 执行位**显式给上**：Tauri 把这个文件当 sidecar 塞进包，少了执行位的话装完
+// 「接入」写出来的那条命令点不动，而且不报错。`copyFileSync` 不保证带上源文件的
+// 权限位。Windows 上 chmod 是空操作（`.exe` 不看权限位），所以不必判断平台。
+chmodSync(to, 0o755);
 console.log(`[stage-cli] ${to}`);
