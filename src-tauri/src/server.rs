@@ -686,6 +686,31 @@ mod tests {
         (ctx, notifications, settings, bind)
     }
 
+    /// 「自检」在 HTTP 式接入下走的是**真一次 HTTP**（`crate::probe_http`）。
+    ///
+    /// 这条用例同时钉住两件事：那条路真的能打通（不是只调了一遍 handler），
+    /// 以及它**不需要 token** —— 装出来的配置里本来就没有 token。
+    #[tokio::test]
+    async fn the_self_check_probe_reaches_the_hook_endpoint() {
+        let server = start().await;
+        let payload = json!({
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "signalhub-probe",
+        })
+        .to_string();
+        let url = format!("http://127.0.0.1:{}/v1/hooks/claude-code", server.port);
+
+        let text = tokio::task::spawn_blocking(move || crate::probe_http(&url, &payload))
+            .await
+            .unwrap()
+            .expect("探测应当成功");
+        assert!(text.starts_with("HTTP 200"), "{text}");
+
+        // 探测真的走完了整条路：状态进了状态机
+        let (_, state) = call(&server, "GET", "/v1/state", Some(&server.token), false, None).await;
+        assert!(state.contains("signalhub-probe"), "state: {state}");
+    }
+
     impl TestServer {
         /// 模拟用户在设置面板里拨「按目录 / 按会话分组」——改的是服务器手里那一份，
         /// 走的是同一条共享路径，不是另造一个快照。

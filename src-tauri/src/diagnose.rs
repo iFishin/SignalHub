@@ -82,6 +82,17 @@ pub fn text(receipts: &Receipts, filter: Option<Agent>) -> String {
             InstallKind::PluginFile => "往插件目录放我们自己的文件",
         };
         let _ = writeln!(out, "接入方式 {kind}");
+        // **哪一种写法**也要说：两种模式写进同一个配置，而它们的行为不同
+        // （HTTP 式不怕 PATH 问题、但开了局域网访问时会关掉）
+        match hooks::installed_http(agent) {
+            Some(true) => {
+                let _ = writeln!(out, "  写法 HTTP —— 不需要命令；开了局域网访问时这个端点会关掉");
+            }
+            Some(false) => {
+                let _ = writeln!(out, "  写法 命令 —— 需要那条命令跑得起来（见下面那两行）");
+            }
+            None => {}
+        }
         write_config(&mut out, agent);
         write_config_command(&mut out, agent);
         write_plugin_shape(&mut out, agent);
@@ -204,6 +215,12 @@ fn write_config(out: &mut String, agent: Agent) {
 fn write_config_command(out: &mut String, agent: Agent) {
     if matches!(hooks::install_kind(agent), InstallKind::PluginFile) {
         // 插件式没有「配置里那条命令」这回事 —— 它的上报命令写在我们生成的源码里。
+        return;
+    }
+    if hooks::installed_http(agent) == Some(true) {
+        // **没有命令是设计如此**，不是读不出来。写成「读不出来」会把人引到
+        // 「是不是我配置写错了」那条岔路上。
+        let _ = writeln!(out, "配置里没有命令 —— 这条接入走 HTTP，不需要命令跑得起来");
         return;
     }
     match hooks::installed_command(agent) {

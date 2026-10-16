@@ -909,6 +909,12 @@ struct AgentStatus {
     /// （它只是执行了一个不存在的程序，然后照常继续），灯也不亮。这是「装了却没
     /// 反应」里最值得主动指出的一种，所以把它算在服务端、摆到界面上。
     command_ok: bool,
+    /// 装进去的是 **HTTP 式**（`Some(true)`）还是命令式（`Some(false)`）。
+    /// `None` = 没装。
+    ///
+    /// 两种模式写进同一个配置，界面必须说得出「你在跑哪条路」—— 否则用户看到
+    /// 「已接入」却不知道自己改不改 PATH 有没有关系。
+    http: Option<bool>,
 }
 
 /// 扫一遍机器上有哪些智能体、我们接入了哪些。
@@ -926,6 +932,9 @@ fn detect_agents() -> Vec<AgentStatus> {
             // `installed_command` 要读一次配置文件，所以只算一次
             let command = hooks::installed_command(agent);
             let command_ok = command.as_deref().is_some_and(hooks::command_resolves);
+            // **HTTP 式没有命令可解析**，所以 `command_ok` 在那种情况下无意义 ——
+            // 界面按 `http` 那个字段改口（见 `SettingsPanel` 的 `agentTryHint`）。
+            let http = hooks::installed_http(agent);
             AgentStatus {
                 id,
                 name: agent.name(),
@@ -936,6 +945,7 @@ fn detect_agents() -> Vec<AgentStatus> {
                     .unwrap_or_default(),
                 command,
                 command_ok,
+                http,
             }
         })
         .collect()
@@ -1038,9 +1048,63 @@ fn install_agent_hooks(agent: String) -> Result<HookChange, String> {
     hooks::install(hooks::Agent::parse(&agent)?, false).map(HookChange::from)
 }
 
+/// 用 **HTTP 方式**接入（目前只有 Claude Code 支持）。
+///
+/// 和上面那个分开，而不是加一个「模式」参数：**用户点的是一件事，不是一个选项**。
+/// 界面上它是「改用 HTTP 方式」这一句，对应的就是这条命令；而参数化的接口会让人
+/// 以为还有第三种组合。
+///
+/// 端口取**此刻**服务真正在用的那个（`config::read_port`）。拿不到就说明应用还没
+/// 起来 —— 那时写进去的 URL 一定是错的，宁可失败也不要留一条打不通的 hook。
+///
+/// 端口在 **Rust 这边读**，不从界面上传：界面上那个值是打开设置面板时取的，
+/// 中途端口可能已经变了（原来那个被占用），而写进用户配置文件的东西不该来自
+/// 一份可能过期的快照。
+#[tauri::command]
+fn install_agent_http_hooks(agent: String) -> Result<HookChange, String> {
+    let port = config::read_port()
+        .map_err(|err| format!("读不到上报服务的端口（应用还没跑起来？）: {err}"))?;
+    hooks::install_http(hooks::Agent::parse(&agent)?, port, false).map(HookChange::from)
+}
+
 #[tauri::command]
 fn uninstall_agent_hooks(agent: String) -> Result<HookChange, String> {
     hooks::uninstall(hooks::Agent::parse(&agent)?, false).map(HookChange::from)
+}
+
+/// HTTP 式接入的探测上限。对面就是我们自己、走的是回环，3 秒绰绰有余 ——
+/// 而这个数字同时是「点下去界面最多等多久」的上限。
+const PROBE_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// 打一次自己的 hook 端点，确认它活着、也认得这个 payload。
+///
+/// **必须真发一次 HTTP**，不能直接调 handler：这条路上要验证的恰恰是「端点在不在」
+/// ——路由挂上去没有、是不是真的绑在回环上、body 限长有没有把正常的 payload 挡掉。
+/// 直接调函数把这些全都跳过去了，那正是最需要证明的部分。
+///
+/// 阻塞式的（ureq），调用方负责挪到线程上（见 `try_agent`）。
+fn probe_http(url: &str, payload: &str) -> Result<String, String> {
+    let config = ureq::Agent::config_builder()
+        .timeout_connect(Some(PROBE_HTTP_TIMEOUT))
+        .timeout_per_call(Some(PROBE_HTTP_TIMEOUT))
+        .build();
+
+    // ureq 把 4xx/5xx 也当成 Err，所以 Ok 就意味着 2xx。这里唯一的非 2xx 是
+    // 「开了局域网访问」时的 403，而它的原因写在响应体里 —— 由 err 带出去。
+    let mut response = ureq::Agent::new_with_config(config)
+        .post(url)
+        .header("Content-Type", "application/json")
+        .send(payload)
+        .map_err(|err| err.to_string())?;
+    let status = response.status().as_u16();
+    let body = response
+        .body_mut()
+        .with_config()
+        .limit(1024)
+        .lossy_utf8(true)
+        .read_to_string()
+        .unwrap_or_default();
+    Ok(format!("HTTP {status} {body}").trim().to_string())
 }
 
 /// 「试一下」的结果。**返回结构而不是一句话**：文案分语言（见 `lang.rs`），
@@ -1082,6 +1146,42 @@ async fn try_agent(app: tauri::AppHandle, agent: String) -> Result<ProbeOutcome,
     // 两条路都在事后清理探测信号（见 `sweep_probe`）。放在最前面：命令式那条路
     // 是从这里返回的，它报上来的会话名同样是 `signalhub-probe`。
     sweep_probe(app.clone());
+
+    if hooks::installed_http(agent) == Some(true) {
+        // **HTTP 式那条路跑不了命令**（配置里根本没有命令），所以要单独探一次：
+        // 真发一个 HTTP 过去，看那个端点认不认得我们的 payload。
+        let port = config::read_port()
+            .map_err(|err| format!("读不到上报服务的端口（应用还没跑起来？）: {err}"))?;
+        let url = format!("http://127.0.0.1:{port}/v1/hooks/{}", hooks::cli_name(agent));
+        let payload = hooks::probe_payload(agent)
+            .ok_or_else(|| "这个智能体没有可用的探测事件".to_string())?;
+
+        // **不能就地发**：ureq 是阻塞的，而这里是 async 上下文 —— 就地发会把整个
+        // 异步运行时（上报服务也在上面）卡住最多 3 秒。这正是「界面卡住」和
+        // 「上报超时」一起出现的那种怪现象的来源。
+        let target = url.clone();
+        let outcome = tauri::async_runtime::spawn_blocking(move || probe_http(&target, &payload))
+            .await
+            .map_err(|err| err.to_string())?;
+        return Ok(match outcome {
+            Ok(text) => ProbeOutcome {
+                kind: "http",
+                ran: true,
+                code: Some(200),
+                output: text,
+                command: Some(url),
+                states: Vec::new(),
+            },
+            Err(err) => ProbeOutcome {
+                kind: "http",
+                ran: false,
+                code: None,
+                output: err,
+                command: Some(url),
+                states: Vec::new(),
+            },
+        });
+    }
 
     if let Some(payload) = hooks::probe_payload(agent) {
         let command = hooks::installed_command(agent)
@@ -2128,6 +2228,7 @@ pub fn run() {
             update::check_update,
             update::install_update,
             install_agent_hooks,
+            install_agent_http_hooks,
             uninstall_agent_hooks,
             try_agent,
             diagnose,

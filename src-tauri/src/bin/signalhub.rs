@@ -162,6 +162,8 @@ struct Flags {
     ttl_ms: Option<u64>,
     json: bool,
     dry_run: bool,
+    /// `install hooks`：用 **HTTP 方式**接入（不需要命令，目前只有 Claude Code）。
+    http: bool,
     port: Option<u16>,
     /// watch 专用
     interval_ms: Option<u64>,
@@ -209,6 +211,7 @@ impl Flags {
                 }
                 "--json" => flags.json = true,
                 "--dry-run" => flags.dry_run = true,
+                "--http" => flags.http = true,
                 "--interval" => {
                     let raw = take_value(args, &mut index, "--interval")?;
                     flags.interval_ms = Some(parse_ttl(&raw)?);
@@ -816,7 +819,16 @@ fn run_diagnose(agent: Option<&str>) -> Result<(), Failure> {
 
 fn install_hooks(agent: &str, flags: &Flags) -> Result<(), Failure> {
     let agent = hooks::Agent::parse(agent).map_err(Failure::other)?;
-    let report = hooks::install(agent, flags.dry_run).map_err(Failure::other)?;
+    let report = if flags.http {
+        // 端口取**此刻**服务真正在用的那个：写进用户配置文件的东西不能来自一份
+        // 可能过期的快照，而读不到端口就说明应用还没起来 —— 那时 URL 一定是错的
+        let port = config::read_port().map_err(|err| {
+            Failure::other(fill(t().http_needs_port, &[&err.to_string()]))
+        })?;
+        hooks::install_http(agent, port, flags.dry_run).map_err(Failure::other)?
+    } else {
+        hooks::install(agent, flags.dry_run).map_err(Failure::other)?
+    };
 
     println!(
         "{}",

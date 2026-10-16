@@ -93,6 +93,8 @@ pub struct CliText {
     pub uninstalled: &'static str,
     pub dry_run_suffix: &'static str,
     pub install_command: &'static str,
+    /// `install hooks --http` 但读不到端口时（应用还没起来）
+    pub http_needs_port: &'static str,
     pub install_config: &'static str,
     pub install_backup: &'static str,
     /// `{}` 个数
@@ -198,6 +200,8 @@ pub const ZH: CliText = CliText {
     uninstalled: " 已移除",
     dry_run_suffix: "（演练，未写入任何文件）",
     install_command: "  命令  {}",
+    http_needs_port: "读不到上报服务的端口（{err}）—— 应用还没跑起来，写进去的地址一定是错的。",
+
     install_config: "  配置  {}",
     install_backup: "  备份  {}",
     install_added: "  新增  {} 个事件",
@@ -243,6 +247,8 @@ signalhub {} —— 桌面悬浮状态灯的上报客户端
   signalhub monitor on|off           全局暂停 / 恢复监控
   signalhub on | off                 monitor 的简写
   signalhub install hooks <智能体>   把 hook 写进智能体的配置文件
+                                     加 --http 改用 HTTP 方式（不需要命令，
+                                     只有 Claude Code 支持；应用要在跑）
   signalhub uninstall hooks <智能体> 移除本工具写进去的 hook
   signalhub diagnose [智能体]        打印一段排查文本（接不上时先跑它）
 
@@ -347,6 +353,8 @@ pub const EN: CliText = CliText {
     uninstalled: " removed",
     dry_run_suffix: " (dry run, nothing written)",
     install_command: "  command  {}",
+    http_needs_port: "Cannot read the report service port ({err}) — the app is not running, so the URL we would write is certainly wrong.",
+
     install_config: "  config   {}",
     install_backup: "  backup   {}",
     install_added: "  added    {} events",
@@ -392,6 +400,9 @@ Usage:
   signalhub monitor on|off           Pause / resume monitoring globally
   signalhub on | off                 Shorthand for monitor
   signalhub install hooks <agent>    Write hooks into an agent's config file
+                                     add --http to use the HTTP mode instead
+                                     (no command needed; Claude Code only; the
+                                     app must be running)
   signalhub uninstall hooks <agent>  Remove the hooks this tool wrote
   signalhub diagnose [agent]         Print a troubleshooting block (run this first)
 
@@ -575,6 +586,7 @@ mod tests {
             ("uninstalled", t.uninstalled),
             ("dry_run_suffix", t.dry_run_suffix),
             ("install_command", t.install_command),
+            ("http_needs_port", t.http_needs_port),
             ("install_config", t.install_config),
             ("install_backup", t.install_backup),
             ("install_added", t.install_added),

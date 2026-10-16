@@ -242,6 +242,10 @@ export interface Messages {
   agentTryRanFailed: (command: string, code: string, output: string) => string;
   /** 插件式接入：只能内部注入，证不了对方会不会调我们 */
   agentTryPlugin: (states: string) => string;
+  /** HTTP 式接入：真发了一次 HTTP 到本机端点，端点答了 */
+  agentTryHttpOk: (url: string) => string;
+  /** HTTP 式接入：那一次没打成（端点没起来 / 局域网模式下被关掉） */
+  agentTryHttpFailed: (url: string, output: string) => string;
   /** 接入页底部「复制诊断信息」按钮 */
   diagnoseCopy: string;
   diagnoseHint: string;
@@ -252,6 +256,20 @@ export interface Messages {
   diagRefresh: string;
   agentConnect: string;
   agentDisconnect: string;
+  /**
+   * Claude Code 的第二条路：**HTTP 方式**接入（不需要命令存在）。
+   *
+   * 文案里必须点出代价 —— 开了局域网访问时这个端点会自己关掉（它没有 token，
+   * 见 Rust 侧 `server::hook_report`）。不写这一句的话，用户会在打开局域网之后
+   * 遇到一次「突然没反应」而不知道为什么。
+   */
+  agentConnectHttp: string;
+  /** 已接入、想换另一条路时的按钮 */
+  agentSwitchHttp: string;
+  agentSwitchCommand: string;
+  /** 已接入时的接入方式说明（只在 Claude Code 那一行显示） */
+  agentModeHttp: string;
+  agentModeCommand: string;
   /** 「其他工具」那一节 —— 它们没有能写 hook 的配置文件 */
   cliAgentsTitle: string;
   cliAgentsHint: string;
@@ -646,6 +664,10 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       `真的跑了一遍配置里那条命令（${command}）—— 命令跑起来了。`,
     agentTryRanFailed: (command, code, output) =>
       `跑配置里那条命令（${command}）失败了${code ? `（退出码 ${code}）` : ""}${output ? `：${output}` : "。"}`,
+    agentTryHttpOk: (url) =>
+      `真的发了一次 HTTP 到 ${url} —— 端点答了。这条链路是通的（它证不了对方会不会调我们，那个看上面那行回执）。`,
+    agentTryHttpFailed: (url, output) =>
+      `发 HTTP 到 ${url} 失败${output ? `：${output}` : "。"}`,
     agentTryPlugin: (states) =>
       `这条接入是插件式，没有能单独运行的东西 —— 刚才是由应用内部注入了一遍 ${states}，证明灯和状态机是好的；它会不会调用我们，看上面那行回执。`,
     diagnoseCopy: "复制诊断信息",
@@ -658,6 +680,11 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     diagRefresh: "刷新",
     agentConnect: "接入",
     agentDisconnect: "卸载",
+    agentConnectHttp: "用 HTTP 接入（不需要命令）",
+    agentSwitchHttp: "改用 HTTP",
+    agentSwitchCommand: "改用命令",
+    agentModeHttp: "接入方式 HTTP：不需要那条命令存在，所以「命令不在 PATH 上」这类失败不存在。代价：开了「允许局域网访问」时这个端点会关掉。",
+    agentModeCommand: "接入方式 命令",
     cliAgentsTitle: "其他工具",
     cliAgentsHint:
       "两条路，按对方的情况挑。包一条命令：不管对方是什么，只要能跑命令就行 —— 跑起来报「执行中」，退出后按退出码报「已完成 / 出错」，不用它有任何 hook 支持。在它自己的事件钩子里调：对方有事件钩子时更精细（能区分「需要授权」和「出错」）—— 上面列表里没有的、但有 hook 配置的智能体走这条。VS Code 系里跑在集成终端（含任务）的用第一条；只活在侧边栏面板里的扩展（Cline / Roo Code / Continue 这类）接不了 —— 它既没有可包的进程，也没有可写的 hook 配置。",
@@ -1054,6 +1081,10 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     agentTryRanOk: (command) => `Ran the command from your config (${command}) — it works.`,
     agentTryRanFailed: (command, code, output) =>
       `Running the command from your config (${command}) failed${code ? ` (exit ${code})` : ""}${output ? `: ${output}` : "."}`,
+    agentTryHttpOk: (url) =>
+      `Sent a real HTTP request to ${url} — the endpoint answered. This path works (it cannot prove the agent will call us; the receipt above answers that).`,
+    agentTryHttpFailed: (url, output) =>
+      `Sending HTTP to ${url} failed${output ? `: ${output}` : "."}`,
     agentTryPlugin: (states) =>
       `This integration is a plugin — there is nothing we can run on its own. What you just saw was the app injecting ${states} itself, which proves the lamp and the state machine work; whether it calls us at all is what the receipt above answers.`,
     diagnoseCopy: "Copy diagnostics",
@@ -1066,6 +1097,11 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     diagRefresh: "Refresh",
     agentConnect: "Connect",
     agentDisconnect: "Disconnect",
+    agentConnectHttp: "Connect over HTTP (no command needed)",
+    agentSwitchHttp: "Switch to HTTP",
+    agentSwitchCommand: "Switch to command",
+    agentModeHttp: "Mode: HTTP. No command has to exist, so \"the command is not on PATH\" cannot happen. The trade-off: this endpoint is switched off while \"Allow LAN access\" is on.",
+    agentModeCommand: "Mode: command",
     cliAgentsTitle: "Other tools",
     cliAgentsHint:
       "Two ways; pick by what the tool gives you. Wrap a command: it does not matter what the tool is, as long as it can run a command — it reports Working while it runs and Done / Error by exit code when it finishes, and the tool needs no hook support at all. Call it from its own event hooks: finer-grained when the tool has them (it can tell Needs permission from Error apart) — use this for anything with hook config that is not in the list above. For VS Code: anything running in the integrated terminal (tasks included) uses the first way; extensions that live only in a side panel (Cline, Roo Code, Continue and the like) cannot be hooked at all — they offer neither a process to wrap nor a config file to write.",

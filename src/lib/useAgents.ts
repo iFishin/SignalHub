@@ -28,6 +28,14 @@ export interface AgentStatus {
    * 一个不存在的程序），灯也不亮。这是最该主动指出来的一种「装了却没反应」。
    */
   command_ok: boolean;
+  /**
+   * 装进去的是 HTTP 式（`true`）还是命令式（`false`）；`null` = 没装。
+   *
+   * 两种模式写进同一个配置，界面要说得出「你在跑哪条路」—— 否则用户看到「已接入」
+   * 也不知道自己改不改 PATH 有没有关系。HTTP 式没有命令可解析，所以那时
+   * `command_ok` 无意义。
+   */
+  http: boolean | null;
 }
 
 /** 与 Rust 侧 receipts.rs 的 ReceiptView 对应。 */

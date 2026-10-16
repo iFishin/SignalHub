@@ -73,6 +73,7 @@ Authorization: Bearer <token>
 | 方法 | 路径 | 说明 | 鉴权 |
 |---|---|---|---|
 | GET | `/v1/health` | 存活探测 | 免 |
+| POST | `/v1/hooks/{agent}` | HTTP 式 hook 的落点（见 §4.16） | 免（**只在绑回环时可用**） |
 | GET | `/v1/state` | 当前聚合状态 + 会话列表 | 需要 |
 | POST | `/v1/state` | 上报状态（`session` 在 body 里） | 需要 |
 | POST | `/v1/sessions/{session}/state` | 上报状态（`session` 在路径里） | 需要 |
@@ -960,6 +961,73 @@ a successful switch, pi emits session_shutdown for the old extension instance…
 它自己的进程里，那个目录就是「在哪个项目里干活」—— 按目录分组（`group_by: cwd`）靠它。
 
 Hermes 没有「需要授权」事件，所以接不了 `permission` 那一档（同 Gemini）。
+
+### 4.16 HTTP 方式接入（`--http`，目前只有 Claude Code）
+
+命令式接入最现实的失败是**那条命令跑不起来**：应用被挪走、裸命令名不在 GUI 进程的
+`PATH` 上……而智能体执行一个不存在的程序**不会报错**（它照常继续，灯也不亮）。
+
+HTTP 方式把这一整类失败去掉：配置里写的是一条本地 URL，智能体的进程自己 POST 过来。
+
+```bash
+signalhub install hooks claude-code --http   # 需要 app 正在运行（要读它的端口）
+```
+
+写进 `~/.claude/settings.json` 的是：
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "*",
+        "hooks": [ { "type": "http",
+                     "url": "http://127.0.0.1:41320/v1/hooks/claude-code",
+                     "timeout": 5,
+                     "onFailure": "continue" } ] }
+    ]
+  }
+}
+```
+
+字段都是官方文档里有的：`type` / `url` / `timeout`（**秒**，默认 600）/
+`onFailure`（`"continue"` 是默认值，写出来是为了让人一眼看到它是故意的）。事件清单、
+`matcher` 与命令式**完全相同**（同一张 `events()` 表）。
+
+#### 两条硬约束
+
+- **`timeout: 5` + `onFailure: "continue"`**：端点不在时（app 没开、端口变了）
+  也**绝不允许**拖住或挡住智能体。这两项不是可调参数。
+- **端点不需要 token，但只在绑回环时可用**（见 §2.2）。token 是每台机器一份的秘密，
+  而这份配置在用户的 `settings.json` 里、是会被 commit 的文件；代之以两条防线：
+  绑到 `0.0.0.0`（开了「允许局域网访问」）时该端点一律 **403**，以及 **256 KiB 的
+  body 上限**。这也是为什么它是**唯一**一个与「局域网访问」互斥的功能。
+
+#### 应答
+
+任何情况下都回 `200 {}`：这是上报端点，我们没有任何决定要交给智能体（`{}` 里没有
+`decision` / `continue` 字段 = 「没有意见」）。唯一例外是上面那个 403 —— 端点整个关着时，
+请求方本来就该知道。
+
+#### 会被静默跳过的一种情况
+
+`allowedHttpHookUrls`：用户一旦在**任何** settings 里定义了这个键，Claude Code
+就只运行列表里匹配的 HTTP hook，其余的一律不跑。所以 `install hooks --http` 会先读
+`~/.claude/settings.json`，发现这个键且我们的 URL 不匹配时**拒绝安装**并给出该写的
+那一行（`"http://127.0.0.1:*"`）—— 装上去只会得到一个「接入了却永远不亮」的谜。
+（我们**不**替你改这个键：那是安全设置，不该被一个上报功能悄悄改写。）
+
+#### 与命令式的取舍
+
+| | 命令式 | HTTP 式 |
+|---|---|---|
+| 依赖 | 那条命令必须跑得起来 | 无（只要 app 在跑） |
+| 延迟 | 每次事件一个进程 | 一次本地 HTTP |
+| 「正在做什么」那一行 | CLI 生成 | 应用生成（同一组词，见 `lang.rs`） |
+| 局域网访问开着时 | 照常工作 | **端点关闭（403）** |
+| 适配范围 | 8 家 | 只有 Claude Code |
+
+两种模式写进**同一个**配置，所以「换一种」是原地改写整条 handler（不会留下
+`url` 和 `command` 并存的怪条目），`uninstall` 也两种都认。
 
 ---
 

@@ -1039,7 +1039,8 @@ pub fn install(agent: Agent, dry_run: bool) -> Result<Report, String> {
     }
 
     let path = config_path(agent)?;
-    let mut report = install_at(agent, &resolve_hook_command(agent), &path, dry_run)?;
+    let mut report =
+        install_at(agent, &HookSpec::Command(resolve_hook_command(agent)), &path, dry_run)?;
 
     // Goose 的 hook 必须放在一个**插件**里，光有 hooks.json 它不会加载 ——
     // 清单是插件的身份证。演练模式不落盘，所以这里也跳过。
@@ -1059,6 +1060,135 @@ pub fn install(agent: Agent, dry_run: bool) -> Result<Report, String> {
         report.manifest = Some(manifest);
     }
     Ok(report)
+}
+
+/// 用 **HTTP 方式**接入（目前只有 Claude Code 支持）。
+///
+/// 和命令式的差别只有一个：配置里写的是一条本地 URL，而不是一条要跑起来的命令。
+/// 于是**「命令不在 PATH 上 / 应用被挪走了」这一整类失败都不存在** —— 那是接入页
+/// 红色提示里最常见的一条，也是这个模式存在的全部理由。
+///
+/// `port` 是**此刻**上报服务真正在用的端口（`config::read_port`）。为什么不留一个
+/// 占位符等启动时再改：改用户的配置文件是件该被看见的事，运行中偷偷去改它，
+/// 用户就永远不知道自己的配置里写了什么。端口变了重装一次即可 —— 而重装是我们
+/// 在界面上明确引导的动作。
+pub fn install_http(agent: Agent, port: u16, dry_run: bool) -> Result<Report, String> {
+    if agent != Agent::ClaudeCode {
+        // 其余几家没有可对照的文档事实：不写「验证过的映射」之外的东西
+        return Err("HTTP 方式目前只支持 Claude Code".to_string());
+    }
+    let url = hook_url(port);
+    let path = config_path(agent)?;
+
+    // **装了也会被静默跳过的一种情况**，所以宁可在这里拒绝。见 `url_allowed`。
+    if let Some(text) = fs::read_to_string(&path).ok()
+        && url_allowed(&text, &url) == Some(false)
+    {
+        return Err(format!(
+            "{} 里定义了 allowedHttpHookUrls，而 {url} 不在里面 —— \
+             定义了这个键之后，Claude Code 只会运行列表里匹配的 HTTP hook，\
+             其余的一律不跑（那就是「装上了却永远不亮」）。\
+             请在 allowedHttpHookUrls 里加上 \"http://127.0.0.1:*\"，\
+             或者删掉这个键，然后再点一次。",
+            path.display()
+        ));
+    }
+
+    install_at(agent, &HookSpec::Http { url }, &path, dry_run)
+}
+
+/// 用户自己的 HTTP hook 白名单里允不允许这个 URL。
+///
+/// `None` = 那个键不存在（默认不限制）。**有它就一定要判定**：定义了这个键之后，
+/// Claude Code 只会运行列表里匹配的 HTTP hook，其余的一律不跑 —— 装了、一点也不亮、
+/// 而且看不出为什么，正是这个项目最不能接受的一种失败。
+///
+/// 匹配规则照官方文档（`*` 通配、主机名大小写不敏感）。这里刻意做得**比对方更严**：
+/// 严的后果是「拒绝安装并告诉用户怎么写」，松的后果是「装上了但永远不亮」。
+fn url_allowed(text: &str, url: &str) -> Option<bool> {
+    let root: Value = serde_json::from_str(text).ok()?;
+    let patterns = root.get("allowedHttpHookUrls")?.as_array()?;
+    Some(
+        patterns
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|pattern| glob_match(pattern, url)),
+    )
+}
+
+/// `*` 通配、其余按字面比、整体大小写不敏感。
+///
+/// 大小写不敏感是官方的说法（就主机名而言），而我们的 URL 全小写 —— 放宽只会让
+/// 判定更松一点点，而松的那一点点对「主机名大小写」这种情形恰好是对的。
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let pattern: Vec<char> = pattern.to_lowercase().chars().collect();
+    let text: Vec<char> = text.to_lowercase().chars().collect();
+
+    // 双指针 + 回溯：`*` 先只吞零个字符，后面不匹配了再回来多吞一个
+    let (mut p, mut t) = (0usize, 0usize);
+    let (mut star, mut mark) = (None, 0usize);
+    while t < text.len() {
+        if p < pattern.len() && pattern[p] == text[t] {
+            p += 1;
+            t += 1;
+        } else if p < pattern.len() && pattern[p] == '*' {
+            star = Some(p);
+            mark = t;
+            p += 1;
+        } else if let Some(at) = star {
+            p = at + 1;
+            mark += 1;
+            t = mark;
+        } else {
+            return false;
+        }
+    }
+    while p < pattern.len() && pattern[p] == '*' {
+        p += 1;
+    }
+    p == pattern.len()
+}
+
+/// 上报服务的本地端点。**只绑回环**（见 `server::bind_host`），所以写死的
+/// `127.0.0.1` 和实际监听地址一致；端口是运行时才知道的。
+fn hook_url(port: u16) -> String {
+    format!("http://127.0.0.1:{port}{HOOK_PATH_PREFIX}claude-code")
+}
+
+/// 装进去的是 HTTP 式（`true`）还是命令式（`false`）。没装过就是 `None`。
+///
+/// 界面要能说出「你在跑哪条路」：两种模式写进同一个配置，用户看得出来才谈得上
+/// 换一种、或者知道「为什么我改不了 PATH 也没关系」。
+pub fn installed_http(agent: Agent) -> Option<bool> {
+    let path = config_path(agent).ok()?;
+    let text = fs::read_to_string(path).ok()?;
+    installed_http_in(&text)
+}
+
+/// 抽成纯函数是为了能单测（理由同 `config_has_our_hooks`：测试里改 `HOME` 是
+/// 进程级的，会和并行跑的用例打架）。
+fn installed_http_in(text: &str) -> Option<bool> {
+    let root: Value = serde_json::from_str(text).ok()?;
+    let hooks = &root["hooks"];
+    let mut found = false;
+    for groups in hooks.as_object()?.values() {
+        // 形态有两种：`{ hooks: [ … ] }` 和（Cursor 那种）直接就是 handler
+        for group in groups.as_array()? {
+            let handlers: Vec<&Value> = match group.get("hooks").and_then(Value::as_array) {
+                Some(inner) => inner.iter().collect(),
+                None => vec![group],
+            };
+            for handler in handlers {
+                if is_our_http_handler(handler) {
+                    return Some(true);
+                }
+                if is_our_handler(handler) {
+                    found = true;
+                }
+            }
+        }
+    }
+    found.then_some(false)
 }
 
 pub fn uninstall(agent: Agent, dry_run: bool) -> Result<Report, String> {
@@ -1178,7 +1308,7 @@ fn uninstall_plugin_file(agent: Agent, dry_run: bool) -> Result<Report, String> 
 
 // ---- 实现 ------------------------------------------------------------------
 
-fn install_at(agent: Agent, command: &str, path: &Path, dry_run: bool) -> Result<Report, String> {
+fn install_at(agent: Agent, spec: &HookSpec, path: &Path, dry_run: bool) -> Result<Report, String> {
     let existing: Option<String> = match fs::read_to_string(path) {
         Ok(text) => Some(text),
         Err(err) if err.kind() == io::ErrorKind::NotFound => None,
@@ -1236,22 +1366,18 @@ fn install_at(agent: Agent, command: &str, path: &Path, dry_run: bool) -> Result
                 Some(index) => &mut groups[group]["hooks"][index],
                 None => &mut groups[group],
             };
-            let current = slot
-                .get("command")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
 
-            if current == command {
+            if spec.matches(slot) {
                 already.push((*event).to_string());
             } else {
-                slot["command"] = json!(command);
+                // 从一种形态换成另一种也走这条路（见 `HookSpec::apply`）
+                spec.apply(slot, agent);
                 updated.push((*event).to_string());
             }
             continue;
         }
 
-        groups.push(handler_group(agent, command, *matcher));
+        groups.push(handler_group(agent, spec, *matcher));
         added.push((*event).to_string());
     }
 
@@ -1264,7 +1390,7 @@ fn install_at(agent: Agent, command: &str, path: &Path, dry_run: bool) -> Result
         return Ok(Report {
             path: path.to_path_buf(),
             backup: None,
-            command: Some(command.to_string()),
+            command: Some(spec.as_text()),
             added,
             already,
             updated,
@@ -1284,7 +1410,7 @@ fn install_at(agent: Agent, command: &str, path: &Path, dry_run: bool) -> Result
     Ok(Report {
         path: path.to_path_buf(),
         backup,
-        command: Some(command.to_string()),
+        command: Some(spec.as_text()),
         added,
         already,
         updated,
@@ -1446,6 +1572,20 @@ fn is_our_handler(handler: &Value) -> bool {
         .get("command")
         .and_then(Value::as_str)
         .is_some_and(is_our_hook_command)
+        || is_our_http_handler(handler)
+}
+
+/// HTTP 式 hook 的路径前缀。**刻意不带端口**：端口被占用时会退到系统分配端口，
+/// 那时配置里留下的还是旧端口的 URL —— 只认路径就还认得出来（同 `is_our_hook_command`
+/// 不拿完整命令串做相等比较的理由：认的是「这是我们写的」，不是「它现在完全正确」）。
+const HOOK_PATH_PREFIX: &str = "/v1/hooks/";
+
+/// 我们写进配置的 HTTP 式 hook（`{"type":"http","url":"…/v1/hooks/claude-code"}`）。
+fn is_our_http_handler(handler: &Value) -> bool {
+    handler
+        .get("url")
+        .and_then(Value::as_str)
+        .is_some_and(|url| url.contains(HOOK_PATH_PREFIX))
 }
 
 /// 判断一条命令是不是我们自己写进去的。
@@ -1483,50 +1623,107 @@ fn first_token(command: &str) -> Option<&str> {
     trimmed.split_whitespace().next()
 }
 
+/// 我们写进别人配置里的那条 hook 长什么样。
+///
+/// **两种形态写进同一个 JSON 文档**，所以「找到我们的条目 / 更新它 / 判断是不是我们
+/// 写的」这套逻辑只能有一份。分开写两遍的话，从一种形态换成另一种时一定会留下一条
+/// 两头不靠的条目（见 [`HookSpec::apply`]）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HookSpec {
+    /// 命令式：调用本机 CLI。Claude Code 之外的家只有这一种。
+    Command(String),
+    /// HTTP 式：让智能体**直接 POST 到本机端口**。不需要任何命令存在，所以
+    /// 「命令跑不起来 / 不在 PATH 上」这一整类失败都不存在（见 `server::hook_report`）。
+    Http { url: String },
+}
+
+impl HookSpec {
+    /// 界面和诊断要显示的那一条文本（命令式是命令，HTTP 式是 URL）。
+    fn as_text(&self) -> String {
+        match self {
+            HookSpec::Command(command) => command.clone(),
+            HookSpec::Http { url } => url.clone(),
+        }
+    }
+
+    /// 现有条目和我们这条是不是同一个 —— 决定「已存在」还是「要更新」。
+    fn matches(&self, slot: &Value) -> bool {
+        match self {
+            HookSpec::Command(command) => {
+                slot.get("command").and_then(Value::as_str) == Some(command.as_str())
+            }
+            HookSpec::Http { url } => {
+                slot.get("url").and_then(Value::as_str) == Some(url.as_str())
+            }
+        }
+    }
+
+    /// 把现有条目改写成我们这条。
+    ///
+    /// **整条替换，不是只改那一个字段**：从 HTTP 式换成命令式时，留着 `url` 和
+    /// `type: "http"` 会得到一条两头不靠的条目 —— 而智能体多半会按 `type` 走，
+    /// 于是「换回命令方式」看起来成功了、实际还在打 HTTP。
+    fn apply(&self, slot: &mut Value, agent: Agent) {
+        *slot = self.body(agent);
+    }
+
+    /// 内侧那一项（`{type, command, async}` / `{type, url, timeout, onFailure}`）。
+    fn body(&self, agent: Agent) -> Value {
+        match self {
+            HookSpec::Command(command) => match agent {
+                // `async: true` 是 Claude Code / Codex 的扩展字段，也让 hook 在后台
+                // 跑、不阻塞智能体。注意异步 hook 不受 timeout 约束（docs/api.md §4.4）。
+                Agent::ClaudeCode | Agent::Codex => {
+                    json!({ "type": "command", "command": command, "async": true })
+                }
+                // Gemini / Goose 会**同步等待** hook（两家都没有 async 开关），所以给
+                // 一个明确的超时，免得一个挂住的 hook 把智能体卡在那儿。
+                //
+                // 对不认识的字段宁可保守：Copilot 的文档明确说过「inline 的 hooks 里
+                // 有一项校验不过，整个 hooks 字段作废」。
+                Agent::Gemini | Agent::Goose => json!({
+                    "type": "command",
+                    "command": command,
+                    "timeout": sync_timeout(agent),
+                }),
+                Agent::Cursor => json!({ "command": command, "timeout": 5 }),
+                Agent::Opencode | Agent::Pi | Agent::Hermes => {
+                    unreachable!("插件式的智能体不构造 hooks 条目")
+                }
+            },
+            HookSpec::Http { url } => {
+                // `onFailure: "continue"` + 5 秒：**任何情况下都不能因为我们的端点
+                // 不在而阻塞智能体**（见 docs/plan-round4.md §9）。这两项是这一整条
+                // 路上的安全底线，不是可调参数。
+                json!({
+                    "type": "http",
+                    "url": url,
+                    "timeout": 5,
+                    "onFailure": "continue",
+                })
+            }
+        }
+    }
+}
+
 /// 构造一个 matcher-group。三种形状：
-/// Claude Code / Codex 是 `{ matcher?, hooks: [ { type, command, async } ] }`，
-/// Gemini / Goose 同构但**没有 `async`**、改带 `timeout`，
+/// Claude Code / Codex 是 `{ matcher?, hooks: [ { … } ] }`，
+/// Gemini / Goose 同构（区别只在内侧那一项，见 [`HookSpec::body`]），
 /// Cursor 是 `{ command, timeout }` 直接作为一组。
-fn handler_group(agent: Agent, command: &str, matcher: Option<&str>) -> Value {
+fn handler_group(agent: Agent, spec: &HookSpec, matcher: Option<&str>) -> Value {
     match agent {
         // 插件式安装不走这条路（它不写共享配置），真走到了就是分类写错了。
         Agent::Opencode | Agent::Pi | Agent::Hermes => {
             unreachable!("插件式的智能体不构造 hooks 条目")
         }
-        // Cursor 这边 preToolUse 之类是会被等待的，所以超时保护有意义
-        Agent::Cursor => json!({ "command": command, "timeout": 5 }),
-        // Gemini / Goose 也会**同步等待** hook（两家都没有 async 开关），所以给
-        // 一个明确的超时，免得一个挂住的 hook 把智能体卡在那儿。
-        //
-        // `async: true` 是 Claude Code 的扩展字段，这两家的文档里都没有 ——
-        // 不写。Copilot 的文档甚至明确说了「inline 的 hooks 里有一项校验不过，
-        // 整个 hooks 字段作废」，所以对不认识的字段宁可保守。
-        Agent::Gemini | Agent::Goose => {
+        // Cursor 的 groups 形态不同：没有 `hooks` 数组，命令直接摆在组里
+        Agent::Cursor => spec.body(agent),
+        Agent::ClaudeCode | Agent::Codex | Agent::Gemini | Agent::Goose => {
             let mut group = Map::new();
             if let Some(matcher) = matcher {
                 group.insert("matcher".into(), json!(matcher));
             }
-            group.insert(
-                "hooks".into(),
-                json!([{
-                    "type": "command",
-                    "command": command,
-                    "timeout": sync_timeout(agent),
-                }]),
-            );
-            Value::Object(group)
-        }
-        // `async: true` 是 type=command 独有的字段。它让 hook 在后台跑、不阻塞
-        // 智能体。注意异步 hook 不受 timeout 约束（见 docs/api.md §4.4）。
-        Agent::ClaudeCode | Agent::Codex => {
-            let mut group = Map::new();
-            if let Some(matcher) = matcher {
-                group.insert("matcher".into(), json!(matcher));
-            }
-            group.insert(
-                "hooks".into(),
-                json!([{ "type": "command", "command": command, "async": true }]),
-            );
+            group.insert("hooks".into(), json!([spec.body(agent)]));
             Value::Object(group)
         }
     }
@@ -1685,7 +1882,7 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("settings.json");
 
-        let report = install_at(Agent::ClaudeCode, CMD, &path, false).unwrap();
+        let report = install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), &path, false).unwrap();
         assert_eq!(report.added.len(), events(Agent::ClaudeCode).len());
         assert!(report.already.is_empty());
 
@@ -1700,7 +1897,7 @@ mod tests {
     fn claude_code_hooks_are_async() {
         let dir = TempDir::new();
         let path = dir.file("settings.json");
-        install_at(Agent::ClaudeCode, CMD, &path, false).unwrap();
+        install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), &path, false).unwrap();
 
         let root = read(&path);
         for groups in root["hooks"].as_object().unwrap().values() {
@@ -1714,7 +1911,7 @@ mod tests {
     fn session_start_is_limited_to_real_starts() {
         let dir = TempDir::new();
         let path = dir.file("settings.json");
-        install_at(Agent::ClaudeCode, CMD, &path, false).unwrap();
+        install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), &path, false).unwrap();
 
         let root = read(&path);
         assert_eq!(root["hooks"]["SessionStart"][0]["matcher"], "startup|resume");
@@ -1730,7 +1927,7 @@ mod tests {
         for agent in [Agent::Gemini, Agent::Goose] {
             let dir = TempDir::new();
             let path = dir.file("hooks.json");
-            install_at(agent, CMD, &path, false).unwrap();
+            install_at(agent, &HookSpec::Command(CMD.to_string()), &path, false).unwrap();
 
             let root = read(&path);
             for groups in root["hooks"].as_object().unwrap().values() {
@@ -1752,7 +1949,7 @@ mod tests {
 
         let dir = TempDir::new();
         let path = dir.file("hooks.json");
-        install_at(Agent::Goose, CMD, &path, false).unwrap();
+        install_at(Agent::Goose, &HookSpec::Command(CMD.to_string()), &path, false).unwrap();
         assert_eq!(read(&path)["hooks"]["Stop"][0]["hooks"][0]["timeout"], 5);
     }
 
@@ -1918,7 +2115,7 @@ mod tests {
         )
         .unwrap();
 
-        install_at(Agent::ClaudeCode, CMD, &path, false).unwrap();
+        install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), &path, false).unwrap();
         let root = read(&path);
 
         assert_eq!(root["env"]["FOO"], "bar", "env 必须原样保留");
@@ -1935,10 +2132,10 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("settings.json");
 
-        install_at(Agent::ClaudeCode, CMD, &path, false).unwrap();
+        install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), &path, false).unwrap();
         let first = fs::read_to_string(&path).unwrap();
 
-        let second = install_at(Agent::ClaudeCode, CMD, &path, false).unwrap();
+        let second = install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), &path, false).unwrap();
         assert!(second.added.is_empty(), "第二次不该再加条目");
         assert!(second.updated.is_empty(), "命令没变，不该算更新");
         assert_eq!(second.already.len(), events(Agent::ClaudeCode).len());
@@ -1952,10 +2149,10 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("settings.json");
 
-        install_at(Agent::ClaudeCode, "/old/place/signalhub hook claude-code", &path, false)
+        install_at(Agent::ClaudeCode, &HookSpec::Command("/old/place/signalhub hook claude-code".to_string()), &path, false)
             .unwrap();
 
-        let report = install_at(Agent::ClaudeCode, "signalhub hook claude-code", &path, false)
+        let report = install_at(Agent::ClaudeCode, &HookSpec::Command("signalhub hook claude-code".to_string()), &path, false)
             .unwrap();
         assert!(report.added.is_empty(), "条目已存在，不该重复新增");
         assert_eq!(report.updated.len(), events(Agent::ClaudeCode).len());
@@ -1973,8 +2170,8 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("settings.json");
 
-        install_at(Agent::ClaudeCode, "/old/signalhub hook claude-code", &path, false).unwrap();
-        install_at(Agent::ClaudeCode, "signalhub hook claude-code", &path, false).unwrap();
+        install_at(Agent::ClaudeCode, &HookSpec::Command("/old/signalhub hook claude-code".to_string()), &path, false).unwrap();
+        install_at(Agent::ClaudeCode, &HookSpec::Command("signalhub hook claude-code".to_string()), &path, false).unwrap();
 
         let root = read(&path);
         let stop = root["hooks"]["Stop"].as_array().unwrap();
@@ -1986,9 +2183,9 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("hooks.json");
 
-        install_at(Agent::Cursor, "/old/signalhub hook cursor", &path, false).unwrap();
+        install_at(Agent::Cursor, &HookSpec::Command("/old/signalhub hook cursor".to_string()), &path, false).unwrap();
         let report =
-            install_at(Agent::Cursor, "/new/signalhub hook cursor", &path, false).unwrap();
+            install_at(Agent::Cursor, &HookSpec::Command("/new/signalhub hook cursor".to_string()), &path, false).unwrap();
 
         assert_eq!(report.updated.len(), events(Agent::Cursor).len());
         let root = read(&path);
@@ -2002,7 +2199,7 @@ mod tests {
         let path = dir.file("settings.json");
         fs::write(&path, "{\"theme\":\"dark\"}").unwrap();
 
-        let report = install_at(Agent::ClaudeCode, CMD, &path, false).unwrap();
+        let report = install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), &path, false).unwrap();
         let backup = report.backup.expect("应产生备份");
         assert_eq!(fs::read_to_string(&backup).unwrap(), "{\"theme\":\"dark\"}");
     }
@@ -2015,7 +2212,7 @@ mod tests {
         let broken = "{ this is not json }";
         fs::write(&path, broken).unwrap();
 
-        let err = install_at(Agent::ClaudeCode, CMD, &path, false).unwrap_err();
+        let err = install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), &path, false).unwrap_err();
         assert!(err.contains("不是合法 JSON"), "{err}");
         assert_eq!(fs::read_to_string(&path).unwrap(), broken, "内容必须一字未改");
         assert!(!dir.file("settings.json.signalhub-backup").exists());
@@ -2027,7 +2224,7 @@ mod tests {
         let path = dir.file("settings.json");
         fs::write(&path, r#"{"hooks": ["nonsense"]}"#).unwrap();
 
-        assert!(install_at(Agent::ClaudeCode, CMD, &path, false).is_err());
+        assert!(install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), &path, false).is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), r#"{"hooks": ["nonsense"]}"#);
     }
 
@@ -2036,7 +2233,7 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("settings.json");
 
-        let report = install_at(Agent::ClaudeCode, CMD, &path, true).unwrap();
+        let report = install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), &path, true).unwrap();
         assert!(report.dry_run);
         assert!(!report.added.is_empty(), "演算也应报告将要做什么");
         assert!(report.backup.is_none());
@@ -2057,7 +2254,7 @@ mod tests {
             }"#,
         )
         .unwrap();
-        install_at(Agent::ClaudeCode, CMD, &path, false).unwrap();
+        install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), &path, false).unwrap();
 
         let report = uninstall_at(&path, false).unwrap();
         assert!(!report.removed.is_empty());
@@ -2106,7 +2303,7 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("settings.json");
         fs::write(&path, r#"{"theme":"dark"}"#).unwrap();
-        install_at(Agent::ClaudeCode, CMD, &path, false).unwrap();
+        install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), &path, false).unwrap();
 
         uninstall_at(&path, false).unwrap();
         let root = read(&path);
@@ -2125,7 +2322,7 @@ mod tests {
     fn uninstall_is_idempotent() {
         let dir = TempDir::new();
         let path = dir.file("settings.json");
-        install_at(Agent::ClaudeCode, CMD, &path, false).unwrap();
+        install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), &path, false).unwrap();
 
         assert!(!uninstall_at(&path, false).unwrap().removed.is_empty());
         assert!(uninstall_at(&path, false).unwrap().removed.is_empty());
@@ -2136,7 +2333,7 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("settings.json");
         // 用另一个路径装，卸载时应照样认得出来
-        install_at(Agent::ClaudeCode, "/home/someone/bin/signalhub hook claude-code", &path, false)
+        install_at(Agent::ClaudeCode, &HookSpec::Command("/home/someone/bin/signalhub hook claude-code".to_string()), &path, false)
             .unwrap();
         uninstall_at(&path, false).unwrap();
         assert!(read(&path).get("hooks").is_none());
@@ -2149,7 +2346,7 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("hooks.json");
 
-        install_at(Agent::Cursor, "/opt/signalhub hook cursor", &path, false).unwrap();
+        install_at(Agent::Cursor, &HookSpec::Command("/opt/signalhub hook cursor".to_string()), &path, false).unwrap();
         let root = read(&path);
 
         assert_eq!(root["version"], 1, "Cursor 要求 version 字段");
@@ -2165,7 +2362,7 @@ mod tests {
         let path = dir.file("hooks.json");
         fs::write(&path, r#"{"version":1}"#).unwrap();
 
-        install_at(Agent::Cursor, "/opt/signalhub hook cursor", &path, false).unwrap();
+        install_at(Agent::Cursor, &HookSpec::Command("/opt/signalhub hook cursor".to_string()), &path, false).unwrap();
         assert_eq!(read(&path)["version"], 1);
     }
 
@@ -2174,7 +2371,7 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("hooks.json");
 
-        install_at(Agent::Codex, "/opt/signalhub hook codex", &path, false).unwrap();
+        install_at(Agent::Codex, &HookSpec::Command("/opt/signalhub hook codex".to_string()), &path, false).unwrap();
         let root = read(&path);
         assert_eq!(root["hooks"]["PreToolUse"][0]["hooks"][0]["async"], true);
         assert_eq!(root["hooks"]["Interrupt"][0]["hooks"][0]["command"], "/opt/signalhub hook codex");
@@ -2503,7 +2700,152 @@ mod tests {
     fn backup_is_not_written_when_there_is_nothing_to_back_up() {
         let dir = TempDir::new();
         let path = dir.file("settings.json");
-        let report = install_at(Agent::ClaudeCode, CMD, &path, false).unwrap();
+        let report = install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), &path, false).unwrap();
         assert!(report.backup.is_none(), "新建文件没什么可备份的");
+    }
+
+    // ---- HTTP 式接入 --------------------------------------------------------
+
+    /// 写进去的那条 URL 必须是**本机回环**。写成 `0.0.0.0` 或者某个内网地址，就等于
+    /// 把状态送给别人；而这个端点连 token 都没有（见 `server::hook_report`）。
+    #[test]
+    fn http_hooks_point_at_loopback_with_the_safety_fields() {
+        let dir = TempDir::new();
+        let path = dir.file("settings.json");
+        let spec = HookSpec::Http { url: hook_url(41320) };
+        install_at(Agent::ClaudeCode, &spec, &path, false).unwrap();
+
+        let root = read(&path);
+        let handler = &root["hooks"]["PreToolUse"][0]["hooks"][0];
+        assert_eq!(handler["type"], "http");
+        assert_eq!(handler["url"], "http://127.0.0.1:41320/v1/hooks/claude-code");
+        // 这两项是这条路上的安全底线：端点不在时**不许**拖住智能体
+        // （见 docs/plan-round4.md §9）
+        assert_eq!(handler["timeout"], 5);
+        assert_eq!(handler["onFailure"], "continue");
+        // `async` 是命令式才有的字段，HTTP 式写了只会让人以为它有意义
+        assert!(handler.get("async").is_none());
+        assert!(handler.get("command").is_none());
+    }
+
+    /// 端口是运行时才知道的，配置里写死的是**当下**那个。端口变了（原来的被占用）
+    /// 之后，旧 URL 仍要认得出来是「我们写的」—— 否则卸载会留下一条永远打不通的
+    /// hook，而用户已经在界面上看到「已卸载」了。
+    #[test]
+    fn our_handlers_are_recognized_even_after_the_port_changes() {
+        let stale = json!({ "type": "http", "url": "http://127.0.0.1:9999/v1/hooks/claude-code" });
+        assert!(is_our_handler(&stale));
+
+        // 用户自己的 HTTP hook 不能被认成我们的
+        let foreign = json!({ "type": "http", "url": "http://127.0.0.1:9999/my/webhook" });
+        assert!(!is_our_handler(&foreign));
+    }
+
+    /// 从命令式换成 HTTP 式（以及换回来）必须**整条替换**：留着 `url` 或 `command`
+    /// 中的另一份，会得到一条两头不靠的条目，而智能体多半按 `type` 走 —— 那时
+    /// 「换回命令方式」看起来成功了，实际还在打 HTTP。
+    #[test]
+    fn switching_between_command_and_http_replaces_the_handler() {
+        let dir = TempDir::new();
+        let path = dir.file("settings.json");
+
+        install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), &path, false).unwrap();
+        let report = install_at(
+            Agent::ClaudeCode,
+            &HookSpec::Http { url: hook_url(41320) },
+            &path,
+            false,
+        )
+        .unwrap();
+        assert!(!report.updated.is_empty(), "换一种形态算更新，不是新装");
+        assert!(report.added.is_empty());
+
+        let handler = read(&path)["hooks"]["PreToolUse"][0]["hooks"][0].clone();
+        assert_eq!(handler["type"], "http");
+        assert!(handler.get("command").is_none(), "命令式的字段必须清掉: {handler}");
+        assert_eq!(installed_http_in(&fs::read_to_string(&path).unwrap()), Some(true));
+
+        install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), &path, false).unwrap();
+        let handler = read(&path)["hooks"]["PreToolUse"][0]["hooks"][0].clone();
+        assert_eq!(handler["type"], "command");
+        assert!(handler.get("url").is_none(), "HTTP 式的字段必须清掉: {handler}");
+        assert!(handler.get("onFailure").is_none());
+        assert_eq!(installed_http_in(&fs::read_to_string(&path).unwrap()), Some(false));
+    }
+
+    /// 卸载要把 HTTP 式的一并清掉，而且**只清我们的**。
+    #[test]
+    fn uninstall_removes_http_handlers_and_keeps_foreign_ones() {
+        let dir = TempDir::new();
+        let path = dir.file("settings.json");
+        let foreign = json!({ "hooks": [{ "type": "http", "url": "http://127.0.0.1:9999/mine" }] });
+        fs::write(&path, json!({ "hooks": { "PreToolUse": [foreign] } }).to_string()).unwrap();
+
+        install_at(
+            Agent::ClaudeCode,
+            &HookSpec::Http { url: hook_url(41320) },
+            &path,
+            false,
+        )
+        .unwrap();
+        uninstall_at(&path, false).unwrap();
+
+        let root = read(&path);
+        let groups = root["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(groups.len(), 1, "用户自己那条要留下: {root}");
+        assert_eq!(groups[0]["hooks"][0]["url"], "http://127.0.0.1:9999/mine");
+    }
+
+    /// 没装过、或者只有别人写的东西 → `None`（界面据此显示「未接入」）。
+    #[test]
+    fn installed_http_is_none_when_nothing_of_ours_is_there() {
+        assert_eq!(installed_http_in("{}"), None);
+        assert_eq!(installed_http_in("这不是 JSON"), None);
+        let foreign = json!({ "hooks": { "Stop": [{ "hooks": [{ "type": "command", "command": "echo hi" }] }] } });
+        assert_eq!(installed_http_in(&foreign.to_string()), None);
+        // Cursor 那种「组本身就是 handler」的形态也要能看出来
+        let ours = json!({ "hooks": { "beforeShellExecution": [{ "command": "/opt/signalhub hook cursor" }] } });
+        assert_eq!(installed_http_in(&ours.to_string()), Some(false));
+    }
+
+    /// 白名单的匹配：`*` 通配、大小写不敏感，别的一律按字面。
+    #[test]
+    fn the_allowlist_glob_matches_like_the_documented_one() {
+        assert!(glob_match("http://127.0.0.1:*", "http://127.0.0.1:41320/v1/hooks/claude-code"));
+        assert!(glob_match("http://127.0.0.1:41320/*", "http://127.0.0.1:41320/v1/hooks/claude-code"));
+        assert!(glob_match("*", "http://127.0.0.1:1/x"));
+        // 主机名大小写不敏感
+        assert!(glob_match("http://LOCALHOST:*", "http://localhost:1/x"));
+        // **不匹配就不能算通过**：端口不同的模式、别的路径、别的协议都不行
+        assert!(!glob_match("http://127.0.0.1:9999/*", "http://127.0.0.1:41320/v1/hooks/claude-code"));
+        assert!(!glob_match("http://localhost:*", "http://127.0.0.1:41320/v1/hooks/claude-code"));
+        assert!(!glob_match("https://*", "http://127.0.0.1:41320/v1/hooks/claude-code"));
+    }
+
+    /// 白名单的三种情况，逐个钉住 —— 尤其是「有这个键但为空」：那是**封掉全部**
+    /// HTTP hook，不是「不限制」。
+    #[test]
+    fn the_allowlist_reads_as_documented() {
+        let url = hook_url(41320);
+        assert_eq!(url_allowed("{}", &url), None, "没有这个键 = 不限制");
+        assert_eq!(url_allowed(r#"{"allowedHttpHookUrls": []}"#, &url), Some(false));
+        assert_eq!(
+            url_allowed(r#"{"allowedHttpHookUrls": ["http://127.0.0.1:*"]}"#, &url),
+            Some(true)
+        );
+        assert_eq!(
+            url_allowed(r#"{"allowedHttpHookUrls": ["https://hooks.example.com/*"]}"#, &url),
+            Some(false)
+        );
+    }
+
+    /// 其余几家**没有** HTTP 方式：没有可对照的文档事实就不写
+    /// （见文件头的「只验证过的映射」）。
+    #[test]
+    fn http_install_is_refused_for_everybody_but_claude_code() {
+        for agent in [Agent::Codex, Agent::Cursor, Agent::Gemini, Agent::Goose] {
+            let err = install_http(agent, 41320, true).unwrap_err();
+            assert!(err.contains("Claude Code"), "{agent:?}: {err}");
+        }
     }
 }

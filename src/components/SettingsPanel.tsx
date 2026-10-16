@@ -467,6 +467,11 @@ function probeLine(m: Messages, outcome: ProbeOutcome): string {
     return m.agentTryPlugin(outcome.states.join(" → "));
   }
   const command = outcome.command ?? "";
+  if (outcome.kind === "http") {
+    return outcome.ran
+      ? m.agentTryHttpOk(command)
+      : m.agentTryHttpFailed(command, outcome.output.trim());
+  }
   if (outcome.ran && outcome.code === 0) return m.agentTryRanOk(command);
   const code = outcome.code === null ? "" : String(outcome.code);
   return m.agentTryRanFailed(command, code, outcome.output.trim());
@@ -953,8 +958,11 @@ function headerKeys(cancel: () => void) {
 
 /** 与 Rust 侧 lib.rs 的 ProbeOutcome 对应。 */
 interface ProbeOutcome {
-  /** `command` = 真跑了一遍接入命令；`plugin` = 内部注入 */
-  kind: "command" | "plugin";
+  /**
+   * `command` = 真跑了一遍接入命令；`plugin` = 内部注入；
+   * `http` = 真发了一次 HTTP 到本机那个 hook 端点
+   */
+  kind: "command" | "plugin" | "http";
   ran: boolean;
   code: number | null;
   output: string;
@@ -1082,18 +1090,43 @@ export function SettingsPanel({ snapshot }: Props) {
    * handler」就是它俩的区别。调用返回后重取一次列表：`installed` 变了，状态标记
    * 和按钮文案都得跟着变。
    */
+  /**
+   * 接入 / 卸载的**收尾**：接入和换模式两条路都走这里。
+   *
+   * 抽出来是因为两处的收尾每一步都一样，而漏掉任何一步的表现都是「界面在撒谎」：
+   * 不回执就不刷新（会一直显示「还没有收到过它的上报」）、不重取列表（徽章还是旧的
+   * 「未接入」）。
+   */
+  const finishAgentChange = (agent: AgentStatus) => (change: HookChange) => {
+    setAgentChanges((prev) => ({ ...prev, [agent.id]: change }));
+    refreshAgents();
+    // 回执也要重取：装完之后那一行该立刻从「没有回执」变成真实状态，而
+    // 「刚接入」这几秒里它多半还是「还没有收到过它的上报」——那正是实话。
+    refreshReceipts();
+  };
+
   const changeAgent = (agent: AgentStatus, install: boolean) => {
     setError(null);
     setBusyAgent(agent.id);
     const command = install ? "install_agent_hooks" : "uninstall_agent_hooks";
     invoke<HookChange>(command, { agent: agent.id })
-      .then((change) => {
-        setAgentChanges((prev) => ({ ...prev, [agent.id]: change }));
-        refreshAgents();
-        // 回执也要重取：装完之后那一行该立刻从「没有回执」变成真实状态，而
-        // 「刚接入」这几秒里它多半还是「还没有收到过它的上报」——那正是实话。
-        refreshReceipts();
-      })
+      .then(finishAgentChange(agent))
+      .catch(reported)
+      .finally(() => setBusyAgent(null));
+  };
+
+  /**
+   * 换成 **HTTP 方式**接入（目前只有 Claude Code）。
+   *
+   * 和 `changeAgent` 是同一件事的另一条路：对用户来说就是「再点一次接入，只是写法
+   * 不同」，所以 busyAgent、结果行、回执刷新全都共用 —— 两条路各写一套状态，迟早
+   * 会出现「换完模式界面还停在旧文字上」。
+   */
+  const changeAgentHttp = (agent: AgentStatus) => {
+    setError(null);
+    setBusyAgent(agent.id);
+    invoke<HookChange>("install_agent_http_hooks", { agent: agent.id })
+      .then(finishAgentChange(agent))
       .catch(reported)
       .finally(() => setBusyAgent(null));
   };
@@ -2024,7 +2057,7 @@ export function SettingsPanel({ snapshot }: Props) {
                           一种「装了却没反应」：智能体执行一个不存在的程序**不会报错**，
                           灯也不会亮，两边都很安静。命令原文也摆出来，用户能自己看出
                           它指向哪（多半是个已经被挪走的旧路径）。 */}
-                      {agent.installed && !agent.command_ok && (
+                      {agent.installed && !agent.command_ok && agent.http !== true && (
                         <span className="agent-broken">
                           {m.agentCommandBroken}
                           {agent.command && <code className="mono">{agent.command}</code>}
@@ -2057,6 +2090,14 @@ export function SettingsPanel({ snapshot }: Props) {
                             : m.agentReceiptNever}
                         </span>
                       )}
+                      {/* **在跑哪条路。** 两种模式写进同一个配置文件，而它们的行为
+                          不同（HTTP 式不怕 PATH 问题、但开局域网时会关掉）—— 用户
+                          看得见才谈得上换一种。只有 Claude Code 有两种可选。 */}
+                      {agent.id === "claude-code" && agent.installed && (
+                        <span className="agent-result muted-text">
+                          {agent.http ? m.agentModeHttp : m.agentModeCommand}
+                        </span>
+                      )}
                       {/* 「试一下」的结果：和回执是两个问题 —— 回执问「最近有没有在报」，
                           这一行答「现在这条链路还通不通」。 */}
                       {probeResults[agent.id] && (
@@ -2078,6 +2119,28 @@ export function SettingsPanel({ snapshot }: Props) {
                           onClick={() => tryAgent(agent)}
                         >
                           {busy ? m.agentTryBusy : m.agentTry}
+                        </button>
+                      )}
+                      {/* **HTTP 方式**（只有 Claude Code）。放在「接入」左边：
+                          它是同一个动作的另一条路，而不是另一个功能。已接入时它
+                          变成「换一种写法」—— 两种模式共用一个配置，换过去是原地
+                          改写，不需要先卸载。 */}
+                      {agent.id === "claude-code" && (
+                        <button
+                          type="button"
+                          className="btn btn-tiny"
+                          disabled={busy}
+                          onClick={() =>
+                            !agent.installed || !agent.http
+                              ? changeAgentHttp(agent)
+                              : changeAgent(agent, true)
+                          }
+                        >
+                          {!agent.installed
+                            ? m.agentConnectHttp
+                            : agent.http
+                              ? m.agentSwitchCommand
+                              : m.agentSwitchHttp}
                         </button>
                       )}
                       <button
