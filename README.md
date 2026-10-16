@@ -82,6 +82,8 @@ xattr -dr com.apple.quarantine /Applications/SignalHub.app
 ln -sfn /Applications/SignalHub.app/Contents/MacOS/signalhub /usr/local/bin/signalhub
 ```
 
+**更新**：macOS 版从 0.2.4 起支持**应用内更新**（设置 →「系统」页会显示有没有新版本，「下载并安装」点了才装，默认不自动装）。Linux 和 Windows 这一版还只能手动下载 —— Windows 要用的解包库被上游全量撤下了，Linux 侧还没在真机上验收过（原因写在 [.github/release-body.md](.github/release-body.md)）。
+
 打一个 `v` 开头的 tag 就会自动出四个平台的包，见 [.github/workflows/release.yml](.github/workflows/release.yml)。
 
 ## 从源码运行
