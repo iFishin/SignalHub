@@ -456,6 +456,23 @@ function signalText(m: Messages, state: string): string {
 }
 
 /**
+ * 「试一下」的结果 → 一句话。
+ *
+ * 三种情况分开说，因为**它们的含义不同**：命令跑通了（好）、命令跑起来但失败了
+ * （可操作 —— 输出里就是原因）、插件式只能内部注入（如实说明它证不了什么）。
+ * 混成一句「已完成」的话，用户就分不出「接对了」和「我们只是自己亮了一下」。
+ */
+function probeLine(m: Messages, outcome: ProbeOutcome): string {
+  if (outcome.kind === "plugin") {
+    return m.agentTryPlugin(outcome.states.join(" → "));
+  }
+  const command = outcome.command ?? "";
+  if (outcome.ran && outcome.code === 0) return m.agentTryRanOk(command);
+  const code = outcome.code === null ? "" : String(outcome.code);
+  return m.agentTryRanFailed(command, code, outcome.output.trim());
+}
+
+/**
  * 面板是不是真的在屏幕上。
  *
  * 设置窗的 webview 一直活着，隐藏着也照样收事件、照样重绘 —— 而这个窗口里有几个
@@ -934,6 +951,17 @@ function headerKeys(cancel: () => void) {
   };
 }
 
+/** 与 Rust 侧 lib.rs 的 ProbeOutcome 对应。 */
+interface ProbeOutcome {
+  /** `command` = 真跑了一遍接入命令；`plugin` = 内部注入 */
+  kind: "command" | "plugin";
+  ran: boolean;
+  code: number | null;
+  output: string;
+  command: string | null;
+  states: string[];
+}
+
 export function SettingsPanel({ snapshot }: Props) {
   const settings = useSettings();
   const toggles = useToggles();
@@ -986,6 +1014,9 @@ export function SettingsPanel({ snapshot }: Props) {
   // 每个智能体最近一次接入 / 卸载改了什么，就地显示一行结果 —— 这是用户唯一
   // 能看到「刚才那下到底做了什么」的地方。
   const [agentChanges, setAgentChanges] = useState<Record<string, HookChange>>({});
+  // 「试一下」的结果，按 id 就地显示一行 —— 它回答的是「现在这条链路还通不通」，
+  // 和上面的回执（「最近有没有在报」）是两个问题。
+  const [probeResults, setProbeResults] = useState<Record<string, ProbeOutcome>>({});
   // 配置导出 / 导入的结果，就地显示在按钮下面
   const [backupNotice, setBackupNotice] = useState<string | null>(null);
 
@@ -1062,6 +1093,26 @@ export function SettingsPanel({ snapshot }: Props) {
         // 回执也要重取：装完之后那一行该立刻从「没有回执」变成真实状态，而
         // 「刚接入」这几秒里它多半还是「还没有收到过它的上报」——那正是实话。
         refreshReceipts();
+      })
+      .catch(reported)
+      .finally(() => setBusyAgent(null));
+  };
+
+  /**
+   * 试一下这条接入：让 Rust 把配置里**实际写着**的那条命令跑一遍。
+   *
+   * 它比回执更能回答「现在通不通」——尤其是那个最隐蔽的成因：应用从 Dock 起来时
+   * PATH 和用户 shell 里的不一样，而配置里写的偏偏是裸命令名。
+   */
+  const tryAgent = (agent: AgentStatus) => {
+    setError(null);
+    setBusyAgent(agent.id);
+    invoke<ProbeOutcome>("try_agent", { agent: agent.id })
+      .then((outcome) => {
+        setProbeResults((prev) => ({ ...prev, [agent.id]: outcome }));
+        // 命令真的跑起来后，回执那边**应该**马上就有一条；顺手刷一次，用户就能看到
+        // 「最近上报 0s 前」和这一行同时出现 —— 那是最有说服力的一刻。
+        window.setTimeout(refreshReceipts, 600);
       })
       .catch(reported)
       .finally(() => setBusyAgent(null));
@@ -1992,15 +2043,38 @@ export function SettingsPanel({ snapshot }: Props) {
                             : m.agentReceiptNever}
                         </span>
                       )}
+                      {/* 「试一下」的结果：和回执是两个问题 —— 回执问「最近有没有在报」，
+                          这一行答「现在这条链路还通不通」。 */}
+                      {probeResults[agent.id] && (
+                        <span
+                          className="agent-result"
+                          data-on={probeResults[agent.id].ran}
+                        >
+                          {probeLine(m, probeResults[agent.id])}
+                        </span>
+                      )}
                     </div>
-                    <button
-                      type="button"
-                      className="btn btn-tiny"
-                      disabled={busy}
-                      onClick={() => changeAgent(agent, !agent.installed)}
-                    >
-                      {agent.installed ? m.agentDisconnect : m.agentConnect}
-                    </button>
+                    <div className="agent-buttons">
+                      {/* 「试一下」只在已接入时有意义：没接入就没有那条命令可跑。 */}
+                      {agent.installed && (
+                        <button
+                          type="button"
+                          className="btn btn-tiny"
+                          disabled={busy}
+                          onClick={() => tryAgent(agent)}
+                        >
+                          {busy ? m.agentTryBusy : m.agentTry}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="btn btn-tiny"
+                        disabled={busy}
+                        onClick={() => changeAgent(agent, !agent.installed)}
+                      >
+                        {agent.installed ? m.agentDisconnect : m.agentConnect}
+                      </button>
+                    </div>
                   </div>
                 );
               })}

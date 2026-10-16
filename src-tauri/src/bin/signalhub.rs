@@ -1295,6 +1295,44 @@ mod tests {
         json!({ "hook_event_name": name, "session_id": "s-1", "cwd": "/proj" })
     }
 
+    /// **「试一下」那条合成 payload 必须真的被映射表认出来。**
+    ///
+    /// 这是那个按钮唯一会骗人的地方：需求里它就是「把配置里那条命令跑一遍」，而如果
+    /// 它合成的事件名映射表不认识，那条命令只会静默地什么都不做（日志里留一行
+    /// `ignored`）——按钮却会说「命令跑起来了」。所以这张表和映射表必须有这条测试
+    /// 把它们钉在一起。
+    ///
+    /// 走的是和真实钩子**同一条**解析路径（`events_of` + `map_event`），不是照着
+    /// 名字对一遍：认不认识由映射表说了算。
+    #[test]
+    fn the_probe_payload_is_recognised_by_every_command_agent() {
+        for name in hooks::ALL_NAMES {
+            let agent = hooks::Agent::parse(name).unwrap();
+            let payload = hooks::probe_payload(agent);
+
+            let Some(payload) = payload else {
+                // 插件式接入：没有能单独跑的命令，所以也没有 payload。反过来也要成立 ——
+                // 除了那三家，谁都不该缺 payload。
+                assert!(
+                    matches!(name, "opencode" | "pi" | "hermes"),
+                    "{name}: 只有插件式接入才该没有 payload"
+                );
+                continue;
+            };
+
+            let payload: Value = serde_json::from_str(&payload).expect("payload 要是合法 JSON");
+            assert!(
+                state_of(name, &payload).is_some(),
+                "{name} 不认识合成 payload —— 「试一下」会变成一次假通过"
+            );
+            assert_eq!(
+                session_id(&payload).as_deref(),
+                Some("signalhub-probe"),
+                "{name}: 会话名要一眼看得出是试出来的"
+            );
+        }
+    }
+
     fn state_of(agent: &str, payload: &Value) -> Option<&'static str> {
         match map_event(agent, payload)? {
             Action::Report(state) => Some(state),

@@ -1019,6 +1019,188 @@ fn uninstall_agent_hooks(agent: String) -> Result<HookChange, String> {
     hooks::uninstall(hooks::Agent::parse(&agent)?, false).map(HookChange::from)
 }
 
+/// 「试一下」的结果。**返回结构而不是一句话**：文案分语言（见 `lang.rs`），
+/// Rust 这边只负责干活。
+#[derive(serde::Serialize)]
+struct ProbeOutcome {
+    /// 走的是哪条路：`command` = 真跑了一遍接入命令；`plugin` = 插件式，内部注入
+    kind: &'static str,
+    /// 命令起来了没有（只有 `command` 那条路有意义）
+    ran: bool,
+    /// 退出码
+    code: Option<i32>,
+    /// 命令的输出（stdout + stderr）。失败时它就是原因。
+    output: String,
+    /// 跑的是哪条命令 —— 界面上要能看见「我们替你跑的是这一条」
+    command: Option<String>,
+    /// 内部注入时报了哪几个状态
+    states: Vec<String>,
+}
+
+/// 「试一下」的等待上限。
+///
+/// 命令自己带网络超时（钩子那条约几秒），这里只是兜底：**绝不能让界面转不完**。
+const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// 试一下这条接入：**真的把配置里那条命令跑一遍**。
+///
+/// 这是「装了却没反应」最直接的自证。它验证的东西比回执（`receipts.rs`）更多：
+/// 回执回答「最近有没有在报」，这里回答「**现在**这条链路还通不通」——包括那个
+/// 最隐蔽的成因：app 从 Dock / LaunchAgent 起来时 PATH 和用户 shell 里的不一样，
+/// 而配置里写的偏偏是裸命令名 `signalhub`。
+///
+/// 插件式接入（opencode / Pi / Hermes）没有能单独运行的东西 —— 它的代码跑在对方
+/// 的进程里。那时退化成内部注入一条测试信号，**证不了对方会不会调我们**（那正是
+/// 回执要回答的问题），所以 `kind` 要如实告诉界面走了哪条路。
+#[tauri::command]
+async fn try_agent(app: tauri::AppHandle, agent: String) -> Result<ProbeOutcome, String> {
+    let agent = hooks::Agent::parse(&agent)?;
+    // 两条路都在事后清理探测信号（见 `sweep_probe`）。放在最前面：命令式那条路
+    // 是从这里返回的，它报上来的会话名同样是 `signalhub-probe`。
+    sweep_probe(app.clone());
+
+    if let Some(payload) = hooks::probe_payload(agent) {
+        let command = hooks::installed_command(agent)
+            .ok_or_else(|| "配置里没有我们的命令（先点「接入」）".to_string())?;
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let program = command.clone();
+        // 单独一个线程 + 有上限的等待：**界面不能被一条卡住的命令吊住**。
+        std::thread::spawn(move || {
+            use std::io::Write;
+
+            let spawned = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(&program)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn();
+            let mut child = match spawned {
+                Ok(child) => child,
+                Err(err) => {
+                    let _ = tx.send(Err(err.to_string()));
+                    return;
+                }
+            };
+            if let Some(stdin) = child.stdin.as_mut() {
+                let _ = stdin.write_all(payload.as_bytes());
+            }
+            // 关掉 stdin：有些命令会一直等 EOF，不关就是白等一次超时
+            drop(child.stdin.take());
+            let _ = tx.send(child.wait_with_output().map_err(|err| err.to_string()));
+        });
+
+        let outcome = rx.recv_timeout(PROBE_TIMEOUT);
+        return Ok(match outcome {
+            Ok(Ok(output)) => ProbeOutcome {
+                kind: "command",
+                ran: true,
+                code: output.status.code(),
+                output: combined_output(&output),
+                command: Some(command),
+                states: Vec::new(),
+            },
+            Ok(Err(err)) => ProbeOutcome {
+                kind: "command",
+                ran: false,
+                code: None,
+                output: err,
+                command: Some(command),
+                states: Vec::new(),
+            },
+            Err(_) => ProbeOutcome {
+                kind: "command",
+                ran: false,
+                code: None,
+                output: "超时".to_string(),
+                command: Some(command),
+                states: Vec::new(),
+            },
+        });
+    }
+
+    // ---- 插件式：内部注入三条状态 ----
+    //
+    // 它证明的是「应用这一头是好的」：状态机、分组、窗口、灯。**不证明对方会调我们**——
+    // 那句只能靠回执里的「最近上报」。
+    let store = app.state::<SharedStore>();
+    let states = ["idle", "working", "done"];
+    for state in states {
+        let req = Report {
+            state: Signal::parse(state)?,
+            // 会话名固定：它一出现就说明这是试出来的，而不是某个真实项目在报
+            session: Some(PROBE_SESSION.into()),
+            // 组名也留成探测名：灯上会显示「signalhub-probe · 执行中」，一眼认得出
+            group: Some(PROBE_SESSION.into()),
+            agent: Some("test".into()),
+            cwd: None,
+            message: None,
+            // 短停留：试出来的东西不该在灯上赖着
+            ttl_ms: Some(PROBE_TTL_MS),
+        };
+        let ttl = report_ttl(&app, &req);
+        mutate(&app, &store, |guard, now| guard.apply(now, req, ttl));
+        tokio::time::sleep(Duration::from_millis(400)).await;
+    }
+    clear_session(app.clone(), PROBE_SESSION.to_string());
+
+    Ok(ProbeOutcome {
+        kind: "plugin",
+        ran: true,
+        code: None,
+        output: String::new(),
+        command: hooks::installed_command(agent),
+        states: states.iter().map(|state| (*state).to_string()).collect(),
+    })
+}
+
+/// 探测用的会话名。**两条路共用同一个名字**，这样：
+///
+/// - 灯上出现的这块牌一眼看得出是试出来的，而不是某个真实项目在报；
+/// - 命令式那条路（真跑了一遍接入命令）报上来的会话名是同一个，所以收工时的清理
+///   对两条路都管用。
+const PROBE_SESSION: &str = "signalhub-probe";
+
+/// 探测信号停留多久。
+///
+/// 命令式那条路带不了 TTL（钩子命令是装在对方配置里的字符串，不该为「试一下」改它），
+/// 所以两条路都靠**跑完等一会儿再清掉**来收尾（见 [`sweep_probe`]）。
+const PROBE_TTL_MS: u64 = 30_000;
+
+/// 探测信号在灯上留多久，然后清掉。
+///
+/// 不留着它是有实际理由的：命令式接入报上来的那条用的是**默认停留时长**（`working`
+/// 是 5 分钟），而一块亮五分钟的牌会让人以为真有个叫 `signalhub-probe` 的项目在跑。
+/// 清一个不存在的会话是幂等的，所以这里不需要先判断它在不在。
+fn sweep_probe(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(PROBE_TTL_MS)).await;
+        clear_session(app, PROBE_SESSION.to_string());
+    });
+}
+
+/// 命令的输出，stdout 和 stderr 拼起来。
+///
+/// 合并而不是只取一边：这条命令成功时**什么都不说**（钩子不许往 stdout 写东西，
+/// 见 `bin/signalhub.rs` 顶部），失败时原因可能在任意一边。
+fn combined_output(output: &std::process::Output) -> String {
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    let err = String::from_utf8_lossy(&output.stderr);
+    if !err.trim().is_empty() {
+        if !text.trim().is_empty() {
+            text.push('\n');
+        }
+        text.push_str(&err);
+    }
+    if text.len() > 2000 {
+        // 界面上只摆得下几行；截断是为了不让一条啰嗦的输出把面板撑坏
+        text.truncate(2000);
+        text.push('…');
+    }
+    text
+}
+
 /// 时间线的窗口长度。近半小时够看出「刚才卡了多久」，又不至于挤成一条线。
 const TIMELINE_WINDOW: Duration = Duration::from_secs(30 * 60);
 
@@ -1923,6 +2105,7 @@ pub fn run() {
             update::install_update,
             install_agent_hooks,
             uninstall_agent_hooks,
+            try_agent,
             toggle_collapsed,
             clear_group_state,
             clear_session,

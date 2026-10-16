@@ -1203,6 +1203,20 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   overflow-wrap: anywhere;
 }
 
+/* 「试一下」失败时用告警色：这一行是**可操作的**（输出里就是原因），不该混在
+   一片灰里。成功时保持正常色。 */
+.agent-result[data-on="false"] {
+  color: var(--danger);
+}
+
+/* 接入行右侧的按钮组：「试一下」在「接入 / 卸载」左边。`flex: none` 保证它不
+   参与上面 `.agent-info` 的收缩 —— 按钮变窄就没法点了。 */
+.agent-buttons {
+  display: flex;
+  flex: none;
+  gap: 4px;
+}
+
 /* 「已接入、但配置里那条命令现在跑不起来了」。比路径更该被看见，所以用告警色。
    它同时是**可操作的**：重装一次就修好，所以命令原文跟着一起摆出来。 */
 .agent-broken {

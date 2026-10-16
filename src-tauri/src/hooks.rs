@@ -164,7 +164,7 @@ impl Agent {
 
 /// 见 [`Agent::install_kind`]。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InstallKind {
+pub enum InstallKind {
     /// 往用户共享的一份 JSON 里插 `hooks` 条目。
     JsonHooks,
     /// 往对方自动加载的插件目录里放**我们自己的一个文件**
@@ -532,6 +532,63 @@ fn agent_name_for_cli(agent: Agent) -> &'static str {
         Agent::Pi => "pi",
         Agent::Hermes => "hermes",
     }
+}
+
+/// 公开的接入方式判断，给「试一下」用。
+///
+/// 为什么调用方需要知道：插件式接入（opencode / Pi / Hermes）**没有可以单独运行的
+/// 命令** —— 它的代码跑在对方的进程里，由对方加载、由对方调用。所以「试一下」对这
+/// 两种接入的含义不同：命令式能真的把那条命令跑一遍（那才验证得了 PATH、配置、
+/// 上报这一整条链路），插件式只能由我们内部注入一条测试信号，**证不了对方会不会
+/// 调用我们** —— 而后者正是回执（`receipts.rs`）要回答的问题。
+pub fn install_kind(agent: Agent) -> InstallKind {
+    agent.install_kind()
+}
+
+/// 「试一下」用的一条**真实的**事件 payload。
+///
+/// **必须真的能被 `map_event` 认出来。** 认不出来时那条命令什么也不做（日志里只
+/// 留一行 `ignored`）—— 那会让「试一下」变成一次假通过，比没有这个按钮更糟。所以
+/// 这张表和 `bin/signalhub.rs` 的映射表是配套的：改映射时一起看一眼。
+///
+/// 取的是各家「开始一轮 / 正在思考」那一档：它不依赖任何多余的 payload 字段
+/// （`Stop` 要看 `status`、`Notification` 要看 `notification_type`），不会因为合成
+/// 得不全而被认成别的意思。`None` = 插件式接入，没有能跑的命令。
+pub fn probe_payload(agent: Agent) -> Option<String> {
+    let event = match agent {
+        Agent::ClaudeCode | Agent::Codex | Agent::Goose => "UserPromptSubmit",
+        // Cursor 用 camelCase
+        Agent::Cursor => "beforeSubmitPrompt",
+        // Gemini 也是 PascalCase，但「开始一轮」叫 BeforeAgent
+        Agent::Gemini => "BeforeAgent",
+        // 插件式：没有能单独跑的命令（`install_kind` 会给出 `PluginFile`）
+        Agent::Opencode | Agent::Pi | Agent::Hermes => return None,
+    };
+    // **会话名固定成 `signalhub-probe`**：它一出现就说明这是试出来的，而不是某个
+    // 真实项目在报。
+    //
+    // 两个事件字段名都写上：Goose 认 `event`，其余认 `hook_event_name`，而
+    // `event_name` 是按顺序试的 —— 同一个 payload 里不会两个都有且冲突。
+    Some(
+        serde_json::json!({
+            "hook_event_name": event,
+            "event": event,
+            "session_id": "signalhub-probe",
+            "cwd": probe_cwd(),
+        })
+        .to_string(),
+    )
+}
+
+/// 合成 payload 里带的 `cwd`：当前工作目录。
+///
+/// 为什么要有：上报带 `cwd` 时分组会按目录算（用户开的就是这个行为），试出来的那块
+/// 牌就落在**用户自己那个项目组**里，而不是冒出一个没人认识的组。取不到就不写这个
+/// 字段（`Report.cwd` 是 `Option`），行为回落到默认分组。
+fn probe_cwd() -> Option<String> {
+    std::env::current_dir()
+        .ok()
+        .map(|path| path.to_string_lossy().into_owned())
 }
 
 /// Goose 插件的目录 —— 就是我们建的那个，卸载时整份删掉。
