@@ -450,14 +450,19 @@ mod tests {
     }
 
     /// 配置路径那一行也走同样的缩写：绝对路径里带着用户名。
+    ///
+    /// 期望值按**平台的分隔符**拼，不写死 `/`：Windows 上 `Path::join` 出来的是反斜杠，
+    /// 写死 `/` 会让这条测试在 Windows 的 CI 上红（2026-10-17 起红了一整天）。
     #[test]
     fn config_paths_lose_the_username() {
         let Some(home) = config::home_dir() else {
             return;
         };
-        let path = home.join(".claude/settings.json");
+        let sep = std::path::MAIN_SEPARATOR;
+        let path = home.join(".claude").join("settings.json");
         let text = short_path(&path);
-        assert_eq!(text, "~/.claude/settings.json");
+
+        assert_eq!(text, format!("~{sep}.claude{sep}settings.json"));
         assert!(!text.contains(&home.to_string_lossy().into_owned()));
     }
 }
