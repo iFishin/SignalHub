@@ -11,6 +11,7 @@ mod outbound;
 mod panel;
 mod receipts;
 mod server;
+mod shortcuts;
 mod state;
 mod stats;
 mod sweep;
@@ -35,9 +36,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, LogicalSize, Manager};
 use tauri_plugin_autostart::ManagerExt;
-use tauri_plugin_global_shortcut::{
-    Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState,
-};
 
 type SharedStore = Arc<Mutex<Store>>;
 /// 共享的设置。**和 `SharedStore` 一样是 `Arc`，不是裸 `Mutex`** ——
@@ -137,99 +135,6 @@ type SharedReceipts = Arc<receipts::Receipts>;
 /// 最近几次出站钩子的执行结果。界面上要能回答「我的服务器到底收到没有」——
 /// 光看 stderr 是查不出来的（从 Dock 启动的话根本没地方看）。
 type SharedOutbound = outbound::OutboundLog;
-
-/// 点击穿透的逃生快捷键。**穿透一旦开启，鼠标就没法再操作那个窗口**，
-/// 所以这是唯一的键盘出路（另一条是托盘菜单）。
-///
-/// 组合里**必须带 Alt**。这里曾经注册的是 ⌘S / Ctrl+S —— 那是全世界的「保存」，
-/// 全局注册等于把它从所有其它应用手里抢走；而当时的文案写的是「⌘⌥S」。两头
-/// 都错：提示里的组合按不出来，真正生效的那个又在别处捣乱。
-#[cfg(target_os = "macos")]
-const PASS_THROUGH_SHORTCUT: (Modifiers, Code) =
-    (Modifiers::SUPER.union(Modifiers::ALT), Code::KeyS);
-#[cfg(not(target_os = "macos"))]
-const PASS_THROUGH_SHORTCUT: (Modifiers, Code) =
-    (Modifiers::CONTROL.union(Modifiers::ALT), Code::KeyS);
-
-/// 快捷键写法的两种平台习惯。
-///
-/// **做成显式参数、而不是在函数体里直接 `cfg!`**，是为了让两套写法在**任何平台
-/// 上都能被单测走到**。起因是一次真实的漏网：`efc8f16` 把 macOS 的修饰键顺序照抄
-/// 进了 Windows / Linux 那一支，写出来的标签是 `Alt+Super+S`（哪个平台都不这么写），
-/// 而本地是 macOS、`cfg!` 永远走不到那一支 —— CI 上 Linux 连红三次才被发现。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum KeyStyle {
-    /// macOS：按 Apple HIG 的 ⌃⌥⇧⌘，Command 紧贴键名。
-    Mac,
-    /// Windows / Linux：Super 打头 —— 微软文档里 Win 键一律写最前
-    /// （`Win+Shift+S` 截图、`Win+Ctrl+Shift+B` 重启显卡驱动），
-    /// Linux 的快捷键语法也是 `<Super><Alt>s`。
-    Other,
-}
-
-/// 当前平台用哪种写法。
-fn key_style() -> KeyStyle {
-    if cfg!(target_os = "macos") { KeyStyle::Mac } else { KeyStyle::Other }
-}
-
-/// 快捷键的人话写法：macOS 上是「⌥⌘S」，别处是「Super+Alt+S」。
-///
-/// **从 `PASS_THROUGH_SHORTCUT` 派生，不另立常量。** 这里原来有一份独立的
-/// label 常量，结果和真正注册的组合漂移了 —— 而且漂移了也没人会发现，因为
-/// 文案只出现在提示和日志里，没有任何东西拿它和注册的那份比对。派生出来就
-/// 不存在「两份真值」这件事了。
-fn shortcut_label(mods: Modifiers, code: Code) -> String {
-    // `Code` 的 `Display` 给的是 W3C 名字（`KeyS`、`Digit1`），键盘上印的不是这个。
-    let w3c = code.to_string();
-    let key = w3c
-        .strip_prefix("Key")
-        .or_else(|| w3c.strip_prefix("Digit"))
-        .or_else(|| w3c.strip_prefix("Numpad"))
-        .unwrap_or(&w3c);
-
-    shortcut_label_for(mods, key, key_style())
-}
-
-/// 指定写法的版本。单测用它把**两套**都跑一遍，不受当前平台限制。
-fn shortcut_label_for(mods: Modifiers, key: &str, style: KeyStyle) -> String {
-    match style {
-        KeyStyle::Mac => {
-            let mut out = String::new();
-            for (flag, glyph) in [
-                (Modifiers::CONTROL, '⌃'),
-                (Modifiers::ALT, '⌥'),
-                (Modifiers::SHIFT, '⇧'),
-                (Modifiers::SUPER, '⌘'),
-            ] {
-                if mods.contains(flag) {
-                    out.push(glyph);
-                }
-            }
-            out.push_str(key);
-            out
-        }
-        KeyStyle::Other => {
-            let mut parts: Vec<&str> = Vec::new();
-            for (flag, name) in [
-                (Modifiers::SUPER, "Super"),
-                (Modifiers::CONTROL, "Ctrl"),
-                (Modifiers::ALT, "Alt"),
-                (Modifiers::SHIFT, "Shift"),
-            ] {
-                if mods.contains(flag) {
-                    parts.push(name);
-                }
-            }
-            parts.push(key);
-            parts.join("+")
-        }
-    }
-}
-
-/// 当前平台穿透快捷键的文案。托盘、通知、设置面板都从这里取。
-fn pass_through_shortcut_label() -> String {
-    shortcut_label(PASS_THROUGH_SHORTCUT.0, PASS_THROUGH_SHORTCUT.1)
-}
 
 #[tauri::command]
 fn get_state(store: tauri::State<'_, SharedStore>) -> Snapshot {
@@ -633,7 +538,7 @@ fn toggles(app: &tauri::AppHandle) -> Toggles {
             .lock()
             .expect("ui poisoned")
             .pass_through,
-        pass_through_shortcut: pass_through_shortcut_label(),
+        pass_through_shortcut: shortcuts::pass_through_label(),
     }
 }
 
@@ -691,7 +596,7 @@ fn set_pass_through_impl(app: &tauri::AppHandle, enabled: bool) -> Result<(), St
         alerts::send_message(
             app,
             lang::text(lang).pass_through_title,
-            &lang::pass_through_body(lang, &pass_through_shortcut_label()),
+            &lang::pass_through_body(lang, &shortcuts::pass_through_label()),
         );
     }
 
@@ -830,6 +735,17 @@ fn test_hooks(app: tauri::AppHandle) -> usize {
         current_lang(&app),
         app.state::<SharedOutbound>().inner(),
     )
+}
+
+/// 四个全局快捷键现在的处境（设置 →「系统」页那几行）。
+///
+/// 注册失败（多半是被别的程序占了）时界面必须**明说哪一个没生效** —— 一个按了
+/// 没反应的键，用户只会以为是 SignalHub 坏了。
+#[tauri::command]
+fn get_shortcuts(
+    status: tauri::State<'_, shortcuts::SharedShortcuts>,
+) -> Vec<shortcuts::ShortcutStatus> {
+    status.lock().expect("shortcut status poisoned").clone()
 }
 
 /// 清掉某一组的全部会话（灯上那块牌右上角的 `×`）。
@@ -2212,6 +2128,8 @@ pub fn run() {
         .manage(update::SharedUpdate::default())
         // 右键菜单只记「刚点的是哪一组」，见 menu.rs
         .manage(menu::Target::default())
+        // 四个全局快捷键抢到了没有 —— 注册时算一次，设置 →「系统」页读它
+        .manage(shortcuts::SharedShortcuts::default())
         .invoke_handler(tauri::generate_handler![
             get_state,
             set_state,
@@ -2236,6 +2154,7 @@ pub fn run() {
             get_timeline,
             get_messages,
             get_outbound_log,
+            get_shortcuts,
             get_notify_permission,
             request_notify_permission,
             detect_agents,
@@ -2300,35 +2219,27 @@ pub fn run() {
             // 必须一起做，只做一半的表现是「按钮从来没见过」且不报错。
             alerts::wire_actions(app.handle());
 
-            // 全局快捷键是点击穿透唯一的键盘出路，所以先把它注册成功 ——
-            // 注册失败只记日志（不阻断启动），但用户从托盘菜单仍能退出穿透。
-            let label = pass_through_shortcut_label();
-            let shortcut = Shortcut::new(
-                Some(PASS_THROUGH_SHORTCUT.0),
-                PASS_THROUGH_SHORTCUT.1,
+            // 全局快捷键。**不阻断启动**：抢不到一个组合不该让 app 起不来，
+            // 而且抢不到这件事会记进状态、在设置 →「系统」页明说出来 —— 一个
+            // 按了没反应的键比一个「这一个没生效」的说明糟得多。
+            let registered = shortcuts::register_all(app.handle());
+            // 打一行：不开设置窗口时，这是唯一能确认「快捷键到底抢到了没有」的地方。
+            // 文案从注册结果派生，所以不会和真正生效的那个组合漂移。
+            eprintln!(
+                "[signalhub] 全局快捷键: {}",
+                registered
+                    .iter()
+                    .map(|status| if status.ok {
+                        status.label.clone()
+                    } else {
+                        format!("{}（没抢到）", status.label)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" / ")
             );
-            if let Err(err) = app.global_shortcut().on_shortcut(
-                shortcut,
-                |app, _shortcut, event| {
-                    // 只认按下，否则一次按键会来回切换两次
-                    if event.state != ShortcutState::Pressed {
-                        return;
-                    }
-                    let enabled = app
-                        .state::<SharedUi>()
-                        .lock()
-                        .expect("ui poisoned")
-                        .pass_through;
-                    if let Err(err) = set_pass_through_impl(app, !enabled) {
-                        eprintln!("[signalhub] 快捷键切换点击穿透失败: {err}");
-                    }
-                },
-            ) {
-                eprintln!(
-                    "[signalhub] 注册全局快捷键 {label} 失败（{err}）；\
-                     点击穿透仍可从托盘菜单退出"
-                );
-            }
+            *app.state::<shortcuts::SharedShortcuts>()
+                .lock()
+                .expect("shortcut status poisoned") = registered;
 
             wire_settings_window(app);
             // 右键菜单是运行时构造的，`Menu` 自己没有事件回调 —— 只能挂在应用上，
@@ -2372,15 +2283,12 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        clamp_to_area, distance_to_bounds, grow_away_from_edges, nearest_index,
-        pass_through_shortcut_label, shortcut_label,
-        shortcut_label_for, snap_to_edges, validate_settings, visible_groups, KeyStyle,
-        state_ttl_defaults, PASS_THROUGH_SHORTCUT, TEST_REPORT_TTL_MS,
+        clamp_to_area, distance_to_bounds, grow_away_from_edges, nearest_index, snap_to_edges,
+        state_ttl_defaults, validate_settings, visible_groups, TEST_REPORT_TTL_MS,
     };
     use crate::config::{GroupMeta, Settings, StateStyle, MAX_STATE_TTL_MS, MIN_STATE_TTL_MS};
     use crate::state::{state_ttl, GroupView, Report, Signal, Snapshot, Store};
     use std::time::{Duration, Instant};
-    use tauri_plugin_global_shortcut::{Code, Modifiers};
 
     // ---- 测试上报 -------------------------------------------------------------
 
@@ -2481,73 +2389,6 @@ mod tests {
             },
         );
         assert!(validate_settings(&bad_color).is_err(), "非 #rrggbb 要报错");
-    }
-
-    // ---- 穿透快捷键 -----------------------------------------------------------
-
-    /// 裸的 ⌘S / Ctrl+S 是「保存」—— 全局注册会把它从所有其它应用手里抢走，
-    /// 而且用户按保存时灯会悄悄切换穿透。这里曾经真的就是这么注册的。
-    #[test]
-    fn the_pass_through_shortcut_does_not_steal_save() {
-        let (mods, _) = PASS_THROUGH_SHORTCUT;
-        assert!(mods.contains(Modifiers::ALT), "不带 Alt 的组合会和「保存」撞车");
-        assert!(
-            mods.contains(Modifiers::CONTROL) || mods.contains(Modifiers::SUPER),
-            "总得有一个主修饰键"
-        );
-    }
-
-    /// 文案必须真的描述那个注册的组合。这两样曾经各是一个常量、并且漂移了
-    /// —— 文案写 ⌘⌥S，实际注册 ⌘S —— 而没有任何东西会发现。这条测试就是那个
-    /// 「会发现的东西」。
-    #[test]
-    fn the_label_matches_the_registered_shortcut() {
-        let label = pass_through_shortcut_label();
-        let (mods, _) = PASS_THROUGH_SHORTCUT;
-
-        assert_eq!(
-            mods.contains(Modifiers::ALT),
-            label.contains('⌥') || label.contains("Alt"),
-            "{label} 与注册的修饰键对不上"
-        );
-        assert_eq!(
-            mods.contains(Modifiers::SHIFT),
-            label.contains('⇧') || label.contains("Shift"),
-            "{label} 与注册的修饰键对不上"
-        );
-        assert!(
-            label.ends_with('S'),
-            "{label} 里没有键名 —— 说明 Code 的前缀没被剥掉"
-        );
-    }
-
-    /// 格式化函数本身：W3C 名字要去掉前缀，修饰键要按平台习惯写。
-    ///
-    /// **两套写法都断言，不管跑在哪个平台。** 用 `shortcut_label_for` 显式指定
-    /// 写法，而不是靠 `cfg!` 只走到当前平台那一支 —— 这个测试原来正是那么写的，
-    /// 于是「Windows / Linux 那一支照抄了 macOS 的顺序」在 macOS 开发机上永远
-    /// 测不出来，CI 上 Linux 连红三次。
-    #[test]
-    fn shortcut_labels_read_like_keyboards() {
-        let word = Modifiers::CONTROL.union(Modifiers::ALT);
-        let command = Modifiers::SUPER.union(Modifiers::ALT);
-
-        // macOS：Apple HIG 的 ⌃⌥⇧⌘，Command 紧贴键名
-        assert_eq!(shortcut_label_for(word, "S", KeyStyle::Mac), "⌃⌥S");
-        assert_eq!(shortcut_label_for(command, "S", KeyStyle::Mac), "⌥⌘S");
-
-        // Windows / Linux：Super 打头，别把上面那套照抄下来
-        assert_eq!(shortcut_label_for(word, "S", KeyStyle::Other), "Ctrl+Alt+S");
-        assert_eq!(
-            shortcut_label_for(command, "S", KeyStyle::Other),
-            "Super+Alt+S"
-        );
-
-        // 数字键同样要去掉 `Digit` 前缀，否则会写出「Ctrl+Digit1」这种东西。
-        // 走公开入口（`shortcut_label`），顺带覆盖「当前平台是哪种写法」那一层
-        let digit = shortcut_label(Modifiers::CONTROL, Code::Digit1);
-        assert!(digit.ends_with('1'), "{digit}");
-        assert!(!digit.contains("Digit"), "{digit} 里还留着 W3C 前缀");
     }
 
     // ---- 把窗口夹回工作区 -----------------------------------------------------

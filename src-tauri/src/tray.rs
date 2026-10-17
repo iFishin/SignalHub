@@ -308,7 +308,9 @@ fn build_menu(app: &AppHandle, lang: crate::config::Lang) -> tauri::Result<Menu<
     )
 }
 
-fn toggle_lamp(app: &AppHandle) {
+/// 显示 / 隐藏灯。托盘的「显示 / 隐藏灯球」和全局快捷键 `⌥⇧L` 都走这里 ——
+/// 两条入口各写一遍的话，「切换」到底做了什么迟早分叉。
+pub(crate) fn toggle_lamp(app: &AppHandle) {
     let Some(win) = app.get_webview_window("main") else {
         return;
     };

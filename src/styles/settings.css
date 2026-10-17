@@ -671,6 +671,8 @@ input[type="color"].style-swatch::-webkit-color-swatch {
 
 /* 目标还没填的钩子不会触发，得让它看得见 */
 .hook-warn {
+  /* 紧跟在一行字后面（「灯 2」「清除最差的那一组」），不留个缝会贴上去 */
+  margin-left: 6px;
   padding: 1px 5px;
   border-radius: 3px;
   background: var(--hover);

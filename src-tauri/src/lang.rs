@@ -145,6 +145,35 @@ pub fn pass_through_body(lang: Lang, shortcut: &str) -> String {
     }
 }
 
+/// 「已静音 / 已取消静音」那两条通告的标题和正文。
+///
+/// 需要它是因为**静音在屏幕上是看不见的**：静音只影响通知和提示音，灯照常显示
+/// 那一组。一个按下去什么都没发生的全局快捷键，用户只会再按几次。见
+/// `shortcuts::mute_worst`。
+///
+/// 返回 `(标题, 正文)` 而不是两个函数：这两句是同一件事的两半，分开写迟早会有
+/// 人只改一半。
+pub fn mute_message(lang: Lang, group: &str, muted: bool) -> (String, String) {
+    match (lang, muted) {
+        (Lang::Zh, true) => (
+            format!("已静音「{group}」"),
+            "这一组不再弹通知和提示音（灯照常显示）。再按一次快捷键恢复。".to_string(),
+        ),
+        (Lang::Zh, false) => (
+            format!("已取消静音「{group}」"),
+            "这一组的通知恢复了。".to_string(),
+        ),
+        (Lang::En, true) => (
+            format!("Muted \"{group}\""),
+            "This group no longer notifies or plays a sound (the lamp still shows it). Press the shortcut again to undo.".to_string(),
+        ),
+        (Lang::En, false) => (
+            format!("Unmuted \"{group}\""),
+            "This group notifies again.".to_string(),
+        ),
+    }
+}
+
 /// 「已经等了多久」。重复提醒的正文用它 —— 见 `alerts::send_reminder`。
 ///
 /// 超过一小时就换成小时制：卡了三个小时时「已等待 180 分钟」还得让人自己换算。
@@ -309,6 +338,18 @@ mod tests {
                 .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
             "「已等待多久」的英文里还有中文"
         );
+        for (title, body) in [
+            mute_message(Lang::En, "ci", true),
+            mute_message(Lang::En, "ci", false),
+        ] {
+            assert!(
+                !title
+                    .chars()
+                    .chain(body.chars())
+                    .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+                "静音通告的英文里还有中文：{title} / {body}"
+            );
+        }
     }
 
     /// 「已经等了多久」。一小时以上换成小时制 —— 卡了三小时还写「已等待 180 分钟」

@@ -356,6 +356,11 @@ export interface Messages {
   systemHintTray: string;
   systemHintPassThrough: (shortcut: string) => string;
   shortcutFallback: string;
+  shortcutsTitle: string;
+  /** 按动作名取本地化的名字（`lamp` / `mute` / `clear` / `pass_through`）。 */
+  shortcutActions: Record<string, string>;
+  shortcutTaken: string;
+  shortcutsHint: string;
   language: string;
   langAuto: string;
   langZh: string;
@@ -800,6 +805,16 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     systemHintPassThrough: (shortcut) =>
       `穿透后圆点不再响应鼠标，按 ${shortcut} 或从托盘菜单退出。该模式不会保留到下次启动。`,
     shortcutFallback: "快捷键",
+    shortcutsTitle: "全局快捷键",
+    shortcutActions: {
+      lamp: "显示 / 隐藏灯",
+      mute: "静音最差的那一组",
+      clear: "清除最差的那一组",
+      pass_through: "切换点击穿透",
+    },
+    shortcutTaken: "被别的程序占用了",
+    shortcutsHint:
+      "快捷键是固定的（不做可配：真正的故障是被别的程序占了，那件事可配也解决不了）。抢不到的那一个会在上面标出来。「最差的那一组」= 紧急度最高的那一组，和灯上最上面那块牌同一个判据；置顶只改显示顺序。",
     language: "语言",
     langAuto: "跟随系统",
     langZh: "中文",
@@ -1237,6 +1252,16 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     systemHintPassThrough: (shortcut) =>
       `In click-through the dot stops responding to the mouse; press ${shortcut} or quit from the tray menu. The mode is not kept for the next launch.`,
     shortcutFallback: "the shortcut",
+    shortcutsTitle: "Global shortcuts",
+    shortcutActions: {
+      lamp: "Show / hide the lamp",
+      mute: "Mute the worst group",
+      clear: "Clear the worst group",
+      pass_through: "Toggle click-through",
+    },
+    shortcutTaken: "taken by another app",
+    shortcutsHint:
+      "The combinations are fixed (making them configurable would not fix the real failure \u2014 another app already owning one). Any that could not be registered are flagged above. \u201cThe worst group\u201d is the most urgent one, the same rule that puts a sign at the top of the lamp; pinning only changes the display order.",
     language: "Language",
     langAuto: "System",
     langZh: "中文",

@@ -36,6 +36,7 @@ import {
   type HookChange,
 } from "../lib/useAgents";
 import { useStateTtls } from "../lib/useStateTtls";
+import { useShortcuts } from "../lib/useShortcuts";
 import { percent, progressLabel } from "../lib/updateProgress";
 import { useUpdate } from "../lib/useUpdate";
 import { colorVars, resolveColors } from "../lib/palettes";
@@ -980,6 +981,7 @@ interface ProbeOutcome {
 export function SettingsPanel({ snapshot }: Props) {
   const settings = useSettings();
   const toggles = useToggles();
+  const shortcuts = useShortcuts();
   const stats = useStats();
   const timeline = useTimeline(snapshot.aggregate);
   const { days: historyDays, refresh: refreshHistory } = useHistory();
@@ -3193,6 +3195,26 @@ export function SettingsPanel({ snapshot }: Props) {
                 toggles.pass_through_shortcut || m.shortcutFallback,
               )}
             </p>
+
+            {/* 全局快捷键。**抢不到的那一个必须说出来** —— 一个按了没反应的键，
+                用户只会以为是 SignalHub 坏了（注册失败只写 stderr，从 Dock 启动
+                的话根本没地方看）。 */}
+            <div className="section">
+              <div className="section-title">{m.shortcutsTitle}</div>
+              {shortcuts.map((shortcut) => (
+                <div className="row" key={shortcut.action}>
+                  <span>
+                    {m.shortcutActions[shortcut.action] ?? shortcut.action}
+                    {/* 认不出来的动作名照原样显示：多一个动作不该让这一行消失 */}
+                    {!shortcut.ok && (
+                      <span className="hook-warn">{m.shortcutTaken}</span>
+                    )}
+                  </span>
+                  <span className="mono">{shortcut.label}</span>
+                </div>
+              ))}
+              <p className="hint">{m.shortcutsHint}</p>
+            </div>
 
             {/* 这两个原先挂在顶部栏上。搬到这一页是因为它们是**诊断入口**
                 （看配置、看日志），而这一页本来就是「系统层面的事」——
