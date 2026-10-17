@@ -1040,7 +1040,7 @@ pub fn install(agent: Agent, dry_run: bool) -> Result<Report, String> {
 
     let path = config_path(agent)?;
     let mut report =
-        install_at(agent, &HookSpec::Command(resolve_hook_command(agent)), &path, dry_run)?;
+        install_at(agent, &HookSpec::Command(resolve_hook_command(agent)), None, &path, dry_run)?;
 
     // Goose 的 hook 必须放在一个**插件**里，光有 hooks.json 它不会加载 ——
     // 清单是插件的身份证。演练模式不落盘，所以这里也跳过。
@@ -1094,7 +1094,53 @@ pub fn install_http(agent: Agent, port: u16, dry_run: bool) -> Result<Report, St
         ));
     }
 
-    install_at(agent, &HookSpec::Http { url }, &path, dry_run)
+    install_at(agent, &HookSpec::Http { url }, None, &path, dry_run)
+}
+
+/// 装「从灯上审批」（C3）：HTTP 式接入，但把 `PermissionRequest` 那一条换成
+/// 带 token 的审批端点。
+///
+/// 为什么是**整份 HTTP 接入 + 一条替换**而不是「加一条」：审批要能工作，前提是
+/// 其余事件也在报（灯上得先知道有这么一个会话，黄了才知道是谁在等）。而「加一条」
+/// 会让 `PermissionRequest` 上挂着两个 hook —— 同一个确认框打两次接口，其中一次
+/// 还是免鉴权的上报端点，读起来没人说得清哪条在起作用。
+///
+/// 关掉时把 HTTP 式接入再装一遍（`install_http`）就回到只上报 —— 见 `lib.rs`。
+pub fn install_approve(
+    agent: Agent,
+    port: u16,
+    token: &str,
+    dry_run: bool,
+) -> Result<Report, String> {
+    if agent != Agent::ClaudeCode {
+        // 只有 Claude Code 的文档里写清了「HTTP hook 可以回一个决定」
+        return Err("从灯上审批目前只支持 Claude Code".to_string());
+    }
+    let url = hook_url(port);
+    let approve = HookSpec::Approve {
+        url: approve_url(port),
+        token: token.to_string(),
+    };
+    let path = config_path(agent)?;
+
+    // 两条地址都要过白名单判定：定义了这个键之后，不在列表里的 hook 会被静默跳过
+    // ——「装上了却永远不亮」正是这个项目最不能接受的一种失败（见 `url_allowed`）。
+    if let Ok(text) = fs::read_to_string(&path) {
+        for candidate in [&url, &approve.as_text()] {
+            if url_allowed(&text, candidate) == Some(false) {
+                return Err(format!(
+                    "{} 里定义了 allowedHttpHookUrls，而 {candidate} 不在里面 —— \
+                     定义了这个键之后，Claude Code 只会运行列表里匹配的 HTTP hook，\
+                     其余的一律不跑（那就是「装上了却永远不亮」）。\
+                     请在 allowedHttpHookUrls 里加上 \"http://127.0.0.1:*\"，\
+                     或者删掉这个键，然后再点一次。",
+                    path.display()
+                ));
+            }
+        }
+    }
+
+    install_at(agent, &HookSpec::Http { url }, Some(&approve), &path, dry_run)
 }
 
 /// 用户自己的 HTTP hook 白名单里允不允许这个 URL。
@@ -1154,6 +1200,15 @@ fn glob_match(pattern: &str, text: &str) -> bool {
 fn hook_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}{HOOK_PATH_PREFIX}claude-code")
 }
+
+/// 审批端点的地址（C3）。
+fn approve_url(port: u16) -> String {
+    format!("http://127.0.0.1:{port}/v1/approve/claude-code")
+}
+
+/// 写进配置里的超时。**必须比 `approvals::WAIT`（45 秒）长**：反过来的话对方会先
+/// 超时，我们那个「等用户点」的窗口就永远走不满。
+pub(crate) const APPROVE_TIMEOUT_SECS: u32 = 60;
 
 /// 装进去的是 HTTP 式（`true`）还是命令式（`false`）。没装过就是 `None`。
 ///
@@ -1308,7 +1363,16 @@ fn uninstall_plugin_file(agent: Agent, dry_run: bool) -> Result<Report, String> 
 
 // ---- 实现 ------------------------------------------------------------------
 
-fn install_at(agent: Agent, spec: &HookSpec, path: &Path, dry_run: bool) -> Result<Report, String> {
+/// `approve` 给 `Some` 时，`PermissionRequest` 那一条改用那条 spec（从灯上审批），
+/// 其余事件照旧用 `spec`（普通上报）。**一次写完**：先装上报、再改一条会留下
+/// 「改到一半」的状态，而这个功能改的是用户自己的智能体配置。
+fn install_at(
+    agent: Agent,
+    spec: &HookSpec,
+    approve: Option<&HookSpec>,
+    path: &Path,
+    dry_run: bool,
+) -> Result<Report, String> {
     let existing: Option<String> = match fs::read_to_string(path) {
         Ok(text) => Some(text),
         Err(err) if err.kind() == io::ErrorKind::NotFound => None,
@@ -1348,6 +1412,11 @@ fn install_at(agent: Agent, spec: &HookSpec, path: &Path, dry_run: bool) -> Resu
     let hooks = hooks.as_object_mut().expect("刚确认过是对象");
 
     for (event, matcher) in events(agent) {
+        // 每个事件各用哪条 spec：只有 `PermissionRequest` 那一条会被换成审批端点
+        let spec = match (approve, *event) {
+            (Some(approve), "PermissionRequest") => approve,
+            _ => spec,
+        };
         let groups = hooks.entry((*event).to_string()).or_insert_with(|| json!([]));
         let Some(groups) = groups.as_array_mut() else {
             return Err(format!(
@@ -1386,11 +1455,13 @@ fn install_at(agent: Agent, spec: &HookSpec, path: &Path, dry_run: bool) -> Resu
         root.entry("version").or_insert_with(|| json!(1));
     }
 
+    // 界面要显示的「写进去的是什么」：装了审批就显示审批那一条（用户刚拨的就是它）
+    let shown = approve.unwrap_or(spec).as_text();
     if added.is_empty() && updated.is_empty() {
         return Ok(Report {
             path: path.to_path_buf(),
             backup: None,
-            command: Some(spec.as_text()),
+            command: Some(shown.clone()),
             added,
             already,
             updated,
@@ -1410,7 +1481,7 @@ fn install_at(agent: Agent, spec: &HookSpec, path: &Path, dry_run: bool) -> Resu
     Ok(Report {
         path: path.to_path_buf(),
         backup,
-        command: Some(spec.as_text()),
+        command: Some(shown),
         added,
         already,
         updated,
@@ -1580,12 +1651,19 @@ fn is_our_handler(handler: &Value) -> bool {
 /// 不拿完整命令串做相等比较的理由：认的是「这是我们写的」，不是「它现在完全正确」）。
 const HOOK_PATH_PREFIX: &str = "/v1/hooks/";
 
-/// 我们写进配置的 HTTP 式 hook（`{"type":"http","url":"…/v1/hooks/claude-code"}`）。
+/// 审批端点的路径前缀（C3）。
+const APPROVE_PATH_PREFIX: &str = "/v1/approve/";
+
+/// 我们写进配置的 HTTP 式 hook（`{"type":"http","url":"…/v1/hooks/claude-code"}`，
+/// 或者审批那条 `…/v1/approve/claude-code`）。
+///
+/// **两条都要认**。只认上报那条的后果不只是「装第二遍会多出一条」，还有
+/// **卸载时会把带 token 的那条留在用户配置里** —— 那是这个功能最不该留下的东西。
 fn is_our_http_handler(handler: &Value) -> bool {
     handler
         .get("url")
         .and_then(Value::as_str)
-        .is_some_and(|url| url.contains(HOOK_PATH_PREFIX))
+        .is_some_and(|url| url.contains(HOOK_PATH_PREFIX) || url.contains(APPROVE_PATH_PREFIX))
 }
 
 /// 判断一条命令是不是我们自己写进去的。
@@ -1635,6 +1713,12 @@ pub enum HookSpec {
     /// HTTP 式：让智能体**直接 POST 到本机端口**。不需要任何命令存在，所以
     /// 「命令跑不起来 / 不在 PATH 上」这一整类失败都不存在（见 `server::hook_report`）。
     Http { url: String },
+    /// HTTP 式，但**要 token**，而且这一条会**等**（从灯上审批，见 `approvals.rs`）。
+    ///
+    /// 和 `Http` 的区别全在 [`HookSpec::body`] 里，而且每一处都是刻意的：
+    /// 带 `Authorization`（这一条替用户做决定）、`timeout: 60`（要够人从屏幕上
+    /// 挪到灯上点一下）、`onFailure: "continue"`（端点不在时回到终端里那个确认框）。
+    Approve { url: String, token: String },
 }
 
 impl HookSpec {
@@ -1643,6 +1727,7 @@ impl HookSpec {
         match self {
             HookSpec::Command(command) => command.clone(),
             HookSpec::Http { url } => url.clone(),
+            HookSpec::Approve { url, .. } => url.clone(),
         }
     }
 
@@ -1653,6 +1738,10 @@ impl HookSpec {
                 slot.get("command").and_then(Value::as_str) == Some(command.as_str())
             }
             HookSpec::Http { url } => {
+                slot.get("url").and_then(Value::as_str) == Some(url.as_str())
+            }
+            // 按 URL 判断就够：两条端点不一样，所以「已经装的是哪一种」分得开
+            HookSpec::Approve { url, .. } => {
                 slot.get("url").and_then(Value::as_str) == Some(url.as_str())
             }
         }
@@ -1700,6 +1789,23 @@ impl HookSpec {
                     "url": url,
                     "timeout": 5,
                     "onFailure": "continue",
+                })
+            }
+            HookSpec::Approve { url, token } => {
+                // 这三项和上面那条**故意不一样**，每一条都是这个功能的形状：
+                //
+                // - `timeout: 60`：这一条会等到有人点（我们的截止时间是 45 秒，
+                //   比它短 —— 永远是我们先回话，对方的超时不该触发）。
+                // - `onFailure: "continue"`：**端点不在时绝不阻塞智能体**，
+                //   回到终端里那个确认框。这是 §9 那条红线的延续，不是例外。
+                // - `Authorization`：这一条替用户做决定，所以要有凭证。token 写在
+                //   用户主目录的配置里（`~/.claude/settings.json`），不进仓库。
+                json!({
+                    "type": "http",
+                    "url": url,
+                    "timeout": APPROVE_TIMEOUT_SECS,
+                    "onFailure": "continue",
+                    "headers": { "Authorization": format!("Bearer {token}") },
                 })
             }
         }
@@ -1882,7 +1988,7 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("settings.json");
 
-        let report = install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), &path, false).unwrap();
+        let report = install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), None, &path, false).unwrap();
         assert_eq!(report.added.len(), events(Agent::ClaudeCode).len());
         assert!(report.already.is_empty());
 
@@ -1897,7 +2003,7 @@ mod tests {
     fn claude_code_hooks_are_async() {
         let dir = TempDir::new();
         let path = dir.file("settings.json");
-        install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), &path, false).unwrap();
+        install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), None, &path, false).unwrap();
 
         let root = read(&path);
         for groups in root["hooks"].as_object().unwrap().values() {
@@ -1911,7 +2017,7 @@ mod tests {
     fn session_start_is_limited_to_real_starts() {
         let dir = TempDir::new();
         let path = dir.file("settings.json");
-        install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), &path, false).unwrap();
+        install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), None, &path, false).unwrap();
 
         let root = read(&path);
         assert_eq!(root["hooks"]["SessionStart"][0]["matcher"], "startup|resume");
@@ -1927,7 +2033,7 @@ mod tests {
         for agent in [Agent::Gemini, Agent::Goose] {
             let dir = TempDir::new();
             let path = dir.file("hooks.json");
-            install_at(agent, &HookSpec::Command(CMD.to_string()), &path, false).unwrap();
+            install_at(agent, &HookSpec::Command(CMD.to_string()), None, &path, false).unwrap();
 
             let root = read(&path);
             for groups in root["hooks"].as_object().unwrap().values() {
@@ -1949,7 +2055,7 @@ mod tests {
 
         let dir = TempDir::new();
         let path = dir.file("hooks.json");
-        install_at(Agent::Goose, &HookSpec::Command(CMD.to_string()), &path, false).unwrap();
+        install_at(Agent::Goose, &HookSpec::Command(CMD.to_string()), None, &path, false).unwrap();
         assert_eq!(read(&path)["hooks"]["Stop"][0]["hooks"][0]["timeout"], 5);
     }
 
@@ -2115,7 +2221,7 @@ mod tests {
         )
         .unwrap();
 
-        install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), &path, false).unwrap();
+        install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), None, &path, false).unwrap();
         let root = read(&path);
 
         assert_eq!(root["env"]["FOO"], "bar", "env 必须原样保留");
@@ -2132,10 +2238,10 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("settings.json");
 
-        install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), &path, false).unwrap();
+        install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), None, &path, false).unwrap();
         let first = fs::read_to_string(&path).unwrap();
 
-        let second = install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), &path, false).unwrap();
+        let second = install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), None, &path, false).unwrap();
         assert!(second.added.is_empty(), "第二次不该再加条目");
         assert!(second.updated.is_empty(), "命令没变，不该算更新");
         assert_eq!(second.already.len(), events(Agent::ClaudeCode).len());
@@ -2149,10 +2255,10 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("settings.json");
 
-        install_at(Agent::ClaudeCode, &HookSpec::Command("/old/place/signalhub hook claude-code".to_string()), &path, false)
+        install_at(Agent::ClaudeCode, &HookSpec::Command("/old/place/signalhub hook claude-code".to_string()), None, &path, false)
             .unwrap();
 
-        let report = install_at(Agent::ClaudeCode, &HookSpec::Command("signalhub hook claude-code".to_string()), &path, false)
+        let report = install_at(Agent::ClaudeCode, &HookSpec::Command("signalhub hook claude-code".to_string()), None, &path, false)
             .unwrap();
         assert!(report.added.is_empty(), "条目已存在，不该重复新增");
         assert_eq!(report.updated.len(), events(Agent::ClaudeCode).len());
@@ -2170,8 +2276,8 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("settings.json");
 
-        install_at(Agent::ClaudeCode, &HookSpec::Command("/old/signalhub hook claude-code".to_string()), &path, false).unwrap();
-        install_at(Agent::ClaudeCode, &HookSpec::Command("signalhub hook claude-code".to_string()), &path, false).unwrap();
+        install_at(Agent::ClaudeCode, &HookSpec::Command("/old/signalhub hook claude-code".to_string()), None, &path, false).unwrap();
+        install_at(Agent::ClaudeCode, &HookSpec::Command("signalhub hook claude-code".to_string()), None, &path, false).unwrap();
 
         let root = read(&path);
         let stop = root["hooks"]["Stop"].as_array().unwrap();
@@ -2183,9 +2289,9 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("hooks.json");
 
-        install_at(Agent::Cursor, &HookSpec::Command("/old/signalhub hook cursor".to_string()), &path, false).unwrap();
+        install_at(Agent::Cursor, &HookSpec::Command("/old/signalhub hook cursor".to_string()), None, &path, false).unwrap();
         let report =
-            install_at(Agent::Cursor, &HookSpec::Command("/new/signalhub hook cursor".to_string()), &path, false).unwrap();
+            install_at(Agent::Cursor, &HookSpec::Command("/new/signalhub hook cursor".to_string()), None, &path, false).unwrap();
 
         assert_eq!(report.updated.len(), events(Agent::Cursor).len());
         let root = read(&path);
@@ -2199,7 +2305,7 @@ mod tests {
         let path = dir.file("settings.json");
         fs::write(&path, "{\"theme\":\"dark\"}").unwrap();
 
-        let report = install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), &path, false).unwrap();
+        let report = install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), None, &path, false).unwrap();
         let backup = report.backup.expect("应产生备份");
         assert_eq!(fs::read_to_string(&backup).unwrap(), "{\"theme\":\"dark\"}");
     }
@@ -2212,7 +2318,7 @@ mod tests {
         let broken = "{ this is not json }";
         fs::write(&path, broken).unwrap();
 
-        let err = install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), &path, false).unwrap_err();
+        let err = install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), None, &path, false).unwrap_err();
         assert!(err.contains("不是合法 JSON"), "{err}");
         assert_eq!(fs::read_to_string(&path).unwrap(), broken, "内容必须一字未改");
         assert!(!dir.file("settings.json.signalhub-backup").exists());
@@ -2224,7 +2330,7 @@ mod tests {
         let path = dir.file("settings.json");
         fs::write(&path, r#"{"hooks": ["nonsense"]}"#).unwrap();
 
-        assert!(install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), &path, false).is_err());
+        assert!(install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), None, &path, false).is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), r#"{"hooks": ["nonsense"]}"#);
     }
 
@@ -2233,7 +2339,7 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("settings.json");
 
-        let report = install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), &path, true).unwrap();
+        let report = install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), None, &path, true).unwrap();
         assert!(report.dry_run);
         assert!(!report.added.is_empty(), "演算也应报告将要做什么");
         assert!(report.backup.is_none());
@@ -2254,7 +2360,7 @@ mod tests {
             }"#,
         )
         .unwrap();
-        install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), &path, false).unwrap();
+        install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), None, &path, false).unwrap();
 
         let report = uninstall_at(&path, false).unwrap();
         assert!(!report.removed.is_empty());
@@ -2303,7 +2409,7 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("settings.json");
         fs::write(&path, r#"{"theme":"dark"}"#).unwrap();
-        install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), &path, false).unwrap();
+        install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), None, &path, false).unwrap();
 
         uninstall_at(&path, false).unwrap();
         let root = read(&path);
@@ -2322,7 +2428,7 @@ mod tests {
     fn uninstall_is_idempotent() {
         let dir = TempDir::new();
         let path = dir.file("settings.json");
-        install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), &path, false).unwrap();
+        install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), None, &path, false).unwrap();
 
         assert!(!uninstall_at(&path, false).unwrap().removed.is_empty());
         assert!(uninstall_at(&path, false).unwrap().removed.is_empty());
@@ -2333,7 +2439,7 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("settings.json");
         // 用另一个路径装，卸载时应照样认得出来
-        install_at(Agent::ClaudeCode, &HookSpec::Command("/home/someone/bin/signalhub hook claude-code".to_string()), &path, false)
+        install_at(Agent::ClaudeCode, &HookSpec::Command("/home/someone/bin/signalhub hook claude-code".to_string()), None, &path, false)
             .unwrap();
         uninstall_at(&path, false).unwrap();
         assert!(read(&path).get("hooks").is_none());
@@ -2346,7 +2452,7 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("hooks.json");
 
-        install_at(Agent::Cursor, &HookSpec::Command("/opt/signalhub hook cursor".to_string()), &path, false).unwrap();
+        install_at(Agent::Cursor, &HookSpec::Command("/opt/signalhub hook cursor".to_string()), None, &path, false).unwrap();
         let root = read(&path);
 
         assert_eq!(root["version"], 1, "Cursor 要求 version 字段");
@@ -2362,7 +2468,7 @@ mod tests {
         let path = dir.file("hooks.json");
         fs::write(&path, r#"{"version":1}"#).unwrap();
 
-        install_at(Agent::Cursor, &HookSpec::Command("/opt/signalhub hook cursor".to_string()), &path, false).unwrap();
+        install_at(Agent::Cursor, &HookSpec::Command("/opt/signalhub hook cursor".to_string()), None, &path, false).unwrap();
         assert_eq!(read(&path)["version"], 1);
     }
 
@@ -2371,7 +2477,7 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("hooks.json");
 
-        install_at(Agent::Codex, &HookSpec::Command("/opt/signalhub hook codex".to_string()), &path, false).unwrap();
+        install_at(Agent::Codex, &HookSpec::Command("/opt/signalhub hook codex".to_string()), None, &path, false).unwrap();
         let root = read(&path);
         assert_eq!(root["hooks"]["PreToolUse"][0]["hooks"][0]["async"], true);
         assert_eq!(root["hooks"]["Interrupt"][0]["hooks"][0]["command"], "/opt/signalhub hook codex");
@@ -2700,7 +2806,7 @@ mod tests {
     fn backup_is_not_written_when_there_is_nothing_to_back_up() {
         let dir = TempDir::new();
         let path = dir.file("settings.json");
-        let report = install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), &path, false).unwrap();
+        let report = install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), None, &path, false).unwrap();
         assert!(report.backup.is_none(), "新建文件没什么可备份的");
     }
 
@@ -2713,7 +2819,7 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("settings.json");
         let spec = HookSpec::Http { url: hook_url(41320) };
-        install_at(Agent::ClaudeCode, &spec, &path, false).unwrap();
+        install_at(Agent::ClaudeCode, &spec, None, &path, false).unwrap();
 
         let root = read(&path);
         let handler = &root["hooks"]["PreToolUse"][0]["hooks"][0];
@@ -2749,10 +2855,11 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("settings.json");
 
-        install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), &path, false).unwrap();
+        install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), None, &path, false).unwrap();
         let report = install_at(
             Agent::ClaudeCode,
             &HookSpec::Http { url: hook_url(41320) },
+            None,
             &path,
             false,
         )
@@ -2765,12 +2872,103 @@ mod tests {
         assert!(handler.get("command").is_none(), "命令式的字段必须清掉: {handler}");
         assert_eq!(installed_http_in(&fs::read_to_string(&path).unwrap()), Some(true));
 
-        install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), &path, false).unwrap();
+        install_at(Agent::ClaudeCode, &HookSpec::Command(CMD.to_string()), None, &path, false).unwrap();
         let handler = read(&path)["hooks"]["PreToolUse"][0]["hooks"][0].clone();
         assert_eq!(handler["type"], "command");
         assert!(handler.get("url").is_none(), "HTTP 式的字段必须清掉: {handler}");
         assert!(handler.get("onFailure").is_none());
         assert_eq!(installed_http_in(&fs::read_to_string(&path).unwrap()), Some(false));
+    }
+
+    /// 审批那一条写进去的样子：**token / 超时 / onFailure 一个都不能错**。
+    ///
+    /// 写错超时的表现是「灯上的按钮点不动了」（对方先超时，我们那个等用户点的
+    /// 窗口永远走不满）；漏了 `onFailure` 则是「端点不在时把智能体卡住」——
+    /// 而那是 §9 那条红线明确不许的。
+    #[test]
+    fn the_approval_handler_carries_the_token_and_a_longer_timeout() {
+        let spec = HookSpec::Approve {
+            url: approve_url(41320),
+            token: "tok-123".to_string(),
+        };
+        let body = spec.body(Agent::ClaudeCode);
+        assert_eq!(body["type"], "http");
+        assert_eq!(body["url"], "http://127.0.0.1:41320/v1/approve/claude-code");
+        assert_eq!(body["timeout"], APPROVE_TIMEOUT_SECS);
+        // 「比 approvals::WAIT 长」那一条关系由 `approvals.rs` 里的用例钉着
+        // （这个文件也被 CLI 编进去，看不到 `approvals` 模块）
+        assert_eq!(body["onFailure"], "continue", "端点不在时绝不阻塞智能体");
+        assert_eq!(body["headers"]["Authorization"], "Bearer tok-123");
+    }
+
+    /// **只有 `PermissionRequest` 那一条换成审批端点**，其余事件照旧走上报端点
+    /// （它们不带 token，也不该带）。
+    #[test]
+    fn only_the_permission_request_entry_becomes_the_approval_endpoint() {
+        let dir = TempDir::new();
+        let path = dir.file("settings.json");
+        let approve = HookSpec::Approve {
+            url: approve_url(41320),
+            token: "tok-123".to_string(),
+        };
+        install_at(
+            Agent::ClaudeCode,
+            &HookSpec::Http { url: hook_url(41320) },
+            Some(&approve),
+            &path,
+            false,
+        )
+        .unwrap();
+
+        let root = read(&path);
+        let permission = root["hooks"]["PermissionRequest"][0]["hooks"][0].clone();
+        assert_eq!(permission["url"], "http://127.0.0.1:41320/v1/approve/claude-code");
+        assert_eq!(permission["headers"]["Authorization"], "Bearer tok-123");
+
+        let other = root["hooks"]["PreToolUse"][0]["hooks"][0].clone();
+        assert_eq!(other["url"], "http://127.0.0.1:41320/v1/hooks/claude-code");
+        assert!(other.get("headers").is_none(), "上报端点不该带凭证: {other}");
+        assert_eq!(other["timeout"], 5, "上报那一条仍然是 5 秒");
+
+        // 再装一遍（幂等）：不该变成两条
+        install_at(
+            Agent::ClaudeCode,
+            &HookSpec::Http { url: hook_url(41320) },
+            Some(&approve),
+            &path,
+            false,
+        )
+        .unwrap();
+        let root = read(&path);
+        assert_eq!(root["hooks"]["PermissionRequest"].as_array().unwrap().len(), 1);
+    }
+
+    /// 卸载要把审批那条也清掉 —— **带 token 的条目不能留在用户配置里**。
+    #[test]
+    fn uninstall_removes_the_approval_handler_too() {
+        let dir = TempDir::new();
+        let path = dir.file("settings.json");
+        let approve = HookSpec::Approve {
+            url: approve_url(41320),
+            token: "tok-123".to_string(),
+        };
+        install_at(
+            Agent::ClaudeCode,
+            &HookSpec::Http { url: hook_url(41320) },
+            Some(&approve),
+            &path,
+            false,
+        )
+        .unwrap();
+        assert!(
+            fs::read_to_string(&path).unwrap().contains("tok-123"),
+            "装上了就该看得见 token（这一条是给用户排查用的）"
+        );
+
+        uninstall_at(&path, false).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("tok-123"), "卸载之后 token 不该还留在配置里: {text}");
+        assert!(!text.contains(APPROVE_PATH_PREFIX), "{text}");
     }
 
     /// 卸载要把 HTTP 式的一并清掉，而且**只清我们的**。
@@ -2784,6 +2982,7 @@ mod tests {
         install_at(
             Agent::ClaudeCode,
             &HookSpec::Http { url: hook_url(41320) },
+            None,
             &path,
             false,
         )

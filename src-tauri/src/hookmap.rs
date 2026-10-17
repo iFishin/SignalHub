@@ -265,3 +265,89 @@ pub fn cwd_of(payload: &Value) -> Option<String> {
         .or_else(|| payload["workspace_roots"].as_array()?.first()?.as_str())
         .map(str::to_string)
 }
+
+/// 「这次调用到底要干什么」—— 给**灯上那个待批准气泡**看的一行。
+///
+/// 和 `tool_target` 分开：那个是牌面上的短词（`执行 npm`），要短到不挤掉别的信息；
+/// 这个要**看得全**，因为用户是拿它来决定放不放行的。返回 `(一行文字, 有没有被截断)`。
+///
+/// **被截断就不给「允许」**（见 `approvals::Pending::allowable`）：看不全的东西不该在
+/// 灯上一键放行，那种情况下只能拒绝、或者回终端自己看。
+///
+/// 这里的东西**只进本地界面**：状态上报用的是 `tool_target`（短词），通知和出站钩子
+/// 都不会带上它 —— 命令里可能有 `API_KEY=…` 这类东西，而那是「只发状态」那条红线的
+/// 范围。终端里的确认框本来也把这些打给用户看，所以本地面板里看得见不算越界。
+pub const DETAIL_MAX: usize = 240;
+
+pub fn approval_detail(tool: &str, input: &Value) -> (String, bool) {
+    let raw = match tool_verb(tool) {
+        // 命令：整条打出来 —— `API_KEY=xxx curl …` 里要决定的就是这一整行
+        Some(Verb::Exec) => ["command", "cmd"]
+            .iter()
+            .find_map(|key| input[*key].as_str())
+            .map(str::to_string),
+        // 文件类：给路径就够了（`Write` 的 content 可能几万行）
+        Some(Verb::Edit | Verb::Read) => ["file_path", "filePath", "path", "notebook_path"]
+            .iter()
+            .find_map(|key| input[*key].as_str())
+            .map(str::to_string),
+        // 搜索 / 上网：查询词和 URL
+        Some(Verb::Search | Verb::Net) => ["pattern", "query", "url"]
+            .iter()
+            .find_map(|key| input[*key].as_str())
+            .map(str::to_string),
+        // 认不出来的工具（含 MCP）：整个输入 —— 短的就够看，长的会被截断
+        None => None,
+    };
+
+    let text = raw.unwrap_or_else(|| input.to_string());
+    let text = text.trim();
+    let clipped = clip(text, DETAIL_MAX);
+    let truncated = clipped != text;
+    (clipped, truncated)
+}
+
+#[cfg(test)]
+mod approval_detail_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_command_is_shown_whole() {
+        let input = json!({ "command": "rm -rf node_modules", "description": "清理" });
+        assert_eq!(
+            approval_detail("Bash", &input),
+            ("rm -rf node_modules".to_string(), false)
+        );
+    }
+
+    /// 长命令要**说出来**它被截断了 —— 那一句就是「这条不能在灯上放行」的依据。
+    #[test]
+    fn a_long_command_is_flagged_as_truncated() {
+        let long = "echo ".to_string() + &"x".repeat(DETAIL_MAX * 2);
+        let (shown, truncated) = approval_detail("Bash", &json!({ "command": long }));
+        assert!(truncated);
+        assert!(shown.chars().count() <= DETAIL_MAX + 1, "{shown}");
+    }
+
+    #[test]
+    fn file_tools_show_the_path_not_the_contents() {
+        let input = json!({ "file_path": "/proj/src/main.rs", "content": "x".repeat(9999) });
+        assert_eq!(
+            approval_detail("Write", &input),
+            ("/proj/src/main.rs".to_string(), false)
+        );
+    }
+
+    /// 认不出来的工具：输入小就给整个 JSON（因此**可以**放行），大就截断（不能）。
+    #[test]
+    fn an_unknown_tool_falls_back_to_the_raw_input() {
+        let small = json!({ "memory": "hello" });
+        assert_eq!(
+            approval_detail("mcp__memory__create", &small),
+            (small.to_string(), false)
+        );
+        let big = json!({ "blob": "y".repeat(DETAIL_MAX * 3) });
+        assert!(approval_detail("mcp__memory__create", &big).1);
+    }
+}

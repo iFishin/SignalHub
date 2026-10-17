@@ -33,8 +33,31 @@ struct Ctx {
     bind: crate::SharedBind,
     /// 当前界面语言。HTTP 式 hook 的「正在做什么」那行由应用自己生成。
     lang: Arc<crate::lang::LocalLang>,
+    /// 等用户点的那些审批（见 `approvals.rs`）。**和 `store` 一样是共享的同一份** ——
+    /// 灯上那个气泡读的就是它。
+    approvals: Arc<crate::approvals::Registry>,
     token: String,
     started: Instant,
+}
+
+/// 上报 / 审批路径要用的那几样「共享的同一份」。
+///
+/// 收成一个结构而不是八个参数：**它们必须都是 app 里 manage 的那几份**，参数一多
+/// 就容易在调用点按位置传错（类型还都长得差不多），而传错的后果是「上报绕过聚合 /
+/// 审批看不到灯上的表」这类静默的错。按名字打包之后，调用点读起来也是自证的。
+pub struct Shared {
+    pub store: Arc<Mutex<Store>>,
+    /// 上报路径要读 `group_by`（兜底分组），所以设置也共享给它，而不是让它自己
+    /// 从盘上再读一份 —— 两份真值迟早会漂移。
+    pub settings: crate::SharedSettings,
+    /// 实际绑到哪了，回填给界面判断「那个开关生效了没有」
+    pub bind: crate::SharedBind,
+    /// 每个信号源的最近一次上报 —— 和上报路径共用同一份
+    pub receipts: Arc<crate::receipts::Receipts>,
+    /// 当前界面语言：HTTP 式 hook 要用它生成「正在做什么」那行
+    pub lang: Arc<crate::lang::LocalLang>,
+    /// 审批端点和灯上那个气泡共用同一份登记表
+    pub approvals: Arc<crate::approvals::Registry>,
 }
 
 /// 绑定并开始服务。返回后不阻塞调用方。
@@ -43,29 +66,26 @@ struct Ctx {
 /// 通知器**，它除了推事件给前端，还要核对窗口尺寸、记统计、发通知和转发。
 /// 这里若自己构造一个（早先就是这么写的），HTTP 上报这条路径就会绕过
 /// 那一整套逻辑 —— 而智能体的 hook 恰好全部走这条路。
-pub fn spawn(
-    notify: Notifier,
-    store: Arc<Mutex<Store>>,
-    settings: crate::SharedSettings,
-    bind: crate::SharedBind,
-    receipts: Arc<crate::receipts::Receipts>,
-    lang: Arc<crate::lang::LocalLang>,
-    token: String,
-) {
+pub fn spawn(notify: Notifier, shared: Shared, token: String) {
     // 监听地址**在启动时定一次**。设置里那个开关改了要重启才生效 —— 理由见
     // `Settings::lan_access`：运行中重绑会让端口变化，表现为「灯突然收不到上报」。
-    let lan = settings.lock().expect("settings poisoned").lan_access;
+    let lan = shared
+        .settings
+        .lock()
+        .expect("settings poisoned")
+        .lan_access;
     let host = bind_host(lan);
 
     let ctx = Ctx {
-        store,
+        store: shared.store,
         notify,
-        settings,
-        receipts,
+        settings: shared.settings,
+        receipts: shared.receipts,
         // 记「实际绑到哪了」和给 handler 看的是**同一份**：handler 要按它决定
         // 免鉴权那条端点开不开，两处各存一个就会有一边撒谎
-        bind: bind.clone(),
-        lang,
+        bind: shared.bind.clone(),
+        lang: shared.lang,
+        approvals: shared.approvals,
         token,
         started: Instant::now(),
     };
@@ -89,7 +109,7 @@ pub fn spawn(
         }
         // 记下「实际绑到哪了」。**在真的 bind 成功之后记** —— 界面上那句
         // 「重启才生效」靠它判断，记早了会说谎。
-        *bind.lock().expect("bind poisoned") = lan;
+        *shared.bind.lock().expect("bind poisoned") = lan;
         if lan {
             // 这条要显眼：开了局域网访问之后，网内任何人拿到 token 就能上报
             match local_ip() {
@@ -202,12 +222,29 @@ fn router(ctx: Ctx) -> Router {
         .route("/v1/hooks/{agent}", post(hook_report))
         .layer(axum::extract::DefaultBodyLimit::max(HOOK_BODY_MAX));
 
+    // 审批端点（C3）。**在 `protected` 那一组里** —— 它要 token，这是它和上报端点
+    // 最重要的区别（见 `approve_request` 的注释）。body 限长和上报端点同一把尺子：
+    // payload 是同一个东西。
+    let approvals = Router::new()
+        .route("/v1/approve/{agent}", post(approve_request))
+        .route("/v1/approvals", get(approval_list))
+        .route("/v1/approvals/{id}", post(approval_decide))
+        .layer(axum::extract::DefaultBodyLimit::max(HOOK_BODY_MAX))
+        // **鉴权中间件必须挂在这一组上**：它是独立的一个 Router，不会继承
+        // `protected` 那一层。少写这一行就是「任何本地进程都能替用户点允许」——
+        // 而这正是 C3 那条红线要挡住的事。
+        .route_layer(axum::middleware::from_fn_with_state(
+            ctx.clone(),
+            require_auth,
+        ));
+
     Router::new()
         .route("/v1/health", get(health))
         // 只读 Web 面板。**免鉴权**：页面里没有任何数据，数据由页面自己去拉
         // `/v1/state`（那条路要 token）。见 `panel.rs`。
         .route("/", get(web_panel))
         .merge(hooks)
+        .merge(approvals)
         .merge(protected)
         .with_state(ctx)
 }
@@ -392,6 +429,170 @@ fn log_http_hook(agent: &str, event: &str, session: &str, outcome: &str) {
     ));
 }
 
+// ---- 审批（C3，`approvals.rs`）------------------------------------------------
+
+/// 一个待批准条目的短 id：6 字节随机 → 12 位十六进制。够短，能在电话里念出来。
+fn new_approval_id() -> String {
+    let mut bytes = [0u8; 6];
+    if getrandom::fill(&mut bytes).is_err() {
+        // 取不到随机数也不该挡住审批：退回按时间取。登记表按会话去重，本来也堆不了几条，
+        // 同一微秒内撞上两条的概率可以忽略。
+        let micros = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_micros() as u64)
+            .unwrap_or(0);
+        return format!("{micros:012x}");
+    }
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// 审批端点：Claude Code 的 `PermissionRequest` hook 打到这里，**这一条会等到有人点**。
+///
+/// 和上报端点（`/v1/hooks/{agent}`）分开是刻意的，而且是安全要求：
+///
+/// - **要 token。** 上报端点不能要（那条配置写在用户的 Claude Code 配置里，而那个
+///   文件不该放秘密）；这一条替用户做决定，所以必须有凭证 —— 没有 token 的本地进程
+///   不该能替用户点「允许」。token 由 `hooks::install_approve` 写进配置。
+/// - **默认关。** 关着的时候照常回 200 但**什么都不说**（`{}`），Claude Code 走自己
+///   的询问流程：装了 hook 也不改变任何行为。
+/// - **只认「它本来就要问你」的那一刻**（`PermissionRequest`）。`PreToolUse` 会拦下
+///   本来不需要批准的事，那是替用户做决定，不是把确认框搬个地方。
+/// - **出任何问题都不报错给智能体**：回 `{}`。报错只会在对方界面上留一行属于我们的
+///   故障，而它自己那个询问框本来就是对的答案。
+async fn approve_request(
+    State(ctx): State<Ctx>,
+    Path(agent): Path<String>,
+    body: axum::body::Bytes,
+) -> Json<Value> {
+    let payload = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
+    let event = payload["hook_event_name"].as_str().unwrap_or("?").to_string();
+    let session = crate::hookmap::session_id(&payload).unwrap_or_else(|| agent.clone());
+
+    // 局域网访问打开时和上报端点一样整条关掉：这一条**替用户做决定**，比只写状态
+    // 严重得多。要 token 是第二道防线（见 `router` 里那一层）。
+    if *ctx.bind.lock().expect("bind poisoned") {
+        log_http_hook(&agent, &event, &session, "approve: 局域网访问开着，端点关着");
+        return Json(crate::approvals::response(None));
+    }
+
+    let enabled = ctx.settings.lock().expect("settings poisoned").approve_tools;
+    if !enabled || agent != "claude-code" || event != "PermissionRequest" {
+        let why = if !enabled {
+            "approve: off"
+        } else {
+            "approve: 不是 PermissionRequest，不管"
+        };
+        log_http_hook(&agent, &event, &session, why);
+        return Json(crate::approvals::response(None));
+    }
+
+    let tool = payload["tool_name"].as_str().unwrap_or("").trim().to_string();
+    let input = &payload["tool_input"];
+    let (detail, truncated) = crate::hookmap::approval_detail(&tool, input);
+    let target = crate::hookmap::tool_target(input)
+        .unwrap_or_else(|| crate::hookmap::clip(&tool, crate::hookmap::TOOL_NAME_MAX));
+    let id = new_approval_id();
+    let pending = crate::approvals::Pending::new(
+        id.clone(),
+        session.clone(),
+        tool,
+        target,
+        detail,
+        truncated,
+    );
+
+    // 灯上先变黄 —— 走的是和上报完全相同的那条路（凭证、兜底分组、推送都跟着来）。
+    // 这条上报**只带那个短词**（`hook_message`），命令全文只进本地界面。
+    ingest(
+        &ctx,
+        Report {
+            state: Signal::Permission,
+            session: Some(session.clone()),
+            group: None,
+            agent: Some(agent.clone()),
+            source: Some("agent".to_string()),
+            cwd: crate::hookmap::cwd_of(&payload),
+            message: hook_message(&ctx, &payload),
+            ttl_ms: None,
+        },
+        None,
+    );
+
+    let rx = ctx.approvals.open(pending);
+    log_http_hook(&agent, &event, &session, "approve: 等你点");
+    let decision = crate::approvals::wait(rx).await;
+    if decision.is_none() {
+        // 没人点，这一条到此为止。**按 id 收**：同一个会话可能刚又来了一条（新的
+        // 顶掉旧的），按会话收会把那条新的也带走。
+        // （请求方中途断开那条路不经过这里 —— 那种条目由 `Registry::list` 顺手扫掉。）
+        ctx.approvals.expire(&id);
+    }
+
+    // 点完之后把牌子从「等你」改回「在干活」：无论允许还是拒绝，智能体都已经往下走了。
+    // 后面的事件（PostToolUse 之类）会把它修正成更准确的状态。
+    if decision.is_some() {
+        ingest(
+            &ctx,
+            Report {
+                state: Signal::Working,
+                session: Some(session.clone()),
+                group: None,
+                agent: Some(agent.clone()),
+                source: Some("agent".to_string()),
+                cwd: None,
+                message: None,
+                ttl_ms: None,
+            },
+            None,
+        );
+    }
+    let outcome = match decision {
+        Some(crate::approvals::Decision::Allow) => "approve: 允许",
+        Some(crate::approvals::Decision::Deny) => "approve: 拒绝",
+        None => "approve: 没人点，交回 Claude Code 自己问",
+    };
+    log_http_hook(&agent, &event, &session, outcome);
+    Json(crate::approvals::response(decision))
+}
+
+/// 现在有几条在等。灯上那个气泡读它（IPC 走同一个函数）。
+async fn approval_list(State(ctx): State<Ctx>) -> Json<Value> {
+    Json(json!({ "approvals": ctx.approvals.list() }))
+}
+
+/// 从接口上替用户点一下 —— **和灯上那两个按钮走的是同一个函数**（`Registry::decide`）。
+///
+/// 存在这条路的理由很实际：它是这个功能唯一能被端到端验证的入口（灯上的按钮没法
+/// 自动化点）。它和 `/v1/state` 在同一个 token 后面，所以不扩大信任边界；
+/// 「看不全不给放行」那条规则在登记表里挡着，这条接口绕不过去。
+async fn approval_decide(
+    State(ctx): State<Ctx>,
+    Path(id): Path<String>,
+    body: axum::body::Bytes,
+) -> Json<Value> {
+    let payload = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
+    let decision = match payload["decision"].as_str() {
+        Some("allow") => crate::approvals::Decision::Allow,
+        Some("deny") => crate::approvals::Decision::Deny,
+        other => {
+            return Json(json!({
+                "ok": false,
+                "error": format!("decision 只能是 allow 或 deny，收到 {other:?}"),
+            }));
+        }
+    };
+    match ctx.approvals.decide(&id, decision) {
+        crate::approvals::Decided::Done => Json(json!({ "ok": true })),
+        crate::approvals::Decided::NotFound => {
+            Json(json!({ "ok": false, "error": "没有这一条（超时了，或者被同一个会话的新请求顶掉了）" }))
+        }
+        crate::approvals::Decided::NotAllowable => Json(json!({
+            "ok": false,
+            "error": "这条的内容在灯上看不全，只能拒绝 —— 要放行请回终端里看",
+        })),
+    }
+}
+
 async fn read_state(State(ctx): State<Ctx>) -> Json<Snapshot> {
     Json(ctx.store.lock().expect("state store poisoned").snapshot())
 }
@@ -524,7 +725,13 @@ fn ingest_core(ctx: &Ctx, mut report: Report, ttl: Option<Duration>) -> (bool, S
 fn drop_session(ctx: &Ctx, session: &str) -> (bool, bool, Snapshot) {
     let mut guard = ctx.store.lock().expect("state store poisoned");
     let (removed, changed) = guard.remove_session(session, Instant::now());
-    (removed, changed, guard.snapshot())
+    let snapshot = guard.snapshot();
+    drop(guard);
+    // 会话没了，挂在它名下的审批也不再作数：对面收到「没有决定」，走它自己的询问流程
+    // （智能体已经退出时，那一头本来也没人在等）。**放在这里**是因为它是服务端
+    // 唯一一处「丢掉一个会话」的落点 —— hook 的 SessionEnd 和 HTTP 的 DELETE 都走它。
+    ctx.approvals.forget_session(session);
+    (removed, changed, snapshot)
 }
 
 /// 启动时把 `spool.jsonl` 里攒下的上报补进状态机，然后删掉它。
@@ -677,10 +884,14 @@ mod tests {
         bind: crate::SharedBind,
         /// 和服务器共用的凭证表。上报会顺手往这里记一笔，所以测试能直接看它。
         receipts: Arc<crate::receipts::Receipts>,
+        /// 和服务器共用的审批登记表（灯上那个气泡读的就是它）。
+        approvals: Arc<crate::approvals::Registry>,
     }
 
     async fn start() -> TestServer {
         let (ctx, notifications, settings, bind, receipts) = test_ctx();
+        // 先从 ctx 里取出来再把它交给 router（`Ctx` 不是 `Clone`）
+        let approvals = ctx.approvals.clone();
 
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -688,7 +899,15 @@ mod tests {
             axum::serve(listener, router(ctx)).await.unwrap();
         });
 
-        TestServer { port, token: "s3cret".to_string(), notifications, settings, bind, receipts }
+        TestServer {
+            port,
+            token: "s3cret".to_string(),
+            notifications,
+            settings,
+            bind,
+            receipts,
+            approvals,
+        }
     }
 
     /// 一个不经 HTTP 的 ctx + 通知计数 + 那份共享设置。
@@ -721,6 +940,9 @@ mod tests {
             receipts: receipts.clone(),
             bind: bind.clone(),
             lang: Arc::new(crate::lang::LocalLang::default()),
+            // 审批登记表：单测里不挂回调（`on_change` 的调用点是 `lib.rs`），
+            // 所以这里和 `notify` 不一样 —— 没有 app 也能测
+            approvals: Arc::new(crate::approvals::Registry::default()),
             token: "s3cret".to_string(),
             started: Instant::now(),
         };
@@ -829,7 +1051,7 @@ mod tests {
 
         // 整条响应都要看：**Content-Type 不对的话浏览器会把这页当纯文本显示**
         // （也就是把源码摊给用户看），所以它和正文一样是这条用例的一部分。
-        let raw = call_raw(&server, "GET", "/", None, false, None).await;
+        let raw = call_raw(server.port, "GET", "/", None, false, None).await;
         assert!(raw.starts_with("HTTP/1.1 200"), "{}", &raw[..60.min(raw.len())]);
         assert!(raw.to_lowercase().contains("content-type: text/html"), "要声明成 HTML");
         let body = raw.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default();
@@ -979,14 +1201,14 @@ mod tests {
     /// 手写一个 HTTP/1.1 请求，就为了几个测试引入一个 HTTP 客户端依赖不划算。
     /// 返回**整条响应**（含响应头）—— 需要看 `Content-Type` 时用它。
     async fn call_raw(
-        server: &TestServer,
+        port: u16,
         method: &str,
         path: &str,
         token: Option<&str>,
         origin: bool,
         body: Option<&str>,
     ) -> String {
-        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", server.port))
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
             .await
             .unwrap();
 
@@ -1012,6 +1234,20 @@ mod tests {
         String::from_utf8_lossy(&raw).into_owned()
     }
 
+    /// 一段 HTTP 应答 → 状态码 + 正文。
+    fn split_response(text: &str) -> (u16, String) {
+        let status = text
+            .split_whitespace()
+            .nth(1)
+            .and_then(|code| code.parse().ok())
+            .unwrap_or(0);
+        let body = text
+            .split_once("\r\n\r\n")
+            .map(|(_, b)| b.to_string())
+            .unwrap_or_default();
+        (status, body)
+    }
+
     /// [`call_raw`] 的常用视图：状态码 + 正文。
     async fn call(
         server: &TestServer,
@@ -1021,14 +1257,19 @@ mod tests {
         origin: bool,
         body: Option<&str>,
     ) -> (u16, String) {
-        let text = call_raw(server, method, path, token, origin, body).await;
-        let status = text
-            .split_whitespace()
-            .nth(1)
-            .and_then(|code| code.parse().ok())
-            .unwrap_or(0);
-        let body = text.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default();
-        (status, body)
+        split_response(&call_raw(server.port, method, path, token, origin, body).await)
+    }
+
+    /// 只要端口的那种调用：审批那条会**一直挂着**，所以它必须能跑在 `tokio::spawn`
+    /// 里，而那边借不到 `TestServer`。
+    async fn call_at(
+        port: u16,
+        method: &str,
+        path: &str,
+        token: Option<&str>,
+        body: Option<&str>,
+    ) -> (u16, String) {
+        split_response(&call_raw(port, method, path, token, false, body).await)
     }
 
     async fn post_state(server: &TestServer, body: &str) -> (u16, String) {
@@ -1494,5 +1735,269 @@ mod tests {
         assert_eq!(stats.bad, 2, "非 JSON 的行 + 状态名不合法的请求体");
         assert_eq!(ctx.store.lock().unwrap().snapshot().aggregate, Signal::Attention);
         assert!(!path.exists(), "读完了照样要清掉 —— 坏行留着只会每次都白读一遍");
+    }
+
+    // ---- 从灯上审批（C3）-----------------------------------------------------
+
+    fn permission_request(event: &str, tool: &str, input: serde_json::Value) -> String {
+        serde_json::json!({
+            "hook_event_name": event,
+            "session_id": "cc-1",
+            "cwd": "/proj/signalhub",
+            "tool_name": tool,
+            "tool_input": input,
+        })
+        .to_string()
+    }
+
+    /// 拨开关走的是**服务器手里那一份共享设置**（和用户在设置面板里拨是同一个路径）。
+    fn enable_approvals(settings: &crate::SharedSettings) {
+        let mut guard = settings.lock().unwrap();
+        let mut next = (**guard).clone();
+        next.approve_tools = true;
+        *guard = std::sync::Arc::new(next);
+    }
+
+    /// 等那条登记上（灯上那个气泡读的就是这个列表），返回它的 id。
+    async fn wait_for_approval(server: &TestServer) -> String {
+        for _ in 0..200 {
+            let (_, body) = call(server, "GET", "/v1/approvals", Some(&server.token), false, None).await;
+            let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+            if let Some(id) = parsed["approvals"][0]["id"].as_str() {
+                return id.to_string();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("审批一直没登记上");
+    }
+
+    /// **审批端点必须要有 token。** 它和上报端点正好相反（那一条刻意免鉴权：
+    /// 它写在用户的 Claude Code 配置里，而 token 是每台机器一份的秘密）——
+    /// 这一条替用户做决定，所以没有凭证的本地进程不该能点「允许」。
+    #[tokio::test]
+    async fn the_approval_endpoint_refuses_a_request_without_the_token() {
+        let server = start().await;
+        let body = permission_request(
+            "PermissionRequest",
+            "Bash",
+            serde_json::json!({ "command": "rm -rf build" }),
+        );
+        let (status, _) = call(
+            &server,
+            "POST",
+            "/v1/approve/claude-code",
+            None,
+            false,
+            Some(&body),
+        )
+        .await;
+        assert_eq!(status, 401, "没有 token 就不该能替用户做决定");
+        assert!(server.approvals.list().is_empty());
+    }
+
+    /// 默认关：装了 hook 也**不改变任何行为** —— 端点照常回话，但什么都不说，
+    /// 于是 Claude Code 走它自己的询问框。
+    #[tokio::test]
+    async fn approval_is_off_by_default_so_nothing_is_decided() {
+        let server = start().await;
+        assert!(
+            !crate::config::Settings::default().approve_tools,
+            "默认必须是关的 —— 这是唯一会改变智能体行为的开关"
+        );
+        let body = permission_request(
+            "PermissionRequest",
+            "Bash",
+            serde_json::json!({ "command": "rm -rf build" }),
+        );
+        let (status, body) = call(
+            &server,
+            "POST",
+            "/v1/approve/claude-code",
+            Some(&server.token),
+            false,
+            Some(&body),
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(body.trim(), "{}", "关着的时候不能替用户做决定");
+        assert!(server.approvals.list().is_empty(), "关着时不该登记任何东西");
+    }
+
+    /// **只认 `PermissionRequest`。** `PreToolUse` 会拦下本来不需要批准的事 ——
+    /// 那是替用户做决定，不是把确认框搬个地方。
+    #[tokio::test]
+    async fn only_the_moment_that_would_have_asked_is_intercepted() {
+        let server = start().await;
+        enable_approvals(&server.settings);
+        for event in ["PreToolUse", "PostToolUse", "Stop"] {
+            let body = permission_request(event, "Bash", serde_json::json!({ "command": "ls" }));
+            let (status, body) = call(
+                &server,
+                "POST",
+                "/v1/approve/claude-code",
+                Some(&server.token),
+                false,
+                Some(&body),
+            )
+            .await;
+            assert_eq!(status, 200);
+            assert_eq!(body.trim(), "{}", "{event} 不该被拦");
+        }
+        assert!(server.approvals.list().is_empty());
+    }
+
+    /// 开着的时候：请求会**等**，灯上出现那一条，点一下 → 决定回给对方。
+    #[tokio::test]
+    async fn a_pending_approval_waits_for_the_decision() {
+        let server = start().await;
+        enable_approvals(&server.settings);
+        let port = server.port;
+        let token = server.token.clone();
+        let body = permission_request(
+            "PermissionRequest",
+            "Bash",
+            serde_json::json!({ "command": "rm -rf build" }),
+        );
+
+        // 这一条会一直挂着（等用户点），所以放到后台
+        let waiting = tokio::spawn(async move {
+            call_at(port, "POST", "/v1/approve/claude-code", Some(&token), Some(&body)).await
+        });
+
+        let id = wait_for_approval(&server).await;
+
+        // 灯上先变黄：这条上报和普通上报走的是同一条路（分组 / 凭证 / 推送都跟着）
+        let (_, state) = call(&server, "GET", "/v1/state", Some(&server.token), false, None).await;
+        assert!(state.contains("\"permission\""), "{state}");
+        assert!(state.contains("cc-1"), "{state}");
+        // 状态里**只有那个短词**，没有命令全文
+        assert!(!state.contains("rm -rf build"), "命令全文不该进状态：{state}");
+        // 但灯上那个气泡看得到全文
+        let (_, list) = call(&server, "GET", "/v1/approvals", Some(&server.token), false, None).await;
+        assert!(list.contains("rm -rf build"), "{list}");
+
+        // 点「允许」
+        let (status, body) = call(
+            &server,
+            "POST",
+            &format!("/v1/approvals/{id}"),
+            Some(&server.token),
+            false,
+            Some("{\"decision\":\"allow\"}"),
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert!(body.contains("\"ok\":true"), "{body}");
+
+        let (status, body) = waiting.await.unwrap();
+        assert_eq!(status, 200);
+        assert!(body.contains("\"behavior\":\"allow\""), "{body}");
+        assert!(server.approvals.list().is_empty(), "点过之后那条就不该再挂着");
+    }
+
+    /// **看不全就不给放行。** 长命令只能拒绝 —— 而且这条规则在登记表里挡着，
+    /// 从接口上也绕不过去。
+    #[tokio::test]
+    async fn a_command_too_long_to_show_cannot_be_allowed() {
+        let server = start().await;
+        enable_approvals(&server.settings);
+        let port = server.port;
+        let token = server.token.clone();
+        let long = format!("echo {}", "x".repeat(400));
+        let body = permission_request(
+            "PermissionRequest",
+            "Bash",
+            serde_json::json!({ "command": long }),
+        );
+        let waiting = tokio::spawn(async move {
+            call_at(port, "POST", "/v1/approve/claude-code", Some(&token), Some(&body)).await
+        });
+
+        let id = wait_for_approval(&server).await;
+        let (_, list) = call(&server, "GET", "/v1/approvals", Some(&server.token), false, None).await;
+        assert!(list.contains("\"allowable\":false"), "{list}");
+        assert!(list.contains("\"truncated\":true"), "{list}");
+
+        let (_, body) = call(
+            &server,
+            "POST",
+            &format!("/v1/approvals/{id}"),
+            Some(&server.token),
+            false,
+            Some("{\"decision\":\"allow\"}"),
+        )
+        .await;
+        assert!(body.contains("\"ok\":false"), "{body}");
+        assert!(
+            !server.approvals.list().is_empty(),
+            "被拒之后那条还得在，好让人改主意去拒绝"
+        );
+
+        // 拒绝照样可以
+        let (_, body) = call(
+            &server,
+            "POST",
+            &format!("/v1/approvals/{id}"),
+            Some(&server.token),
+            false,
+            Some("{\"decision\":\"deny\"}"),
+        )
+        .await;
+        assert!(body.contains("\"ok\":true"), "{body}");
+        let (_, body) = waiting.await.unwrap();
+        assert!(body.contains("\"behavior\":\"deny\""), "{body}");
+    }
+
+    /// 局域网访问打开时和上报端点一样整条关掉：这一条**替用户做决定**，
+    /// 比只写状态严重得多。要 token 是第二道防线。
+    #[tokio::test]
+    async fn approval_is_closed_while_lan_access_is_on() {
+        let server = start().await;
+        enable_approvals(&server.settings);
+        *server.bind.lock().unwrap() = true;
+        let body = permission_request(
+            "PermissionRequest",
+            "Bash",
+            serde_json::json!({ "command": "ls" }),
+        );
+        let (status, body) = call(
+            &server,
+            "POST",
+            "/v1/approve/claude-code",
+            Some(&server.token),
+            false,
+            Some(&body),
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(body.trim(), "{}");
+        assert!(server.approvals.list().is_empty());
+    }
+
+    /// 会话结束（`SessionEnd`）时挂着的那条不再作数：对面收到「没有决定」，
+    /// 也就不会有人对着一条已经没有意义的审批点。
+    #[tokio::test]
+    async fn a_session_ending_drops_its_pending_approval() {
+        let server = start().await;
+        enable_approvals(&server.settings);
+        let port = server.port;
+        let token = server.token.clone();
+        let body = permission_request(
+            "PermissionRequest",
+            "Bash",
+            serde_json::json!({ "command": "ls" }),
+        );
+        let waiting = tokio::spawn(async move {
+            call_at(port, "POST", "/v1/approve/claude-code", Some(&token), Some(&body)).await
+        });
+        wait_for_approval(&server).await;
+
+        // 会话结束走的是上报端点（命令式 / HTTP 式 hook 都一样）
+        let end = serde_json::json!({ "hook_event_name": "SessionEnd", "session_id": "cc-1" }).to_string();
+        call(&server, "POST", "/v1/hooks/claude-code", None, false, Some(&end)).await;
+
+        assert!(server.approvals.list().is_empty(), "会话没了，那条也该没了");
+        let (_, body) = waiting.await.unwrap();
+        assert_eq!(body.trim(), "{}", "没有决定：交回 Claude Code 自己问");
     }
 }

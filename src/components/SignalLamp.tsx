@@ -10,6 +10,8 @@ import { labelOf, orderVisible } from "../lib/lampSort";
 import { nameChanged, withGroupName } from "../lib/groupMeta";
 import { useNow } from "../lib/useNow";
 import { useToggles } from "../lib/useToggles";
+import { ApprovalBubble } from "./ApprovalBubble";
+import type { Approval } from "../lib/useApprovals";
 import { updateSettings, type GroupMeta, type Settings } from "../lib/useSettings";
 import type { GroupView, SignalState } from "../lib/types";
 
@@ -32,6 +34,14 @@ interface Props {
   settings: Settings;
   /** 监控暂停中。灯上要给一个持续可见的提示 —— 颜色上 `off` 和 `offline` 太近。 */
   paused: boolean;
+  /**
+   * 等着你点的审批（从灯上审批，见 `useApprovals`）。
+   *
+   * **只在主灯上传**：气泡是「有没有事要我做」，和某一组无关 —— 而组灯是给
+   * 「这一组现在怎么样」用的。多灯模式下主灯仍然是那一盏（它退成全局灯）。
+   */
+  approvals?: Approval[];
+  onDecide?: (id: string, decision: "allow" | "deny") => void;
 }
 
 /**
@@ -192,7 +202,10 @@ function openLampMenu(event: React.MouseEvent) {
   invoke("open_lamp_menu").catch(console.error);
 }
 
-export function SignalLamp({ aggregate, groups, settings, paused }: Props) {
+export function SignalLamp({ aggregate, groups, settings, paused, approvals, onDecide }: Props) {
+  // 待审批的条数：Rust 的 `approval_area` 按**同一个数**给窗口留高度（见 lamp.css
+  // 的 `--bubble-h`）。数错了就是气泡被裁掉一半 —— 而那两个按钮是唯一的出路。
+  const pending = approvals?.length ?? 0;
   const { size, quiet, collapsed, show, sign_opacity, hidden_groups } = settings;
   const m = useMessages();
   const lang = useLang();
@@ -388,6 +401,9 @@ export function SignalLamp({ aggregate, groups, settings, paused }: Props) {
       style={
         {
           "--size": `${size}px`,
+          // 气泡占多高（见 lamp.css）：条数就是下面那个 `pending`，而 Rust 的
+          // `approval_area` 按**同一个数**给窗口留高度 —— 三个地方一个数。
+          "--approvals": pending,
           ...lampVars(settings),
         } as React.CSSProperties
       }
@@ -398,6 +414,8 @@ export function SignalLamp({ aggregate, groups, settings, paused }: Props) {
          那组颜色也就仍然只有 CSS 一个出处。 */
       data-sign-translucent={signTextInverted(sign_opacity) || undefined}
       data-paused={paused || undefined}
+      // 有气泡时窗口要高出一块（Rust 算的），CSS 按同一个数把内容区收上去
+      data-approvals={pending || undefined}
       data-pass-through={toggles.pass_through || undefined}
       data-collapsed={!expanded}
       data-flash={flash || undefined}
@@ -560,6 +578,11 @@ export function SignalLamp({ aggregate, groups, settings, paused }: Props) {
             )}
           </div>
         ),
+      )}
+      {/* 待审批的气泡。**绝对定位**（见 lamp.css）：不参与 flex 布局，所以折叠态
+          那种横排也不用另写一套，牌的宽高一个像素都不变。 */}
+      {pending > 0 && onDecide && (
+        <ApprovalBubble approvals={approvals ?? []} onDecide={onDecide} />
       )}
       {/* 折叠态没有牌面可寄住，角标只能自己占一个点的位置（见 CSS 的
           .lamp-dot-flag / .lamp-dot-more），Rust 的 `collapsed_window_size`

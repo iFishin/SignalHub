@@ -167,6 +167,9 @@ struct Flags {
     dry_run: bool,
     /// `install hooks`：用 **HTTP 方式**接入（不需要命令，目前只有 Claude Code）。
     http: bool,
+    /// `install hooks --approve`：装「从灯上审批」（C3）。**隐含 `--http`** ——
+    /// 审批就是 HTTP hook 回一个决定，没有别的形态。
+    approve: bool,
     port: Option<u16>,
     /// watch 专用
     interval_ms: Option<u64>,
@@ -219,6 +222,10 @@ impl Flags {
                 "--json" => flags.json = true,
                 "--dry-run" => flags.dry_run = true,
                 "--http" => flags.http = true,
+                "--approve" => {
+                    flags.approve = true;
+                    flags.http = true;
+                }
                 "--interval" => {
                     let raw = take_value(args, &mut index, "--interval")?;
                     flags.interval_ms = Some(parse_ttl(&raw)?);
@@ -859,7 +866,15 @@ fn run_diagnose(agent: Option<&str>) -> Result<(), Failure> {
 
 fn install_hooks(agent: &str, flags: &Flags) -> Result<(), Failure> {
     let agent = hooks::Agent::parse(agent).map_err(Failure::other)?;
-    let report = if flags.http {
+    let report = if flags.approve {
+        // 端口和 token 都取**此刻**的真实值：写进用户配置文件的东西不能来自一份
+        // 可能过期的快照（token 是每台机器一份的秘密，从文件里读，不从参数收）
+        let port = config::read_port()
+            .map_err(|err| Failure::other(fill(t().http_needs_port, &[&err.to_string()])))?;
+        let token = config::read_token()
+            .map_err(|err| Failure::other(fill(t().approve_needs_token, &[&err.to_string()])))?;
+        hooks::install_approve(agent, port, &token, flags.dry_run).map_err(Failure::other)?
+    } else if flags.http {
         // 端口取**此刻**服务真正在用的那个：写进用户配置文件的东西不能来自一份
         // 可能过期的快照，而读不到端口就说明应用还没起来 —— 那时 URL 一定是错的
         let port = config::read_port().map_err(|err| {
@@ -882,6 +897,13 @@ fn install_hooks(agent: &str, flags: &Flags) -> Result<(), Failure> {
     );
     if let Some(command) = &report.command {
         println!("{}", fill(t().install_command, &[command]));
+    }
+    if flags.approve {
+        // **这一条必须说**：装了 hook 不等于审批生效 —— 真正的闸门是应用里那个
+        // 「从灯上审批」开关（默认关）。不说的话，用户看到的是「装好了」，
+        // 而实际上每次要批准时还是回终端里问 —— 那种「装上了却永远不亮」正是
+        // 这个项目最不能接受的一种失败。
+        println!("{}", t().approve_needs_switch);
     }
     println!("{}", fill(t().install_config, &[&report.path.display().to_string()]));
     if let Some(backup) = &report.backup {

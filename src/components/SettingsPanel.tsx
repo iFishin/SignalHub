@@ -1141,6 +1141,25 @@ export function SettingsPanel({ snapshot }: Props) {
   };
 
   /**
+   * 装 / 卸**从灯上审批**（C3）。
+   *
+   * 走的是 Rust 的 `set_tool_approval` —— 它一次做完两件事（改配置里的 hook、
+   * 改设置里那个开关），**而且开关由它落盘**。所以这里不 `patch({approve_tools})`：
+   * 那样会出现「设置里开着、配置里没 hook」（点了没反应）或者反过来，两种都是静默的。
+   *
+   * 失败时**开关会停在原处**（Rust 是先改配置、后落盘，任何一步失败都返回 Err）——
+   * 界面只需要把那句话说给用户听。
+   */
+  const toggleApproval = (agent: AgentStatus, on: boolean) => {
+    setError(null);
+    setBusyAgent(agent.id);
+    invoke<HookChange>("set_tool_approval", { agent: agent.id, on })
+      .then(finishAgentChange(agent))
+      .catch(reported)
+      .finally(() => setBusyAgent(null));
+  };
+
+  /**
    * 试一下这条接入：让 Rust 把配置里**实际写着**的那条命令跑一遍。
    *
    * 它比回执更能回答「现在通不通」——尤其是那个最隐蔽的成因：应用从 Dock 起来时
@@ -2156,6 +2175,23 @@ export function SettingsPanel({ snapshot }: Props) {
                         <span className="agent-result muted-text">
                           {agent.http ? m.agentModeHttp : m.agentModeCommand}
                         </span>
+                      )}
+                      {/* **从灯上审批**（C3）。只在**已经用 HTTP 方式接入**时出现：
+                          审批就是 HTTP hook 回一个决定，命令式那条路上没有这个东西
+                          —— 摆一个拨了没反应的开关比不摆更坏。
+                          默认关，而且它改的是**智能体自己的配置**（不只是 SignalHub
+                          的行为），所以代价写在 hint 里，见 i18n 的 approveToolsHint。 */}
+                      {agent.id === "claude-code" && agent.installed && agent.http && (
+                        <>
+                          <div className="row">
+                            <span>{m.approveTools}</span>
+                            <Switch
+                              on={settings.approve_tools}
+                              onChange={(on) => toggleApproval(agent, on)}
+                            />
+                          </div>
+                          <p className="hint">{m.approveToolsHint}</p>
+                        </>
                       )}
                       {/* 「试一下」的结果：和回执是两个问题 —— 回执问「最近有没有在报」，
                           这一行答「现在这条链路还通不通」。 */}

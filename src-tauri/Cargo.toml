@@ -87,7 +87,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # 直接用 tauri::async_runtime::spawn 起 sweep 和 HTTP 任务；tokio 由 Tauri 内置。
 # 锁用 std::sync::Mutex —— 临界区都是内存操作，没有 I/O 跨越 await。
-tokio = { version = "1", features = ["time", "net", "io-util", "macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["time", "net", "io-util", "macros", "rt-multi-thread", "sync"] }
 # getrandom 已在 Tauri 的依赖树里，复用版本可以避免重复编译
 getrandom = "0.3"
 # CLI 的 HTTP 客户端（app 侧发 webhook 也用它）。

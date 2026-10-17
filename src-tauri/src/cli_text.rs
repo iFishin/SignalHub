@@ -97,6 +97,10 @@ pub struct CliText {
     pub unknown_source: &'static str,
     /// `install hooks --http` 但读不到端口时（应用还没起来）
     pub http_needs_port: &'static str,
+    /// `install hooks --approve` 但读不到 token 时
+    pub approve_needs_token: &'static str,
+    /// `install hooks --approve` 装完之后：真正的闸门在应用里
+    pub approve_needs_switch: &'static str,
     pub install_config: &'static str,
     pub install_backup: &'static str,
     /// `{}` 个数
@@ -205,6 +209,9 @@ pub const ZH: CliText = CliText {
     unknown_source: "不认识的信号源类型 {}；只认 agent / system / custom",
     http_needs_port: "读不到上报服务的端口（{err}）—— 应用还没跑起来，写进去的地址一定是错的。",
 
+    approve_needs_token: "读不到 token（{err}）—— 应用还没跑起来。审批那条 hook 要带 token，没有它写进去的配置会被拒。",
+    approve_needs_switch: "  还要在 SignalHub 的「接入」页打开「从灯上审批」那个开关 —— 它是默认关的，而且是真正的闸门：关着的时候端点什么都不说，每次还是回终端里问你。",
+
     install_config: "  配置  {}",
     install_backup: "  备份  {}",
     install_added: "  新增  {} 个事件",
@@ -252,6 +259,8 @@ signalhub {} —— 桌面悬浮状态灯的上报客户端
   signalhub install hooks <智能体>   把 hook 写进智能体的配置文件
                                      加 --http 改用 HTTP 方式（不需要命令，
                                      只有 Claude Code 支持；应用要在跑）
+                                     加 --approve 装「从灯上审批」（隐含 --http，
+                                     要应用在跑；见 README「从灯上审批」）
   signalhub uninstall hooks <智能体> 移除本工具写进去的 hook
   signalhub diagnose [智能体]        打印一段排查文本（接不上时先跑它）
 
@@ -361,6 +370,9 @@ pub const EN: CliText = CliText {
     unknown_source: "Unknown source type {}; only agent / system / custom are accepted",
     http_needs_port: "Cannot read the report service port ({err}) — the app is not running, so the URL we would write is certainly wrong.",
 
+    approve_needs_token: "Cannot read the token ({err}) — the app is not running. The approval hook carries a token, and without one the entry we write would be rejected.",
+    approve_needs_switch: "  Also turn on \"Approve from the lamp\" on the Connect page in SignalHub — it is off by default and it is the real gate: while it is off the endpoint says nothing, and every question still goes to the terminal.",
+
     install_config: "  config   {}",
     install_backup: "  backup   {}",
     install_added: "  added    {} events",
@@ -409,6 +421,8 @@ Usage:
                                      add --http to use the HTTP mode instead
                                      (no command needed; Claude Code only; the
                                      app must be running)
+                                     add --approve for approval-from-the-lamp
+                                     (implies --http; see README)
   signalhub uninstall hooks <agent>  Remove the hooks this tool wrote
   signalhub diagnose [agent]         Print a troubleshooting block (run this first)
 

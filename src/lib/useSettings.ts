@@ -191,6 +191,14 @@ export interface Settings {
    * 默认空 = 一台都不发（新增外发默认关）。
    */
   devices: Device[];
+  /**
+   * **从灯上审批工具调用**（默认关）。
+   *
+   * 全项目唯一会改变智能体行为的开关：打开之后 Claude Code 每次要问你批准某个
+   * 工具调用时，确认框会被搬到灯上。开关本身由 Rust 的 `set_tool_approval` 改
+   * （它同时改配置里的 hook），这里只是读出来画那个开关。
+   */
+  approve_tools: boolean;
   shape: Shape;
   palette: Palette;
   /** 逐个状态的外观覆盖（颜色 / 形状 / 节奏）。没写的项跟随全局。 */
@@ -266,6 +274,7 @@ export const DEFAULTS: Settings = {
   notify: true,
   hooks: [],
   devices: [],
+  approve_tools: false,
   shape: "circle",
   palette: "default",
   styles: {},

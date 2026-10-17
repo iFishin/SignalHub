@@ -1,4 +1,5 @@
 mod alerts;
+mod approvals;
 mod devices;
 mod diagnose;
 mod hookmap;
@@ -324,6 +325,10 @@ fn import_settings(app: tauri::AppHandle, path: String) -> Result<Settings, Stri
 /// 改设置的路径有三条（设置面板、托盘、灯上右键菜单），而两个窗口都得跟着变 ——
 /// 所以**每条路径都必须广播**，否则设置窗里的开关会显示过时的状态。
 const SETTINGS_EVENT: &str = "signalhub://settings";
+
+/// 待审批列表变化的事件名（灯上那个气泡据此刷新）。前端 `src/lib/useApprovals.ts`
+/// 里的字面量必须与之一致。
+const APPROVALS_EVENT: &str = "signalhub://approvals";
 
 /// 改设置的统一出口：存盘 → 改内存 → 按新设置调整界面 → 广播给两个窗口。
 ///
@@ -749,6 +754,41 @@ fn get_shortcuts(
     status.lock().expect("shortcut status poisoned").clone()
 }
 
+/// 现在有几条审批在等（灯上那个气泡读它）。
+///
+/// 和 HTTP 的 `GET /v1/approvals` 是同一个函数 —— 那个接口是给脚本的（也是这个
+/// 功能唯一能被端到端验证的入口），灯走 IPC，因为前端手上没有 token。
+#[tauri::command]
+fn get_approvals(
+    registry: tauri::State<'_, approvals::SharedApprovals>,
+) -> Vec<approvals::PendingView> {
+    registry.list()
+}
+
+/// 替用户点一下「允许 / 拒绝」。
+///
+/// **「看不全不给放行」在登记表里挡着**（`Registry::decide`），所以这个命令只是把
+/// 失败翻译成一句人话；界面上那个按钮本来也不会画出来。
+#[tauri::command]
+fn decide_approval(
+    registry: tauri::State<'_, approvals::SharedApprovals>,
+    id: String,
+    decision: String,
+) -> Result<(), String> {
+    let decision = match decision.as_str() {
+        "allow" => approvals::Decision::Allow,
+        "deny" => approvals::Decision::Deny,
+        other => return Err(format!("decision 只能是 allow 或 deny，收到 {other:?}")),
+    };
+    match registry.decide(&id, decision) {
+        approvals::Decided::Done => Ok(()),
+        approvals::Decided::NotFound => Err("没有这一条了（多半是刚超时）".to_string()),
+        approvals::Decided::NotAllowable => {
+            Err("这条在灯上看不全，只能拒绝 —— 要放行请回终端里看".to_string())
+        }
+    }
+}
+
 /// 清掉某一组的全部会话（灯上那块牌右上角的 `×`）。
 ///
 /// 与右键菜单里的「清除该组的状态」走同一个函数（[`clear_group`]）。**不做二次
@@ -778,6 +818,10 @@ fn clear_session(app: tauri::AppHandle, session: String) -> bool {
     if changed {
         notify::push(&app, &snapshot);
     }
+    // 会话没了，挂在它名下的审批也不再作数（和 HTTP 的 DELETE 走的是同一个判断，
+    // 见 `server::drop_session`）。**不清整个登记表**：别的会话还在等。
+    app.state::<approvals::SharedApprovals>()
+        .forget_session(&session);
     removed
 }
 
@@ -993,6 +1037,43 @@ fn install_agent_http_hooks(agent: String) -> Result<HookChange, String> {
     let port = config::read_port()
         .map_err(|err| format!("读不到上报服务的端口（应用还没跑起来？）: {err}"))?;
     hooks::install_http(hooks::Agent::parse(&agent)?, port, false).map(HookChange::from)
+}
+
+/// 装 / 卸「从灯上审批」（C3）。
+///
+/// **一次调用做完两件事**：改配置里的 hook、改设置里那个开关。分开的话会出现
+/// 「hook 装上了但开关还关着」（审批永远不生效）或者反过来（开关开着但没有 hook
+/// 会打过来）—— 两种都是静默的，用户只会觉得「这个功能坏了」。
+///
+/// 关掉的时候**装回普通的 HTTP 式接入**，而不是卸载：`PermissionRequest` 那一条
+/// 刚才被换成了审批端点，直接卸掉会让「它本来要问你」这个事件从此没人上报。
+/// 用户想彻底移除，用旁边的「移除接入」。
+///
+/// 端口和 token 都在 Rust 这边读（见 [`install_agent_http_hooks`] 的同一条理由）。
+#[tauri::command]
+fn set_tool_approval(
+    app: tauri::AppHandle,
+    agent: String,
+    on: bool,
+) -> Result<HookChange, String> {
+    let agent = hooks::Agent::parse(&agent)?;
+    let port = config::read_port()
+        .map_err(|err| format!("读不到上报服务的端口（应用还没跑起来？）: {err}"))?;
+
+    let report = if on {
+        let token = config::read_token()
+            .map_err(|err| format!("读不到 token（应用还没跑起来？）: {err}"))?;
+        hooks::install_approve(agent, port, &token, false)?
+    } else {
+        // 回到「只上报」：那一条 PermissionRequest 又变回上报端点
+        hooks::install_http(agent, port, false)?
+    };
+
+    // 开关跟着一起改。**落盘失败就说出来**：配置已经改了而开关没改，比不做还糟。
+    let mut settings = (*current_settings(&app)).clone();
+    settings.approve_tools = on;
+    persist_settings(&app, settings)?;
+    Ok(HookChange::from(report))
 }
 
 #[tauri::command]
@@ -1413,6 +1494,12 @@ fn apply_settings(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapsh
     // 用户刚把通知打开时也要能申请到权限 —— 只在启动时申请的话，启动时通知是关着的
     // 用户永远不会被问一次，而没权限时通知是静默丢弃的（见 alerts::ensure_permission）。
     alerts::ensure_permission(app, settings);
+    // 刚把「从灯上审批」关掉：**当场把还在等的那几条放掉**（对面立刻收到「没有决定」，
+    // 回到终端里的询问框）。等 45 秒超时也是一种放掉，但那是「我已经关了它，它却还
+    // 挡着智能体」—— 用户刚表达过「别管这件事」，就不该再等。
+    if !settings.approve_tools {
+        app.state::<approvals::SharedApprovals>().clear();
+    }
 }
 
 /// 灯上真正会画出来的组：右键隐藏掉的不算，再按优先级截断到 `MAX_SIGNS`。
@@ -1558,6 +1645,31 @@ fn sync_lamps(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapshot) 
 }
 
 /// 一次状态 / 设置变化之后，把**所有**窗口的布局同步一遍：主灯尺寸 + 各组的灯。
+/// 待审批气泡要占的地方：`(宽, 高)`。没有待审批时是 `(0, 0)`。
+///
+/// 单独一个函数，因为它读的是**和快照无关**的一份状态（审批登记表）。窗口尺寸本来
+/// 只由「牌」决定，现在多了一个来源 —— 而它在 `apply_window_size` 里，那是热路径，
+/// 所以这里只做一次加锁 + 取长度。
+fn approval_area(app: &tauri::AppHandle) -> (u16, u16) {
+    let count = app
+        .state::<approvals::SharedApprovals>()
+        .list()
+        .len()
+        .min(MAX_APPROVAL_BUBBLES);
+    if count == 0 {
+        return (0, 0);
+    }
+    (
+        config::APPROVAL_BUBBLE_W,
+        config::APPROVAL_BUBBLE_H * count as u16,
+    )
+}
+
+/// 一次最多画几条待审批。多出来的**不画**（也不占窗口高度）—— 它们不会丢：那几条
+/// 的牌在灯上是黄的，而每答完一条，下一条会自己冒出来。真堆到三条以上时，
+/// 「先把眼前这条处理掉」本来就是对的顺序。
+const MAX_APPROVAL_BUBBLES: usize = 3;
+
 fn sync_layout(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapshot) {
     apply_window_size(app, settings, snapshot);
     sync_lamps(app, settings, snapshot);
@@ -1628,6 +1740,8 @@ fn apply_window_size(app: &tauri::AppHandle, settings: &Settings, snapshot: &Sna
     // 悬停临时展开也算「不折叠」（见 `effective_collapsed`）—— 前端会按同一个条件
     // 渲染，两边不一致就会裁内容。
     let collapsed = effective_collapsed(app, settings, "main");
+    // 待审批的气泡挂在牌子下面（见 `approval_area`）：有多条就多占一份高度。
+    let (bubble_w, bubble_h) = approval_area(app);
     let (width, height) = if collapsed {
         // 折叠态里没有牌面，全局状态角标和「还有几组」的 `+N` 都得自己占一个点位。
         // 少算一枚，那枚角标就落在窗口外面 —— 而折叠态最不该出的就是这种错：
@@ -1637,6 +1751,9 @@ fn apply_window_size(app: &tauri::AppHandle, settings: &Settings, snapshot: &Sna
     } else {
         settings.window_size(&sign_heights(settings, &groups))
     };
+
+    let width = width.max(bubble_w);
+    let height = height + bubble_h;
 
     // 和上次设下去的尺寸一样就收工。**这是热路径**：拿缓存比，不问窗口。
     let (previous, scale) = {
@@ -2133,6 +2250,8 @@ pub fn run() {
         .manage(shortcuts::SharedShortcuts::default())
         // 专注倒计时的代号（取消上一个线程用，见 manual.rs）
         .manage(manual::SharedManual::default())
+        // 等用户点的那些审批（灯上的气泡读它，见 approvals.rs）
+        .manage(approvals::SharedApprovals::default())
         .invoke_handler(tauri::generate_handler![
             get_state,
             set_state,
@@ -2158,6 +2277,8 @@ pub fn run() {
             get_messages,
             get_outbound_log,
             get_shortcuts,
+            get_approvals,
+            decide_approval,
             get_notify_permission,
             request_notify_permission,
             detect_agents,
@@ -2168,6 +2289,7 @@ pub fn run() {
             update::install_update,
             install_agent_hooks,
             install_agent_http_hooks,
+            set_tool_approval,
             uninstall_agent_hooks,
             try_agent,
             diagnose,
@@ -2255,18 +2377,34 @@ pub fn run() {
             // 更新检查是**静默**的后台任务（见 update.rs 顶部）：失败只写日志，
             // 绝不在用户没点过「检查更新」的时候弹东西。
             update::spawn_auto_check(app.handle().clone());
+            // 审批列表变了就广播一次：灯上的气泡据此刷新。服务器那边**不持有
+            // AppHandle**（见 `server::spawn` 的注释），所以这件事在这里挂进去。
+            //
+            // **还要重算布局**：气泡是挂在牌子下面的（见 `approval_area`），而
+            // 「没人点、超时了」这条路上一次状态推送都没有 —— 只广播不重算的话，
+            // 窗口会一直留着一块空出来的地方。
+            {
+                let handle = app.handle().clone();
+                app.state::<approvals::SharedApprovals>()
+                    .inner()
+                    .on_change(std::sync::Arc::new(move || {
+                        let _ = handle.emit(APPROVALS_EVENT, ());
+                        let settings = current_settings(&handle);
+                        let snapshot = current_snapshot(&handle);
+                        sync_layout(&handle, &settings, &snapshot);
+                    }));
+            }
             server::spawn(
                 notify,
-                app.state::<SharedStore>().inner().clone(),
-                // 上报路径要读 `group_by`，所以设置也共享给它，而不是让它自己
-                // 从盘上再读一份 —— 两份真值迟早会漂移。
-                app.state::<SharedSettings>().inner().clone(),
-                // 实际绑到哪了，回填给界面判断「那个开关生效了没有」
-                app.state::<SharedBind>().inner().clone(),
-                // 每个信号源的最近一次上报 —— 和上报路径共用同一份
-                app.state::<SharedReceipts>().inner().clone(),
-                // 当前界面语言：HTTP 式 hook 要用它生成「正在做什么」那行
-                app.state::<SharedLang>().inner().clone(),
+                server::Shared {
+                    // 全部取自 app 里 manage 的那几份 —— 各写一遍真值迟早会漂移
+                    store: app.state::<SharedStore>().inner().clone(),
+                    settings: app.state::<SharedSettings>().inner().clone(),
+                    bind: app.state::<SharedBind>().inner().clone(),
+                    receipts: app.state::<SharedReceipts>().inner().clone(),
+                    lang: app.state::<SharedLang>().inner().clone(),
+                    approvals: app.state::<approvals::SharedApprovals>().inner().clone(),
+                },
                 token,
             );
 

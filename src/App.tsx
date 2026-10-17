@@ -6,6 +6,7 @@ import { useSignal } from "./lib/useSignal";
 import { useSettings } from "./lib/useSettings";
 import { usePalettePush } from "./lib/palettes";
 import { useLocalClock } from "./lib/useLocalClock";
+import { useApprovals } from "./lib/useApprovals";
 import { useLangPush } from "./lib/i18n";
 import { inTauri, windowGroup, windowKind } from "./lib/env";
 import { perGroupActive } from "./lib/lampLayout";
@@ -63,10 +64,14 @@ export default function App() {
   useLangPush();
   useDevKeys();
   useQuitShortcut();
+  // 等着你点的审批（从灯上审批）。**两个窗口都会订阅**，但只有灯窗会画 ——
+  // 设置窗读它是为了那个开关旁边能说「现在有一条在等」。
+  const { approvals, decide } = useApprovals();
 
   if (windowKind() === "settings") {
     return <SettingsPanel snapshot={snapshot} />;
   }
+
 
   // 多灯：这个灯窗只看自己那一组（`?group=`）。主灯在「每组分灯」生效时退成一颗
   // 全局灯 —— 传空组让 SignalLamp 走它现有的占位 / 全局分支。
@@ -90,6 +95,10 @@ export default function App() {
       // 暂停是**灯上**要持续可见的状态，而 `off`（暂停时的聚合值）和 `offline`
       // 都是很淡的灰，只靠颜色分不出来。
       paused={snapshot.paused}
+      // 待审批的气泡**只在主灯上**（组灯是给「这一组现在怎么样」用的，而审批是
+      // 「有没有事要我做」）。多灯模式下主灯仍然是那一盏 —— 它退成全局灯。
+      approvals={myGroup === null ? approvals : undefined}
+      onDecide={myGroup === null ? decide : undefined}
     />
   );
 }

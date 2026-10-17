@@ -35,6 +35,18 @@ pub const LAMP_MARGIN: u16 = 20;
 /// 灯球上最多同时显示几块牌。超出的截断 —— 牌按优先级排，所以留下的是最紧急的。
 pub const MAX_SIGNS: usize = 4;
 
+/// 待审批气泡占的高度（**每一条**）。见 `lib.rs` 的 `approval_area`。
+///
+/// **必须和 `src/styles/lamp.css` 里 `.approval` 的高度一致**：Rust 用它算窗口高度、
+/// 前端用它排版，两处不一致就是「按钮被裁掉一半」—— 而那正好是这个功能最不能出的错
+/// （看不见的按钮等于没有按钮）。和牌那套几何一样，这是刻意的两处真值 + 同一次提交
+/// 同步。
+pub const APPROVAL_BUBBLE_H: u16 = 132;
+
+/// 待审批气泡占的宽度。窗口本来只装得下一块牌（约 `size` 宽），气泡比它宽 ——
+/// 因为里面要放一整条命令。
+pub const APPROVAL_BUBBLE_W: u16 = 360;
+
 /// 牌的宽度。
 ///
 /// 由 `size` 派生，不另加一个设置 —— `size` 现在表示整块牌的尺度，「大小」
@@ -864,6 +876,17 @@ pub struct Settings {
     /// （红线 3）。灯可能挂在别人也看得见的地方，而 WLED 自己的界面会把收到的
     /// 东西显示出来。
     pub devices: Vec<Device>,
+    /// **从灯上审批工具调用**（C3）。默认关。
+    ///
+    /// 这是全项目唯一会**改变智能体行为**的开关：打开之后，Claude Code 每次要问你
+    /// 批准某个工具调用时，那个确认框会被搬到灯上（`PermissionRequest` hook →
+    /// `POST /v1/approve/claude-code`），你在灯上点允许 / 拒绝，或者不管它 ——
+    /// 不管的时候交回 Claude Code 自己问。
+    ///
+    /// 默认关的理由不是「没做完」，而是它**会挂住智能体**（最多
+    /// `approvals::WAIT`）：这是一条只有用户明确想要时才该生效的路。关着的时候
+    /// 端点照常回话但什么都不说，所以装了 hook 也不会改变任何行为。
+    pub approve_tools: bool,
     /// 圆点形状
     pub shape: Shape,
     /// 配色方案（用户没单独指定颜色时的默认值）
@@ -1103,6 +1126,8 @@ impl Default for Settings {
             hooks: Vec::new(),
             // 空 = 一台灯都不发（新增外发默认关，红线 3）
             devices: Vec::new(),
+            // 会改变智能体行为的开关一律默认关（红线 3）
+            approve_tools: false,
             shape: Shape::default(),
             palette: Palette::default(),
             locale: Locale::default(),
@@ -1610,6 +1635,7 @@ mod tests {
             lamp_layout: LampLayout::PerGroup,
             always_on_top: false,
             snap_to_edge: true,
+            approve_tools: true,
             quiet: false,
             notify: false,
             hooks: vec![
@@ -1865,6 +1891,7 @@ mod tests {
         assert!(!settings.always_on_top);
         assert!(!settings.quiet);
         assert!(settings.notify, "缺的字段退回该字段的默认值");
+        assert!(!settings.approve_tools, "会改智能体行为的开关，缺字段必须是关的");
         assert!(settings.colors.is_empty(), "缺的颜色表是空的，不是解析失败");
     }
 

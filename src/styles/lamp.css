@@ -89,6 +89,135 @@ body,
   gap: calc(var(--size) / 3);
 }
 
+/* ---- 待审批的气泡（C3）---------------------------------------------------- */
+
+/* 气泡挂在牌子**下面**，占一块单独的固定高度区域。
+   两个数字和 Rust 是**两处真值**（同 `.sign` 那套几何，见 config.rs 文件头）：
+   - 每条气泡的高度 = `config::APPROVAL_BUBBLE_H`
+   - 窗口加宽到 = `config::APPROVAL_BUBBLE_W`
+   对不上的表现是「按钮被裁掉一半」—— 看不见的按钮等于没有按钮，而这个功能
+   唯一的出路就是那两个按钮。改一处必须同步另一处。 */
+.lamp-root {
+  --bubble-h: 132px;
+  /* 待审批的条数（前端挂上来的，和 Rust `approval_area` 是同一个数）。没有气泡时
+     就是原本那 10px 留白。 */
+  --approvals: 0;
+  /* 把内容区往上收：`justify-content: center` 于是把牌子居中在**剩下的**地方，
+     气泡落在下面那块留白里。数字不对的表现是牌子和气泡叠在一起。 */
+  padding-bottom: calc(10px + var(--approvals) * var(--bubble-h));
+}
+
+.approvals {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  cursor: default;
+}
+
+/* 一条待审批。高度**固定**（见上面的两处真值），内容多了自己滚 —— 不固定的话
+   窗口高度就得跟着文字长度变，而那会让灯在屏幕上跳。 */
+.approval {
+  box-sizing: border-box;
+  height: var(--bubble-h);
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--size) * 0.2);
+  padding: calc(var(--size) * 0.32);
+  border: 1px solid var(--sign-line);
+  border-radius: calc(var(--size) * 0.32);
+  /* 比牌面更实一点：这一块是要动手的，不该和背景混在一起 */
+  background: rgba(28, 28, 32, 0.97);
+  color: var(--sign-fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: calc(var(--size) * 0.44);
+  line-height: 1.25;
+  overflow: hidden;
+}
+
+/* 气泡里的字**不跟着牌面淡**：牌淡到一半会把字翻成深色，而气泡的底色是实的
+   深色 —— 跟着翻就变成深字压深底，什么都看不见。 */
+.lamp-root[data-sign-translucent] .approval {
+  --sign-fg: #ececef;
+  --sign-muted: #9b9ba3;
+  --sign-line: rgba(255, 255, 255, 0.14);
+}
+
+.approval-head {
+  display: flex;
+  align-items: baseline;
+  gap: calc(var(--size) * 0.2);
+  color: var(--sign-muted);
+  font-size: calc(var(--size) * 0.38);
+}
+
+.approval-session {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.approval-detail {
+  flex: 1;
+  min-height: 0;
+  /* 长命令在这里滚：气泡高度是固定的（见上），不能让它把窗口撑开 */
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: calc(var(--size) * 0.42);
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.approval-warn {
+  color: var(--sign-muted);
+}
+
+.approval-buttons {
+  display: flex;
+  gap: calc(var(--size) * 0.2);
+}
+
+/* 自己一套按钮样式，不复用设置面板那个 `.btn`：那是 settings.css 里的东西，
+   灯窗根本不加载它 —— 复用会变成「按钮没有外观」，而且是只在灯上才看得见的那种。 */
+.approval-btn {
+  flex: 1;
+  box-sizing: border-box;
+  padding: calc(var(--size) * 0.2) 0;
+  border: 1px solid var(--sign-line);
+  border-radius: calc(var(--size) * 0.24);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--sign-fg);
+  font: inherit;
+  cursor: pointer;
+}
+
+.approval-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+/* 「允许」用状态色描边：点下去就是让智能体动手，该有点分量 */
+.approval-btn[data-decision="allow"] {
+  border-color: var(--state);
+}
+
+/* 「看不全就不给放行」：那个按钮**不画**（不是画成灰的）—— 一个点了没反应的
+   按钮比没有按钮更让人困惑。规则在 Rust 的登记表里挡着（`Registry::decide`），
+   这里只是不给它一个能点的地方。 */
+.approval-warn + .approval-buttons {
+  justify-content: flex-end;
+}
+
+.approval-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* ---- 一块牌 -------------------------------------------------------------- */
 
 .sign {
