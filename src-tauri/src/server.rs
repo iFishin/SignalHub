@@ -153,6 +153,7 @@ pub fn local_ip() -> Option<String> {
     (!ip.is_loopback()).then(|| ip.to_string())
 }
 
+
 /// 只有 health 和 HTTP 式 hook **免鉴权**，其余整组挂上中间件。
 ///
 /// 免鉴权的那两个各自的理由见 [`hook_report`] 的注释 —— 尤其是第二条：它只在绑到
@@ -318,6 +319,9 @@ fn apply_hook(ctx: &Ctx, agent: &str, payload: &Value) -> Option<(String, String
                 // 和 HTTP 上报完全同一条路
                 group: None,
                 agent: Some(agent.to_string()),
+                // **走 hook 报的一律是智能体**（这个端点是给装了 hook 的智能体用的），
+                // 所以不用上报方声明 —— 这里比 CLI 更清楚它是什么。
+                source: Some("agent".to_string()),
                 cwd: crate::hookmap::cwd_of(payload),
                 message: hook_message(ctx, payload),
                 ttl_ms: None,
@@ -459,7 +463,7 @@ fn ingest_core(ctx: &Ctx, mut report: Report, ttl: Option<Duration>) -> (bool, S
     // 因为某种原因没能改变状态，用户也该看到「它确实调过我们」，这正是接入页
     // 要回答的问题。
     if let Some(agent) = report.agent.as_deref() {
-        ctx.receipts.record(agent, report.state.name());
+        ctx.receipts.record(agent, report.source_id(), report.state.name());
     }
     // 兜底分组。**放在这里，因为这是唯一的上报入口** —— `/v1/state` 和
     // `/v1/sessions/{id}/state` 都走它，所以下面那两个 handler 不可能漏掉一个。
@@ -643,10 +647,12 @@ mod tests {
         settings: crate::SharedSettings,
         /// 和服务器共用的「实际绑到哪了」。测试用它模拟「局域网访问开着」。
         bind: crate::SharedBind,
+        /// 和服务器共用的凭证表。上报会顺手往这里记一笔，所以测试能直接看它。
+        receipts: Arc<crate::receipts::Receipts>,
     }
 
     async fn start() -> TestServer {
-        let (ctx, notifications, settings, bind) = test_ctx();
+        let (ctx, notifications, settings, bind, receipts) = test_ctx();
 
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -654,14 +660,20 @@ mod tests {
             axum::serve(listener, router(ctx)).await.unwrap();
         });
 
-        TestServer { port, token: "s3cret".to_string(), notifications, settings, bind }
+        TestServer { port, token: "s3cret".to_string(), notifications, settings, bind, receipts }
     }
 
     /// 一个不经 HTTP 的 ctx + 通知计数 + 那份共享设置。
     ///
     /// 重放那几条用例（`replay_spool`）不需要真的起服务器 —— 重放本来就不走网络，
     /// 它是「把盘上的东西补进状态机」。
-    fn test_ctx() -> (Ctx, Arc<AtomicUsize>, crate::SharedSettings, crate::SharedBind) {
+    fn test_ctx() -> (
+        Ctx,
+        Arc<AtomicUsize>,
+        crate::SharedSettings,
+        crate::SharedBind,
+        Arc<crate::receipts::Receipts>,
+    ) {
         let notifications = Arc::new(AtomicUsize::new(0));
         let counter = notifications.clone();
         let settings: crate::SharedSettings =
@@ -669,6 +681,7 @@ mod tests {
         // 回环（`false`）：HTTP 式 hook 那条端点默认开着，才测得到它
         let bind: crate::SharedBind = Arc::new(Mutex::new(false));
 
+        let receipts = Arc::new(crate::receipts::Receipts::in_memory());
         let ctx = Ctx {
             store: Arc::new(Mutex::new(Store::default())),
             notify: Arc::new(move |_header: &Snapshot| {
@@ -677,17 +690,48 @@ mod tests {
             settings: settings.clone(),
             // 不落盘（`None`）：单测绝不能写开发者真实的 `~/.signalhub`。
             // 上报路径会顺手记凭证，所以这里必须真的给一个，不能用 `Default`。
-            receipts: Arc::new(crate::receipts::Receipts::in_memory()),
+            receipts: receipts.clone(),
             bind: bind.clone(),
             lang: Arc::new(crate::lang::LocalLang::default()),
             token: "s3cret".to_string(),
             started: Instant::now(),
         };
-        (ctx, notifications, settings, bind)
+        (ctx, notifications, settings, bind, receipts)
+    }
+
+    /// 上报里声明的 `source` **原样**记进凭证表：界面靠它把信号源分成
+    /// 「AI 智能体 / 系统 / 自定义」三组，而凭证是那条分组的唯一来源。
+    ///
+    /// 这条走的是真的 HTTP（`/v1/state`）而不是直接调 `ingest_core`：CLI、curl、
+    /// spool 重放全都从这一个入口进来，而「字段名拼错」正是这条链上最容易发生、
+    /// 又最安静的一种错（服务端没有 `deny_unknown_fields`）。
+    #[tokio::test]
+    async fn the_declared_source_lands_in_the_receipt() {
+        let server = start().await;
+        let body = json!({
+            "state": "working",
+            "session": "build-watch",
+            "agent": "build-watch",
+            "source": "system",
+        });
+        let (status, _) = call(
+            &server,
+            "POST",
+            "/v1/state",
+            Some(&server.token),
+            false,
+            Some(body.to_string().as_str()),
+        )
+        .await;
+        assert_eq!(status, 200);
+
+        let receipts = server.receipts.view();
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].agent, "build-watch");
+        assert_eq!(receipts[0].source, "system");
     }
 
     /// 「自检」在 HTTP 式接入下走的是**真一次 HTTP**（`crate::probe_http`）。
-    ///
     /// 这条用例同时钉住两件事：那条路真的能打通（不是只调了一遍 handler），
     /// 以及它**不需要 token** —— 装出来的配置里本来就没有 token。
     #[tokio::test]
@@ -727,6 +771,7 @@ mod tests {
             *self.bind.lock().unwrap() = lan;
         }
     }
+
 
     /// HTTP 式 hook：**不带 token** 就该能上报。它是这个端点存在的全部理由 ——
     /// 要求 token 就得把每台机器一份的秘密写进用户的 `settings.json`。
@@ -839,14 +884,15 @@ mod tests {
     }
 
     /// 手写一个 HTTP/1.1 请求，就为了几个测试引入一个 HTTP 客户端依赖不划算。
-    async fn call(
+    /// 返回**整条响应**（含响应头）—— 需要看 `Content-Type` 时用它。
+    async fn call_raw(
         server: &TestServer,
         method: &str,
         path: &str,
         token: Option<&str>,
         origin: bool,
         body: Option<&str>,
-    ) -> (u16, String) {
+    ) -> String {
         let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", server.port))
             .await
             .unwrap();
@@ -870,8 +916,19 @@ mod tests {
         stream.write_all(request.as_bytes()).await.unwrap();
         let mut raw = Vec::new();
         stream.read_to_end(&mut raw).await.unwrap();
+        String::from_utf8_lossy(&raw).into_owned()
+    }
 
-        let text = String::from_utf8_lossy(&raw).into_owned();
+    /// [`call_raw`] 的常用视图：状态码 + 正文。
+    async fn call(
+        server: &TestServer,
+        method: &str,
+        path: &str,
+        token: Option<&str>,
+        origin: bool,
+        body: Option<&str>,
+    ) -> (u16, String) {
+        let text = call_raw(server, method, path, token, origin, body).await;
         let status = text
             .split_whitespace()
             .nth(1)
@@ -1211,7 +1268,7 @@ mod tests {
     /// 攒在盘上的记录补进状态机，然后**文件清掉** —— 不然下次启动会再补一遍。
     #[test]
     fn a_replay_applies_the_records_and_removes_the_file() {
-        let (ctx, notifications, _settings, _bind) = test_ctx();
+        let (ctx, notifications, _settings, _bind, _receipts) = test_ctx();
         let path = spool::temp_path("spool.jsonl");
         spool::append_at(
             &path,
@@ -1266,7 +1323,7 @@ mod tests {
     /// 过了 TTL 的记录**直接丢**，不要补出一块「沉默」的牌。
     #[test]
     fn a_replay_drops_records_that_already_expired() {
-        let (ctx, notifications, _settings, _bind) = test_ctx();
+        let (ctx, notifications, _settings, _bind, _receipts) = test_ctx();
         let path = spool::temp_path("spool.jsonl");
         // `done` 的 TTL 是 30 秒，这条是五分钟前的 —— 它早就不该在灯上了
         spool::append_at(
@@ -1295,7 +1352,7 @@ mod tests {
     /// 在灯上多待四分钟。
     #[test]
     fn a_replay_keeps_the_remaining_life_of_a_record() {
-        let (ctx, _notifications, _settings, _bind) = test_ctx();
+        let (ctx, _notifications, _settings, _bind, _receipts) = test_ctx();
         let path = spool::temp_path("spool.jsonl");
         spool::append_at(
             &path,
@@ -1320,7 +1377,7 @@ mod tests {
     /// 坏行跳过，好行照补 —— 文件会被手改、被截断、被交错写花。
     #[test]
     fn a_replay_skips_junk_without_losing_the_rest() {
-        let (ctx, _notifications, _settings, _bind) = test_ctx();
+        let (ctx, _notifications, _settings, _bind, _receipts) = test_ctx();
         let path = spool::temp_path("spool.jsonl");
         std::fs::write(
             &path,

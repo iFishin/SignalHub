@@ -93,6 +93,7 @@ Authorization: Bearer <token>
   "session": "abc123",
   "group":   "work",
   "agent":   "claude-code",
+  "source":  "agent",
   "cwd":     "/Users/me/proj",
   "message": "Bash: npm test",
   "ttl_ms":  300000
@@ -104,7 +105,8 @@ Authorization: Bearer <token>
 | `state` | string | ✅ | — | 见 §1。`off` 等价于清除该会话 |
 | `session` | string | | `"default"` | 会话标识。多智能体并行时用来区分 |
 | `group` | string | | `"default"` | **归属的组**。灯球上每组一块牌（见 §2.9）。不传就归 `default`，单组用户完全不用管 |
-| `agent` | string | | `"unknown"` | 上报方名字，用于 UI 归因 |
+| `agent` | string | | `"unknown"` | 上报方名字，用于 UI 归因（接入页的「最近上报」也按它记） |
+| `source` | string | | `"agent"` | **信号源类型**：`agent` / `system` / `custom`。只影响「接入」页怎么分组（AI 智能体 / 系统 / 自定义），**不参与任何状态决策**。见 §2.3.1 |
 | `cwd` | string | | `null` | 项目路径，UI 显示成项目名 |
 | `message` | string | | `null` | 牌上显示的一行说明。**走 `signalhub hook` 时不用你给** —— 工具事件会自动生成一句，见 §4.14 |
 | `ttl_ms` | number | | 按状态默认 | 覆盖默认过期时间；长任务显式传大值。**优先级最高** —— 用户可以在设置里改每个状态的停留时长，但显式传的值仍然压过它 |
@@ -116,6 +118,29 @@ Authorization: Bearer <token>
 ```
 
 返回聚合结果而非简单 `{"ok":true}`，好处是**一次 `curl` 调用就能看到全局状态**，调试体验显著更好。
+
+#### 2.3.1 `source`：信号源不只有智能体
+
+`source` 是**上报方自己声明**的一类，服务端**不做校验**（认不出来的值原样存下，界面把它归到「自定义」）—— 这样加一个新类别不需要两边同时升级。
+
+| 值 | 谁该用它 | 在接入页落在哪 |
+|---|---|---|
+| `agent`（缺省） | 智能体的 hook（`signalhub hook <智能体>`） | 上面那张智能体表 |
+| `system` | 内置采集器（会议中、备份中……），以及你自己盯系统状态的守护脚本 | 「系统信号源」 |
+| `custom` | 你的脚本、`signalhub run` 包的命令、别的机器、手写的一条 curl | 「自定义」 |
+
+`signalhub` 的缺省是这么定的（`--source` 永远优先）：
+
+- `hook` 报的是 `agent`（这条命令就是给我们装进各家配置里的那条用的）；
+- `run` 报的是 `custom`（包装器是用户自己的东西）；
+- 手写的 `signalhub working` 按 `--agent` 推：是我们那 8 家的名字就算 `agent`，否则算 `custom`。
+
+**它只管一件事**：接入页把「收到过上报、但不在智能体清单里」的那些分成两组显示，好让「系统采集器」和「我自己的脚本」不至于混在一起。灯的聚合、分组、TTL、通知全都与它无关 —— 所以填错、不填，灯的行为一模一样。
+
+```bash
+# 一个盯系统状态的脚本，声明自己是系统信号源
+signalhub working --source system --agent backup-watch --group backup
+```
 
 ### 2.4 `GET /v1/state`
 
@@ -286,6 +311,7 @@ signalhub status
 |---|---|
 | `--session <id>` | 会话标识，默认 `default` |
 | `--agent <name>` | 上报方名字 |
+| `--source <type>` | 信号源类型：`agent` / `system` / `custom`。见 §2.3.1 |
 | `--cwd <path>` | 项目路径 |
 | `--group <name>` | 归属的组，默认 `default`。见 §2.7 |
 | `--message <text>` | 悬停提示文本 |
@@ -690,7 +716,7 @@ curl -sf -m 1 -X POST "http://127.0.0.1:$(cat ~/.signalhub/port)/v1/state" \
 | `AfterAgent` | `done` |
 | `SessionEnd` | 清除会话 |
 
-stdin 字段：`session_id`、`transcript_path`、`cwd`、`hook_event_name`、`timestamp`；`SessionStart` 另有 `source`，工具事件另有 `tool_name`、`tool_input`。
+stdin 字段：`session_id`、`transcript_path`、`cwd`、`hook_event_name`、`timestamp`；`SessionStart` 另有 `source`（**这是对方的字段**：`startup` / `resume`，和我们上报体里的 `source` 不是一回事，见 §2.3.1），工具事件另有 `tool_name`、`tool_input`。
 
 **刻意不装** `BeforeModel`、`AfterModel`、`BeforeToolSelection`：这三个每次模型调用都触发，装上去灯会一直在闪而信息量为零。
 
@@ -757,7 +783,7 @@ signalhub run --agent aider -- aider --model sonnet
 | 跑的过程中 | 每 20 秒续期一次（TTL 60 秒） |
 | 退出后 | 退出码 0 → `done`，非零 → `error` |
 
-**任何跑在终端里的工具都能这么接。** `--agent` 的名字随便填（服务端不校验，它只是上报体里的一个标识）。
+**任何跑在终端里的工具都能这么接。** `--agent` 的名字随便填（服务端不校验，它只是上报体里的一个标识），上报体会带 `source: "custom"`（见 §2.3.1）—— 包装器是用户自己的东西，不是我们装进配置里的 hook。
 
 #### 四条设计约束
 

@@ -229,7 +229,12 @@ export interface Messages {
   agentReceiptCount: (n: number) => string;
   /** 接入行上的回执：装了、但一条上报都没收到过 */
   agentReceiptNever: string;
-  /** 「其它信号源」一节：收到过上报、但不在智能体清单里的 */
+  /** 「系统信号源」一节：上报方声明了 `source: "system"` 的 */
+  systemSourcesTitle: string;
+  systemSourcesHint: string;
+  /** 那一节空着时说的话（顺带把「怎么报一个」写出来） */
+  systemSourcesEmpty: string;
+  /** 「自定义」一节：不在智能体清单里、也没声明成系统的 */
   otherSourcesTitle: string;
   otherSourcesHint: string;
   /** 「试一下」按钮 */
@@ -655,9 +660,14 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     agentReceiptCount: (n) => `本次运行 ${n} 条`,
     agentReceiptNever:
       "还没有收到过它的上报 —— 用它一次；要是灯还是不亮，看下面「最近的 hook 调用」有没有行。",
-    otherSourcesTitle: "其它信号源",
+    systemSourcesTitle: "系统信号源",
+    systemSourcesHint:
+      "上报时声明了 source: system 的信号源 —— 内置采集器（会议中、备份中……）会是这一组；你自己盯系统状态的脚本也放这儿。",
+    systemSourcesEmpty:
+      "还没有。报一个试试：signalhub working --source system --agent meeting",
+    otherSourcesTitle: "自定义",
     otherSourcesHint:
-      "收到过上报、但不在上面清单里的（你自己的脚本、curl、别的机器……）。有这一行就说明上报通道是通的。",
+      "收到过上报、但不在上面清单里的（你自己的脚本、signalhub run 包的命令、别的机器、手写的一条 curl……）。有这一行就说明上报通道是通的。",
     agentTry: "自检",
     agentTryBusy: "试…",
     agentTryRanOk: (command) =>
@@ -1073,9 +1083,14 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     agentReceiptCount: (n) => `${n} this run`,
     agentReceiptNever:
       "No report received from it yet — use it once; if the lamp stays dark, check Recent hook calls below for a line.",
-    otherSourcesTitle: "Other sources",
+    systemSourcesTitle: "System sources",
+    systemSourcesHint:
+      "Sources that declared source: system when reporting — the built-in collectors (in a meeting, backing up, …) will land here, and so can your own scripts that watch the machine.",
+    systemSourcesEmpty:
+      "None yet. Try one: signalhub working --source system --agent meeting",
+    otherSourcesTitle: "Custom",
     otherSourcesHint:
-      "Sources we have received reports from that are not in the list above (your own scripts, curl, another machine…). A line here means the reporting path works.",
+      "Sources we have received reports from that are not in the list above (your own scripts, commands wrapped by signalhub run, another machine, a hand-written curl…). A line here means the reporting path works.",
     agentTry: "Self-check",
     agentTryBusy: "Trying…",
     agentTryRanOk: (command) => `Ran the command from your config (${command}) — it works.`,

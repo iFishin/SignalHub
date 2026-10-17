@@ -155,6 +155,9 @@ impl Failure {
 struct Flags {
     session: Option<String>,
     agent: Option<String>,
+    /// 声明的信号源类型（`agent` / `system` / `custom`）。不传就按 `--agent` 推
+    /// （见 `inferred_source`），hook / run 另有自己的缺省。
+    source: Option<String>,
     cwd: Option<String>,
     /// 归属的组。不传就是 `default` —— 单组用户完全不用管这个字段。
     group: Option<String>,
@@ -196,6 +199,10 @@ impl Flags {
             match arg {
                 "--session" => flags.session = Some(take_value(args, &mut index, "--session")?),
                 "--agent" => flags.agent = Some(take_value(args, &mut index, "--agent")?),
+                "--source" => {
+                    let raw = take_value(args, &mut index, "--source")?;
+                    flags.source = Some(parse_source(&raw)?);
+                }
                 "--cwd" => flags.cwd = Some(take_value(args, &mut index, "--cwd")?),
                 "--group" => flags.group = Some(take_value(args, &mut index, "--group")?),
                 "--message" => flags.message = Some(take_value(args, &mut index, "--message")?),
@@ -445,6 +452,9 @@ fn apply_flag_extras(body: &mut Value, flags: &Flags) {
     if let Some(value) = &flags.agent {
         body["agent"] = json!(value);
     }
+    if let Some(value) = &flags.source {
+        body["source"] = json!(value);
+    }
     if let Some(value) = &flags.cwd {
         body["cwd"] = json!(value);
     }
@@ -459,11 +469,40 @@ fn apply_flag_extras(body: &mut Value, flags: &Flags) {
     }
 }
 
+/// `--source` 只认三个值。
+///
+/// **在这里就报错**，而不是留给服务端：服务端不做校验（认不出来的类别会被界面归到
+/// 「自定义」），打错一个字不会有任何提示 —— 那正是「我明明声明了 system，怎么跑到
+/// 自定义里去了」的来源。
+fn parse_source(raw: &str) -> Result<String, Failure> {
+    let value = raw.trim().to_ascii_lowercase();
+    match value.as_str() {
+        "agent" | "system" | "custom" => Ok(value),
+        other => Err(Failure::other(fill(t().unknown_source, &[&format!("{other:?}")]))),
+    }
+}
+
+/// 没声明 `--source` 时按名字推。**这是推断，所以它只是缺省值**：`--source` 永远优先。
+///
+/// 推的是「这个名字是不是我们那 8 家」：是就按智能体算，否则按自定义算。手写
+/// `signalhub report` 的两种常见情形（给某家没有一键接入的智能体补一条上报 / 自己的
+/// 脚本报进度）正好被这条规则分开，而分错的后果只是「接入」页里那一行落在别的组，
+/// 补一句 `--source` 就能改。
+fn inferred_source(agent: Option<&str>) -> &'static str {
+    match agent.map(|name| hooks::Agent::parse(name).is_ok()) {
+        Some(true) => "agent",
+        _ => "custom",
+    }
+}
+
 fn report(state: &str, flags: &Flags) -> Result<(), Failure> {
     let endpoint = Endpoint::discover(flags)?;
 
     let mut body = json!({ "state": state });
     apply_flag_extras(&mut body, flags);
+    if body.get("source").is_none() {
+        body["source"] = json!(inferred_source(flags.agent.as_deref()));
+    }
 
     let (status, text) = read_response!(client()
         .post(&endpoint.url("/state"))
@@ -501,7 +540,8 @@ fn post_state_quiet(
     flags: &Flags,
     ttl_ms: u64,
 ) -> Result<(), Failure> {
-    let mut body = json!({ "state": state });
+    // 包装器不是我们装的 hook，而是用户自己的东西 —— 归到「自定义」那一组
+    let mut body = json!({ "state": state, "source": "custom" });
     apply_flag_extras(&mut body, flags);
     body["ttl_ms"] = json!(ttl_ms);
 
@@ -930,7 +970,8 @@ fn hook_body(
     payload: &Value,
     flags: &Flags,
 ) -> Value {
-    let mut body = json!({ "state": state, "session": session, "agent": agent });
+    // 走 hook 报的**一定是智能体**：这个子命令就是给我们装进各家配置里的那条命令用的
+    let mut body = json!({ "state": state, "session": session, "agent": agent, "source": "agent" });
     if let Some(cwd) = cwd_of(payload) {
         body["cwd"] = json!(cwd);
     }
@@ -1872,6 +1913,7 @@ mod tests {
                 "hook", "status", "watch", "run", "clear", "monitor", "install", "uninstall",
                 "claude-code", "9.9.9", "--never-fail", "--ttl", "--dry-run", "--until",
                 "--timeout", "--interval", "--group", "--session", "--agent", "--port",
+                "--source",
                 exit_heading,
             ] {
                 assert!(text.contains(expected), "{name} 帮助文本缺少 {expected}");
@@ -1879,6 +1921,29 @@ mod tests {
             // 通用适配那一节也得在 —— 它是「其他工具怎么接」的唯一出处
             assert!(text.contains("run --agent"), "{name} 帮助里没有 run 的用法示例");
         }
+    }
+
+    /// `--source` 只认三个值，别的**当场报错**。
+    ///
+    /// 不校验的话，服务端会照收（它不做校验）、界面会把它归到「自定义」—— 于是
+    /// 「我明明声明了 system」变成一个没有任何提示的哑谜。
+    #[test]
+    fn only_three_source_types_are_accepted() {
+        assert_eq!(parse_source("system").unwrap(), "system");
+        assert_eq!(parse_source("  AGENT ").unwrap(), "agent", "两头空白和大小写都该收");
+        let err = parse_source("sytem").unwrap_err();
+        assert!(err.message.contains("sytem"), "{}", err.message);
+        assert!(err.message.contains("custom"), "错误里要写清认哪几个: {}", err.message);
+    }
+
+    /// 没声明 `--source` 时按名字推：我们那 8 家（含简称）算智能体，其余算自定义。
+    #[test]
+    fn the_source_is_inferred_from_the_agent_name() {
+        assert_eq!(inferred_source(Some("claude-code")), "agent");
+        assert_eq!(inferred_source(Some("claude")), "agent", "简称也该认出来");
+        assert_eq!(inferred_source(Some("opencode")), "agent");
+        assert_eq!(inferred_source(Some("aider")), "custom", "没一键接入的智能体归自定义");
+        assert_eq!(inferred_source(None), "custom", "没给名字就是用户自己的东西");
     }
 
     #[test]

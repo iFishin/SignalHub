@@ -46,6 +46,14 @@ export interface Receipt {
   last_epoch_ms: number;
   /** 最后一次上报的状态名（`working` / `permission` …），没报过是空串 */
   state: string;
+  /**
+   * 最后一次上报**声明**的信号源类型：`agent` / `system` / `custom`。
+   *
+   * 空串 = 没声明（老版本 CLI / 手写 curl 不带这个字段）。只有 `system` 会被单独
+   * 分出一组，其余都按「不是我们认识的智能体」落到自定义那一组 —— 见
+   * `groupReceipts`。
+   */
+  source: string;
   /** 本次运行以来收到多少条 */
   count: number;
 }
@@ -138,4 +146,29 @@ export function useHookLog(limit = 40) {
   useEffect(refresh, [refresh]);
 
   return { lines, refresh };
+}
+
+/**
+ * 把「收到过上报的信号源」分成界面上的两组。
+ *
+ * 上面那张表是**我们认识的智能体**（`detect_agents` 的 8 行，每行带接入按钮），
+ * 所以这里只处理剩下的：
+ *
+ *   - **系统** = 上报方自己声明了 `source: "system"`（将来的内置采集器，以及用户
+ *     自己盯系统状态的守护脚本）。
+ *   - **自定义** = 其余全部（用户自己的脚本、另一台机器、手写的一条 curl、还没
+ *     一键接入的智能体）。
+ *
+ * **「是不是智能体」由调用方判定**（`knownIds`）：那份清单在 `agents` 里，这一层
+ * 不该再抄一份 8 个名字 —— 抄了就会在加第 9 家时漏掉一处。
+ */
+export function groupReceipts(
+  receipts: Receipt[],
+  knownIds: Set<string>,
+): { system: Receipt[]; custom: Receipt[] } {
+  const others = receipts.filter((r) => !knownIds.has(r.agent));
+  return {
+    system: others.filter((r) => r.source === "system"),
+    custom: others.filter((r) => r.source !== "system"),
+  };
 }

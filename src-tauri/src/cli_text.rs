@@ -93,6 +93,8 @@ pub struct CliText {
     pub uninstalled: &'static str,
     pub dry_run_suffix: &'static str,
     pub install_command: &'static str,
+    /// `--source` 给了个不认识的值
+    pub unknown_source: &'static str,
     /// `install hooks --http` 但读不到端口时（应用还没起来）
     pub http_needs_port: &'static str,
     pub install_config: &'static str,
@@ -200,6 +202,7 @@ pub const ZH: CliText = CliText {
     uninstalled: " 已移除",
     dry_run_suffix: "（演练，未写入任何文件）",
     install_command: "  命令  {}",
+    unknown_source: "不认识的信号源类型 {}；只认 agent / system / custom",
     http_needs_port: "读不到上报服务的端口（{err}）—— 应用还没跑起来，写进去的地址一定是错的。",
 
     install_config: "  配置  {}",
@@ -260,6 +263,8 @@ signalhub {} —— 桌面悬浮状态灯的上报客户端
 选项:
   --session <id>    会话标识，默认 default
   --agent <name>    上报方名字，用于 UI 归因
+  --source <type>   信号源类型：agent / system / custom（缺省按 --agent 推，
+                    hook 报的是 agent，run 报的是 custom）。只影响「接入」页分组
   --cwd <path>      项目路径
   --group <name>    归属的组，默认 default。多分组时灯上每组一块牌
   --message <text>  悬停提示文本
@@ -353,6 +358,7 @@ pub const EN: CliText = CliText {
     uninstalled: " removed",
     dry_run_suffix: " (dry run, nothing written)",
     install_command: "  command  {}",
+    unknown_source: "Unknown source type {}; only agent / system / custom are accepted",
     http_needs_port: "Cannot read the report service port ({err}) — the app is not running, so the URL we would write is certainly wrong.",
 
     install_config: "  config   {}",
@@ -414,6 +420,9 @@ States:
 Options:
   --session <id>    Session identifier, default default
   --agent <name>    Reporter name, used for attribution in the UI
+  --source <type>   Source type: agent / system / custom (defaults to an inference
+                    from --agent; hook reports agent, run reports custom). Only
+                    affects how the Connect page groups sources
   --cwd <path>      Project path
   --group <name>    Group to file this under; default default. One sign per group
   --message <text>  Tooltip text
@@ -586,6 +595,7 @@ mod tests {
             ("uninstalled", t.uninstalled),
             ("dry_run_suffix", t.dry_run_suffix),
             ("install_command", t.install_command),
+            ("unknown_source", t.unknown_source),
             ("http_needs_port", t.http_needs_port),
             ("install_config", t.install_config),
             ("install_backup", t.install_backup),

@@ -253,6 +253,8 @@ fn set_state(
         session,
         group,
         agent: Some("debug".into()),
+        // 「调试上报」不是智能体报的，是应用自己注入的：归到自定义那一组
+        source: Some("custom".into()),
         cwd: None,
         message,
         ttl_ms: None,
@@ -294,6 +296,7 @@ fn send_test_report(
         // 而不是某个真实项目在报
         group: Some("test".into()),
         agent: Some("test".into()),
+        source: Some("custom".into()),
         cwd: None,
         message: None,
         ttl_ms: Some(TEST_REPORT_TTL_MS),
@@ -1258,6 +1261,7 @@ async fn try_agent(app: tauri::AppHandle, agent: String) -> Result<ProbeOutcome,
             // 组名也留成探测名：灯上会显示「signalhub-probe · 执行中」，一眼认得出
             group: Some(PROBE_SESSION.into()),
             agent: Some("test".into()),
+            source: Some("custom".into()),
             cwd: None,
             message: None,
             // 短停留：试出来的东西不该在灯上赖着
@@ -2384,6 +2388,7 @@ mod tests {
                 session: Some("test".into()),
                 group: Some("test".into()),
                 agent: Some("test".into()),
+                source: None,
                 cwd: None,
                 message: None,
                 ttl_ms: Some(TEST_REPORT_TTL_MS),

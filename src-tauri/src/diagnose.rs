@@ -100,15 +100,46 @@ pub fn text(receipts: &Receipts, filter: Option<Agent>) -> String {
             Some(receipt) => {
                 let _ = writeln!(
                     out,
-                    "最近上报 {} 前（状态 {}，本次运行 {} 条）",
+                    "最近上报 {} 前（状态 {}，本次运行 {} 条{}）",
                     seconds_text(receipt.last_epoch_ms),
                     receipt.state,
-                    receipt.count
+                    receipt.count,
+                    // 类别只在**不是**智能体时报出来：那才是需要解释的情况
+                    if receipt.source == crate::state::DEFAULT_SOURCE {
+                        String::new()
+                    } else {
+                        format!("，类型 {}", source_text(&receipt.source))
+                    }
                 );
             }
             None => {
                 let _ = writeln!(out, "最近上报 从没收到过（回执里没有它）");
             }
+        }
+    }
+
+    // ---- 其它信号源 ----
+    //
+    // 不在上面清单里的上报（用户自己的脚本、另一台机器、手写的一条 curl，以及将来
+    // 的系统采集器）。**单独一节而不是并进去**：上面那一节每一行都在说「这个智能体
+    // 接得怎么样」，而这一类我们无从接入 —— 但它们是「上报通道是通的」的活证据，
+    // 也是「我的脚本到底报没报」唯一的答案。
+    let others: Vec<&crate::receipts::ReceiptView> = receipts
+        .iter()
+        .filter(|receipt| !hooks::ALL_NAMES.contains(&receipt.agent.as_str()))
+        .collect();
+    if !others.is_empty() {
+        let _ = writeln!(out, "\n== 其它信号源（不在上面清单里的）==");
+        for receipt in others {
+            let _ = writeln!(
+                out,
+                "{} · {} · 最近上报 {} 前（状态 {}，本次运行 {} 条）",
+                receipt.agent,
+                source_text(&receipt.source),
+                seconds_text(receipt.last_epoch_ms),
+                receipt.state,
+                receipt.count
+            );
         }
     }
 
@@ -273,6 +304,19 @@ fn plugin_shape(agent: Agent, source: &str) -> Option<&'static str> {
         Some("插件文件是旧形状（V1）。opencode V2 会拒绝加载它 —— 在「接入」里重新点一次就会改写成新形状。")
     } else {
         Some("插件文件认不出形状（既没有 export default，也没有 V1 那种导出）—— 它可能被别的工具改过。")
+    }
+}
+
+/// 信号源类型的中文说法。认不出来就原样显示 —— **诊断文本不该替上报方编一个类别**。
+///
+/// 空串是「没声明」（老文件 / 没带这个字段的上报方），按缺省那类算。
+fn source_text(source: &str) -> &str {
+    match source.trim() {
+        "" => "智能体",
+        "agent" => "智能体",
+        "system" => "系统",
+        "custom" => "自定义",
+        other => other,
     }
 }
 

@@ -27,7 +27,14 @@ import { useHistory, type DayRow } from "../lib/useHistory";
 import { useTimeline, type TimelineSegment } from "../lib/useTimeline";
 import { useOutboundLog, lastAttemptFor, type Attempt } from "../lib/useOutboundLog";
 import { useNow } from "../lib/useNow";
-import { useAgents, useHookLog, useReceipts, type AgentStatus, type HookChange } from "../lib/useAgents";
+import {
+  groupReceipts,
+  useAgents,
+  useHookLog,
+  useReceipts,
+  type AgentStatus,
+  type HookChange,
+} from "../lib/useAgents";
 import { useStateTtls } from "../lib/useStateTtls";
 import { percent, progressLabel } from "../lib/updateProgress";
 import { useUpdate } from "../lib/useUpdate";
@@ -1400,6 +1407,7 @@ export function SettingsPanel({ snapshot }: Props) {
       ].join("\n")
     : null;
 
+
   // 复制反馈。1.5 秒后自动收回，否则用户不知道刚才那下有没有生效。
   const [copied, setCopied] = useState<string | null>(null);
   const copy = (what: string, text: string) => {
@@ -2020,7 +2028,13 @@ export function SettingsPanel({ snapshot }: Props) {
         // 收到过上报、但不在上面清单里的信号源，**不能扔掉**：用户自己的脚本、
         // 另一台机器、手写的一条 curl 都在这一类里，而它们恰恰证明上报通道是通的。
         const knownIds = new Set(agents.map((a) => a.id));
-        const otherSources = receipts.filter((r) => !knownIds.has(r.agent));
+        // 非智能体的信号源按**上报方声明**的那一类分两组：系统 / 自定义。见
+        // `groupReceipts` —— 判定放在那边是为了能单测，而「是不是我们认识的智能体」
+        // 仍由上面那张清单决定。
+        const { system: systemSources, custom: otherSources } = groupReceipts(
+          receipts,
+          knownIds,
+        );
 
         return (
           <>
@@ -2155,6 +2169,35 @@ export function SettingsPanel({ snapshot }: Props) {
                   </div>
                 );
               })}
+            </div>
+
+            {/* ---- 系统信号源 ----
+                 这一节**空着也显示**：它是「信号源不只有智能体」这个概念唯一的
+                 落点，藏起来的话，用户在采集器做出来之前根本不知道有这条路。
+                 而且它顺手把用法写出来了 —— 一句话就能把自己的脚本报进来。 */}
+            <div className="section">
+              <div className="section-title">{m.systemSourcesTitle}</div>
+              <p className="hint">{m.systemSourcesHint}</p>
+              {systemSources.length === 0 ? (
+                <p className="hint">{m.systemSourcesEmpty}</p>
+              ) : (
+                systemSources.map((source) => (
+                  <div className="agent" key={source.agent}>
+                    <div className="agent-info">
+                      <div className="agent-line">
+                        <span className="agent-name mono">{source.agent}</span>
+                      </div>
+                      <span className="agent-receipt" data-on>
+                        {m.agentReceiptAgo(
+                          formatAge(source.last_epoch_ms, now),
+                          signalText(m, source.state),
+                        )}{" "}
+                        · {m.agentReceiptCount(source.count)}
+                      </span>
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
 
             {/* ---- 收到过上报、但不在清单里的信号源 ----

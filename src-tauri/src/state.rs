@@ -244,6 +244,14 @@ pub struct Report {
     /// 分组是为了「多组状态灯」：灯球上每组一块牌，各自聚合。
     pub group: Option<String>,
     pub agent: Option<String>,
+    /// 上报方声明的**信号源类型**（`agent` / `system` / `custom`），缺省 `agent`。
+    ///
+    /// **只影响「接入」页怎么分组**，不参与分组聚合、TTL、通知、托盘任何决策 ——
+    /// 它是纯粹的**描述**，所以缺省值选什么都改不了灯的行为。
+    ///
+    /// 存字符串而不是枚举是刻意的：多一个取值不该让老版本 app 解析失败（服务端没有
+    /// `deny_unknown_fields`），而认不出来的一律落到「自定义」那一组。
+    pub source: Option<String>,
     pub cwd: Option<String>,
     pub message: Option<String>,
     pub ttl_ms: Option<u64>,
@@ -258,6 +266,7 @@ impl Report {
             session: None,
             group: None,
             agent: None,
+            source: None,
             cwd: None,
             message: None,
             ttl_ms: None,
@@ -271,7 +280,24 @@ impl Report {
     pub fn group_id(&self) -> &str {
         self.group.as_deref().map(str::trim).filter(|g| !g.is_empty()).unwrap_or(DEFAULT_GROUP)
     }
+
+    /// 声明的那一类，缺省 [`DEFAULT_SOURCE`]。
+    ///
+    /// 缺省给 `agent` 而不是 `custom`：**老版本 CLI 和手写 curl 都不带这个字段**，
+    /// 而它们报的多半就是某个智能体（老 CLI 装的 hook 正是这么报的）。反过来，
+    /// 用户自己的脚本要落到「自定义」那一组，由 CLI 显式声明（`--source` 或按
+    /// `--agent` 推出来的缺省），不靠这里猜。
+    pub fn source_id(&self) -> &str {
+        self.source
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(DEFAULT_SOURCE)
+    }
 }
+
+/// 没指定 `source` 时的类型。见 [`Report::source_id`]。
+pub const DEFAULT_SOURCE: &str = "agent";
 
 /// 没指定组时的组名。
 pub const DEFAULT_GROUP: &str = "default";
@@ -842,6 +868,24 @@ mod tests {
         req.group = Some(group.to_string());
         let ttl = ttl_of(req.state, req.ttl_ms);
         s.apply(t, req, ttl)
+    }
+
+    /// `source` 只影响「接入」页怎么分组，**不参与任何决策** —— 所以缺省值是
+    /// `agent`，而空串 / 空白也算没声明（老上报方就是这么发的）。
+    #[test]
+    fn the_source_defaults_to_agent_and_blank_counts_as_unset() {
+        let mut req = Report::new(Signal::Working);
+        assert_eq!(req.source_id(), DEFAULT_SOURCE);
+
+        req.source = Some("   ".into());
+        assert_eq!(req.source_id(), DEFAULT_SOURCE, "空白不算声明");
+
+        req.source = Some("  system ".into());
+        assert_eq!(req.source_id(), "system", "两头空白要去掉");
+
+        // 认不出来的一律原样返回：这一层不认识类别清单（界面把它归到「自定义」）
+        req.source = Some("whatever".into());
+        assert_eq!(req.source_id(), "whatever");
     }
 
     /// 测试里的 TTL：**内置默认那一档**（`Settings::default()` 没有任何逐状态覆盖）。

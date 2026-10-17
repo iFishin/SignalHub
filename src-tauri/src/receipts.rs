@@ -39,12 +39,21 @@ struct StoredEntry {
     last_epoch_ms: u64,
     /// 最后一次上报的状态名。「它报过」和「它报的是什么」是两个问题。
     state: String,
+    /// 最后一次上报**声明**的信号源类型（`agent` / `system` / `custom`）。
+    ///
+    /// `serde(default)` 是给老文件的：这个字段是后来才加的，缺了就是空串 ——
+    /// 空串在界面上落到「自定义」，正是「没声明」该有的待遇。
+    #[serde(default)]
+    source: String,
 }
 
 #[derive(Default, Clone)]
 struct Entry {
     last_epoch_ms: u64,
     state: String,
+    /// 最后一次声明的那一类。**后一次覆盖前一次**：同一个名字先后声明成不同类别时，
+    /// 以最近那次为准（和 `state` 一样，这张表回答的是「它现在是什么」）。
+    source: String,
     /// **本次运行以来**的次数。刻意不落盘：它回答的是「它现在还在报吗」，而这个
     /// 问题的时效就是这一次运行。跨重启的总量在 `stats.json` 那边（按时长算的）。
     count: u64,
@@ -58,6 +67,11 @@ pub struct ReceiptView {
     pub last_epoch_ms: u64,
     /// 最后一次上报的状态名，没有就是空串。
     pub state: String,
+    /// 最后一次上报声明的信号源类型（`agent` / `system` / `custom`）。
+    ///
+    /// **空串 = 没声明**（老文件，或者上报方压根没带这个字段）。界面据此把信号源
+    /// 分成「AI 智能体 / 系统 / 自定义」三组，见 `SettingsPanel` 的 `groupReceipts`。
+    pub source: String,
     /// 本次运行以来的上报条数。
     pub count: u64,
 }
@@ -103,6 +117,7 @@ impl Receipts {
                             Entry {
                                 last_epoch_ms: entry.last_epoch_ms,
                                 state: entry.state,
+                                source: entry.source,
                                 // 次数不跨重启：它是「这次运行里还在报吗」
                                 count: 0,
                             },
@@ -123,7 +138,9 @@ impl Receipts {
     }
 
     /// 记一次上报。**这是上报路径上的函数，所以它绝不能失败、也绝不能慢。**
-    pub fn record(&self, agent: &str, state: &str) {
+    ///
+    /// `source` 是上报方声明的那一类（见 `state::Report::source_id`），只用于界面分组。
+    pub fn record(&self, agent: &str, source: &str, state: &str) {
         let agent = agent.trim();
         // 空名字丢掉（上报里 `agent` 是可选字段，没写就是没有信号源可记）。
         // 除此之外**不认识的名字也照收**：这一层不认识智能体清单，也不该认识 ——
@@ -136,6 +153,7 @@ impl Receipts {
         let entry = inner.agents.entry(agent.to_string()).or_default();
         entry.last_epoch_ms = epoch_ms();
         entry.state = state.to_string();
+        entry.source = source.to_string();
         entry.count = entry.count.saturating_add(1);
 
         if inner.saved.elapsed() < SAVE_EVERY {
@@ -155,6 +173,7 @@ impl Receipts {
                 agent: agent.clone(),
                 last_epoch_ms: entry.last_epoch_ms,
                 state: entry.state.clone(),
+                source: entry.source.clone(),
                 count: entry.count,
             })
             .collect()
@@ -176,6 +195,7 @@ fn save(inner: &Inner, path: Option<&std::path::Path>) {
                     StoredEntry {
                         last_epoch_ms: entry.last_epoch_ms,
                         state: entry.state.clone(),
+                        source: entry.source.clone(),
                     },
                 )
             })
@@ -237,15 +257,45 @@ mod tests {
     #[test]
     fn a_report_sets_the_time_state_and_count() {
         let receipts = in_memory();
-        receipts.record("opencode", "working");
-        receipts.record("opencode", "done");
+        receipts.record("opencode", "agent", "working");
+        receipts.record("opencode", "agent", "done");
 
         let view = receipts.view();
         assert_eq!(view.len(), 1);
         assert_eq!(view[0].agent, "opencode");
         assert_eq!(view[0].state, "done", "记的该是最后一次报的状态");
         assert_eq!(view[0].count, 2, "两次上报算两次");
+        assert_eq!(view[0].source, "agent", "声明的那一类也要记下来");
         assert!(view[0].last_epoch_ms > 0, "时刻要填上");
+    }
+
+    /// 同一个名字先后声明成不同类别时**以最近那次为准**：这张表回答的是「它现在是
+    /// 什么」，不是「它曾经是什么」。
+    #[test]
+    fn the_source_is_the_last_one_declared() {
+        let receipts = in_memory();
+        receipts.record("watch-build", "custom", "working");
+        receipts.record("watch-build", "system", "working");
+
+        assert_eq!(receipts.view()[0].source, "system");
+    }
+
+    /// **老文件没有 `source` 这个字段**（它是后加的），读回来该是空串 —— 空串在
+    /// 界面上落到「自定义」，正是「没声明」该有的待遇，而不是让整个文件读不出来。
+    #[test]
+    fn an_old_file_without_a_source_still_loads() {
+        let dir = TempDir::new();
+        let path = dir.file("receipts.json");
+        std::fs::write(
+            &path,
+            r#"{"agents":{"my-script":{"last_epoch_ms":1700000000000,"state":"working"}}}"#,
+        )
+        .unwrap();
+
+        let view = Receipts::with_path(Some(path)).view();
+        assert_eq!(view.len(), 1);
+        assert_eq!(view[0].agent, "my-script");
+        assert_eq!(view[0].source, "");
     }
 
     /// 没有名字的上报不记 —— `agent` 是可选字段，不写就是「没有信号源」。
@@ -253,8 +303,8 @@ mod tests {
     #[test]
     fn nameless_reports_are_ignored() {
         let receipts = in_memory();
-        receipts.record("", "working");
-        receipts.record("   ", "working");
+        receipts.record("", "custom", "working");
+        receipts.record("   ", "custom", "working");
         assert!(receipts.view().is_empty());
     }
 
@@ -266,7 +316,7 @@ mod tests {
 
         {
             let receipts = Receipts::with_path(Some(path.clone()));
-            receipts.record("claude-code", "permission");
+            receipts.record("claude-code", "agent", "permission");
             // 落盘是节流的，第一次记就会写（`saved` 从构造时起算，已过 5 秒是不可能的，
             // 所以这里显式催一次）
             save(
@@ -280,6 +330,7 @@ mod tests {
         assert_eq!(view.len(), 1, "重启后该还记得有个信号源报过");
         assert_eq!(view[0].agent, "claude-code");
         assert_eq!(view[0].state, "permission");
+        assert_eq!(view[0].source, "agent", "类别也要跨重启");
         assert!(view[0].last_epoch_ms > 0);
         assert_eq!(view[0].count, 0, "次数只算本次运行");
     }
@@ -304,7 +355,7 @@ mod tests {
 
         // 构造时 `saved` 就是此刻，所以第一条也会被节流掉 —— 这正是要的行为：
         // 刚启动时不需要立刻写盘。
-        receipts.record("one", "working");
+        receipts.record("one", "custom", "working");
         assert!(
             !path.exists(),
             "刚记下的第一条不该立刻落盘（节流从构造时刻起算）"
