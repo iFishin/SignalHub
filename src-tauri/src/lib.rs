@@ -4,6 +4,7 @@ mod diagnose;
 mod hookmap;
 mod lang;
 mod lamps;
+mod manual;
 mod menu;
 mod notify;
 mod open;
@@ -2130,6 +2131,8 @@ pub fn run() {
         .manage(menu::Target::default())
         // 四个全局快捷键抢到了没有 —— 注册时算一次，设置 →「系统」页读它
         .manage(shortcuts::SharedShortcuts::default())
+        // 专注倒计时的代号（取消上一个线程用，见 manual.rs）
+        .manage(manual::SharedManual::default())
         .invoke_handler(tauri::generate_handler![
             get_state,
             set_state,

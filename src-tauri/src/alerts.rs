@@ -384,6 +384,15 @@ pub fn send_message(app: &tauri::AppHandle, title: &str, body: &str) {
     show(app, title, body, false, None);
 }
 
+/// 用户自己设的定时器到点（目前只有专注倒计时）。
+///
+/// 和 `send_message` 的区别只有一个：**会响**（跟着 `Settings::sound`）—— 一个自己
+/// 设的倒计时到点却悄无声息，等于没提醒。也不走告警那条路：那条要一个快照、会记
+/// 「这条通知说的是哪一组」、还带动作按钮，而定时器没有「哪一组」。
+pub fn send_timer(app: &tauri::AppHandle, title: &str, body: &str, sound: bool) {
+    show(app, title, body, sound, None);
+}
+
 /// 通知的统一出口：标题 + 正文 + 可选的提示音和动作类型，再 show。
 ///
 /// 抽这一层是因为两条路径（告警 / 通告）走的是同一个 builder 链，只是声音和

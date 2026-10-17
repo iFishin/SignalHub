@@ -3,7 +3,7 @@ use crate::state::{Signal, Store};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use tauri::{
-    menu::{Menu, MenuItem},
+    menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::TrayIconBuilder,
     AppHandle, Manager,
 };
@@ -237,6 +237,12 @@ pub fn init(app: AppHandle) -> tauri::Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| match event.id.as_ref() {
+            // 「手动状态」那四项：id → 动作的映射只有一处（见 `manual::action_for`），
+            // 托盘这边不认识那几个 id。在这里再写一遍字面量的话，写错一个就是
+            // 「点了没反应」—— 而且不报错。
+            id if crate::manual::action_for(id).is_some() => {
+                crate::manual::action_for(id).expect("上面刚判断过")(app)
+            }
             "quit" => app.exit(0),
             "toggle" => toggle_lamp(app),
             "settings" => crate::reveal_settings(app),
@@ -302,13 +308,62 @@ fn build_menu(app: &AppHandle, lang: crate::config::Lang) -> tauri::Result<Menu<
     let collapsed = MenuItem::with_id(app, "collapsed", t.tray_collapsed, true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", t.tray_quit, true, None::<&str>)?;
 
+    // 手动状态收成一个子菜单：它是「我在干什么」，和上面那几个「这个 app 怎么显示」
+    // 不是一类东西，平铺进去会把托盘菜单撑到九项。**四项的文案都是固定的**（不随
+    // 状态变）：三个动作都是幂等的「设」，想收掉有「清除手动状态」，所以不需要为了
+    // 改文案重建菜单 —— 那也正是菜单状态最容易和真实状态漂移的地方。
+    let manual = Submenu::with_items(
+        app,
+        t.manual_title,
+        true,
+        &[
+            &MenuItem::with_id(
+                app,
+                crate::manual::MENU_FOCUS,
+                t.manual_focus,
+                true,
+                None::<&str>,
+            )?,
+            &MenuItem::with_id(
+                app,
+                crate::manual::MENU_MEETING,
+                t.manual_meeting,
+                true,
+                None::<&str>,
+            )?,
+            &MenuItem::with_id(
+                app,
+                crate::manual::MENU_AWAY,
+                t.manual_away,
+                true,
+                None::<&str>,
+            )?,
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(
+                app,
+                crate::manual::MENU_CLEAR,
+                t.manual_clear,
+                true,
+                None::<&str>,
+            )?,
+        ],
+    )?;
+
     Menu::with_items(
         app,
-        &[&toggle, &settings, &pause, &pass_through, &collapsed, &quit],
+        &[
+            &toggle,
+            &settings,
+            &pause,
+            &manual,
+            &pass_through,
+            &collapsed,
+            &quit,
+        ],
     )
 }
 
-/// 显示 / 隐藏灯。托盘的「显示 / 隐藏灯球」和全局快捷键 `⌥⇧L` 都走这里 ——
+/// 显示 / 隐藏灯。托盘的「显示 / 隐藏灯球」和全局快捷键 `⌃⌥L` 都走这里 ——
 /// 两条入口各写一遍的话，「切换」到底做了什么迟早分叉。
 pub(crate) fn toggle_lamp(app: &AppHandle) {
     let Some(win) = app.get_webview_window("main") else {

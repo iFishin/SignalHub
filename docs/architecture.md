@@ -1019,6 +1019,7 @@ SignalHub/
       ├─ alerts.rs               告警决策：闸门（持续阈值）、按组静音、勿扰时段、分平台提示音名
       ├─ outbound.rs             出站钩子：按 when 过滤后 POST 或跑命令
       ├─ devices.rs              物理灯（WLED）：把状态色 POST 到灯上 ← 和出站钩子共用一份日志
+      ├─ manual.rs               手动状态（专注倒计时 / 开会 / 离开）：自己也是一个信号源
       ├─ shortcuts.rs            全局快捷键：四个组合 + 抢到了没有（设置 →「系统」页读它）
       ├─ panel.rs                只读 Web 面板（`GET /`）：模板 + 一次注入 ← 只有 server 用它
       ├─ panel.html              上面那份模板（编译期 `include_str!` 进二进制）

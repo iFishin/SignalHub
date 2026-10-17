@@ -117,6 +117,19 @@ pub struct NativeText {
     pub action_mute: &'static str,
     pub pass_through_title: &'static str,
 
+    // ---- 手动状态（托盘子菜单 + 牌上那行字）----
+    /// 托盘里那个子菜单的标题。
+    pub manual_title: &'static str,
+    /// 专注那一项。牌上的倒计时文案见 `manual_focus_left`。
+    pub manual_focus: &'static str,
+    /// 开会 / 离开：**托盘那一项和牌上那行字是同一个字符串**（见 `manual::Manual`），
+    /// 所以只有一份。
+    pub manual_meeting: &'static str,
+    pub manual_away: &'static str,
+    pub manual_clear: &'static str,
+    /// 专注到点时牌上那行字，同时也是那条通知的标题。
+    pub manual_focus_done: &'static str,
+
     // ---- 窗口 ----
     pub settings_window_title: &'static str,
 
@@ -174,6 +187,26 @@ pub fn mute_message(lang: Lang, group: &str, muted: bool) -> (String, String) {
     }
 }
 
+/// 专注倒计时牌上那行字（`manual::report` 每分钟更新一次）。
+///
+/// 向上取整之后的值从 `manual.rs` 传进来 —— 还剩 30 秒时写「1 分钟」比写「0 分钟」
+/// 诚实，而那个取整和「什么时候算到点」是同一件事，不该分两处。
+pub fn manual_focus_left(lang: Lang, minutes: u32) -> String {
+    match lang {
+        Lang::Zh => format!("专注 · 还剩 {minutes} 分钟"),
+        Lang::En => format!("Focus · {minutes}m left"),
+    }
+}
+
+/// 专注到点那条通知的正文。**刻意不提具体分钟数** —— 那个数在 `manual.rs`，
+/// 而这里写一句「起来动一动」不需要和它同步。
+pub fn manual_focus_done_body(lang: Lang) -> String {
+    match lang {
+        Lang::Zh => "这一轮结束了，起来动一动。".to_string(),
+        Lang::En => "That round is done — time to move.".to_string(),
+    }
+}
+
 /// 「已经等了多久」。重复提醒的正文用它 —— 见 `alerts::send_reminder`。
 ///
 /// 超过一小时就换成小时制：卡了三个小时时「已等待 180 分钟」还得让人自己换算。
@@ -211,6 +244,13 @@ static ZH: NativeText = NativeText {
     action_mute: "静音该组",
     pass_through_title: "已进入点击穿透模式",
 
+    manual_title: "手动状态",
+    manual_focus: "专注 25 分钟",
+    manual_meeting: "开会中",
+    manual_away: "离开",
+    manual_clear: "清除手动状态",
+    manual_focus_done: "专注结束",
+
     settings_window_title: "SignalHub 设置",
 
     summary_prefix: "SignalHub",
@@ -236,6 +276,13 @@ static EN: NativeText = NativeText {
     action_reveal: "Open project folder",
     action_mute: "Mute this group",
     pass_through_title: "Click-through mode is on",
+
+    manual_title: "Manual state",
+    manual_focus: "Focus for 25 minutes",
+    manual_meeting: "In a meeting",
+    manual_away: "Away",
+    manual_clear: "Clear manual state",
+    manual_focus_done: "Focus finished",
 
     settings_window_title: "SignalHub Settings",
 
@@ -316,6 +363,12 @@ mod tests {
             en.action_reveal,
             en.action_mute,
             en.pass_through_title,
+            en.manual_title,
+            en.manual_focus,
+            en.manual_meeting,
+            en.manual_away,
+            en.manual_clear,
+            en.manual_focus_done,
             en.settings_window_title,
             en.summary_prefix,
             en.summary_prefix_test,
@@ -341,6 +394,10 @@ mod tests {
         for (title, body) in [
             mute_message(Lang::En, "ci", true),
             mute_message(Lang::En, "ci", false),
+            (
+                manual_focus_left(Lang::En, 25),
+                manual_focus_done_body(Lang::En),
+            ),
         ] {
             assert!(
                 !title
