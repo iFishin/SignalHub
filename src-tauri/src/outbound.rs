@@ -427,7 +427,10 @@ pub type OutboundLog = Arc<Mutex<VecDeque<Attempt>>>;
 const LOG_CAPACITY: usize = 200;
 
 /// 记一笔结果：写日志文件、失败时打 stderr、推进环形缓冲。
-fn record(log: &OutboundLog, target: String, ok: bool, detail: &str) {
+///
+/// `pub(crate)`：物理灯（`devices.rs`）记进**同一个**日志 —— 用户只需要一个地方
+/// 看「我配的东西到底发出去了没有」。
+pub(crate) fn record(log: &OutboundLog, target: String, ok: bool, detail: &str) {
     let at_ms = now_ms();
     let outcome = if ok {
         format!("ok {detail}")
@@ -445,7 +448,9 @@ fn record(log: &OutboundLog, target: String, ok: bool, detail: &str) {
         ));
     }
     if !ok {
-        eprintln!("[signalhub] 钩子执行失败（{target}）: {detail}");
+        // 「出站」而不是「钩子」：物理灯也走这一条（见 `devices.rs`），
+        // 而把一台灯说成钩子会让人去钩子列表里找一个不存在的东西。
+        eprintln!("[signalhub] 出站失败（{target}）: {detail}");
     }
 
     // 锁**只拿着推一条**，落盘在锁外做：写文件比拷贝 200 条记录慢得多，而这条

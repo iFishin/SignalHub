@@ -1,4 +1,5 @@
 mod alerts;
+mod devices;
 mod diagnose;
 mod hookmap;
 mod lang;
@@ -365,6 +366,12 @@ fn validate_settings(settings: &Settings) -> Result<(), String> {
     for hook in &settings.hooks {
         if let Some(problem) = config::hook_problem(hook) {
             return Err(format!("钩子不合法：{problem}"));
+        }
+    }
+
+    for device in &settings.devices {
+        if let Some(problem) = config::device_problem(device) {
+            return Err(format!("物理灯不合法：{problem}"));
         }
     }
 
@@ -1483,6 +1490,9 @@ fn apply_settings(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapsh
     sync_layout(app, settings, snapshot);
     // 开关可能刚被改过，所以尺寸之外还要重画一次托盘
     refresh_tray(app);
+    // 灯可能刚被加上 / 刚被改过地址 / 刚换了配色 —— 立刻按**当前**状态发一次，
+    // 那是「填完了到底通不通」唯一一次能马上看到的回答（见 `devices::sync`）。
+    devices::sync(app, settings, snapshot);
     // 用户刚把通知打开时也要能申请到权限 —— 只在启动时申请的话，启动时通知是关着的
     // 用户永远不会被问一次，而没权限时通知是静默丢弃的（见 alerts::ensure_permission）。
     alerts::ensure_permission(app, settings);
@@ -2191,6 +2201,8 @@ pub fn run() {
         // 启动时把上次的转发结果读回来：日志原来是纯内存的，重启一次界面就显示
         // 「从未触发」—— 用户重启一次就会以为转发坏了。
         .manage(outbound::load_log())
+        // 每台物理灯「上一次成功发出去的颜色」（不落盘，重启后重新发一次）
+        .manage(devices::SharedDevices::default())
         .manage(SharedPalette::default())
         .manage(alerts::LocalHour::default())
         .manage(Arc::new(lang::LocalLang::default()))

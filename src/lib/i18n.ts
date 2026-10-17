@@ -297,6 +297,12 @@ export interface Messages {
   noHooks: string;
   hookN: (n: number) => string;
   noTarget: string;
+  devicesTitle: string;
+  noDevices: string;
+  deviceN: (n: number) => string;
+  addDevice: string;
+  devicePlaceholder: string;
+  devicesHint: string;
   type: string;
   command: string;
   addHook: string;
@@ -725,6 +731,13 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     noHooks: "还没有钩子。加一条，就能在状态变化时 POST 到某个地址或跑一条命令。",
     hookN: (n) => `钩子 ${n}`,
     noTarget: "未填目标",
+    devicesTitle: "物理灯（WLED）",
+    noDevices: "还没有灯。填一台 WLED 的地址，状态色就直接发到它上面。",
+    deviceN: (n) => `灯 ${n}`,
+    addDevice: "+ 添加一盏灯",
+    devicePlaceholder: "192.168.1.50 或 wled.local:8080",
+    devicesHint:
+      "只填主机，带不带 http:// 都认。发出去的东西只有颜色：没有组名、没有会话名、没有消息内容。填完保存就会立刻按当前状态亮一次 —— 那一下就是「通不通」的回答，结果记在上面同一份日志里。",
     type: "类型",
     command: "命令",
     addHook: "+ 添加钩子",
@@ -1155,6 +1168,13 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     noHooks: "No hooks yet. Add one to POST to a URL or run a command on state changes.",
     hookN: (n) => `Hook ${n}`,
     noTarget: "No target",
+    devicesTitle: "Physical lights (WLED)",
+    noDevices: "No lights yet. Fill in a WLED address and the state colour goes straight to it.",
+    deviceN: (n) => `Light ${n}`,
+    addDevice: "+ Add a light",
+    devicePlaceholder: "192.168.1.50 or wled.local:8080",
+    devicesHint:
+      "Just the host; with or without http://. Only the colour is sent: no group names, no session names, no message text. Saving lights it up once with the current state — that is the answer to \u201cdoes it work?\u201d, and the result lands in the same log as the hooks above.",
     type: "Type",
     command: "Command",
     addHook: "+ Add hook",

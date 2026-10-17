@@ -159,6 +159,11 @@ fn compose_now(app: tauri::AppHandle) -> Notifier {
             );
         }
 
+        // 物理灯**每次都问一次**（不像钩子那样只在跃迁时）：它自己按「颜色变了没有」
+        // 去重，所以健康的时候这一句只是算个色号、比一下；而多问的那几次正是
+        // 「灯刚才连不上」的恢复路径。见 `devices::sync`。
+        crate::devices::sync(&app, &settings, snapshot);
+
         if settings.notify {
             decide_alert(&app, &gate, &settings, snapshot);
         }

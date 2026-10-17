@@ -16,7 +16,7 @@ import {
   MAX_HOOK_HEADERS,
 } from "../lib/hookHeaders";
 import { useLang, useMessages, type Lang, type Messages } from "../lib/i18n";
-import { useSettings, updateSettings, DEFAULTS, HTTP_PRESETS, type Settings, type Shape, type Palette, type HttpPreset, type Hook, type StateStyle, type GroupMeta } from "../lib/useSettings";
+import { useSettings, updateSettings, DEFAULTS, HTTP_PRESETS, type Settings, type Shape, type Palette, type HttpPreset, type Hook, type Device, type StateStyle, type GroupMeta } from "../lib/useSettings";
 import {
   useToggles,
   setAutostart,
@@ -1327,6 +1327,33 @@ export function SettingsPanel({ snapshot }: Props) {
     const current = hook.type === "http" ? hook.url : hook.command;
     if (next === (current ?? "").trim()) return; // 没改就别白存一次
     updateHook(index, hook.type === "http" ? { url: next } : { command: next });
+  };
+
+  // ---- 物理灯（WLED）--------------------------------------------------------
+  //
+  // 和钩子目标一样是「草稿 + 失焦提交」：每敲一个字存一次会把半截地址写进配置，
+  // 而半截地址（`192.168.1.5`）指向的是**另一台设备** —— 比半截 URL 更糟。
+  const [deviceDraft, setDeviceDraft] = useState<{
+    index: number;
+    value: string;
+  } | null>(null);
+
+  const setDevices = (devices: Device[]) => patch({ devices });
+
+  // 地址先留空：空地址不算错（不发），用户填了才开始工作 —— 和钩子一个脾气。
+  const addDevice = () => setDevices([...settings.devices, { host: "" }]);
+
+  const commitDeviceDraft = () => {
+    if (!deviceDraft) return;
+    const { index, value } = deviceDraft;
+    setDeviceDraft(null);
+    const device = settings.devices[index];
+    if (!device) return;
+    const next = value.trim();
+    if (next === device.host.trim()) return; // 没改就别白存一次
+    setDevices(
+      settings.devices.map((item, i) => (i === index ? { host: next } : item)),
+    );
   };
 
   // ---- 请求头 ---------------------------------------------------------------
@@ -2945,6 +2972,76 @@ export function SettingsPanel({ snapshot }: Props) {
             <p className="hint">{m.presetHint}</p>
             <p className="hint">{m.hookGroupsHint}</p>
             <p className="hint">{m.headersHint}</p>
+
+            {/* ---- 物理灯（WLED）----
+                挂在「转发」页里而不是新开一个页签：它和出站钩子是同一件事 ——
+                SignalHub 主动往外发，区别只是发的东西不一样（那边发一段文字，
+                这边发一个颜色）。为一个功能多开一个页签的成本比这个功能本身还大。 */}
+            <div className="section">
+              <div className="section-title">{m.devicesTitle}</div>
+              {settings.devices.length === 0 && (
+                <p className="empty">{m.noDevices}</p>
+              )}
+              {settings.devices.map((device, index) => {
+                const shown =
+                  deviceDraft?.index === index ? deviceDraft.value : device.host;
+                const configured = device.host.trim().length > 0;
+                // 日志里认一台灯用的话（`devices::target`）—— 两边必须一模一样，
+                // 不然这里会显示成「还没触发过」，而日志里明明有记录。
+                const attempt = configured
+                  ? lastAttemptFor(outboundLog, `WLED ${device.host.trim()}`)
+                  : undefined;
+
+                return (
+                  <div className="hook" key={index}>
+                    <div className="hook-head">
+                      <span className="hook-title">
+                        {m.deviceN(index + 1)}
+                        {!configured && (
+                          <span className="hook-warn">{m.noTarget}</span>
+                        )}
+                      </span>
+                      <button
+                        type="button"
+                        className="btn btn-tiny"
+                        onClick={() =>
+                          setDevices(
+                            settings.devices.filter((_, i) => i !== index),
+                          )
+                        }
+                      >
+                        {m.delete}
+                      </button>
+                    </div>
+
+                    <input
+                      className="input mono"
+                      spellCheck={false}
+                      placeholder={m.devicePlaceholder}
+                      value={shown}
+                      onChange={(event) =>
+                        setDeviceDraft({ index, value: event.target.value })
+                      }
+                      onBlur={commitDeviceDraft}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") event.currentTarget.blur();
+                      }}
+                    />
+
+                    {/* 最近一次结果。地址空着时无从匹配，不渲染。 */}
+                    {configured && (
+                      <span className="hook-result mono">
+                        {attempt ? attemptLine(m, attempt, now) : m.neverFired}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+              <button type="button" className="btn" onClick={addDevice}>
+                {m.addDevice}
+              </button>
+              <p className="hint">{m.devicesHint}</p>
+            </div>
           </>
         );
       }

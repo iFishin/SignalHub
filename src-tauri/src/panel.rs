@@ -8,15 +8,15 @@
 //!
 //! - **状态名**：`lang::signal_label` —— 和系统通知用同一张表，所以手机上说的
 //!   和通知里说的一样（用户偏好 `auto` 时前端解析好推给 Rust，见 `lang.rs`）。
-//! - **颜色**：设置里那套配色的粗粒度映射（ok / warn / danger / muted）+ 用户
-//!   逐个状态改过的颜色。粗粒度那个映射是 `src/lib/palettes.ts` 三套配色的投影，
-//!   **改配色表时两边要一起改**（那边也有一句指回来的注释）。
+//! - **颜色**：`Settings::state_color` —— Rust 侧唯一的「状态 → 颜色」入口，
+//!   物理灯（WLED）也从那里取。它按「用户逐个状态改过的颜色 > 配色预设」解析，
+//!   和灯上一致（见 `palettes.ts` 的 `resolveColors`）。
 //! - **组显示名**：`group_meta` 里用户改过的名字，和灯上一样。
 //!
 //! 页面模板在同目录的 `panel.html`，编译期嵌进二进制（`include_str!`）——
 //! 运行时不读盘，也不需要额外的构建步骤。
 
-use crate::config::{Lang, Palette, Settings};
+use crate::config::{Lang, Settings};
 use crate::state::Signal;
 
 /// 页面模板。
@@ -51,34 +51,16 @@ const REFRESH_MS: u64 = 1000;
 
 /// 每个状态最终用哪个颜色。
 ///
-/// 优先级和灯上一致：**用户逐个状态指定的 > 配色预设**（见 `palettes.ts` 的
-/// `resolveColors`）。
+/// 逐个问 [`Settings::state_color`] —— 那是 Rust 侧唯一的「状态 → 颜色」入口
+/// （物理灯也从那里取）。按**全部状态名**遍历而不是 `parse`：聚合出来的
+/// `stale` / `offline` 也要有颜色，而 `parse` 刻意不接受它们。
 fn state_colors(settings: &Settings) -> serde_json::Value {
-    let (ok, warn, danger, muted) = match settings.palette {
-        Palette::Default => ("#16a34a", "#d99a06", "#d0342c", "#9ca3af"),
-        Palette::Colorblind => ("#0072b2", "#e69f00", "#d55e00", "#8b8f96"),
-        Palette::Vivid => ("#00b34a", "#ffab00", "#ff2d2d", "#9aa1ab"),
-    };
-
     let mut colors = serde_json::Map::new();
-    // 按**全部状态名**（含派生状态）遍历：聚合出来的 `stale` / `offline` 也要有颜色，
-    // 而 `parse` 刻意不接受它们 —— 所以走 `ALL_NAMES` 而不是 `parse`。
     for name in Signal::ALL_NAMES {
-        let base = match name {
-            "idle" | "thinking" | "working" | "done" => ok,
-            "attention" => warn,
-            "permission" | "error" => danger,
-            _ => muted, // stale / offline / off
-        };
-        // 用户改过的那个状态用他自己的颜色（`styles` 的键是状态名，含派生状态）
-        let custom = settings
-            .styles
-            .get(name)
-            .and_then(|style| style.color.as_deref())
-            .map(str::trim)
-            .filter(|color| !color.is_empty())
-            .unwrap_or(base);
-        colors.insert(name.to_string(), serde_json::json!(custom));
+        colors.insert(
+            name.to_string(),
+            serde_json::json!(settings.state_color(name)),
+        );
     }
     serde_json::Value::Object(colors)
 }
@@ -110,6 +92,7 @@ fn group_labels(settings: &Settings) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Palette;
 
     /// 三套配色的四个语义色都要注进去，而且**缺省配色就是灯上那四个色号**。
     #[test]

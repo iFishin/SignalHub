@@ -1018,6 +1018,9 @@ SignalHub/
       ├─ notify.rs               通知出口（Notifier）— 让 HTTP 层能脱离 AppHandle 单测
       ├─ alerts.rs               告警决策：闸门（持续阈值）、按组静音、勿扰时段、分平台提示音名
       ├─ outbound.rs             出站钩子：按 when 过滤后 POST 或跑命令
+      ├─ devices.rs              物理灯（WLED）：把状态色 POST 到灯上 ← 和出站钩子共用一份日志
+      ├─ panel.rs                只读 Web 面板（`GET /`）：模板 + 一次注入 ← 只有 server 用它
+      ├─ panel.html              上面那份模板（编译期 `include_str!` 进二进制）
       ├─ menu.rs                 灯上右键的原生菜单：隐藏 / 静音该组、清除该组、切形态、开设置
       ├─ config.rs               ~/.signalhub 路径、token、端口文件、用户设置
       ├─ hooks.rs                智能体 hook 的安装/卸载（入站；与 outbound.rs 方向相反）

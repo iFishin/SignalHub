@@ -499,6 +499,42 @@ impl HookAction {
     }
 }
 
+/// 一台**物理灯**（目前只支持 WLED）。
+///
+/// 挂在「转发」页里而不是新开一个页签：它和出站钩子是同一件事 ——
+/// **SignalHub 主动往外发**，区别只是发的东西不一样（那边发一段文字，这边发一个
+/// 颜色）。为一个功能多开一个页签的成本比这个功能本身还大。
+///
+/// **只有地址。** 没有开关：填了地址就发、地址空着就不发，和钩子一个脾气
+/// （见 [`HookAction::is_configured`]）。多一个开关只会多出一种「配置看起来在、
+/// 实际不发」的哑谜；要停掉一盏灯就把它删了。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Device {
+    /// 灯的地址。**只填主机**（含端口），如 `192.168.1.50`、`wled.local:8080`、
+    /// `http://192.168.1.50`。路径是我们拼的（`/json/state`）。
+    ///
+    /// 带不带 `http://` 都认；顺手把 `/json/state` 粘进来也认（见
+    /// [`crate::devices::url`]）。
+    #[serde(default)]
+    pub host: String,
+}
+
+/// 一台灯配置上的问题。空地址不算错（「刚添加、还没填」是编辑时必然经过的中间态）。
+///
+/// 只挡**明显的粘贴事故**（地址里带了空格 —— 多半是把「192.168.1.50 的灯」整句
+/// 粘进来了）。刻意不校验 IP 形状：`wled.local` 这类 mDNS 名字是正经用法，而
+/// 「地址对不对」只有真发一次才知道 —— 那是日志那行 `ok 200` 要回答的。
+pub fn device_problem(device: &Device) -> Option<String> {
+    let host = device.host.trim();
+    if host.is_empty() {
+        return None;
+    }
+    if host.chars().any(char::is_whitespace) {
+        return Some(format!("灯的地址里不能有空格：{:?}", device.host));
+    }
+    None
+}
+
 /// 额外请求头的条数上限。
 ///
 /// 转发目标（尤其是别人给你的一个 webhook 地址）算**不可信输入**：一个几千条的
@@ -820,6 +856,14 @@ pub struct Settings {
     pub webhook_url: Option<String>,
     /// 出站钩子。聚合变化时按 `when` 过滤后依次触发。
     pub hooks: Vec<Hook>,
+    /// 物理灯（WLED）。聚合变化时把**状态色**发给它们。
+    ///
+    /// **默认空 = 不发**（红线 3：新增外发默认关）。里面只有地址，理由见 [`Device`]。
+    ///
+    /// 发出去的东西只有颜色：**没有组名、没有会话名、没有路径、没有消息内容**
+    /// （红线 3）。灯可能挂在别人也看得见的地方，而 WLED 自己的界面会把收到的
+    /// 东西显示出来。
+    pub devices: Vec<Device>,
     /// 圆点形状
     pub shape: Shape,
     /// 配色方案（用户没单独指定颜色时的默认值）
@@ -1057,6 +1101,8 @@ impl Default for Settings {
             notify: true,
             webhook_url: None,
             hooks: Vec::new(),
+            // 空 = 一台灯都不发（新增外发默认关，红线 3）
+            devices: Vec::new(),
             shape: Shape::default(),
             palette: Palette::default(),
             locale: Locale::default(),
@@ -1136,15 +1182,57 @@ impl Settings {
         }
         self.group_meta.retain(|_, meta| !meta.is_empty());
         // 同样地，写坏的钩子只丢掉那一条，不让整份设置失效
-        self.hooks.retain(|hook| hook_problem(hook).is_none());
-        // 钩子里的组名也要规整，理由同 hidden_groups
+        self.hooks.retain(|hook| hook_problem(hook).is_none());        // 钩子里的组名也要规整，理由同 hidden_groups
         for hook in &mut self.hooks {
             hook.groups = normalize_groups(std::mem::take(&mut hook.groups));
             if let HookAction::Http { headers, .. } = &mut hook.action {
                 *headers = normalize_headers(std::mem::take(headers));
             }
         }
+        // 地址去空白。**空地址留着**，和钩子一个脾气：那是「刚点了添加、还没填」
+        // 这个必然经过的中间态，存下去会被丢掉的话，界面上就是「刚点出来的那一行
+        // 自己没了」。真正发的时候按空地址过滤（见 `devices::sync`）。
+        for device in &mut self.devices {
+            device.host = device.host.trim().to_string();
+        }
         self
+    }
+
+    /// 某个状态最终用哪个颜色（`#rrggbb`）。
+    ///
+    /// 优先级和灯上一致：**用户逐个状态指定的 > 配色预设**（见 `palettes.ts` 的
+    /// `resolveColors`）。`state` 是状态名，含 `stale` / `offline` 这类派生状态。
+    ///
+    /// 这是 Rust 侧唯一的「状态 → 颜色」入口：只读 Web 面板和物理灯都从这里取，
+    /// 免得两处各写一份投影。**配色表本身仍是两处真值**（`palettes.ts` 里十个状态
+    /// 逐行写着，这里是四个语义档）—— 改配色时两边要一起改，那边也有一句指回来的
+    /// 注释。
+    ///
+    /// 认不出来的状态名落到「没动静」那一档的灰，而不是空串：颜色最终要塞进
+    /// JSON / 发给灯，空串会让调用方各自兜底，而那正是「同一个状态在三个地方
+    /// 三个颜色」的来源。
+    pub fn state_color(&self, state: &str) -> &str {
+        // 用户改过的那个状态用他自己的颜色
+        if let Some(custom) = self
+            .styles
+            .get(state)
+            .and_then(|style| style.color.as_deref())
+            .map(str::trim)
+            .filter(|color| !color.is_empty())
+        {
+            return custom;
+        }
+        let (ok, warn, danger, muted) = match self.palette {
+            Palette::Default => ("#16a34a", "#d99a06", "#d0342c", "#9ca3af"),
+            Palette::Colorblind => ("#0072b2", "#e69f00", "#d55e00", "#8b8f96"),
+            Palette::Vivid => ("#00b34a", "#ffab00", "#ff2d2d", "#9aa1ab"),
+        };
+        match state {
+            "idle" | "thinking" | "working" | "done" => ok,
+            "attention" => warn,
+            "permission" | "error" => danger,
+            _ => muted, // stale / offline / off
+        }
     }
 
     /// 这个组该不该出现在灯上。Rust 算窗口高度和前端渲染都必须问同一句话 ——
@@ -1593,6 +1681,8 @@ mod tests {
             // 面板也要设成非默认值 —— 它是这条往返里最容易漏的一个（`GET /` 的
             // 那个开关只在服务端读，前端不碰）
             web_panel: true,
+            // 物理灯同理：列表为空时「漏了 devices 字段」这种错看不出来
+            devices: vec![Device { host: "192.168.1.50".into() }],
             webhook_url: None,
             colors: BTreeMap::new(),
         };
@@ -2138,9 +2228,54 @@ mod tests {
         assert!(settings.hidden_groups.is_empty());
     }
 
+    /// Rust 侧的「状态 → 颜色」只有这一个入口：只读 Web 面板和物理灯都问它。
+    ///
+    /// 所以它必须和灯上一致（`palettes.ts` 的 `resolveColors`）—— 这条用例钉的是
+    /// 三件容易漂的事：派生状态也有颜色、认不出来的名字有兜底、逐个覆盖压过预设。
     #[test]
-    fn clamped_pulls_out_of_range_sizes_back() {
-        let wild = Settings { size: 9999, ..Settings::default() };
+    fn a_state_colour_is_the_override_then_the_palette() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.state_color("working"), "#16a34a");
+        assert_eq!(settings.state_color("permission"), "#d0342c");
+        // 聚合出来的派生状态也要有颜色（面板要画它们，灯要显示它们）
+        assert_eq!(settings.state_color("offline"), "#9ca3af");
+        // 认不出来的名字落到「没动静」那档，**不是空串** —— 空串会让每个调用方
+        // 各自兜底，那正是「同一个状态三处三个颜色」的来源
+        assert_eq!(settings.state_color("nonsense"), "#9ca3af");
+
+        settings.styles.insert(
+            "error".to_string(),
+            StateStyle {
+                color: Some("#123456".to_string()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(settings.state_color("error"), "#123456");
+
+        settings.palette = Palette::Colorblind;
+        assert_eq!(settings.state_color("working"), "#0072b2");
+        assert_eq!(settings.state_color("error"), "#123456", "逐个覆盖仍然压过配色");
+    }
+
+    /// 地址去空白、空地址留着 —— 手改配置里留一个 `{"host": ""}` 不该让界面上的
+    /// 那一行消失（见 `clamped` 里的说明），而真正要发的时候会按空地址过滤。
+    #[test]
+    fn devices_are_trimmed_but_an_empty_host_stays() {
+        let settings = Settings {
+            devices: vec![
+                Device { host: " 192.168.1.50 ".into() },
+                Device { host: "   ".into() },
+            ],
+            ..Settings::default()
+        }
+        .clamped();
+        assert_eq!(settings.devices.len(), 2);
+        assert_eq!(settings.devices[0].host, "192.168.1.50");
+        assert_eq!(settings.devices[1].host, "");
+    }
+
+    #[test]
+    fn clamped_pulls_out_of_range_sizes_back() {        let wild = Settings { size: 9999, ..Settings::default() };
         assert_eq!(wild.clamped().size, MAX_SIZE);
         let tiny = Settings { size: 1, ..Settings::default() };
         assert_eq!(tiny.clamped().size, MIN_SIZE);

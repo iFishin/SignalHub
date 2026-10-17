@@ -77,6 +77,23 @@ export type HookAction =
  */
 export type Hook = { when: string[]; groups: string[] } & HookAction;
 
+/**
+ * 一台物理灯（目前只支持 WLED）。
+ *
+ * **只有地址，没有开关**：填了地址就发、空着就不发，和钩子一个脾气。多一个开关
+ * 只会多出一种「配置看起来在、实际不发」的哑谜 —— 要停掉一盏灯就把它删了。
+ *
+ * 发出去的东西只有颜色（没有组名、会话名、消息内容），见 `devices.rs`。
+ */
+export interface Device {
+  /**
+   * 灯的地址。**只填主机**（含端口）：`192.168.1.50`、`wled.local:8080`、
+   * `http://192.168.1.50`。带不带 `http://` 都认，路径由 Rust 侧拼
+   * （`/json/state`）。
+   */
+  host: string;
+}
+
 /** 展开的牌上显示哪几段内容。四段都可以单独关掉 —— 有人只要一眼颜色，
  *  有人要看清「卡在哪一步」。 */
 export interface SignFields {
@@ -168,6 +185,12 @@ export interface Settings {
   notify: boolean;
   /** 出站钩子。 */
   hooks: Hook[];
+  /**
+   * 物理灯（WLED）。聚合变化时把**状态色**发给它们。
+   *
+   * 默认空 = 一台都不发（新增外发默认关）。
+   */
+  devices: Device[];
   shape: Shape;
   palette: Palette;
   /** 逐个状态的外观覆盖（颜色 / 形状 / 节奏）。没写的项跟随全局。 */
@@ -242,6 +265,7 @@ export const DEFAULTS: Settings = {
   quiet: true,
   notify: true,
   hooks: [],
+  devices: [],
   shape: "circle",
   palette: "default",
   styles: {},
