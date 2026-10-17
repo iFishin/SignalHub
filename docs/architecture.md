@@ -1021,6 +1021,7 @@ SignalHub/
       ├─ devices.rs              物理灯（WLED）：把状态色 POST 到灯上 ← 和出站钩子共用一份日志
       ├─ manual.rs               手动状态（专注倒计时 / 开会 / 离开）：自己也是一个信号源
       ├─ shortcuts.rs            全局快捷键：四个组合 + 抢到了没有（设置 →「系统」页读它）
+      ├─ approvals.rs            从灯上审批（C3）：登记表 + 决定 + 回给 Claude Code 的那段 JSON
       ├─ panel.rs                只读 Web 面板（`GET /`）：模板 + 一次注入 ← 只有 server 用它
       ├─ panel.html              上面那份模板（编译期 `include_str!` 进二进制）
       ├─ menu.rs                 灯上右键的原生菜单：隐藏 / 静音该组、清除该组、切形态、开设置
