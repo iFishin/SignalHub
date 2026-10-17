@@ -226,6 +226,11 @@
 
 **施工中发现的问题**：一律开 GitHub issue 存档（`gh issue create`），再在本表下面记一行「issue #N → 结论」。
 
+- **issue #3 → 待实测**：C3 的审批端点走 `require_auth`，而那个中间件会拒带 `Origin` 的
+  请求 —— Claude Code 的 HTTP hook 会不会带 `Origin`，官方文档没写。带了的表现是「装上了、
+  开关也开了，灯上却从来不弹气泡」（401 → `onFailure: continue` → 回终端问，**不阻塞**，
+  所以不会有人受伤，但功能静默失效）。`hooks.log` 里有没有 `approve: 等你点` 那行直接
+  区分两种情况。修法取决于答案，见 issue。
 - **issue #2 → 已修**：诊断文本会把转发钩子的密钥（`pushkey=…`）一起复制出去。
   修法是**在诊断输出里脱敏**（URL 的 query 只留 `?…`、敏感 `key=value` 只留键名、
   家目录缩成 `~`），并在 `hooks.log` 建文件时改成 **0600**。日志写入本身不动 ——
