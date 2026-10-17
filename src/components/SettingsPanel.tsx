@@ -1407,6 +1407,22 @@ export function SettingsPanel({ snapshot }: Props) {
       ].join("\n")
     : null;
 
+  /**
+   * 只读 Web 面板的完整链接（含 token）。
+   *
+   * **地址取的是「实际绑到哪了」**（`bound_lan`）而不是开关：用户刚打开局域网
+   * 访问、还没重启时，那个开关是 `true` 而服务仍绑在回环 —— 这时给一个
+   * `http://192.168.x.x:…` 的链接是**给不出去的东西**（手机上打不开）。宁可先给
+   * 回环那条（本机能用），旁边那句「重启才生效」会告诉他为什么。
+   *
+   * token 放 query 而不是 header：这是给人**点开**的链接，浏览器里只有 URL 可带。
+   */
+  const panelUrl =
+    endpoint?.port && endpoint.token
+      ? `http://${
+          endpoint.bound_lan && endpoint.lan_ip ? endpoint.lan_ip : "127.0.0.1"
+        }:${endpoint.port}/?t=${endpoint.token}`
+      : null;
 
   // 复制反馈。1.5 秒后自动收回，否则用户不知道刚才那下有没有生效。
   const [copied, setCopied] = useState<string | null>(null);
@@ -2411,6 +2427,39 @@ export function SettingsPanel({ snapshot }: Props) {
                 </div>
               )}
               <p className="hint">{m.lanAccessHint}</p>
+            </div>
+
+            {/* ---- 只读 Web 面板 ----
+                紧挨着「局域网访问」：这两个开关合起来才决定「手机上能不能看到灯」
+                —— 一个管从哪能连进来，一个管那边能看到什么。分成两节也是因为
+                它们是**两件事**：面板开着、但只绑回环时，就只有本机能看。 */}
+            <div className="section">
+              <div className="row">
+                <span>{m.webPanel}</span>
+                <Switch
+                  on={settings.web_panel}
+                  onChange={(on) => patch({ web_panel: on })}
+                />
+              </div>
+              {settings.web_panel && panelUrl && (
+                <div className="kv">
+                  <span className="k">{m.webPanelUrl}</span>
+                  <span className="mono">{panelUrl}</span>
+                  <button
+                    type="button"
+                    className="btn btn-tiny kv-copy"
+                    onClick={() => copy("panel", panelUrl)}
+                  >
+                    {copyLabel("panel")}
+                  </button>
+                </div>
+              )}
+              <p className="hint">{m.webPanelHint}</p>
+              {/* 两个开关都开着才提示代价 —— 只在面板开着时说「同一 WiFi 下
+                  任何设备都能看」会吓到只在本机看的人 */}
+              {settings.web_panel && settings.lan_access && (
+                <p className="hint">{m.webPanelLanWarning}</p>
+              )}
             </div>
 
             {/* ---- 通知转发入口 ----

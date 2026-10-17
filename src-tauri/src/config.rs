@@ -898,6 +898,17 @@ pub struct Settings {
     /// （CLI 的自动发现跟着断一下），出问题时表现为「灯突然收不到上报」这种很难
     /// 归因的现象。与其在运行中做这件事，不如写明「下次启动生效」。
     pub lan_access: bool,
+    /// **只读 Web 面板**（`GET /`）：手机 / 平板上打开一个链接就能看灯。
+    ///
+    /// **默认关**（红线）：它是一个**新的对外读取面**，而灯本身是私人的东西
+    /// （哪个项目在跑、跑到哪一步、哪一步卡住了）。要看得见，得由用户明确打开。
+    ///
+    /// 它和上报服务**共用监听地址**：绑回环时只有本机能看；开了「允许局域网访问」
+    /// 才轮到同一 WiFi 下的设备 —— 那时设置页会明说这一点。
+    ///
+    /// **改完立刻生效**（不像 `lan_access` 要重启）：它只是一个路由的开关，
+    /// 读的是这份设置的当前值，不涉及重新绑定。
+    pub web_panel: bool,
 }
 
 /// 兜底分组的依据。
@@ -1065,6 +1076,7 @@ impl Default for Settings {
             group_by: GroupBy::default(),
             // 默认只监听本机。见字段注释：开了之后唯一的防线就是 token
             lan_access: false,
+            web_panel: false,
         }
     }
 }
@@ -1578,6 +1590,9 @@ mod tests {
             tray_follows_state: false,
             group_by: GroupBy::Cwd,
             lan_access: true,
+            // 面板也要设成非默认值 —— 它是这条往返里最容易漏的一个（`GET /` 的
+            // 那个开关只在服务端读，前端不碰）
+            web_panel: true,
             webhook_url: None,
             colors: BTreeMap::new(),
         };

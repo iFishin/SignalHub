@@ -387,6 +387,12 @@ export interface Messages {
   lanAccessHint: string;
   lanAddress: string;
   lanRestart: string;
+  /** 「只读 Web 面板」那一节 */
+  webPanel: string;
+  webPanelUrl: string;
+  webPanelHint: string;
+  /** 面板开着**且**允许局域网访问时的代价（同一 WiFi 下任何设备都能看） */
+  webPanelLanWarning: string;
 
   quit: string;
 
@@ -819,6 +825,12 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       "关着的时候只有本机能上报。打开后，别的机器 / 容器 / WSL 里的智能体也能连进来 —— 代价是「同一网段里任何人只要拿到 token 就能上报」：那道拒绝带 Origin 请求的防线挡的是网页偷偷打本机端口，对 curl 这类客户端无效。所以要开的话，请确认这个网络是你信得过的（家里的、公司内网），别开在公共 WiFi 上。",
     lanAddress: "局域网地址",
     lanRestart: "改完要重启应用才生效。",
+    webPanel: "只读 Web 面板",
+    webPanelUrl: "面板地址",
+    webPanelHint:
+      "打开后可以在手机 / 平板上看灯（状态、每组在做什么、已持续多久），只读 —— 面板上没有能改变任何东西的按钮。改完立刻生效。",
+    webPanelLanWarning:
+      "注意：局域网访问也开着，所以同一 WiFi 下的任何设备，只要拿到上面那条带 token 的链接，就能看到你的灯。别把链接发到群里，也别在公共 WiFi 上开着。",
 
     quit: "退出 SignalHub",
 
@@ -1243,6 +1255,12 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
       "Turned off, only this machine can report. Turned on, agents on other machines, in containers, or under WSL can reach it — at the cost that anyone on the same network who has the token can report. The \"reject requests carrying Origin\" defence stops a web page poking the local port, not a client like curl. So only turn it on for a network you trust (home, an office intranet) — never on public WiFi.",
     lanAddress: "LAN address",
     lanRestart: "Takes effect after restarting the app.",
+    webPanel: "Read-only web panel",
+    webPanelUrl: "Panel URL",
+    webPanelHint:
+      "Turn this on to watch the lamp from a phone or tablet (the state, what each group is doing, how long it has been that way). Read-only — there is nothing on the panel that can change anything. Takes effect immediately.",
+    webPanelLanWarning:
+      "Note: LAN access is on too, so any device on the same WiFi can see your lamp as long as it has the link above (which carries the token). Don't share that link, and don't leave this on while you're on public WiFi.",
 
     quit: "Quit SignalHub",
 

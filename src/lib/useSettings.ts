@@ -221,6 +221,8 @@ export interface Settings {
    * **改完要重启应用才生效**：监听地址只在启动时绑定一次。
    */
   lan_access: boolean;
+  /** 只读 Web 面板（`GET /`）：手机 / 平板上打开一个链接就能看灯。**默认关。** */
+  web_panel: boolean;
 }
 
 /**
@@ -257,6 +259,7 @@ export const DEFAULTS: Settings = {
   group_meta: {},
   group_by: "none",
   lan_access: false,
+  web_panel: false,
 };
 
 const SETTINGS_EVENT = "signalhub://settings";

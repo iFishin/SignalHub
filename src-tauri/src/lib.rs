@@ -7,6 +7,7 @@ mod menu;
 mod notify;
 mod open;
 mod outbound;
+mod panel;
 mod receipts;
 mod server;
 mod state;

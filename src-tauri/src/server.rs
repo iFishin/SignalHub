@@ -153,6 +153,31 @@ pub fn local_ip() -> Option<String> {
     (!ip.is_loopback()).then(|| ip.to_string())
 }
 
+/// 只读 Web 面板（`GET /`）：手机 / 平板上打开一个链接就能看灯。
+///
+/// **默认关**（设置里的 `web_panel`），关着的时候这个路由不存在（404）—— 它是一条
+/// **新的对外读取面**，而灯是私人的东西（哪个项目在跑、卡在哪一步），要看得见
+/// 得由用户明确打开。
+///
+/// 关着时给一句能照做的话，而不是一个光秃秃的 404：404 只说明「没有」，不说明
+/// 「怎么有」。
+async fn web_panel(State(ctx): State<Ctx>) -> Response {
+    let settings = ctx.settings.lock().expect("settings poisoned").clone();
+    if !settings.web_panel {
+        return (
+            StatusCode::NOT_FOUND,
+            "只读 Web 面板没开。设置 → 接入 → 只读 Web 面板\n",
+        )
+            .into_response();
+    }
+
+    let html = crate::panel::page(&settings, ctx.lang.get());
+    (
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        html,
+    )
+        .into_response()
+}
 
 /// 只有 health 和 HTTP 式 hook **免鉴权**，其余整组挂上中间件。
 ///
@@ -179,6 +204,9 @@ fn router(ctx: Ctx) -> Router {
 
     Router::new()
         .route("/v1/health", get(health))
+        // 只读 Web 面板。**免鉴权**：页面里没有任何数据，数据由页面自己去拉
+        // `/v1/state`（那条路要 token）。见 `panel.rs`。
+        .route("/", get(web_panel))
         .merge(hooks)
         .merge(protected)
         .with_state(ctx)
@@ -770,8 +798,73 @@ mod tests {
         fn set_lan(&self, lan: bool) {
             *self.bind.lock().unwrap() = lan;
         }
+
+        /// 拨「只读 Web 面板」那个开关（模拟用户在设置里打开它）。
+        fn set_web_panel(&self, on: bool) {
+            let current = self.settings.lock().unwrap().clone();
+            *self.settings.lock().unwrap() =
+                Arc::new(crate::config::Settings { web_panel: on, ..(*current).clone() });
+        }
     }
 
+    /// 面板**默认关**：没打开时这个路由不存在。
+    ///
+    /// 它是一条新的对外读取面，而灯是私人的东西（哪个项目在跑、卡在哪一步）——
+    /// 「默认关」是红线，这条用例就是那道线的把手。
+    #[tokio::test]
+    async fn the_web_panel_is_off_by_default() {
+        let server = start().await;
+        let (status, _) = call(&server, "GET", "/", None, false, None).await;
+        assert_eq!(status, 404);
+    }
+
+    /// 打开之后 `GET /` 给出整页，而且**不需要 token**。
+    ///
+    /// 不鉴权是有意的：页面里没有任何数据，数据由页面自己去拉 `/v1/state`
+    /// （那条路要 token）。所以拿到这个空壳的人得不到任何信息。
+    #[tokio::test]
+    async fn the_web_panel_serves_the_page_when_switched_on() {
+        let server = start().await;
+        server.set_web_panel(true);
+
+        // 整条响应都要看：**Content-Type 不对的话浏览器会把这页当纯文本显示**
+        // （也就是把源码摊给用户看），所以它和正文一样是这条用例的一部分。
+        let raw = call_raw(&server, "GET", "/", None, false, None).await;
+        assert!(raw.starts_with("HTTP/1.1 200"), "{}", &raw[..60.min(raw.len())]);
+        assert!(raw.to_lowercase().contains("content-type: text/html"), "要声明成 HTML");
+        let body = raw.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default();
+        // 注进去的东西也在：状态名（和系统通知同一张表）+ 缺省配色的颜色
+        assert!(body.contains("执行中"), "状态名没注进去");
+        assert!(body.contains("#16a34a"), "颜色没注进去");
+        assert!(!body.contains("__CONFIG__"), "占位符必须被换掉");
+    }
+
+    /// 面板的空壳是免费的，**数据不是** —— 这正是这个路由敢不鉴权的原因。
+    ///
+    /// 拿到页面但没拿到 token 的人，看到的只有一句「token 不对」；而页面里的 JS
+    /// 去拉 `/v1/state` 时是**同源** GET，浏览器不会给它加 `Origin`，所以也不会
+    /// 撞上「带 Origin 一律拒绝」那道防线。反过来，跨站的页面想借你的浏览器读灯，
+    /// 一定带 `Origin` —— 那时两道防线（Origin、token）它都过不去。
+    #[tokio::test]
+    async fn the_panel_shell_is_free_but_the_state_is_not() {
+        let server = start().await;
+        server.set_web_panel(true);
+
+        let (status, _) = call(&server, "GET", "/", None, false, None).await;
+        assert_eq!(status, 200, "空壳不要 token");
+
+        // 面板里那行 fetch 的形状：同源、无 Origin、带 token
+        let (status, _) = call(&server, "GET", "/v1/state", Some(&server.token), false, None).await;
+        assert_eq!(status, 200, "带 token 的同源 GET 要能过");
+
+        // 没有 token 就只有 401（页面里的 JS 会据此提示「token 不对」）
+        let (status, _) = call(&server, "GET", "/v1/state", None, false, None).await;
+        assert_eq!(status, 401);
+
+        // 跨站页面借浏览器来读：一定带 Origin，两道防线都过不去
+        let (status, _) = call(&server, "GET", "/v1/state", Some(&server.token), true, None).await;
+        assert_eq!(status, 401);
+    }
 
     /// HTTP 式 hook：**不带 token** 就该能上报。它是这个端点存在的全部理由 ——
     /// 要求 token 就得把每台机器一份的秘密写进用户的 `settings.json`。
