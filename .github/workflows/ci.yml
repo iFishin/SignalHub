@@ -77,6 +77,35 @@ jobs:
       - name: 暂存 CLI sidecar
         run: node scripts/stage-cli.mjs --debug
 
+      # 【临时诊断，查完就删】Windows 上测试二进制一本正经地起不来（0xc0000139
+      # STATUS_ENTRYPOINT_NOT_FOUND），而且**删掉全部缓存冷构建也一样**。这一步
+      # 抓三样事实：exe 依赖哪些 DLL、各 DLL 会从哪解析到、直接跑一次它的退出码
+      # —— dumpbin 找猎物走 vswhere，别硬编码 VS 的安装目录（镜像上装的是哪 year
+      # 心里没数）。
+      - name: 诊断：载不动的测试二进制
+        if: runner.os == 'Windows'
+        run: |
+          $exe = (Get-ChildItem src-tauri/target/debug/deps/signalhub_lib-*.exe |
+                  Select-Object -First 1).FullName
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $dumpbin = (Get-Item (& $vswhere -latest -products * -requires `
+              Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+              -find "VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe").Trim().Split("`n")[0]).FullName
+          Write-Host "===== exe = $exe"
+          Write-Host "===== 直接跑一次"
+          $p = Start-Process -FilePath $exe -ArgumentList "--list" -NoNewWindow -PassThru -Wait
+          Write-Host "exit = 0x{0:x}" -f $p.ExitCode
+          Write-Host "===== 本 exe 依赖的 DLL"
+          & $dumpbin /dependents $exe | Select-String "\.dll"
+          Write-Host "===== 同一个目录下有哪些我们自己的 DLL"
+          Get-ChildItem src-tauri/target/debug -Filter *.dll | ForEach-Object { $_.Name }
+          Write-Host "===== 每个 DLL 会从哪解析（第一行 where 命中即加载来源）"
+          (& $dumpbin /dependents $exe | Select-String "^\s+\S+\.dll\s*$" -AllMatches).Matches |
+            ForEach-Object { $dll = $_.Value.Trim()
+              Write-Host "-- $dll"
+              cmd /c where $dll 2>$null | Select-Object -First 1
+            }
+
       - name: Rust 测试（lib + CLI）
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
