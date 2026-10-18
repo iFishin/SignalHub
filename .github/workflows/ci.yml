@@ -112,6 +112,33 @@ jobs:
               $hit = (cmd /c "where $dll 2>nul") | Select-Object -First 1
               Write-Host "   -> $hit"
             }
+          Write-Host "===== 逐个 DLL 对 imports vs exports（loader 顺序：exe 目录 -> System32）"
+          (& $dumpbin /dependents $exe | Select-String "^\s+\S+\.dll\s*$" -AllMatches).Matches |
+            ForEach-Object { $dll = $_.Value.Trim()
+              # exe 自己目录里先找，再 System32；api-ms-* 是虚拟 API 集，映射到真身
+              $cands = "$dll"
+              if ($dll -like "api-ms-win-crt-*") { $cands = "ucrtbase.dll" }
+              elseif ($dll -like "api-ms-win-core-*") { $cands = "kernelbase.dll,ntdll.dll" }
+              $file = $null
+              foreach ($n in ($cands -split ',')) {
+                $a = Join-Path (Split-Path $exe) $n
+                $b = Join-Path $env:SystemRoot "System32\$n"
+                if (Test-Path $a) { $file = $a; break }
+                if (Test-Path $b) { $file = $b; break }
+              }
+              if (-not $file) { Write-Host "[$dll] 找不到真身（API 集映射没盖住）"; return }
+              $names = & $dumpbin "/imports:$dll" $exe |
+                Select-String "^\s+[0-9A-F]+\s+\S*$" |
+                ForEach-Object { ($_.Line -replace '^\s+[0-9A-F]{8,}\s+', '').Trim() } |
+                Where-Object { $_ -and $_ -ne '' }
+              $export = & $dumpbin /exports $file |
+                Select-String "^\s+[0-9]+\s+[0-9A-F]{8,16}\s+\S" |
+                ForEach-Object { ($_.Line -replace '^\s+[0-9]+\s+[0-9A-F]{8,16}\s+', '') } |
+                ForEach-Object { ($_ -split '\s+')[0].Trim() }
+              $missing = $names | Where-Object { $export -notcontains $_ }
+              Write-Host "[$dll] 依赖真身=$file 候选=$cands imports=$(($names | Measure-Object).Count) 缺失=$(($missing | Measure-Object).Count)"
+              if ($missing) { $missing | Select-Object -First 8 | ForEach-Object { Write-Host "    缺: $_" } }
+            }
           exit 0
 
       - name: Rust 测试（lib + CLI）
