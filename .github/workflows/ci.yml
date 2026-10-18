@@ -127,11 +127,11 @@ jobs:
                 if (Test-Path $b) { $file = $b; break }
               }
               if (-not $file) { Write-Host "[$dll] 找不到真身（API 集映射没盖住）"; return }
-              $names = (& $dumpbin "/imports:$dll" $exe) |
-                ForEach-Object { $_ -match '^\s+\d+\s+[0-9A-F]{8}\s+(\S+)' ? $Matches[1] : $null } |
+              $names = & $dumpbin "/imports:$dll" $exe |
+                ForEach-Object { $_ -match '^\s+\d+\s+[0-9A-F]{4,8}\s+(\S+)' ? $Matches[1] : $null } |
                 Where-Object { $_ }
-              $export = (& $dumpbin /exports $file) |
-                ForEach-Object { $_ -match '^\s+\d+\s+[0-9A-F]{8}\s+(\S+)' ? $Matches[1] : $null } |
+              $export = & $dumpbin /exports $file |
+                ForEach-Object { $_ -match '^\s+\d+\s+[0-9A-F]{2}\s+[0-9A-F]{8}\s+(\S+)' ? $Matches[1] : $null } |
                 Where-Object { $_ }
               $missing = $names | Where-Object { $export -notcontains $_ }
               Write-Host "[$dll] 依赖真身=$file 候选=$cands imports=$(($names | Measure-Object).Count) 缺失=$(($missing | Measure-Object).Count)"
