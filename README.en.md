@@ -181,7 +181,7 @@ Done: the floating lamp, state aggregation and TTL, the HTTP reporting API, the 
 
 To do: code signing and notarization (the steps have a place reserved in [.github/workflows/release.yml](.github/workflows/release.yml) — fill them in once you have certificates).
 
-**Auto-update is not wired up yet** — not for lack of time, but because there is one thing I could not find an answer to and that needs testing on a real machine: whether Gatekeeper blocks an *unsigned* macOS app from installing an update after its bundle is replaced. The wiring steps (how to generate the key, and why the public key goes in as contents rather than a path) are written at the top of [.github/workflows/release.yml](.github/workflows/release.yml), ready to switch on once that has been verified.
+**Auto-update, today:** macOS has it (since 0.2.4, manual trigger — see the Install section above); Linux and Windows do not — the unpacking library Windows needs was pulled upstream, and the Linux path has not been verified on real hardware. The platform gate and the reasoning live in the module header of [src-tauri/src/update.rs](src-tauri/src/update.rs).
 
 ## License
 

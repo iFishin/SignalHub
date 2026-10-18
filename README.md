@@ -189,7 +189,7 @@ $user = [Environment]::GetEnvironmentVariable('Path', 'User')
 
 待做：签名与公证（步骤位置留在 [.github/workflows/release.yml](.github/workflows/release.yml) 里，拿到证书就能填）。
 
-**自动更新还没接** —— 不是没时间，是有一条查不到确切答案、必须真机验的东西：未签名的 macOS 应用替换 bundle 之后，Gatekeeper 会不会拦。接线步骤（含密钥怎么生成、公钥为什么填内容而不是路径）已经写在 [.github/workflows/release.yml](.github/workflows/release.yml) 顶部，验证通过了就能打开。
+**自动更新的现状**：macOS 已接（0.2.4 起，手动触发，见上面「安装」一节）；Linux / Windows 还没接 —— Windows 要用的解包库被上游全量撤下了，Linux 侧还没在真机上验收过。平台判断和理由写在 [src-tauri/src/update.rs](src-tauri/src/update.rs) 的模块头。
 
 ## 许可证
 
