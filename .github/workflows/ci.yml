@@ -22,7 +22,10 @@ jobs:
       # 而不是「第一个出错的是哪个」
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
+        # `ubuntu-latest` 从 2026-10-19 起迁到 Ubuntu 26，而下面那步装的系统库
+        # （webkit2gtk 等）在发行版之间会换包名。固定到 24.04，别让迁移日当天
+        # 毫无预兆地红一次；想跟进 26 时单独开一次改动、把库的包名对一遍。
+        os: [macos-latest, windows-latest, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -112,31 +115,11 @@ jobs:
               $hit = (cmd /c "where $dll 2>nul") | Select-Object -First 1
               Write-Host "   -> $hit"
             }
-          Write-Host "===== 逐个 DLL 对 imports vs exports（loader 顺序：exe 目录 -> System32）"
-          (& $dumpbin /dependents $exe | Select-String "^\s+\S+\.dll\s*$" -AllMatches).Matches |
-            ForEach-Object { $dll = $_.Value.Trim()
-              # exe 自己目录里先找，再 System32；api-ms-* 是虚拟 API 集，映射到真身
-              $cands = "$dll"
-              if ($dll -like "api-ms-win-crt-*") { $cands = "ucrtbase.dll" }
-              elseif ($dll -like "api-ms-win-core-*") { $cands = "kernelbase.dll,ntdll.dll" }
-              $file = $null
-              foreach ($n in ($cands -split ',')) {
-                $a = Join-Path (Split-Path $exe) $n
-                $b = Join-Path $env:SystemRoot "System32\$n"
-                if (Test-Path $a) { $file = $a; break }
-                if (Test-Path $b) { $file = $b; break }
-              }
-              if (-not $file) { Write-Host "[$dll] 找不到真身（API 集映射没盖住）"; return }
-              $names = & $dumpbin "/imports:$dll" $exe |
-                ForEach-Object { $_ -match '^\s+\d+\s+[0-9A-F]{4,8}\s+(\S+)' ? $Matches[1] : $null } |
-                Where-Object { $_ }
-              $export = & $dumpbin /exports $file |
-                ForEach-Object { $_ -match '^\s+\d+\s+[0-9A-F]{2}\s+[0-9A-F]{8}\s+(\S+)' ? $Matches[1] : $null } |
-                Where-Object { $_ }
-              $missing = $names | Where-Object { $export -notcontains $_ }
-              Write-Host "[$dll] 依赖真身=$file 候选=$cands imports=$(($names | Measure-Object).Count) 缺失=$(($missing | Measure-Object).Count)"
-              if ($missing) { $missing | Select-Object -First 8 | ForEach-Object { Write-Host "    缺: $_" } }
-            }
+          Write-Host "===== 完整 import 表（原始输出）"
+          # 这里原来是「逐个 DLL 对 imports vs exports」的解析版，但两个正则都写错了
+          # —— 每个 DLL 都报 imports=0，等于什么都没查。解析错了比不解析更糟（会
+          # 让人以为「没有缺失」），所以直接打原文，宁可长一点。
+          & $dumpbin /imports $exe
           Write-Host "===== comctl32 v6 的四个函数在 System32 那份里有没有（空 = 只有 5.82）"
           & $dumpbin /exports "$env:SystemRoot\System32\comctl32.dll" |
             Select-String "TaskDialogIndirect|SetWindowSubclass|RemoveWindowSubclass|DefSubclassProc" |
