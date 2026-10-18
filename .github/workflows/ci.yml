@@ -139,6 +139,18 @@ jobs:
               Write-Host "[$dll] 依赖真身=$file 候选=$cands imports=$(($names | Measure-Object).Count) 缺失=$(($missing | Measure-Object).Count)"
               if ($missing) { $missing | Select-Object -First 8 | ForEach-Object { Write-Host "    缺: $_" } }
             }
+          Write-Host "===== comctl32 v6 的四个函数在 System32 那份里有没有（空 = 只有 5.82）"
+          & $dumpbin /exports "$env:SystemRoot\System32\comctl32.dll" |
+            Select-String "TaskDialogIndirect|SetWindowSubclass|RemoveWindowSubclass|DefSubclassProc" |
+            ForEach-Object { $_.Line.Trim() }
+          Write-Host "===== exe 里有没有内嵌 manifest（看 .rsrc 段）"
+          & $dumpbin /headers $exe | Select-String "\.rsrc|manifest" | ForEach-Object { $_.Line.Trim() }
+          Write-Host "===== 旁边放一份带 comctl32 v6 依赖的 side-by-side manifest，再跑一次"
+          $manifest = Join-Path (Split-Path $exe) ((Split-Path $exe -Leaf) + ".manifest")
+          '<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0"><dependency><dependentAssembly><assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0" processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/></dependentAssembly></dependency></assembly>' |
+            Out-File -FilePath $manifest -Encoding utf8
+          $p = Start-Process -FilePath $exe -ArgumentList "--list" -NoNewWindow -PassThru -Wait
+          Write-Host ("exit = 0x{0:x}" -f $p.ExitCode)
           exit 0
 
       - name: Rust 测试（lib + CLI）
