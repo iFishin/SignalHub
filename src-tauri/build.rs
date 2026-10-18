@@ -24,10 +24,15 @@ fn main() {
     //    macOS 上验不了、CI 也只在打 tag 时才构建。收窄到 debug / test，
     //    CI 和本地 `cargo test` 都受益，出货的东西一行没变。
     //    （代价：`cargo test --release` 在 Windows 上仍会踩这个坑，别那么跑就行。）
+    //
+    // 值里**不要再套一层双引号**。MS 文档给的例子是 `/MANIFESTDEPENDENCY:"type=…"`，
+    // 那是写在 .vcxproj / 命令行里的形态；走 rustc 时它会替我们把这个参数整体包一
+    // 层引号（因为里面有空格），而内层那对双引号会被 link.exe 当成参数边界，报
+    // `LNK1181: cannot open input file 'name='Microsoft.Windows.Common-Controls''`。
     #[cfg(all(windows, target_env = "msvc"))]
     if std::env::var("PROFILE").as_deref() != Ok("release") {
         println!(
-            r#"cargo::rustc-link-arg=/MANIFESTDEPENDENCY:"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'""#
+            "cargo::rustc-link-arg=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
         );
     }
 
