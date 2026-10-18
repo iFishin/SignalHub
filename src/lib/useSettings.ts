@@ -199,6 +199,13 @@ export interface Settings {
    * （它同时改配置里的 hook），这里只是读出来画那个开关。
    */
   approve_tools: boolean;
+  /**
+   * **Time Machine 备份中**→「备份」组（B2 的内置采集器，默认关）。
+   *
+   * 开关由 Rust 的 `set_collector` 改；采集线程在 Rust 那边一直跑，每一跳自己
+   * 看这个开关，所以前端只有读它这一件事。
+   */
+  collect_backup: boolean;
   shape: Shape;
   palette: Palette;
   /** 逐个状态的外观覆盖（颜色 / 形状 / 节奏）。没写的项跟随全局。 */
@@ -275,6 +282,7 @@ export const DEFAULTS: Settings = {
   hooks: [],
   devices: [],
   approve_tools: false,
+  collect_backup: false,
   shape: "circle",
   palette: "default",
   styles: {},

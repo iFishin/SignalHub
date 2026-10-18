@@ -234,6 +234,12 @@ export interface Messages {
   systemSourcesHint: string;
   /** 那一节空着时说的话（顺带把「怎么报一个」写出来） */
   systemSourcesEmpty: string;
+  /** 内置采集器（B2）：开关那一行上的名字 */
+  collectBackup: string;
+  /** 采集器开关那一行的说明（秒数是 Rust 那边的间隔，跟它走） */
+  collectBackupHint: (secs: number) => string;
+  /** 认不出的采集器 id：后端加了新的、前端没跟上时兜底，不该出现在正常流程里 */
+  collectUnknown: (id: string) => string;
   /** 「自定义」一节：不在智能体清单里、也没声明成系统的 */
   otherSourcesTitle: string;
   otherSourcesHint: string;
@@ -692,6 +698,10 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       "上报时声明了 source: system 的信号源 —— 内置采集器（会议中、备份中……）会是这一组；你自己盯系统状态的脚本也放这儿。",
     systemSourcesEmpty:
       "还没有。报一个试试：signalhub working --source system --agent meeting",
+    collectBackup: "Time Machine 备份中",
+    collectBackupHint: (secs) =>
+      `每 ${secs} 秒看一次 Time Machine 的状态；开始备份时灯上多一组「备份」，结完自动报「备份完成」。只读系统状态，不读任何文件内容；万一它自己出了问题，限度是「那一组消失」，不会反过来影响别的。`,
+    collectUnknown: (id) => `采集器「${id}」`,
     otherSourcesTitle: "自定义",
     otherSourcesHint:
       "收到过上报、但不在上面清单里的（你自己的脚本、signalhub run 包的命令、别的机器、手写的一条 curl……）。有这一行就说明上报通道是通的。",
@@ -1146,6 +1156,10 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
       "Sources that declared source: system when reporting — the built-in collectors (in a meeting, backing up, …) will land here, and so can your own scripts that watch the machine.",
     systemSourcesEmpty:
       "None yet. Try one: signalhub working --source system --agent meeting",
+    collectBackup: "Time Machine backups",
+    collectBackupHint: (secs) =>
+      `Checks Time Machine every ${secs} seconds; while a backup is under way the lamp gains a "Backup" group, and it reports "Backup finished" once it is done. Read-only: it watches system state and reads no file contents. If it ever breaks on its own, the worst that happens is that group disappearing.`,
+    collectUnknown: (id) => `Collector "${id}"`,
     otherSourcesTitle: "Custom",
     otherSourcesHint:
       "Sources we have received reports from that are not in the list above (your own scripts, commands wrapped by signalhub run, another machine, a hand-written curl…). A line here means the reporting path works.",

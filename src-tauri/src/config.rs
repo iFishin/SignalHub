@@ -887,6 +887,11 @@ pub struct Settings {
     /// `approvals::WAIT`）：这是一条只有用户明确想要时才该生效的路。关着的时候
     /// 端点照常回话但什么都不说，所以装了 hook 也不会改变任何行为。
     pub approve_tools: bool,
+    /// Time Machine 备份中 → 「备份」组（B2 的内置采集器）。
+    ///
+    /// 默认关：采集器读的是**这台机器的状态**，而「谁在备份」这件事跟大多数人
+    /// 无关 —— 要它的人去接入页打开。
+    pub collect_backup: bool,
     /// 圆点形状
     pub shape: Shape,
     /// 配色方案（用户没单独指定颜色时的默认值）
@@ -1128,6 +1133,7 @@ impl Default for Settings {
             devices: Vec::new(),
             // 会改变智能体行为的开关一律默认关（红线 3）
             approve_tools: false,
+            collect_backup: false,
             shape: Shape::default(),
             palette: Palette::default(),
             locale: Locale::default(),
@@ -1636,6 +1642,7 @@ mod tests {
             always_on_top: false,
             snap_to_edge: true,
             approve_tools: true,
+            collect_backup: true,
             quiet: false,
             notify: false,
             hooks: vec![
@@ -1892,6 +1899,7 @@ mod tests {
         assert!(!settings.quiet);
         assert!(settings.notify, "缺的字段退回该字段的默认值");
         assert!(!settings.approve_tools, "会改智能体行为的开关，缺字段必须是关的");
+        assert!(!settings.collect_backup, "读系统状态的采集器，缺字段必须是关的");
         assert!(settings.colors.is_empty(), "缺的颜色表是空的，不是解析失败");
     }
 

@@ -1,5 +1,6 @@
 mod alerts;
 mod approvals;
+mod collect;
 mod devices;
 mod diagnose;
 mod hookmap;
@@ -1050,6 +1051,27 @@ fn install_agent_http_hooks(agent: String) -> Result<HookChange, String> {
 /// 用户想彻底移除，用旁边的「移除接入」。
 ///
 /// 端口和 token 都在 Rust 这边读（见 [`install_agent_http_hooks`] 的同一条理由）。
+/// 「接入」页里那一节：这台机器上做得到的采集器。
+#[tauri::command]
+fn list_collectors(app: tauri::AppHandle) -> Vec<collect::CollectorView> {
+    let settings = current_settings(&app);
+    collect::views(current_lang(&app), &settings)
+}
+
+/// 打开 / 关掉一条采集器。
+///
+/// 只改设置：采集线程一直在跑，每一跳自己看开关（见 `collect.rs`）。所以这里
+/// 没有「重启线程」这一步，也就没有「线程重启失败但开关已经翻过去了」这种状态。
+#[tauri::command]
+fn set_collector(app: tauri::AppHandle, id: String, on: bool) -> Result<(), String> {
+    let collector = collect::find(&id).ok_or_else(|| format!("认不出这条采集器：{id}"))?;
+    let mut settings = (*current_settings(&app)).clone();
+    match collector {
+        collect::Collector::Backup => settings.collect_backup = on,
+    }
+    persist_settings(&app, settings).map(|_| ())
+}
+
 #[tauri::command]
 fn set_tool_approval(
     app: tauri::AppHandle,
@@ -2290,6 +2312,8 @@ pub fn run() {
             install_agent_hooks,
             install_agent_http_hooks,
             set_tool_approval,
+            list_collectors,
+            set_collector,
             uninstall_agent_hooks,
             try_agent,
             diagnose,
@@ -2374,6 +2398,11 @@ pub fn run() {
             });
             tray::init(app.handle().clone())?;
             sweep::spawn(notify.clone(), app.state::<SharedStore>().inner().clone());
+            // 内置采集器（B2）：一条采集器一条线程，自己在每一跳看开关。
+            // 做不到的（不是 macOS）在 `spawn` 里直接返回，不会起空转的线程。
+            for collector in collect::Collector::ALL {
+                collector.spawn(app.handle().clone());
+            }
             // 更新检查是**静默**的后台任务（见 update.rs 顶部）：失败只写日志，
             // 绝不在用户没点过「检查更新」的时候弹东西。
             update::spawn_auto_check(app.handle().clone());

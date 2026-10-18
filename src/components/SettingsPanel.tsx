@@ -978,6 +978,25 @@ interface ProbeOutcome {
   states: string[];
 }
 
+/** 与 Rust 侧 collect.rs 的 CollectorView 对应。Rust 只回 supported 的那些。 */
+interface CollectorRow {
+  id: string;
+  /** 它会把状态报到哪个组（跟着界面语言） */
+  group: string;
+  enabled: boolean;
+  interval_secs: number;
+}
+
+/** 采集器在开关那一行上的名字。id 是 Rust 那边的稳定标识（见 collect.rs 的 id()）。 */
+function collectorLabel(id: string, m: Messages): string {
+  switch (id) {
+    case "backup":
+      return m.collectBackup;
+    default:
+      return m.collectUnknown(id);
+  }
+}
+
 export function SettingsPanel({ snapshot }: Props) {
   const settings = useSettings();
   const toggles = useToggles();
@@ -1036,15 +1055,31 @@ export function SettingsPanel({ snapshot }: Props) {
   const [probeResults, setProbeResults] = useState<Record<string, ProbeOutcome>>({});
   // 配置导出 / 导入的结果，就地显示在按钮下面
   const [backupNotice, setBackupNotice] = useState<string | null>(null);
+  // 内置采集器（B2）。Rust 只回**这台机器上做得到的**（比如 Time Machine 只有
+  // macOS 有）—— 空数组就是「这台机器没有」，那一行不渲染，不是灰着骗人。
+  // 开着 / 关着不在 useSettings 里管：拉一次、点完再拉一次（collect.rs 的线程
+  // 自己在每一跳看开关，这里不负责重启谁）。
+  const [collectors, setCollectors] = useState<CollectorRow[] | null>(null);
 
   useEffect(() => {
     if (!inTauri) return;
     invoke<Endpoint>("get_endpoint").then(setEndpoint).catch(() => {
       // 端口/token 读不到就是「服务还没起来」，界面上显示为 — 即可
     });
+    invoke<CollectorRow[]>("list_collectors").then(setCollectors).catch(() => {
+      // 读不到（应用没跑起来）就当没有，和 get_endpoint 同一个答法
+    });
   }, []);
 
   const reported = (err: unknown) => setError(String(err));
+
+  /** 打开 / 关掉一条内置采集器。落盘在 Rust（`set_collector`）——开错了停原处。 */
+  const toggleCollector = (id: string, on: boolean) => {
+    setError(null);
+    invoke<null>("set_collector", { id, on })
+      .then(() => invoke<CollectorRow[]>("list_collectors").then(setCollectors))
+      .catch(reported);
+  };
 
   /**
    * 导出 / 导入设置。
@@ -2259,6 +2294,23 @@ export function SettingsPanel({ snapshot }: Props) {
             <div className="section">
               <div className="section-title">{m.systemSourcesTitle}</div>
               <p className="hint">{m.systemSourcesHint}</p>
+              {/* ---- 内置采集器（B2）----
+                  开关放在「系统信号源」这一节里，而不是单开一节：打开之后它们的
+                  上报（source=system）就出现在下面那张表里，开关和结果在一处，
+                  「点了有没有反应」不用翻页。Rust 只回 supported 的 —— 空数组
+                  就一行都不渲染。Row 的用法和「安静模式」那些开关一致。 */}
+              {(collectors ?? []).map((collector) => (
+                <Row
+                  key={collector.id}
+                  label={collectorLabel(collector.id, m)}
+                  hint={m.collectBackupHint(collector.interval_secs)}
+                >
+                  <Switch
+                    on={collector.enabled}
+                    onChange={(on) => toggleCollector(collector.id, on)}
+                  />
+                </Row>
+              ))}
               {systemSources.length === 0 ? (
                 <p className="hint">{m.systemSourcesEmpty}</p>
               ) : (
