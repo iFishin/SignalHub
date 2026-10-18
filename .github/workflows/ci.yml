@@ -85,26 +85,34 @@ jobs:
       - name: 诊断：载不动的测试二进制
         if: runner.os == 'Windows'
         run: |
+          Write-Host "===== 先把测试二进制编出来（--no-run，测试一步失败与此步骤成败分开看）"
+          cargo test --manifest-path src-tauri/Cargo.toml --no-run
           $exe = (Get-ChildItem src-tauri/target/debug/deps/signalhub_lib-*.exe |
                   Select-Object -First 1).FullName
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $dumpbin = (Get-Item (& $vswhere -latest -products * -requires `
-              Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-              -find "VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe").Trim().Split("`n")[0]).FullName
           Write-Host "===== exe = $exe"
+          if (-not $exe) {
+            Write-Host "target/debug/deps 下根本没有 signalhub_lib 的 exe！"
+            Get-ChildItem src-tauri/target/debug/deps -Filter *.exe | ForEach-Object { Write-Host $_.Name }
+            exit 0
+          }
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $dumpbinRaw = (& $vswhere -latest -products * -requires `
+              Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+              -find "VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1)
+          $dumpbin = $dumpbinRaw.Trim()
           Write-Host "===== 直接跑一次"
           $p = Start-Process -FilePath $exe -ArgumentList "--list" -NoNewWindow -PassThru -Wait
-          Write-Host "exit = 0x{0:x}" -f $p.ExitCode
+          Write-Host ("exit = 0x{0:x}" -f $p.ExitCode)
           Write-Host "===== 本 exe 依赖的 DLL"
-          & $dumpbin /dependents $exe | Select-String "\.dll"
-          Write-Host "===== 同一个目录下有哪些我们自己的 DLL"
-          Get-ChildItem src-tauri/target/debug -Filter *.dll | ForEach-Object { $_.Name }
-          Write-Host "===== 每个 DLL 会从哪解析（第一行 where 命中即加载来源）"
+          & $dumpbin /dependents $exe | Select-String "^\s+\S+\.dll" | ForEach-Object { $_.Line }
+          Write-Host "===== 每个 DLL 会从哪解析（where.exe 的第一行命中即加载来源）"
           (& $dumpbin /dependents $exe | Select-String "^\s+\S+\.dll\s*$" -AllMatches).Matches |
             ForEach-Object { $dll = $_.Value.Trim()
               Write-Host "-- $dll"
-              cmd /c where $dll 2>$null | Select-Object -First 1
+              $hit = (cmd /c "where $dll 2>nul") | Select-Object -First 1
+              Write-Host "   -> $hit"
             }
+          exit 0
 
       - name: Rust 测试（lib + CLI）
         run: cargo test --manifest-path src-tauri/Cargo.toml
