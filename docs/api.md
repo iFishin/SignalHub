@@ -23,10 +23,13 @@
 | `error` | 红、快闪 | 出错/阻塞 |
 | `off` | 灰、熄灭 | 暂停该会话的监控 |
 
-> **`stale`、`offline`、`off` 这三个是聚合派生出来的，不能上报。** `GET /v1/state` 的
+> **`stale` 和 `offline` 是聚合派生出来的，不能上报。** `GET /v1/state` 的
 > `aggregate` 字段可能出现它们（`stale` = 有会话但不说话了，`offline` = 一个会话都
 > 没有），但把它们当 `state` 上报会得到 400。它们是「观测到的结果」，不是外部程序
 > 该声称的状态。
+>
+> **`off` 例外：它可以用。** 上报 `off` / `pause` / `paused` / `disabled` 等价于
+> **清掉这个会话**（见 §3.4）—— 那是「我这边停了」的表达，和暂停全局监控是两回事。
 
 **每个状态都有静默超时**，超时后会话转入 `stale`（「沉默」，仍然显示）而不是消失。所以「上报完就不管」是安全的：`thinking` 600 秒、`working` 300 秒、`idle` 600 秒、`permission` 600 秒、`attention`/`error` 300 秒、`done` 30 秒（到期直接消失）。转入 `stale` 后再保留 30 分钟才真正删除。
 
@@ -81,6 +84,11 @@ Authorization: Bearer <token>
 | DELETE | `/v1/sessions/{session}` | 清除某个会话 | 需要 |
 | GET | `/v1/sessions` | 会话列表 | 需要 |
 | POST | `/v1/monitor` | 全局暂停 / 恢复 | 需要 |
+| POST | `/v1/approve/{agent}` | 从灯上审批的落点（Claude Code 的 `PermissionRequest`，见 §4.17） | 需要 |
+| GET | `/v1/approvals` | 当前挂着的待审批列表 | 需要 |
+| POST | `/v1/approvals/{id}` | 点「允许 / 拒绝」（`{"decision":"allow"\|"deny"}`） | 需要 |
+
+> **`403` 的两种来源**：局域网访问打开时，`/v1/hooks/{agent}` 与两个审批端点都会返回它（前者是「给全网开的门」，后者是「审批只能在能确认是本机的时候做」）；另外所有需要鉴权的端点对**带 `Origin` 头**的请求也回 403 —— 那条规则挡的是浏览器里的网页。
 
 > axum 0.8 的路径参数写作 `/{session}`；0.7 写作 `/:session`。
 
@@ -184,7 +192,7 @@ signalhub working --source system --agent backup-watch --group backup
 
 它出现在两处：**组上的** `stale_progress`（取决定聚合那个会话的，灯上的圆点就是因为它才变 `stale`）和每个 `SessionView` 上的同名字段。灯球只用前者——它画的是每组的圆点，不是每路的。
 
-**进度会自己往前走**：`sweep` 每 250ms 醒一次，进度跨过一档就再推一帧（分 16 档，约每 19 秒一档）。不分档而是每次 tick 都推的话，整段宽限期里灯球会一直重排；而常驻窗口每帧重排是这个项目一直在避免的事。
+**进度会自己往前走**：`sweep` 每 250ms 醒一次，进度跨过一档就再推一帧（分 16 档；宽限期是 30 分钟，所以**约每 112 秒一档**）。不分档而是每次 tick 都推的话，整段宽限期里灯球会一直重排；而常驻窗口每帧重排是这个项目一直在避免的事。
 
 ### 2.5 `POST /v1/monitor`
 
@@ -645,6 +653,7 @@ hook 模式会把每次调用追加到 `~/.signalhub/hooks.log`：
 | 字段 | 说明 |
 |---|---|
 | `when` | 哪些状态**变成**时触发。空数组 = 任何变化都触发。值是状态名，**含 `stale` / `offline` 这类派生状态**（你可能只想知道「会话沉默了」） |
+| `groups` | 可选。只看这些组（组名，和上报里的 `group` 同一个值）。空 = 看**全局聚合**，非空 = 这些组**各自**的跃迁都算数，见下面的「触发语义」 |
 | `type` | `"http"` 或 `"command"` |
 | `url` | `type: "http"` 时的目标，必须 `http://` 或 `https://` 开头 |
 | `headers` | 可选。额外请求头，要鉴权的地址靠它（`Authorization: Bearer …`、ntfy 的 `X-Token`）。最多 16 条 |
@@ -678,7 +687,12 @@ hook 模式会把每次调用追加到 `~/.signalhub/hooks.log`：
 
 那一行文字的形态是 `[SignalHub] 需要授权 · 构建 — 等你批准 (2m)`：状态、**组显示名**（你在「外观 → 各组的显示」里改的名字优先）、说明、已经持续多久。不限定组的钩子写的是全局聚合，所以没有组名那一段。
 
-**触发语义**：只在聚合**发生跃迁**时触发（同一个状态内的变化不算，例如某个会话的说明文本改了）。这一点和系统通知一致——一轮工具调用会触发几十次状态推送，按「每次变化」触发就成了骚扰。
+**触发语义**：只在**发生跃迁**时触发（同一个状态内的变化不算，例如某个会话的说明文本改了）。这一点和系统通知一致——一轮工具调用会触发几十次状态推送，按「每次变化」触发就成了骚扰。
+
+`groups` 决定看谁的跃迁，两种语义都是有意保留的：
+
+- **空**：看**全局聚合**。一组在等授权、另一组在跑，整体是 `permission` —— 这时不该因为「某个组变成 `error` 了」就发。现有的钩子都是按这个配的，所以默认不变。
+- **非空**：这些组**各自**的跃迁都算数，不必等它成为全局最高的那个。想「ci 失败发到 A、deploy 失败发到 B」就用它。
 
 **请求体**（只对 `preset: "raw"`）：
 
@@ -689,7 +703,7 @@ hook 模式会把每次调用追加到 `~/.signalhub/hooks.log`：
     "paused": false,
     "since_ms": 1791683689000,
     "message": "需要批准: rm -rf build",
-    "sessions": [ /* 与 GET /v1/state 的结构完全一致 */ ]
+    "groups": [ /* 与 GET /v1/state 的结构完全一致 */ ]
   },
   "at_ms": 1791683690537
 }
@@ -1082,6 +1096,51 @@ signalhub install hooks claude-code --http   # 需要 app 正在运行（要读�
 
 两种模式写进**同一个**配置，所以「换一种」是原地改写整条 handler（不会留下
 `url` 和 `command` 并存的怪条目），`uninstall` 也两种都认。
+
+### 4.17 从灯上审批（`POST /v1/approve/{agent}`）
+
+Claude Code 每次要问「这个工具调用可以吗」时，`PermissionRequest` hook 打到这个
+端点，请求**挂在这里等**（最长 45 秒），直到有人在灯上点了允许 / 拒绝。
+
+它和上报端点的差别是安全模型，不是实现细节：
+
+| | 上报（`/v1/hooks/{agent}`） | 审批（`/v1/approve/{agent}`） |
+|---|---|---|
+| token | **不需要**（配置写在会被 commit 的 `settings.json` 里） | **需要**（它替用户做决定） |
+| 局域网访问开着时 | 403 | **403**（只能在本机确认是本人） |
+| 默认 | 开着 | **关着**（`approve_tools`） |
+| 失败时 | 回 `200 {}` | 回 `{}`（没有决定，交回终端） |
+
+请求体就是 Claude Code 的 hook payload（`hook_event_name`、`session_id`、
+`tool_name`、`tool_input`）。响应：
+
+```json
+{ "hookSpecificOutput": { "hookEventName": "PermissionRequest",
+                          "decision": { "behavior": "allow" } } }
+```
+
+```json
+{ "hookSpecificOutput": { "hookEventName": "PermissionRequest",
+                          "decision": { "behavior": "deny",
+                                        "message": "Denied from SignalHub …" } } }
+```
+
+```json
+{}
+```
+
+三种情况回 `{}`：开关关着、超过 45 秒没人点、被同一会话的新请求顶掉。**永远不
+替用户说「允许」**，也永远不在不该报错的时候报错。
+
+灯上两个接口（都要 token）：
+
+- `GET /v1/approvals` → `{"approvals":[{"id","session","tool","target","detail","truncated","allowable","age_ms"}]}`
+  （按等待时长排，最久的最前；超过 45 秒的条目在读取时就被扫掉了）；
+- `POST /v1/approvals/{id}`，body `{"decision":"allow"}` 或 `{"decision":"deny"}`。
+  成功回 `{"ok":true}`；`allow` 只在该条 `allowable: true` 时被接受 —— 详情被截断的
+  命令只能拒绝，或者回终端自己看，这时回 `{"ok":false,"error":"…只能拒绝…"}`。
+
+命令全文只出现在这条本地接口和灯窗里；上报、通知、出站钩子带的都是那个短词。
 
 ---
 
