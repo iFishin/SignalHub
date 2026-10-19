@@ -199,13 +199,11 @@ fn decide_alert(
         alerts::Decision::None => {}
         alerts::Decision::Now => {
             alerts::send(app, snapshot, settings.sound, muted);
-            spawn_reminders(app.clone(), gate.clone(), muted.clone(), alerting, episode);
+            spawn_reminders(app.clone(), gate.clone(), alerting, episode);
         }
         alerts::Decision::Later => {
             let app = app.clone();
             let gate = gate.clone();
-            let muted = muted.clone();
-            let sound = settings.sound;
 
             // 延迟到点后重新判，**判据全部从快照现读**，不看排任务时捕获的值：
             // 状态可能已经变了，或者离开又回来变成了一个同名的「新」状态。
@@ -218,15 +216,25 @@ fn decide_alert(
                     return;
                 }
 
+                // 静音 / 提示音**到这一步现读**：等待期间用户可能按了通知上的
+                // 「静音该组」，也可能改过设置。拿着排队时的旧值，就会替一个
+                // 已经静音的组继续弹（issue #12）。
+                let live = app
+                    .state::<SharedSettings>()
+                    .lock()
+                    .expect("settings poisoned")
+                    .clone();
+                let muted = &live.muted_groups;
+
                 let snapshot = app
                     .state::<SharedStore>()
                     .lock()
                     .expect("state store poisoned")
                     .snapshot();
-                if alerts::alerting_aggregate(&snapshot, &muted) != alerting {
+                if alerts::alerting_aggregate(&snapshot, muted) != alerting {
                     return; // 已经不是那个状态了
                 }
-                if !sustained(&snapshot, &muted, alerting, threshold) {
+                if !sustained(&snapshot, muted, alerting, threshold) {
                     // 还是那个状态，但没真的持续够久 —— 这正是这个阈值存在的
                     // 意义：智能体经常在一秒内进出 permission，立刻弹的话用户
                     // 被叫过去看到的是一个已经解决的问题。
@@ -236,8 +244,8 @@ fn decide_alert(
                 if !gate.lock().expect("gate poisoned").confirm(alerting) {
                     return;
                 }
-                alerts::send(&app, &snapshot, sound, &muted);
-                spawn_reminders(app.clone(), gate.clone(), muted.clone(), alerting, episode);
+                alerts::send(&app, &snapshot, live.sound, muted);
+                spawn_reminders(app.clone(), gate.clone(), alerting, episode);
             });
         }
     }
@@ -266,12 +274,12 @@ fn is_quiet_now(app: &tauri::AppHandle) -> bool {
 /// **每一步都要重判，不能一路睡到底。** 这中间状态可能已经过去了、用户可能把通知
 /// 关了、也可能进了勿扰时段 —— 链上任何一步发现不该提，就整条停掉。
 ///
-/// 判据全部现读（快照、设置、本地时间），不看排链时捕获的值：`sound` 这类设置用户
-/// 随时可能改，用旧值就是在替他做决定。
+/// 判据全部现读（快照、设置、本地时间），不看排链时捕获的值：`sound`、`muted`
+/// 这类设置用户随时可能改，用旧值就是在替他做决定 —— 尤其是「刚按了静音，
+/// 五分钟后又被提醒一次」那种（issue #12）。
 fn spawn_reminders(
     app: tauri::AppHandle,
     gate: Arc<Mutex<alerts::Gate>>,
-    muted: Vec<String>,
     alerting: Signal,
     episode: u64,
 ) {
@@ -299,17 +307,21 @@ fn spawn_reminders(
                 return;
             }
 
+            // 静音列表**每一步现读**：这是用户最可能在等待期间改的那一项
+            // （通知上就有「静音该组」），用排链时的快照会让静音对提醒失效。
+            let muted = &settings.muted_groups;
+
             let snapshot = app
                 .state::<SharedStore>()
                 .lock()
                 .expect("state store poisoned")
                 .snapshot();
             // 事情过去了：状态变了、被静音了、或者暂停了
-            if alerts::alerting_aggregate(&snapshot, &muted) != alerting {
+            if alerts::alerting_aggregate(&snapshot, muted) != alerting {
                 return;
             }
 
-            alerts::send_reminder(&app, &snapshot, settings.sound, &muted);
+            alerts::send_reminder(&app, &snapshot, settings.sound, muted);
         }
     });
 }
