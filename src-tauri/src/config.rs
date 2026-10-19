@@ -1467,6 +1467,15 @@ pub(crate) fn atomic_write(path: &Path, contents: &str, mode: Option<u32>) -> io
         TMP_SEQ.fetch_add(1, Ordering::Relaxed),
     ));
 
+    // **进程内的写串行化。** 临时文件互不相同只解决了一半；Windows 上
+    // `MoveFileEx(REPLACE_EXISTING)` 替换一个**正被另一处替换**的目标时会返回
+    // `ERROR_ACCESS_DENIED`（code 5）—— 同一进程里的两个线程并发写同一个文件
+    // 会稳定撞上（出站钩子的「发送测试」就是并发跑的）。
+    //
+    // 串行化是最小、最确定的修法：这些写本来就低频（配置、日志、位置），
+    // 排个队完全无所谓。锁只包住「写临时文件 + rename」，不带任何用户回调。
+    let _serial = WRITE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+
     match write_then_rename(&tmp, &path, contents, mode) {
         Ok(()) => Ok(()),
         Err(err) => {
@@ -1476,6 +1485,9 @@ pub(crate) fn atomic_write(path: &Path, contents: &str, mode: Option<u32>) -> io
         }
     }
 }
+
+/// 写文件用的进程内锁。见 `atomic_write` 里的说明。
+static WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn write_then_rename(tmp: &Path, path: &Path, contents: &str, mode: Option<u32>) -> io::Result<()> {
     use std::io::Write;
@@ -1498,10 +1510,10 @@ fn write_then_rename(tmp: &Path, path: &Path, contents: &str, mode: Option<u32>)
     file.sync_all()?;
     drop(file);
 
-    // Windows 上把临时文件 rename 到**已存在的目标**时，如果另一处正好也在替换
-    // 同一个文件，会拿到 `ERROR_ACCESS_DENIED`（code 5）。这不是偶发：同一进程里
-    // 并发写同一个文件一定会撞上（出站钩子的「发送测试」就是并发跑的）。
-    // 重试几次即可 —— 对方那一次 rename 是微秒级的；最后一次仍失败就原样返回，
+    // Windows 上把临时文件 rename 到**已存在的目标**时，如果那个文件正被别处
+    // 打开着（杀毒软件扫描、另一个进程读配置），会拿到 `ERROR_ACCESS_DENIED`
+    // （code 5）。进程内的并发已经由 `atomic_write` 里的 `WRITE_LOCK` 排掉了，
+    // 这里兜的是**进程外**的短暂占用：重试几次，最后一次仍失败就原样返回，
     // 不假装成功。
     let mut delay = std::time::Duration::from_millis(2);
     let mut last = None;
