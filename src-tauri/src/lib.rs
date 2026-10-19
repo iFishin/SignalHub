@@ -946,7 +946,10 @@ fn get_hook_log(limit: usize) -> Vec<String> {
         .lines()
         .rev()
         .take(limit.min(MAX_LINES))
-        .map(str::to_string)
+        // **界面上的日志也要脱敏**：这一页的文本会被选中复制进 issue，而日志里
+        // 记着出站钩子的完整 URL（推送服务的密钥就在查询串上）。和「一键诊断」
+        // 用同一份规则 —— 那是另一条复制出去的路，规则不该有两份（issue #15）。
+        .map(crate::diagnose::redact)
         .collect();
     lines.reverse();
     lines

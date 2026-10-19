@@ -183,7 +183,10 @@ pub fn text(receipts: &Receipts, filter: Option<Agent>) -> String {
 /// 抹的是**值**，不是整条信息：端点在哪、成没成功、什么时候发的都还看得见，排查能力
 /// 不损失。刻意放在这里而不是改日志写入：日志是排查工具，「它到底发了什么」必须能
 /// 看见（用户要拿它和自己服务器的访问日志对照），要收窄的是「复制出去」这条路。
-fn redact(line: &str) -> String {
+///
+/// `pub(crate)`：界面上的 hook 日志尾巴也走它（见 `lib.rs` 的 `get_hook_log`）——
+/// 那是另一条「复制出去」的路（issue #15）。规则只能有一份。
+pub(crate) fn redact(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     for (index, token) in line.split(' ').enumerate() {
         if index > 0 {

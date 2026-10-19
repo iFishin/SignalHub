@@ -26,6 +26,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// 新鲜度完全够用。不节流的话，一个跑得欢的智能体会让这个小文件每秒被写好几次。
 const SAVE_EVERY: Duration = Duration::from_secs(5);
 
+/// 最多记多少个信号源。正常用量的量级是「个位数 + 几个自己的脚本」；触到上限
+/// 只可能是上报方每次换一个名字。
+const MAX_RECEIPTS: usize = 64;
+
 /// 落盘的样子。键是信号源名字（CLI 那个 `claude-code` / `opencode`）。
 #[derive(Serialize, Deserialize, Default)]
 struct Stored {
@@ -156,6 +160,20 @@ impl Receipts {
         entry.source = source.to_string();
         entry.count = entry.count.saturating_add(1);
 
+        // 名字是上报方给的：一个每次运行换名字的脚本能把它撑成无界的一张表，
+        // 而这张表每 5 秒会被整份重写一遍（issue #16）。满了丢最久没报的那个。
+        while inner.agents.len() > MAX_RECEIPTS {
+            let Some(oldest) = inner
+                .agents
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_epoch_ms)
+                .map(|(name, _)| name.clone())
+            else {
+                break;
+            };
+            inner.agents.remove(&oldest);
+        }
+
         if inner.saved.elapsed() < SAVE_EVERY {
             return;
         }
@@ -217,6 +235,17 @@ fn epoch_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 信号源名字由上报方给：一个每次运行换一个名字的脚本不该让这张表无界增长，
+    /// 也不该让它每 5 秒重写一份越来越大的文件（issue #16）。
+    #[test]
+    fn the_agent_table_is_capped() {
+        let receipts = Receipts::in_memory();
+        for index in 0..(MAX_RECEIPTS + 10) {
+            receipts.record(&format!("agent-{index}"), "custom", "working");
+        }
+        assert_eq!(receipts.view().len(), MAX_RECEIPTS);
+    }
 
     /// 临时目录。单测**绝不能**写真实的 `~/.signalhub`（那里是开发者自己的数据）。
     struct TempDir(PathBuf);

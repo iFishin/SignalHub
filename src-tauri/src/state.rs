@@ -195,6 +195,14 @@ impl<'de> Deserialize<'de> for Signal {
 /// 发生了什么」，又不会让一个常驻应用无限长胖。
 const MESSAGE_HISTORY: usize = 200;
 
+/// 会话表的上限。**正常用法的会话数是个位数** —— 触到上限基本只有一种可能：
+/// 上报方在造（每次运行换一个 session id）。到顶时丢「最快过期」的那条。
+const MAX_SESSIONS: usize = 512;
+
+/// 一条消息最多留多少字符。**在入口处截断**：它会进灯、通知、历史流，
+/// 而 HTTP body 本身可以到 2 MB。
+const MAX_MESSAGE_CHARS: usize = 200;
+
 /// 一条上报过的消息。
 ///
 /// 灯上只显示每个会话**当前**那条；这个流是用来回答「刚才发生了什么」的 ——
@@ -426,7 +434,6 @@ impl Store {
         // 先取出会话名和组名，之后就只移动 req 的各个字段，不再整体借用它
         let session = req.session_id().to_string();
         let group = req.group_id().to_string();
-
         // `off` 作用在会话上等价于清除该会话；全局暂停走 set_paused。
         //
         // `now` 顺手传下去：清理路径也要做前后比对，而比对包含静默进度档位。
@@ -451,9 +458,15 @@ impl Store {
         // 在 insert 之前算好：`prev` 是 `self.sessions` 的不可变借用，而下面那次
         // insert 要可变借用，两者不能重叠。
         let state = req.state;
-        let previous_message = prev.and_then(|s| s.message.clone());
-        let feed = req
+        // **消息在入口处截断**，不指望上报方自觉：`/v1/state` 的 body 可以到 2 MB，
+        // 而这条会上灯、进通知、进 200 条的历史流 —— 一个把文件内容当 message
+        // 发的脚本就能把内存撑到几百 MB（issue #16）。
+        let message = req
             .message
+            .as_deref()
+            .map(|text| crate::hookmap::clip(text, MAX_MESSAGE_CHARS));
+        let previous_message = prev.and_then(|s| s.message.clone());
+        let feed = message
             .as_deref()
             .filter(|text| !text.trim().is_empty())
             .filter(|text| previous_message.as_deref() != Some(*text))
@@ -474,17 +487,39 @@ impl Store {
                 state,
                 agent,
                 cwd,
-                message: req.message,
+                message,
                 expires_at,
                 since,
             },
         );
+        self.enforce_session_cap();
 
         if let Some(entry) = feed {
             self.record_message(entry);
         }
 
         self.settle(now)
+    }
+
+    /// 会话表满了先丢「最快过期」的那一条。
+    ///
+    /// 正常用法的会话数是个位数；触到上限只可能是上报方在造（例如每次运行换一个
+    /// 时间戳当 session id）。不这样的话一张表能一直涨到进程退出（issue #16）。
+    ///
+    /// 选「最快过期」而不是「最久没动」：前者本来也快自己走掉了，丢它造成的可见
+    /// 变化最小。
+    fn enforce_session_cap(&mut self) {
+        while self.sessions.len() > MAX_SESSIONS {
+            let Some(id) = self
+                .sessions
+                .iter()
+                .min_by_key(|(_, session)| session.expires_at)
+                .map(|(id, _)| id.clone())
+            else {
+                break;
+            };
+            self.sessions.remove(&id);
+        }
     }
 
     /// 记一条消息进历史流。满了丢最旧的 —— 常驻应用不该无界增长。
@@ -892,6 +927,40 @@ mod tests {
     /// 要测「用户设的覆盖」和「显式 `ttl_ms` 覆盖」就自己调 `state_ttl`。
     fn ttl_of(state: Signal, explicit_ms: Option<u64>) -> Duration {
         state_ttl(state, explicit_ms, &Settings::default())
+    }
+
+    /// 消息在**入口处**截断：它会进灯、通知和 200 条历史流，而 HTTP body 可以到
+    /// 2 MB —— 一个把文件内容当 `message` 发的脚本就能把内存撑爆（issue #16）。
+    #[test]
+    fn an_overlong_message_is_clipped_when_it_enters() {
+        let mut store = Store::default();
+        let t = Instant::now();
+        let mut req = Report::new(Signal::Working);
+        req.session = Some("s".into());
+        req.message = Some("汉".repeat(500));
+        let ttl = ttl_of(req.state, None);
+        store.apply(t, req, ttl);
+
+        let snapshot = store.snapshot();
+        let message = snapshot.groups[0].sessions[0].message.clone().unwrap();
+        assert_eq!(
+            message.chars().count(),
+            MAX_MESSAGE_CHARS + 1,
+            "200 个字符 + 一个省略号"
+        );
+        // 历史流里那一份也必须是截过的
+        assert_eq!(store.messages()[0].message, message);
+    }
+
+    /// 会话表有上限：一个「每次运行换一个 session id」的上报方不该让内存无界增长。
+    #[test]
+    fn the_session_table_stops_growing_at_the_cap() {
+        let mut store = Store::default();
+        let t = Instant::now();
+        for index in 0..(MAX_SESSIONS + 20) {
+            rep(&mut store, t, &format!("s{index}"), Signal::Working);
+        }
+        assert_eq!(store.snapshot().all_sessions().count(), MAX_SESSIONS);
     }
 
     /// 造一个会话视图 —— 这几个用例只看 `session_label` 关心的 `id` / `agent` / `cwd`。
