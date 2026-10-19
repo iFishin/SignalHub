@@ -1340,20 +1340,25 @@ fn sweep_probe(app: tauri::AppHandle) {
 /// 合并而不是只取一边：这条命令成功时**什么都不说**（钩子不许往 stdout 写东西，
 /// 见 `bin/signalhub.rs` 顶部），失败时原因可能在任意一边。
 fn combined_output(output: &std::process::Output) -> String {
-    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
-    let err = String::from_utf8_lossy(&output.stderr);
+    combined_bytes(&output.stdout, &output.stderr)
+}
+
+/// [`combined_output`] 的本体。拆出来只为让截断能在单测里直接喂字节 ——
+/// 造一个 `std::process::Output` 需要先跑一个真进程，而这条规则和进程无关。
+fn combined_bytes(stdout: &[u8], stderr: &[u8]) -> String {
+    let mut text = String::from_utf8_lossy(stdout).into_owned();
+    let err = String::from_utf8_lossy(stderr);
     if !err.trim().is_empty() {
         if !text.trim().is_empty() {
             text.push('\n');
         }
         text.push_str(&err);
     }
-    if text.len() > 2000 {
-        // 界面上只摆得下几行；截断是为了不让一条啰嗦的输出把面板撑坏
-        text.truncate(2000);
-        text.push('…');
-    }
-    text
+    // **按字符截**，判据也是字符数：一段 666 个汉字（1998 字节）加几个 ASCII 的
+    // 输出只有 672 个字符，本来就该原样显示 —— 旧的按**字节** `truncate(2000)`
+    // 既会在 UTF-8 中间 panic，也会把这种其实不长的中文输出截掉半截（issue #6）。
+    // 复用 hookmap 里那条已经按字符走的实现，别再写一份。
+    hookmap::clip(&text, 2000)
 }
 
 /// 时间线的窗口长度。近半小时够看出「刚才卡了多久」，又不至于挤成一条线。
@@ -2488,14 +2493,45 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        clamp_to_area, distance_to_bounds, grow_away_from_edges, nearest_index, snap_to_edges,
-        state_ttl_defaults, validate_settings, visible_groups, TEST_REPORT_TTL_MS,
+        clamp_to_area, combined_bytes, distance_to_bounds, grow_away_from_edges, nearest_index,
+        snap_to_edges, state_ttl_defaults, validate_settings, visible_groups, TEST_REPORT_TTL_MS,
     };
     use crate::config::{GroupMeta, Settings, StateStyle, MAX_STATE_TTL_MS, MIN_STATE_TTL_MS};
     use crate::state::{state_ttl, GroupView, Report, Signal, Snapshot, Store};
     use std::time::{Duration, Instant};
 
     // ---- 测试上报 -------------------------------------------------------------
+
+    /// 命令输出截断**必须按字符走**：`String::truncate` 落在 UTF-8 中间会 panic，
+    /// 而这条路径喂的是用户命令的原始输出 —— 中文帮助文本超过 2 KB 太容易了，
+    /// 用户把 `--help` 误写进 hook 命令时正好会走到（issue #6）。
+    #[test]
+    fn a_long_multibyte_output_is_clipped_without_panicking() {
+        // 6000 个汉字 = 18000 字节，第 2000 个字节必定落在某个汉字中间
+        let stdout = "汉".repeat(6000);
+        let text = combined_bytes(stdout.as_bytes(), b"");
+        assert_eq!(text.chars().count(), 2001, "2000 个字符 + 一个省略号");
+        assert!(text.ends_with('…'));
+    }
+
+    /// 反过来也要钉住：**字符数少、字节数多**的中文输出不该被当成超长。
+    /// 666 个汉字 + 6 个 ASCII 是 2004 字节、672 个字符 —— 按旧实现会被截掉。
+    #[test]
+    fn a_short_multibyte_output_is_left_alone() {
+        let mut stdout = "汉".repeat(666);
+        stdout.push_str("abcdef");
+        assert!(stdout.len() > 2000, "字节数确实过线了");
+        assert_eq!(combined_bytes(stdout.as_bytes(), b""), stdout);
+    }
+
+    /// stdout 和 stderr 都要带上：命令成功时什么都不说，失败的原因可能在任意一边。
+    #[test]
+    fn both_streams_are_kept() {
+        assert_eq!(combined_bytes(b"out", b"err"), "out\nerr");
+        // 一边为空时不留一个多余的空行
+        assert_eq!(combined_bytes(b"out", b""), "out");
+        assert_eq!(combined_bytes(b"", b"err"), "err");
+    }
 
     /// 测试上报**不能留下**：点完「试一下」之后，那块牌要在半分钟量级自己走掉，
     /// 而不是拖五到十分钟。
