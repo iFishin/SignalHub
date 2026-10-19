@@ -63,8 +63,10 @@ pub fn fire(
             }
         };
         // 摘要**按这条钩子**算：限定了组的写它自己那几个组里最紧急的那个。
-        let line = summarize(lang, lang::text(lang).summary_prefix, &subject(hook, snapshot, changes, settings));
-        dispatch(action, line, payload, log.clone());
+        let subject = subject(hook, snapshot, changes, settings);
+        let line = summarize(lang, lang::text(lang).summary_prefix, &subject);
+        let fields = TemplateFields::from_subject(&subject, aggregate, &line, now_ms());
+        dispatch(action, line, payload, fields, log.clone());
     }
 }
 
@@ -101,6 +103,8 @@ pub fn test_all(settings: &Settings, snapshot: &Snapshot, lang: Lang, log: &Outb
             since_ms: snapshot.since_ms,
         });
     let line = summarize(lang, lang::text(lang).summary_prefix_test, &subject);
+    // 测试消息的占位符也照实填：用户拿它当「真出事时大概长什么样」的样本。
+    let fields = TemplateFields::from_subject(&subject, snapshot.aggregate.name(), &line, now_ms());
     let payload = match serde_json::to_string(&Payload {
         snapshot,
         at_ms: now_ms(),
@@ -118,6 +122,7 @@ pub fn test_all(settings: &Settings, snapshot: &Snapshot, lang: Lang, log: &Outb
             hook.action.clone(),
             line.clone(),
             payload.clone(),
+            fields.clone(),
             log.clone(),
         );
         sent += 1;
@@ -128,17 +133,37 @@ pub fn test_all(settings: &Settings, snapshot: &Snapshot, lang: Lang, log: &Outb
 /// 真的把一条钩子发出去，并把结果记进日志。
 ///
 /// [`fire`] 和 [`test_all`] 共用它 —— 两条路径必须一模一样（见 `test_all` 的说明）。
-fn dispatch(action: HookAction, line: String, payload: String, log: OutboundLog) {
+fn dispatch(
+    action: HookAction,
+    line: String,
+    payload: String,
+    fields: TemplateFields,
+    log: OutboundLog,
+) {
     tauri::async_runtime::spawn_blocking(move || {
         let (ok, detail) = match &action {
             HookAction::Http {
                 url,
                 headers,
                 preset,
-            } => match post(&compose(*preset, &line, url, headers, &payload)) {
-                Ok(status) => (true, status),
-                Err(err) => (false, err),
-            },
+                body,
+                content_type,
+            } => {
+                let request = match preset {
+                    HttpPreset::Custom => compose_custom(
+                        url,
+                        headers,
+                        body.as_deref().unwrap_or_default(),
+                        content_type.as_deref().unwrap_or_default(),
+                        &fields,
+                    ),
+                    _ => compose(*preset, &line, url, headers, &payload),
+                };
+                match post(&request) {
+                    Ok(status) => (true, status),
+                    Err(err) => (false, err),
+                }
+            }
             HookAction::Command { command } => match run_command(command) {
                 Ok(()) => (true, String::new()),
                 Err(err) => (false, err),
@@ -257,7 +282,8 @@ pub struct Request {
     pub url: String,
     /// 要带的头（预设自己加的那些也在里面，例如 ntfy 的 `Title`）。
     pub headers: Vec<(String, String)>,
-    pub content_type: &'static str,
+    /// 自定义预设时由用户填，其余预设是常量 —— 所以是 `String` 而不是 `&'static str`。
+    pub content_type: String,
     pub body: String,
 }
 
@@ -347,14 +373,135 @@ pub fn compose(
                 format!("text={}&type=text", form_encode(summary)),
             )
         }
+        // 自定义模板不走这里（见 [`compose_custom`]）。这个分支只是让 match 穷尽，
+        // 真被走到说明调用点漏了分流 —— 那也不该 panic，发一个空 body 出来。
+        HttpPreset::Custom => (
+            url.to_string(),
+            crate::config::DEFAULT_CUSTOM_CONTENT_TYPE,
+            String::new(),
+        ),
     };
 
     Request {
         preset,
         url,
         headers: extra,
-        content_type,
+        content_type: content_type.to_string(),
         body,
+    }
+}
+
+/// 自定义模板能拿到的值。
+///
+/// **全部由 [`Subject`] / 快照派生**，不引入第二份真值：灯上写的是什么，这里就是
+/// 什么（组名走显示名、时长算法和摘要末尾那个括号同一处）。
+#[derive(Debug, Clone, Default)]
+pub struct TemplateFields {
+    pub state: String,
+    pub aggregate: String,
+    pub group: String,
+    pub message: String,
+    pub duration: String,
+    pub since_ms: u64,
+    pub at_ms: u64,
+    pub summary: String,
+}
+
+impl TemplateFields {
+    /// 由这一条钩子的主语算出全部占位符的值。
+    fn from_subject(subject: &Subject<'_>, aggregate: &str, summary: &str, at_ms: u64) -> Self {
+        Self {
+            state: subject.state.name().to_string(),
+            aggregate: aggregate.to_string(),
+            group: subject.label.to_string(),
+            message: subject.message.unwrap_or_default().to_string(),
+            duration: if subject.since_ms == 0 {
+                String::new()
+            } else {
+                short_age(at_ms.saturating_sub(subject.since_ms) / 1000)
+            },
+            since_ms: subject.since_ms,
+            at_ms,
+            summary: summary.to_string(),
+        }
+    }
+
+    fn get(&self, name: &str) -> Option<String> {
+        Some(match name {
+            "state" => self.state.clone(),
+            "aggregate" => self.aggregate.clone(),
+            "group" => self.group.clone(),
+            "message" => self.message.clone(),
+            "duration" => self.duration.clone(),
+            "since_ms" => self.since_ms.to_string(),
+            "at_ms" => self.at_ms.to_string(),
+            "summary" => self.summary.clone(),
+            _ => return None,
+        })
+    }
+}
+
+/// 组装一条**自定义请求体**的请求。
+///
+/// content-type 是 JSON 时，替换进去的值会做 JSON 字符串转义（不带外层引号）——
+/// 于是 `{"text":"{message}"}` 里出现引号、换行也不会把整条 body 弄坏；而
+/// `"since": {since_ms}` 这种数字位置同样成立（数字转义后还是原样）。
+///
+/// 认不出的占位符**原样留着**：`{"m":{}}` 这种模板里本来就可能有花括号，替它猜
+/// 反而更糟。真写错了由保存时的 `config::unknown_placeholder` 拦下来并告诉他可用
+/// 的是哪几个。
+pub fn compose_custom(
+    url: &str,
+    headers: &BTreeMap<String, String>,
+    template: &str,
+    content_type: &str,
+    fields: &TemplateFields,
+) -> Request {
+    let content_type = content_type.trim();
+    let content_type = if content_type.is_empty() {
+        crate::config::DEFAULT_CUSTOM_CONTENT_TYPE
+    } else {
+        content_type
+    };
+    let is_json = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .eq_ignore_ascii_case("application/json");
+
+    Request {
+        preset: HttpPreset::Custom,
+        url: url.trim().to_string(),
+        headers: headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        content_type: content_type.to_string(),
+        body: expand(template, fields, is_json),
+    }
+}
+
+/// 把模板里的 `{占位符}` 换掉。
+fn expand(template: &str, fields: &TemplateFields, json: bool) -> String {
+    let mut out = template.to_string();
+    for name in crate::config::TEMPLATE_PLACEHOLDERS {
+        let Some(value) = fields.get(name) else {
+            continue;
+        };
+        let value = if json {
+            json_escape(&value)
+        } else {
+            value
+        };
+        out = out.replace(&format!("{{{name}}}"), &value);
+    }
+    out
+}
+
+/// JSON 字符串转义，**不带外层引号** —— 模板里引号由用户自己写。
+fn json_escape(text: &str) -> String {
+    match serde_json::to_string(text) {
+        // serde_json 的输出必定是 `"…"`，去掉首尾两个 ASCII 引号就是转义后的内容
+        Ok(quoted) => quoted[1..quoted.len() - 1].to_string(),
+        Err(_) => text.to_string(),
     }
 }
 
@@ -563,7 +710,7 @@ fn post(request: &Request) -> Result<String, String> {
 
     let mut builder = ureq::Agent::new_with_config(config)
         .post(&request.url)
-        .header("Content-Type", request.content_type);
+        .header("Content-Type", request.content_type.as_str());
     for (name, value) in &request.headers {
         builder = builder.header(name.as_str(), value.as_str());
     }
@@ -619,12 +766,15 @@ fn envelope_error(preset: HttpPreset, body: &str) -> Option<String> {
         HttpPreset::Slack => not_true(&value, "error"),
         // Telegram 出错时给 4xx（走不到这里），但它的信封里也有 `ok`
         HttpPreset::Telegram => not_true(&value, "description"),
-        // 纯文本 / 我们自己的 JSON 快照这些没有一个统一的失败信封，只能看状态码
+        // 纯文本 / 我们自己的 JSON 快照这些没有一个统一的失败信封，只能看状态码。
+        // **自定义模板同样不看**：body 是用户自己写的，认不出「哪种服务」就无从判断
+        // 什么算失败 —— 多看一眼反而会把一次发成功的推送判成失败。
         HttpPreset::Raw
         | HttpPreset::Text
         | HttpPreset::Ntfy
         | HttpPreset::Bark
-        | HttpPreset::Discord => None,
+        | HttpPreset::Discord
+        | HttpPreset::Custom => None,
     }
 }
 
@@ -912,6 +1062,8 @@ mod tests {
                             .into_iter()
                             .collect(),
                         preset: HttpPreset::Ntfy,
+                        body: None,
+                        content_type: None,
                     },
                 },
                 // 目标没填的那条要跳过（同 fire）：否则用户会收到一条空请求，
@@ -1098,6 +1250,75 @@ mod tests {
 
     fn composed(preset: HttpPreset, summary: &str) -> Request {
         compose(preset, summary, "https://x/y", &BTreeMap::new(), "{}")
+    }
+
+    fn template_fields() -> TemplateFields {
+        TemplateFields {
+            state: "permission".into(),
+            aggregate: "permission".into(),
+            group: "构建".into(),
+            message: "say \"hi\"\nnext".into(),
+            duration: "2m".into(),
+            since_ms: 1_700_000_000_000,
+            at_ms: 1_700_000_120_000,
+            summary: "[SignalHub] 需要授权 · 构建".into(),
+        }
+    }
+
+    /// 自定义模板：占位符都替换，且 JSON 里带引号 / 换行的值不会把 body 写坏。
+    /// 这是这个功能的全部价值 —— 「我得自定义请求体」背后就是「我的值里有特殊字符」。
+    #[test]
+    fn a_custom_template_is_filled_and_json_escaped() {
+        let template =
+            r#"{"state":"{state}","project":"{group}","text":"{message}","elapsed":"{duration}","since":{since_ms}}"#;
+        let request = compose_custom(
+            "https://x/y",
+            &BTreeMap::new(),
+            template,
+            "",
+            &template_fields(),
+        );
+
+        assert_eq!(request.content_type, "application/json", "空 content-type 用默认值");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&request.body).expect("替换后仍是合法 JSON");
+        assert_eq!(parsed["state"], "permission");
+        assert_eq!(parsed["project"], "构建");
+        assert_eq!(parsed["text"], "say \"hi\"\nnext");
+        assert_eq!(parsed["elapsed"], "2m");
+        assert_eq!(parsed["since"], 1_700_000_000_000u64);
+    }
+
+    /// 非 JSON 的 content-type 下**不做转义**：人家要的就是原文。
+    #[test]
+    fn a_custom_template_with_a_plain_content_type_keeps_values_verbatim() {
+        let fields = TemplateFields {
+            message: "a \"b\"".into(),
+            ..TemplateFields::default()
+        };
+        let request = compose_custom(
+            "https://x",
+            &BTreeMap::new(),
+            "text={message}",
+            "text/plain; charset=utf-8",
+            &fields,
+        );
+        assert_eq!(request.body, "text=a \"b\"");
+        assert_eq!(request.content_type, "text/plain; charset=utf-8");
+    }
+
+    /// 认不出的占位符**原样留着**（模板里本来就可能出现裸花括号），由保存时的
+    /// 校验去提示。
+    #[test]
+    fn unknown_placeholders_are_left_alone() {
+        let request = compose_custom(
+            "https://x",
+            &BTreeMap::new(),
+            r#"{"a":{}}/{nope}"#,
+            "application/json",
+            &TemplateFields::default(),
+        );
+        assert_eq!(request.body, r#"{"a":{}}/{nope}"#);
     }
 
     /// 每个预设的 content-type 和 body 形状。**这张表就是「转发到底发了什么」的

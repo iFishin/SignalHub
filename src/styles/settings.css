@@ -753,6 +753,32 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   margin-top: 6px;
 }
 
+/* 自定义请求体：小标题 + 一块等宽模板 + content-type。
+   和请求头同一套小标题，理由同 `.hook-headers-label`。 */
+.hook-template {
+  margin-bottom: 8px;
+}
+
+.hook-body {
+  min-height: 84px;
+  padding: 6px 8px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  /* 模板里的缩进是有意义的（一段 JSON），别让它被自动换行拆得看不出结构 */
+  white-space: pre;
+  overflow-x: auto;
+  resize: vertical;
+}
+
+.hook-content-type-label {
+  margin-top: 8px;
+}
+
+.hook-content-type {
+  padding: 3px 7px;
+  font-size: 11.5px;
+}
+
 /* 最近一次出站结果：`✓ 200 · 2m前`。小、灰、等宽（字体来自 .mono）。
    等宽数字免得时间那一截在重取时左右抖。 */
 .hook-result {

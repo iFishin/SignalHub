@@ -345,6 +345,13 @@ export interface Messages {
   presetUrls: Record<HttpPreset, string>;
   /** 预设说明：`raw` 之外每一个都只发一行文字 */
   presetHint: string;
+  /** 自定义请求体那一节的标题 */
+  hookBody: string;
+  hookBodyPlaceholder: string;
+  /** 占位符清单 + JSON 转义那句话 */
+  hookBodyHint: string;
+  /** 自定义 content-type 的标签 */
+  hookContentType: string;
   /** 请求头那一节的标题 */
   hookHeaders: string;
   headerNamePlaceholder: string;
@@ -797,6 +804,7 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       dingtalk: "钉钉",
       telegram: "Telegram",
       pushdeer: "PushDeer",
+      custom: "自定义请求体",
     },
     presetUrls: {
       raw: "https://你的服务器/ingest",
@@ -810,9 +818,15 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       dingtalk: "https://oapi.dingtalk.com/robot/send?access_token=…",
       telegram: "https://api.telegram.org/bot<token>/sendMessage?chat_id=…",
       pushdeer: "https://api2.pushdeer.com/message/push?pushkey=…",
+      custom: "https://你的服务器/hook",
     },
     presetHint:
-      "除了「原样 JSON」，其余都只发下面那行文字 —— 那些服务要的就是「一个地址 + 一句话」，服务端自己排版。选完先用「发送测试」看一眼手机收到的是什么。",
+      "除了「原样 JSON」和「自定义请求体」，其余都只发下面那行文字 —— 那些服务要的就是「一个地址 + 一句话」，服务端自己排版。选完先用「发送测试」看一眼手机收到的是什么。",
+    hookBody: "请求体（自定义）",
+    hookBodyPlaceholder: '{"text":"{state} · {group}","message":"{message}"}',
+    hookBodyHint:
+      "占位符：{state} {aggregate} {group} {message} {duration} {since_ms} {at_ms} {summary}。content-type 是 JSON 时，替换进去的值会自动转义引号和换行；值本身不加引号，字符串位置请自己写双引号。",
+    hookContentType: "content-type",
     hookHeaders: "请求头（鉴权用）",
     headerNamePlaceholder: "Authorization",
     headerValuePlaceholder: "Bearer …",
@@ -1256,6 +1270,7 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
       dingtalk: "DingTalk",
       telegram: "Telegram",
       pushdeer: "PushDeer",
+      custom: "Custom body",
     },
     presetUrls: {
       raw: "https://your.server/ingest",
@@ -1269,9 +1284,15 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
       dingtalk: "https://oapi.dingtalk.com/robot/send?access_token=…",
       telegram: "https://api.telegram.org/bot<token>/sendMessage?chat_id=…",
       pushdeer: "https://api2.pushdeer.com/message/push?pushkey=…",
+      custom: "https://your.server/hook",
     },
     presetHint:
-      "Everything except Raw JSON sends just the one line below — those services want a URL and a sentence, and they do the formatting. Pick one and hit Send test to see what lands on your phone.",
+      "Everything except Raw JSON and Custom body sends just the one line below — those services want a URL and a sentence, and they do the formatting. Pick one and hit Send test to see what lands on your phone.",
+    hookBody: "Request body (custom)",
+    hookBodyPlaceholder: '{"text":"{state} · {group}","message":"{message}"}',
+    hookBodyHint:
+      "Placeholders: {state} {aggregate} {group} {message} {duration} {since_ms} {at_ms} {summary}. With a JSON content-type the substituted values are escaped for you (quotes and newlines included); the value itself carries no quotes, so write the quotes in the template.",
+    hookContentType: "content-type",
     hookHeaders: "Headers (for auth)",
     headerNamePlaceholder: "Authorization",
     headerValuePlaceholder: "Bearer …",

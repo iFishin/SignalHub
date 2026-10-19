@@ -1371,6 +1371,13 @@ export function SettingsPanel({ snapshot }: Props) {
   // 钩子的文本输入用「草稿 + 失焦提交」：每敲一个字就存一次会把半截 URL
   // 写进配置（而且会被校验拒掉）。颜色不一样 —— 取色器要的就是即时反馈。
   const [hookDraft, setHookDraft] = useState<{ index: number; value: string } | null>(null);
+  // 自定义模板同样「草稿 + 失焦提交」：一段 JSON 边敲边存，每次都会先存下一个
+  // 半截 body，而那一瞬间正是「发送测试」最容易点的时候。
+  const [templateDraft, setTemplateDraft] = useState<{
+    index: number;
+    field: "body" | "content_type";
+    value: string;
+  } | null>(null);
 
   const setHooks = (hooks: Hook[]) => patch({ hooks });
 
@@ -1380,6 +1387,19 @@ export function SettingsPanel({ snapshot }: Props) {
         i === index ? ({ ...hook, ...next } as Hook) : hook,
       ),
     );
+
+  const commitTemplateDraft = () => {
+    if (!templateDraft) return;
+    const { index, field, value } = templateDraft;
+    setTemplateDraft(null);
+    const hook = settings.hooks[index];
+    if (!hook || hook.type !== "http") return;
+    const current = (field === "body" ? hook.body : hook.content_type) ?? "";
+    // body 保留换行和缩进（那是一段模板），content-type 只去两头空白
+    const next = field === "body" ? value : value.trim();
+    if (next === current) return;
+    updateHook(index, field === "body" ? { body: next } : { content_type: next });
+  };
 
   const addHook = () =>
     setHooks([
@@ -2940,6 +2960,59 @@ export function SettingsPanel({ snapshot }: Props) {
                         </select>
                       </Row>
 
+                      {/* 自定义请求体：模板 + content-type。只在选中「自定义」时出现
+                          —— 其余预设的 body 形状是固定的，给它们也摆一个输入框只会
+                          让人以为「填了会生效」。 */}
+                      {hook.preset === "custom" && (
+                        <div className="hook-template">
+                          <span className="hook-headers-label">{m.hookBody}</span>
+                          <textarea
+                            className="input mono hook-body"
+                            spellCheck={false}
+                            placeholder={m.hookBodyPlaceholder}
+                            value={
+                              templateDraft?.index === index &&
+                              templateDraft.field === "body"
+                                ? templateDraft.value
+                                : (hook.body ?? "")
+                            }
+                            onChange={(event) =>
+                              setTemplateDraft({
+                                index,
+                                field: "body",
+                                value: event.target.value,
+                              })
+                            }
+                            onBlur={commitTemplateDraft}
+                          />
+                          <span className="hook-headers-label hook-content-type-label">
+                            {m.hookContentType}
+                          </span>
+                          <input
+                            className="input mono hook-content-type"
+                            spellCheck={false}
+                            placeholder="application/json"
+                            value={
+                              templateDraft?.index === index &&
+                              templateDraft.field === "content_type"
+                                ? templateDraft.value
+                                : (hook.content_type ?? "")
+                            }
+                            onChange={(event) =>
+                              setTemplateDraft({
+                                index,
+                                field: "content_type",
+                                value: event.target.value,
+                              })
+                            }
+                            onBlur={commitTemplateDraft}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") event.currentTarget.blur();
+                            }}
+                          />
+                          <p className="hint">{m.hookBodyHint}</p>
+                        </div>
+                      )}
                       {/* 请求头：鉴权靠它。**空名字的行只活在草稿里**（见 addHeader）
                           —— 存进设置的话会被 Rust 的 clamp 丢掉，表现出来就是
                           「刚点出来的那一行自己没了」。 */}

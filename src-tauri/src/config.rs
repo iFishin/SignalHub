@@ -374,9 +374,43 @@ pub enum HookAction {
         /// `{"type":"http","url":"…"}` 解析出来就是 `raw`，一个字节都不变。
         #[serde(default)]
         preset: HttpPreset,
+        /// **自定义请求体模板**（只对 `preset: "custom"` 有意义）。
+        ///
+        /// 占位符写成 `{state}` 这样，完整列表见 [`TEMPLATE_PLACEHOLDERS`]。
+        /// content-type 是 JSON 时，替换进去的值会做 JSON 字符串转义 —— 于是
+        /// `{"text":"{message}"}` 里出现引号也不会把整条 body 弄坏。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        body: Option<String>,
+        /// 自定义 content-type（只对 `custom` 有意义）。空 = `application/json`。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content_type: Option<String>,
     },
     Command { command: String },
 }
+/// 自定义请求体里能用的占位符（不带花括号）。
+///
+/// **这就是全部**：多一个占位符意味着多一处要向用户解释、多一处要在别的语言里
+/// 同步。缺什么再加，别提前铺。
+pub const TEMPLATE_PLACEHOLDERS: [&str; 8] = [
+    "state",
+    "aggregate",
+    "group",
+    "message",
+    "duration",
+    "since_ms",
+    "at_ms",
+    "summary",
+];
+
+/// 自定义模板的上限。一条通知的 body 到 4 KB 已经非常宽裕；再长多半是把整段
+/// 文档粘进来了。
+pub const TEMPLATE_MAX_CHARS: usize = 4096;
+
+/// 自定义 content-type 的上限。它就是一个 MIME，128 字符足够。
+pub const CONTENT_TYPE_MAX_CHARS: usize = 128;
+
+/// `preset: "custom"` 没填 content-type 时用什么。
+pub const DEFAULT_CUSTOM_CONTENT_TYPE: &str = "application/json";
 
 /// HTTP 转发的**服务预设**：决定 content-type 和 body 形状。
 ///
@@ -415,6 +449,12 @@ pub enum HttpPreset {
     /// PushDeer（官方服务器或自架）。`pushkey` 写在 URL 的查询串上
     /// （`https://api2.pushdeer.com/message/push?pushkey=<key>`），正文按表单体发。
     Pushdeer,
+    /// **自定义请求体**：用户自己写模板，占位符见 [`TEMPLATE_PLACEHOLDERS`]。
+    ///
+    /// 存在的理由很直接：预设覆盖的是「现成服务」，而接自建接口的总要一个
+    /// 自己的形状（某个内部通知服务、某个只认 `{"text": …}` 的网关）。
+    /// 模板和 content-type 在 `HookAction::Http` 上，见那里。
+    Custom,
 }
 
 impl Hook {
@@ -472,6 +512,7 @@ impl<'de> Deserialize<'de> for HttpPreset {
             "dingtalk" => HttpPreset::Dingtalk,
             "telegram" => HttpPreset::Telegram,
             "pushdeer" => HttpPreset::Pushdeer,
+            "custom" => HttpPreset::Custom,
             _ => HttpPreset::Raw,
         })
     }
@@ -482,7 +523,21 @@ impl HookAction {
     /// 「刚添加、还没填目标」这个中间态，那时候报错就没法编辑了。
     pub fn is_configured(&self) -> bool {
         match self {
-            HookAction::Http { url, .. } => !url.trim().is_empty(),
+            HookAction::Http {
+                url,
+                preset,
+                body,
+                ..
+            } => {
+                if url.trim().is_empty() {
+                    return false;
+                }
+                // 自定义模板空着时**不算配好**：否则用户选了「自定义」还没写 body，
+                // 我们就会往他的地址发一个空请求 —— 对方收到什么、算不算错都不确定。
+                // 和「刚添加还没填地址」同一种中间态，静默跳过才对。
+                *preset != HttpPreset::Custom
+                    || body.as_deref().is_some_and(|text| !text.trim().is_empty())
+            }
             HookAction::Command { command } => !command.trim().is_empty(),
         }
     }
@@ -508,6 +563,8 @@ impl HookAction {
             url: url.into(),
             headers: BTreeMap::new(),
             preset: HttpPreset::default(),
+            body: None,
+            content_type: None,
         }
     }
 }
@@ -1106,12 +1163,68 @@ pub fn hook_problem(hook: &Hook) -> Option<String> {
         }
     }
     // 空目标不算错（见 is_configured）；填了但填错才算
-    match &hook.action {
-        HookAction::Http { url, .. } if !url.trim().is_empty() && !is_http_url(url) => {
-            Some(format!("钩子地址不合法：{url:?}（需要以 http:// 或 https:// 开头）"))
+    if let HookAction::Http {
+        url,
+        preset,
+        body,
+        content_type,
+        ..
+    } = &hook.action
+    {
+        if !url.trim().is_empty() && !is_http_url(url) {
+            return Some(format!(
+                "钩子地址不合法：{url:?}（需要以 http:// 或 https:// 开头）"
+            ));
         }
-        _ => None,
+        if *preset == HttpPreset::Custom {
+            if let Some(name) = body.as_deref().and_then(unknown_placeholder) {
+                let known: Vec<String> = TEMPLATE_PLACEHOLDERS
+                    .iter()
+                    .map(|name| format!("{{{name}}}"))
+                    .collect();
+                return Some(format!(
+                    "自定义请求体里有不认识的占位符 {{{name}}}；可用: {}",
+                    known.join(" ")
+                ));
+            }
+            if let Some(value) = content_type
+                .as_deref()
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                && value.chars().any(char::is_control)
+            {
+                return Some("content-type 里不能有换行或控制字符".to_string());
+            }
+        }
     }
+    None
+}
+
+/// 模板里出现的、不在 [`TEMPLATE_PLACEHOLDERS`] 里的那个占位符。
+///
+/// 只认 `{snake_case}` 这种形状：JSON 里的 `{"a":1}`、`{ "a": 1 }` 都不算 ——
+/// 否则一条完全正常的 JSON body 会遍地「未知占位符」，校验比不校验更烦人。
+pub fn unknown_placeholder(template: &str) -> Option<String> {
+    let bytes = template.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'{' {
+            let start = index + 1;
+            let mut end = start;
+            while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
+                end += 1;
+            }
+            if end > start && bytes.get(end) == Some(&b'}') {
+                let name = &template[start..end];
+                if !TEMPLATE_PLACEHOLDERS.contains(&name) {
+                    return Some(name.to_string());
+                }
+                index = end;
+            }
+        }
+        index += 1;
+    }
+    None
 }
 
 impl Default for Settings {
@@ -1217,8 +1330,22 @@ impl Settings {
         self.hooks.retain(|hook| hook_problem(hook).is_none());        // 钩子里的组名也要规整，理由同 hidden_groups
         for hook in &mut self.hooks {
             hook.groups = normalize_groups(std::mem::take(&mut hook.groups));
-            if let HookAction::Http { headers, .. } = &mut hook.action {
+            if let HookAction::Http {
+                headers,
+                body,
+                content_type,
+                ..
+            } = &mut hook.action
+            {
                 *headers = normalize_headers(std::mem::take(headers));
+                // 模板和 content-type 按字符夹紧，手改配置写进来的离谱值也兜住。
+                // **切换预设时不清空**：用户来回切一下回来，辛苦写的模板还得在。
+                *body = body
+                    .as_deref()
+                    .map(|text| text.chars().take(TEMPLATE_MAX_CHARS).collect::<String>());
+                *content_type = content_type.as_deref().map(|text| {
+                    text.trim().chars().take(CONTENT_TYPE_MAX_CHARS).collect::<String>()
+                });
             }
         }
         // 地址去空白。**空地址留着**，和钩子一个脾气：那是「刚点了添加、还没填」
@@ -1731,6 +1858,8 @@ mod tests {
                         headers: [("X-Token".to_string(), "abc".to_string())]
                             .into_iter()
                             .collect(),
+                        body: None,
+                        content_type: None,
                     },
                 },
                 Hook {
@@ -1813,6 +1942,8 @@ mod tests {
                 url: "https://x/y".into(),
                 headers: BTreeMap::new(),
                 preset: HttpPreset::Raw,
+                body: None,
+                content_type: None,
             }
         );
 
@@ -1858,6 +1989,8 @@ mod tests {
                 url: "https://x/y".into(),
                 headers: BTreeMap::new(),
                 preset: HttpPreset::Slack,
+                body: None,
+                content_type: None,
             }
         );
         assert_eq!(settings.hooks[1].action.target(), "https://x/z");
@@ -1870,6 +2003,8 @@ mod tests {
                 url: "https://api2.pushdeer.com/message/push?pushkey=K".into(),
                 headers: BTreeMap::new(),
                 preset: HttpPreset::Pushdeer,
+                body: None,
+                content_type: None,
             }
         );
     }
@@ -2007,6 +2142,47 @@ mod tests {
             groups: Vec::new(),
             action: HookAction::http(url),
         }
+    }
+
+    fn custom_hook(url: &str, body: &str) -> Hook {
+        Hook {
+            when: Vec::new(),
+            groups: Vec::new(),
+            action: HookAction::Http {
+                url: url.into(),
+                headers: BTreeMap::new(),
+                preset: HttpPreset::Custom,
+                body: Some(body.into()),
+                content_type: None,
+            },
+        }
+    }
+
+    /// 自定义模板的校验：只认 `{snake_case}` 形状的占位符，普通 JSON 的花括号
+    /// 不算；写错了要说清能用的是哪几个。
+    #[test]
+    fn custom_templates_are_validated_against_the_known_placeholders() {
+        assert!(
+            hook_problem(&custom_hook("https://x/y", r#"{"text":"{state}","since":{since_ms}}"#))
+                .is_none()
+        );
+        // 普通 JSON 里的花括号不是占位符
+        assert!(hook_problem(&custom_hook("https://x/y", r#"{"a":{"b":1},"c":{}}"#)).is_none());
+
+        let typo = hook_problem(&custom_hook("https://x/y", r#"{"text":"{stste}"}"#)).unwrap();
+        assert!(typo.contains("{stste}"), "{typo}");
+        assert!(typo.contains("{state}"), "要列出可用的占位符：{typo}");
+    }
+
+    /// 选了「自定义」却还没写 body：**不触发，但也不算配置错误** —— 和「刚添加、
+    /// 还没填地址」同一种中间态。否则新加一条钩子会立刻顶上一条红线。
+    #[test]
+    fn an_empty_custom_template_is_not_configured_but_not_an_error() {
+        let hook = custom_hook("https://x/y", "   ");
+        assert!(hook_problem(&hook).is_none());
+        assert!(!hook.action.is_configured(), "空模板不该发出去");
+
+        assert!(custom_hook("https://x/y", r#"{"s":"{state}"}"#).action.is_configured());
     }
 
     #[test]

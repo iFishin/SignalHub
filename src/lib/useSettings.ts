@@ -31,7 +31,8 @@ export type HttpPreset =
   | "wecom"
   | "dingtalk"
   | "telegram"
-  | "pushdeer";
+  | "pushdeer"
+  | "custom";
 
 /**
  * 预设的选项顺序。**和 Rust 的 `HttpPreset` 枚举顺序一致** —— 两边列出来的顺序
@@ -49,6 +50,7 @@ export const HTTP_PRESETS: HttpPreset[] = [
   "dingtalk",
   "telegram",
   "pushdeer",
+  "custom",
 ];
 
 /** 钩子能做的事。`command` 会执行本地命令，见 docs/api.md 里的安全说明。 */
@@ -63,6 +65,13 @@ export type HookAction =
       headers: Record<string, string>;
       /** 发什么形状，见 `HttpPreset`。 */
       preset: HttpPreset;
+      /**
+       * 自定义请求体模板（只对 `preset: "custom"` 有意义）。
+       * 占位符见 Rust 的 `TEMPLATE_PLACEHOLDERS`。
+       */
+      body?: string | null;
+      /** 自定义 content-type（只对 `custom` 有意义）。空 = `application/json`。 */
+      content_type?: string | null;
     }
   | { type: "command"; command: string };
 

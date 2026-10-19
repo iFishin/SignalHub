@@ -658,6 +658,8 @@ hook 模式会把每次调用追加到 `~/.signalhub/hooks.log`：
 | `url` | `type: "http"` 时的目标，必须 `http://` 或 `https://` 开头 |
 | `headers` | 可选。额外请求头，要鉴权的地址靠它（`Authorization: Bearer …`、ntfy 的 `X-Token`）。最多 16 条 |
 | `preset` | 可选，默认 `"raw"`。发什么形状，见下表 |
+| `body` | 可选，`preset: "custom"` 时的请求体模板，占位符见下 |
+| `content_type` | 可选，`preset: "custom"` 时的 content-type，默认 `application/json` |
 | `command` | `type: "command"` 时执行的命令，通过 `sh -c`（Windows 上是 `cmd /C`）执行 |
 
 **`preset` 决定 body 的形状。** 默认的 `raw` 是 SignalHub 自己的 JSON 快照（见下）；其余每一个都只发**一行文字** —— 那些服务要的就是「一个地址 + 一段话」，服务端自己排版：
@@ -675,6 +677,40 @@ hook 模式会把每次调用追加到 `~/.signalhub/hooks.log`：
 | `dingtalk`（钉钉） | `application/json` | 同企业微信 |
 | `telegram` | `application/x-www-form-urlencoded` | `chat_id=…&text=…` |
 | `pushdeer` | `application/x-www-form-urlencoded` | `text=…&type=text` |
+| `custom` | 你填的 `content_type`（默认 `application/json`） | 你写的模板，见下 |
+
+**`custom`：自己写请求体。** 接自建接口时总要一个自己的形状（某个内部通知服务、某个只认 `{"text": …}` 的网关），预设覆盖不到：
+
+```json
+{
+  "when": ["permission", "error"],
+  "type": "http",
+  "url": "https://my.internal/hook",
+  "preset": "custom",
+  "content_type": "application/json",
+  "body": "{\"state\":\"{state}\",\"project\":\"{group}\",\"text\":\"{message}\",\"elapsed\":\"{duration}\",\"since\":{since_ms}}"
+}
+```
+
+能用的占位符**只有这八个**：
+
+| 占位符 | 值 |
+|---|---|
+| `{state}` | 触发的那一路状态名（`permission` / `error`…） |
+| `{aggregate}` | 全局聚合状态名 |
+| `{group}` | 组显示名（「外观 → 各组的显示」里改过名字的用改过的；不限定时为空串） |
+| `{message}` | 那一行说明（智能体自己写的短句） |
+| `{duration}` | 已持续多久，短写法 `2m` / `3h`（`since_ms` 为 0 时为空串） |
+| `{since_ms}` | 这个状态的起点（epoch 毫秒），与 `GET /v1/state` 同义 |
+| `{at_ms}` | 触发时刻（epoch 毫秒） |
+| `{summary}` | 预设那行文字（`[SignalHub] 需要授权 · 构建 — 等你批准 (2m)`） |
+
+两条约定：
+
+- **content-type 是 `application/json` 时，替换进去的值会自动做 JSON 字符串转义**（引号、换行、反斜杠），所以 `{message}` 里出现 `"` 不会把 body 写坏。转义**不带外层引号** —— 字符串位置要自己写双引号（`"text":"{message}"`），数字位置直接放（`"since":{since_ms}`）。
+- **认不出的占位符原样留着**（模板里本来就可能出现裸花括号），保存时会被拦下来并告诉你能用的是哪几个。
+
+`custom` 的 200 响应**不做信封判断**：body 是你自己写的，无从知道「哪种服务出错时回 200 却说失败」，只能看状态码。
 
 `telegram` 有一个特别之处：`chat_id` 按官方文档是**查询参数**，所以你填的地址是 `…/bot<token>/sendMessage?chat_id=<id>` —— 发送时整条查询串会被**搬进 body**，URL 上不留（SendMessage 只认表单体）。裸的 `…/sendMessage` 也能填，Telegram 会回 400，而那条状态码会显示在面板上那条钩子下面。
 
