@@ -1808,8 +1808,18 @@ fn apply_window_size(app: &tauri::AppHandle, settings: &Settings, snapshot: &Sna
         // 折叠态里没有牌面，全局状态角标和「还有几组」的 `+N` 都得自己占一个点位。
         // 少算一枚，那枚角标就落在窗口外面 —— 而折叠态最不该出的就是这种错：
         // 看不见的东西，人不会想到去查。
-        let badges = ui_flag_count(app) + config::more_badge(groups.len());
-        config::collapsed_window_size(settings.size, groups.len(), badges)
+        //
+        // **点数和角标都按未截断的可见组数算**：`groups` 已经被 `MAX_SIGNS` 截过，
+        // 拿它的长度喂 `more_badge` 会恒得 0 —— 5 组以上时那枚 `+N` 就被裁掉了
+        // （issue #7）。`collapsed_window_size` 内部会把点数夹到 `MAX_DOTS`。
+        // 多灯模式下主灯只剩一颗全局灯，没有「多出来几组」可言。
+        let visible = if per_group_active(settings, snapshot) {
+            0
+        } else {
+            visible_group_names(settings, snapshot).len()
+        };
+        let badges = ui_flag_count(app) + config::more_badge(visible);
+        config::collapsed_window_size(settings.size, visible, badges)
     } else {
         settings.window_size(&sign_heights(settings, &groups))
     };

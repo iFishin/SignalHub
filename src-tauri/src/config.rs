@@ -2619,6 +2619,23 @@ mod tests {
         );
     }
 
+    /// 折叠态比点还多的组要靠一枚 `+N` 角标表达。调用点传进来的必须是**未截断**
+    /// 的可见组数 —— 传 `visible_groups` 那种已经截到 `MAX_SIGNS` 的列表长度，
+    /// `more_badge` 恒得 0，那枚角标就被窗口裁掉了（issue #7）。
+    #[test]
+    fn groups_beyond_the_dots_get_a_badge_slot() {
+        let size = Settings::default().size;
+        assert_eq!(more_badge(MAX_DOTS), 0, "正好装得下时没有角标");
+        assert_eq!(more_badge(MAX_DOTS + 1), 1);
+
+        let visible = MAX_DOTS + 1;
+        assert!(
+            collapsed_window_size(size, visible, more_badge(visible))
+                > collapsed_window_size(size, visible, 0),
+            "多出来的那组要占一个点位，否则角标落在窗口外面"
+        );
+    }
+
     /// 每一枚角标都占一个点的位置 —— 忘了算哪一枚，它就会落到窗口外面，
     /// 而折叠态的意义正是让出地方。
     #[test]
