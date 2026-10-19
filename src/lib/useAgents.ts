@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { inTauri } from "./env";
+import { useVisibleRefresh } from "./useVisibleRefresh";
 
 /** 与 Rust 侧 lib.rs 的 AgentStatus 对应。 */
 export interface AgentStatus {
@@ -66,6 +67,9 @@ export interface Receipt {
  *
  * 只在挂载和手动 `refresh()` 时取：这份数据不由状态快照驱动，定时轮询只是白打
  * IPC。相对时间由调用方用 `formatAge(last_epoch_ms, now)` 算（见 `useNow`）。
+ *
+ * 同理，设置窗重新显形时也要补拉一次 —— 否则「有没有在报」会一直停在应用启动
+ * 那一刻的答案（见 `useVisibleRefresh`）。
  */
 export function useReceipts() {
   const [receipts, setReceipts] = useState<Receipt[]>([]);
@@ -78,6 +82,7 @@ export function useReceipts() {
   }, []);
 
   useEffect(refresh, [refresh]);
+  useVisibleRefresh(refresh);
 
   return { receipts, refresh };
 }
@@ -110,6 +115,9 @@ export interface HookChange {
  * 只在挂载时取一次，接入 / 卸载后由调用方手动 `refresh()` —— 这份列表不像状态
  * 快照那样随时在变，定时轮询只是白费调用。检测结果也不决定能不能装：没检测到的
  * 条目照样显示、照样装得动（见 Rust 侧 detect_agents 的说明）。
+ *
+ * 设置窗重新显形时补拉一次（`useVisibleRefresh`）：用户可能在别处装了东西，
+ * 也可能只是想让「最近一次上报」跟上。
  */
 export function useAgents() {
   const [agents, setAgents] = useState<AgentStatus[]>([]);
@@ -122,6 +130,7 @@ export function useAgents() {
   }, []);
 
   useEffect(refresh, [refresh]);
+  useVisibleRefresh(refresh);
 
   return { agents, refresh };
 }
@@ -132,6 +141,9 @@ export function useAgents() {
  * 只在挂载和手动 `refresh()` 时取：这个文件回答的是「我刚才那次接入到底有没有
  * 生效」，是「点了按钮想看看」的场景 —— 定时轮询既没必要（它不由状态快照驱动），
  * 也会让这个面板一直打 IPC。文件里每行自带时间，所以不刷新也不会误导。
+ *
+ * **窗口重新显形时补拉一次**：设置窗一直开着、启动那一刻的尾巴会一直留着，
+ * 用户第二天打开还看到昨晚的日志（见 `useVisibleRefresh`）。
  */
 export function useHookLog(limit = 40) {
   const [lines, setLines] = useState<string[]>([]);
@@ -144,6 +156,7 @@ export function useHookLog(limit = 40) {
   }, [limit]);
 
   useEffect(refresh, [refresh]);
+  useVisibleRefresh(refresh);
 
   return { lines, refresh };
 }

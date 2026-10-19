@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { inTauri } from "./env";
+import { useVisibleRefresh } from "./useVisibleRefresh";
 import type { StatRow } from "./useStats";
 
 /** 与 Rust 侧 lib.rs 的 DayRow 对应。 */
@@ -26,7 +27,7 @@ export const HISTORY_DAYS = 7;
  * 最近若干天的每日合计，**由近及远**（今天在最前）。
  *
  * 只在挂载 / 手动 `refresh()` 时取：历史是按天变的，没有「看着它实时涨」的意义 ——
- * 定时轮询只是白费调用。今天的数会在下一次打开面板时刷新。
+ * 定时轮询只是白费调用。今天的数会在下一次打开面板时刷新（`useVisibleRefresh`）。
  *
  * `today` 由**前端**给：Rust 那边只有 UTC（没有时区数据），而「今天」得按用户
  * 所在时区算。`toLocaleDateString("sv")` 给的是本地时区的 `YYYY-MM-DD`。
@@ -43,6 +44,7 @@ export function useHistory(days = HISTORY_DAYS) {
   }, [days]);
 
   useEffect(refresh, [refresh]);
+  useVisibleRefresh(refresh);
 
   return { days: dayRows, refresh };
 }
