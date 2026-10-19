@@ -220,6 +220,9 @@ fn router(ctx: Ctx) -> Router {
     // 工具输入，几 KB 到几十 KB，256KB 足够放下任何真实事件。
     let hooks = Router::new()
         .route("/v1/hooks/{agent}", post(hook_report))
+        // 免鉴权意味着「谁都能打」，但**浏览器里的网页不能算谁** —— 见下面那条
+        // 中间件的说明。层顺序无所谓：两道都是只看请求头的纯判断。
+        .layer(axum::middleware::from_fn(reject_browser_requests))
         .layer(axum::extract::DefaultBodyLimit::max(HOOK_BODY_MAX));
 
     // 审批端点（C3）。**在 `protected` 那一组里** —— 它要 token，这是它和上报端点
@@ -285,6 +288,26 @@ fn token_matches(presented: &str, expected: &str) -> bool {
         .zip(expected)
         .fold(0u8, |acc, (a, b)| acc | (a ^ b))
         == 0
+}
+
+/// 挡住浏览器发起的请求。**只用在免鉴权的 HTTP 式 hook 端点上。**
+///
+/// 那个端点为什么不能要 token，见 [`hook_report`]；代价是它「谁都能打」，本机
+/// 进程打它本来也是设计的一部分。但要挡住**你正在浏览的网页**：跨站 POST（包括
+/// `Content-Type: text/plain` 那种绕过预检的简单请求）浏览器一定会带 `Origin`
+/// 头，而真实的 hook 客户端不是浏览器，不会带。于是「带 Origin 的一律 403」就
+/// 足够把那条路封死（issue #10）。
+///
+/// **刻意不加「必须 application/json」**：那一条能把预检也逼出来，看起来更严，
+/// 但对方是不是真的设置了 content-type 我们控制不了 —— Claude Code 的 HTTP
+/// hook 如果按 `fetch(url, { body: JSON.stringify(...) })` 写，浏览器/undici
+/// 默认给的是 `text/plain`。为了一道本来就由 Origin 覆盖的检查把接入弄哑，
+/// 不值得。
+async fn reject_browser_requests(request: Request, next: Next) -> Result<Response, ApiError> {
+    if request.headers().contains_key(header::ORIGIN) {
+        return Err(ApiError::forbidden("拒绝携带 Origin 的请求"));
+    }
+    Ok(next.run(request).await)
 }
 
 // ---- handlers --------------------------------------------------------------
@@ -1003,6 +1026,35 @@ mod tests {
         // 探测真的走完了整条路：状态进了状态机
         let (_, state) = call(&server, "GET", "/v1/state", Some(&server.token), false, None).await;
         assert!(state.contains("signalhub-probe"), "state: {state}");
+    }
+
+    /// 免鉴权**不等于**「谁都能替你改灯」：浏览器发起的跨站 POST 一律 403。
+    ///
+    /// 挡的是 issue #10 那条路 —— 你随便访问一个网页，它用 `text/plain` 的简单
+    /// 请求（不触发预检）往本地端口 POST 一段 JSON，就能让灯显示「需要授权」并
+    /// 弹一条系统通知。真实的 hook 客户端不是浏览器，不会带 `Origin`。
+    #[tokio::test]
+    async fn the_hook_endpoint_refuses_browser_requests() {
+        let server = start().await;
+        let body = json!({
+            "hook_event_name": "PreToolUse",
+            "session_id": "csrf-session",
+            "tool_name": "Bash",
+        })
+        .to_string();
+
+        let (status, _) =
+            call(&server, "POST", "/v1/hooks/claude-code", None, true, Some(&body)).await;
+        assert_eq!(status, 403, "带 Origin 的请求必须被拒");
+
+        // 拒绝的是浏览器，不是这份 payload：上面那条要是漏了，这里会看到它
+        let (_, state) = call(&server, "GET", "/v1/state", Some(&server.token), false, None).await;
+        assert!(!state.contains("csrf-session"), "跨站请求改动了状态: {state}");
+
+        // 同一个请求去掉 Origin 就能进 —— 证明 403 只因为那一颗头
+        let (status, _) =
+            call(&server, "POST", "/v1/hooks/claude-code", None, false, Some(&body)).await;
+        assert_eq!(status, 200);
     }
 
     impl TestServer {
