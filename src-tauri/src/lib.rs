@@ -1659,11 +1659,47 @@ fn lamp_specs(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapshot) 
 
 /// 让灯窗集合跟上这一帧。单灯模式下 `lamps::MAX_LAMPS` 那个分支不成立，`specs` 为空，
 /// 于是所有组灯被关掉 —— 从多灯切回单灯自然也走这条路。
+///
+/// **锁里只算计划，窗口操作一律在锁外**。`open` 最终会调
+/// `WebviewWindowBuilder::build()`，从非主线程发起时会阻塞等主事件循环；而主线程上
+/// 的 `set_peek` / `set_settings` 也要调进这里抢同一把锁 —— 抱着锁建窗，两边就是
+/// 互等（issue #4）。所以固定三步：锁内 `plan` → 锁外动窗口 → 锁内 `commit`。
 fn sync_lamps(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapshot) {
+    use lamps::LampHost;
+
     let specs = lamp_specs(app, settings, snapshot);
     let handle = app.state::<SharedLamps>();
-    let mut lamps = handle.lock().expect("lamps poisoned");
-    lamps.reconcile(&lamps::TauriHost(app), &specs);
+
+    let plan = {
+        let mut lamps = handle.lock().expect("lamps poisoned");
+        lamps.plan(&specs)
+    };
+
+    let host = lamps::TauriHost(app);
+    let closed: Vec<(String, Option<(i32, i32)>)> = plan
+        .close
+        .iter()
+        .map(|label| (label.clone(), host.close(label)))
+        .collect();
+    for (label, size) in &plan.resize {
+        host.resize(label, *size);
+    }
+    let failed: Vec<String> = plan
+        .open
+        .iter()
+        .filter(|open| !host.open(&open.label, &open.group, open.at, open.size))
+        .map(|open| open.label.clone())
+        .collect();
+
+    // 记账 + 取快照都在这一小段里；落盘放到锁外。
+    let (dirty, positions) = {
+        let mut lamps = handle.lock().expect("lamps poisoned");
+        let dirty = lamps.commit(&closed, &failed);
+        (dirty, lamps.positions_snapshot())
+    };
+    if dirty {
+        lamps::save_positions(&positions);
+    }
 }
 
 /// 一次状态 / 设置变化之后，把**所有**窗口的布局同步一遍：主灯尺寸 + 各组的灯。

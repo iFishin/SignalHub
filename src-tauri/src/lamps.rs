@@ -90,15 +90,39 @@ pub struct LampSpec {
 
 /// 建 / 改 / 关灯窗的副作用。
 ///
-/// 抽成 trait 是为了让 `LampWindows::reconcile` 的差集逻辑（增 / 删 / 保留 / 改尺寸）
+/// 抽成 trait 是为了让 `LampWindows` 的差集逻辑（增 / 删 / 保留 / 改尺寸）
 /// 能在没有真实窗口的情况下单测 —— 建真窗口要一个 Tauri 应用，测试里造不出来。
 pub trait LampHost {
     /// 按 `at`（记着的位置，物理像素）建这个组的灯窗，初始尺寸 `size`。
-    fn open(&self, label: &str, group: &str, at: Option<(i32, i32)>, size: (u16, u16));
+    /// 返回 `false` = 没建成（调用方会撤掉记账，下一帧再试）。
+    fn open(&self, label: &str, group: &str, at: Option<(i32, i32)>, size: (u16, u16)) -> bool;
     /// 改这个窗的尺寸。
     fn resize(&self, label: &str, size: (u16, u16));
     /// 关掉这个窗，返回它最后的位置（好记下来）。
     fn close(&self, label: &str) -> Option<(i32, i32)>;
+}
+
+/// 一个「该建出来」的灯窗。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenSpec {
+    pub label: String,
+    pub group: String,
+    /// 记着的位置（物理像素）；`None` = 这一组第一次出现。
+    pub at: Option<(i32, i32)>,
+    pub size: (u16, u16),
+}
+
+/// 这一帧要对窗口做的事。**在锁里算出来，拿去锁外执行**。
+///
+/// 为什么要分两步：`open` 最终会调 `WebviewWindowBuilder::build()`，而从非主线程
+/// 建窗是「投递给主事件循环 + 阻塞等回执」。如果算计划时还握着 `Lamps` 锁，主线程
+/// 上的 `set_peek` / `set_settings` 也会来要同一把锁 —— 两边互等，整个应用冻住
+/// （见 issue #4）。
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Plan {
+    pub close: Vec<String>,
+    pub resize: Vec<(String, (u16, u16))>,
+    pub open: Vec<OpenSpec>,
 }
 
 /// 真机上唯一用到的 `LampHost`：用 `WebviewWindowBuilder` 建真窗口。
@@ -170,11 +194,11 @@ impl TauriHost<'_> {
 }
 
 impl LampHost for TauriHost<'_> {
-    fn open(&self, label: &str, group: &str, at: Option<(i32, i32)>, size: (u16, u16)) {
+    fn open(&self, label: &str, group: &str, at: Option<(i32, i32)>, size: (u16, u16)) -> bool {
         let app = self.0;
         // 已经有一盏就不重建（布局在 single / per-group 之间来回切时会出现这种情况）
         if app.get_webview_window(label).is_some() {
-            return;
+            return true;
         }
         let url = format!("index.html?window=light&group={}", encode_query(group));
         // 记着位置就回原位 —— **但先夹回可见区**（那块屏可能已经不在了，见
@@ -216,8 +240,12 @@ impl LampHost for TauriHost<'_> {
                 }
                 // 组灯也要能贴边吸附（和主灯同一套，见 lib.rs 的 `wire_snap`）
                 crate::wire_snap(app, &window);
+                true
             }
-            Err(err) => eprintln!("[signalhub] 建灯窗 {label} 失败: {err}"),
+            Err(err) => {
+                eprintln!("[signalhub] 建灯窗 {label} 失败: {err}");
+                false
+            }
         }
     }
 
@@ -256,9 +284,14 @@ impl LampWindows {
         Self { positions, ..Self::default() }
     }
 
-    /// 让开着的灯窗跟上 `specs`：多的关掉、少的建出来、尺寸变了的改尺寸。
-    pub fn reconcile(&mut self, host: &dyn LampHost, specs: &[LampSpec]) {
+    /// 算这一帧要做的窗口操作，**只动自己的记账，不碰任何窗口**。
+    ///
+    /// 记账是**乐观**的：新组在计划里就已经算作「开着」了。这样并发进来的下一帧
+    /// （主线程和后台线程都会调 `sync_lamps`）看到的是同一份判断，不会重复建窗。
+    /// 建失败由 [`Self::commit`] 撤掉。
+    pub fn plan(&mut self, specs: &[LampSpec]) -> Plan {
         let desired: BTreeSet<&str> = specs.iter().map(|spec| spec.group.as_str()).collect();
+        let mut plan = Plan::default();
 
         // 关：开着的、但这一帧不该有的
         let gone: Vec<String> = self
@@ -267,16 +300,12 @@ impl LampWindows {
             .filter(|group| !desired.contains(group.as_str()))
             .cloned()
             .collect();
-        let mut moved = false;
         for group in gone {
             let Some(label) = self.open.remove(&group) else {
                 continue;
             };
             self.sizes.remove(&label);
-            if let Some(at) = host.close(&label) {
-                self.positions.insert(label, at);
-                moved = true;
-            }
+            plan.close.push(label);
         }
 
         // 建 / 改尺寸
@@ -285,19 +314,72 @@ impl LampWindows {
                 if self.sizes.get(&label) == Some(&spec.size) {
                     continue;
                 }
-                host.resize(&label, spec.size);
+                plan.resize.push((label.clone(), spec.size));
                 self.sizes.insert(label, spec.size);
                 continue;
             }
             let label = label_for(&spec.group);
-            host.open(&label, &spec.group, self.positions.get(&label).copied(), spec.size);
+            plan.open.push(OpenSpec {
+                label: label.clone(),
+                group: spec.group.clone(),
+                at: self.positions.get(&label).copied(),
+                size: spec.size,
+            });
             self.sizes.insert(label.clone(), spec.size);
             self.open.insert(spec.group.clone(), label);
         }
 
-        if moved {
-            let _ = write_positions(&self.positions);
+        plan
+    }
+
+    /// 把执行结果记回来。返回 `true` = 位置记忆变了，调用方该落盘。
+    ///
+    /// **在锁里调，但只做内存操作** —— 落盘在锁外（`write_positions`），否则一次
+    /// 磁盘写就把这把锁占住了。
+    pub fn commit(&mut self, closed: &[(String, Option<(i32, i32)>)], failed: &[String]) -> bool {
+        let mut moved = false;
+        for (label, at) in closed {
+            if let Some(at) = at {
+                self.positions.insert(label.clone(), *at);
+                moved = true;
+            }
         }
+        // 建窗失败：把乐观记账撤掉，下一帧再试。不退的话这一组永远没有灯，而界面上
+        // 看不出任何区别 —— 只有一条 stderr。
+        for label in failed {
+            self.open.retain(|_, open_label| open_label != label);
+            self.sizes.remove(label);
+        }
+        moved
+    }
+
+    /// 位置记忆的快照（落盘用；在锁外写，见 [`Self::commit`]）。
+    pub fn positions_snapshot(&self) -> BTreeMap<String, (i32, i32)> {
+        self.positions.clone()
+    }
+
+    /// `plan` + 同步执行 + `commit` 的便利形态。
+    ///
+    /// **只给单测用**：真实路径（`lib.rs` 的 `sync_lamps`）必须把三步分开，让窗口
+    /// 操作落在锁外。这里把三步串起来正是因为测试里没有锁、也没有真窗口。
+    #[cfg(test)]
+    pub fn reconcile(&mut self, host: &dyn LampHost, specs: &[LampSpec]) {
+        let plan = self.plan(specs);
+        let closed: Vec<(String, Option<(i32, i32)>)> = plan
+            .close
+            .iter()
+            .map(|label| (label.clone(), host.close(label)))
+            .collect();
+        for (label, size) in &plan.resize {
+            host.resize(label, *size);
+        }
+        let failed: Vec<String> = plan
+            .open
+            .iter()
+            .filter(|open| !host.open(&open.label, &open.group, open.at, open.size))
+            .map(|open| open.label.clone())
+            .collect();
+        self.commit(&closed, &failed);
     }
 }
 
@@ -334,6 +416,13 @@ fn write_positions(positions: &BTreeMap<String, (i32, i32)>) -> io::Result<()> {
     config::atomic_write(&positions_file()?, &json, None)
 }
 
+/// 落盘一份位置快照。**在 `Lamps` 锁外调**（见 [`LampWindows::commit`]）。
+pub fn save_positions(positions: &BTreeMap<String, (i32, i32)>) {
+    if let Err(err) = write_positions(positions) {
+        eprintln!("[signalhub] 记灯窗位置失败: {err}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,6 +436,8 @@ mod tests {
         closed: RefCell<Vec<String>>,
         /// 已知的位置，`close` 时返回它（模拟「窗口还记得自己拖到哪」）。
         known: BTreeMap<String, (i32, i32)>,
+        /// 让建窗失败（按 label），验证「失败会被撤账、下一帧重试」。
+        failing: std::cell::RefCell<BTreeSet<String>>,
     }
 
     impl FakeHost {
@@ -362,9 +453,13 @@ mod tests {
     }
 
     impl LampHost for FakeHost {
-        fn open(&self, label: &str, group: &str, _at: Option<(i32, i32)>, size: (u16, u16)) {
+        fn open(&self, label: &str, group: &str, _at: Option<(i32, i32)>, size: (u16, u16)) -> bool {
+            if self.failing.borrow().contains(label) {
+                return false;
+            }
             self.open.borrow_mut().insert(label.to_string(), group.to_string());
             self.resized.borrow_mut().insert(label.to_string(), size);
+            true
         }
         fn resize(&self, label: &str, size: (u16, u16)) {
             self.resized.borrow_mut().insert(label.to_string(), size);
@@ -460,6 +555,58 @@ mod tests {
         // 回来时带着位置
         lamps.reconcile(&host, &[spec("a", 10, 10)]);
         assert_eq!(host.open_groups(), vec!["a"]);
+    }
+
+    /// **建窗失败不能被记成「已经开着」** —— 记错了这一组就永远没有灯，而界面上
+    /// 和「组还没出现」一模一样。
+    #[test]
+    fn a_failed_open_is_retried_on_the_next_frame() {
+        let host = FakeHost::default();
+        host.failing.borrow_mut().insert(label_for("a"));
+        let mut lamps = LampWindows::default();
+
+        lamps.reconcile(&host, &[spec("a", 10, 10)]);
+        assert!(host.open.borrow().is_empty(), "这一帧确实没建成");
+        assert!(lamps.open.is_empty(), "失败不该被记账");
+
+        host.failing.borrow_mut().clear();
+        lamps.reconcile(&host, &[spec("a", 10, 10)]);
+        assert_eq!(host.open_groups(), vec!["a"], "下一帧该再试一次");
+    }
+
+    /// 算计划和动窗口是两步 —— 锁只包住前一步，所以 `plan` 绝不能碰窗口。
+    #[test]
+    fn plan_computes_without_touching_any_window() {
+        let host = FakeHost::default();
+        let mut lamps = LampWindows::default();
+
+        let plan = lamps.plan(&[spec("a", 10, 10)]);
+        assert_eq!(plan.open.len(), 1);
+        assert!(host.open.borrow().is_empty(), "plan 阶段不能建窗");
+
+        // 乐观记账：同一批再来一次，计划里不该重复建
+        assert!(lamps.plan(&[spec("a", 10, 10)]).open.is_empty());
+
+        // 尺寸变了才算 resize
+        assert_eq!(lamps.plan(&[spec("a", 20, 20)]).resize.len(), 1);
+
+        // 组没了只出 close，仍然不碰窗口
+        assert_eq!(lamps.plan(&[]).close, vec![label_for("a")]);
+        assert!(host.closed.borrow().is_empty());
+    }
+
+    /// 关窗时拿到的位置要在 `commit` 里记下来，并且告诉调用方「该落盘了」。
+    #[test]
+    fn commit_records_positions_and_reports_a_change() {
+        let mut lamps = LampWindows::default();
+        lamps.plan(&[spec("a", 10, 10)]);
+        lamps.commit(&[], &[]);
+
+        let label = label_for("a");
+        assert_eq!(lamps.plan(&[]).close, vec![label.clone()]);
+        assert!(!lamps.commit(&[(label.clone(), None)], &[]), "没位置就不用落盘");
+        assert!(lamps.commit(&[(label.clone(), Some((7, 9)))], &[]));
+        assert_eq!(lamps.positions_snapshot().get(&label), Some(&(7, 9)));
     }
 
     #[test]
