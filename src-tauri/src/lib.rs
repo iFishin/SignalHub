@@ -15,6 +15,7 @@ mod panel;
 mod receipts;
 mod server;
 mod shortcuts;
+mod shell;
 mod state;
 mod stats;
 mod sweep;
@@ -1224,9 +1225,7 @@ async fn try_agent(app: tauri::AppHandle, agent: String) -> Result<ProbeOutcome,
         std::thread::spawn(move || {
             use std::io::Write;
 
-            let spawned = std::process::Command::new("sh")
-                .arg("-c")
-                .arg(&program)
+            let spawned = shell::command(&program)
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())

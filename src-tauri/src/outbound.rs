@@ -663,19 +663,7 @@ fn explain(value: &serde_json::Value, text_key: &str, fallback: &str) -> String 
 /// 走 `sh -c` / `cmd /C`，所以用户能写管道和重定向（这正是钩子有用的地方）。
 /// 输出全部丢弃：钩子是用来触发副作用的，它的 stdout 没地方去。
 fn run_command(command: &str) -> Result<(), String> {
-    #[cfg(windows)]
-    let mut process = {
-        let mut process = std::process::Command::new("cmd");
-        process.args(["/C", command]);
-        process
-    };
-    #[cfg(not(windows))]
-    let mut process = {
-        let mut process = std::process::Command::new("sh");
-        process.args(["-c", command]);
-        process
-    };
-
+    let mut process = crate::shell::command(command);
     let mut child = process
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
