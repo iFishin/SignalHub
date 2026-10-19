@@ -105,15 +105,16 @@ export function isActivePreset(preset: Preset, settings: Settings): boolean {
 }
 
 /**
- * 逐个状态的灯效预设：颜色 / 形状 / 节奏三样一起给。
+ * 逐个状态的灯效预设：形状 / 节奏两样一起给。
  *
  * 与上面那几套的区别是它们回答的是**两个不同的问题**：那几套管「整块牌有多大、
  * 多透、显示哪几段」，这几套管「红灯和绿灯怎么区分开」。混在一起会变成一套
  * 谁也说不清的组合。
  *
- * 每套给的是**完整的一份 `styles` 表**，应用就是整份替换 —— 所以「当前是哪一套」
- * 可以靠整体相等判断出来（见 `isActiveStylePreset`）。用户改掉任意一格之后
- * 高亮就会消失，那是对的：它已经不是那一套了。
+ * **预设只管形状和节奏。** `styles` 这张表里还住着每个状态的颜色和静默超时
+ * （见 `useSettings.ts` 的 `StateStyle`）—— 它们不是「灯效预设」该决定的东西，
+ * 应用预设时必须原样留着（见 `applyStylePreset`）。早先的实现是整份替换，
+ * 点一下预设就把用户调好的颜色和 TTL 静默删了（issue #8）。
  */
 export interface StylePreset {
   id: string;
@@ -171,18 +172,50 @@ export function stylePresets(m: Messages): StylePreset[] {
   ];
 }
 
-/** 这一格有没有被覆盖过（空对象和全是 null 都算没有）。 */
-function hasAny(style: StateStyle | undefined): boolean {
-  return (
-    !!style &&
-    (style.color != null || style.shape != null || style.blink_ms != null)
-  );
+/**
+ * 把预设合并进现有的 `styles` 表。
+ *
+ * 预设拥有**形状和节奏**；颜色与静默超时是用户自己的，原样保留。整份替换会把
+ * 它们一起删掉 —— 而界面上没有任何提示，用户只会觉得「我明明调过」。
+ */
+export function applyStylePreset(
+  current: Record<string, StateStyle>,
+  preset: Record<string, StateStyle>,
+): Record<string, StateStyle> {
+  const states = new Set([...Object.keys(current), ...Object.keys(preset)]);
+  const merged: Record<string, StateStyle> = {};
+  for (const state of states) {
+    const kept = current[state] ?? {};
+    const own = preset[state] ?? {};
+    const style: StateStyle = {
+      color: kept.color ?? null,
+      ttl_ms: kept.ttl_ms ?? null,
+      shape: own.shape ?? null,
+      blink_ms: own.blink_ms ?? null,
+    };
+    // 一样都没写的条目没有作用（Rust 的 `clamped()` 也会丢掉），先在这里丢：
+    // 否则「这一格改过没有」的判断会和保存之后不一致
+    if (
+      style.color == null &&
+      style.ttl_ms == null &&
+      style.shape == null &&
+      style.blink_ms == null
+    ) {
+      continue;
+    }
+    merged[state] = style;
+  }
+  return merged;
+}
+
+/** 预设管的那两项（形状 / 节奏）。颜色和 TTL 不参与「是哪一套」的判断。 */
+function hasShapeOrRhythm(style: StateStyle | undefined): boolean {
+  return !!style && (style.shape != null || style.blink_ms != null);
 }
 
 /** 逐字段比，不比对象引用也不比 JSON 字符串 —— 键顺序在 Rust 那边往返一趟会变。 */
-function sameStyle(a: StateStyle, b: StateStyle): boolean {
+function sameShapeOrRhythm(a: StateStyle, b: StateStyle): boolean {
   return (
-    (a.color ?? null) === (b.color ?? null) &&
     (a.shape ?? null) === (b.shape ?? null) &&
     (a.blink_ms ?? null) === (b.blink_ms ?? null)
   );
@@ -193,16 +226,16 @@ export function isActiveStylePreset(
   settings: Settings,
 ): boolean {
   const want = Object.keys(preset.styles).filter((key) =>
-    hasAny(preset.styles[key]),
+    hasShapeOrRhythm(preset.styles[key]),
   );
   const have = Object.keys(settings.styles).filter((key) =>
-    hasAny(settings.styles[key]),
+    hasShapeOrRhythm(settings.styles[key]),
   );
   if (want.length !== have.length) return false;
 
   return want.every(
     (key) =>
       have.includes(key) &&
-      sameStyle(preset.styles[key], settings.styles[key]),
+      sameShapeOrRhythm(preset.styles[key], settings.styles[key]),
   );
 }

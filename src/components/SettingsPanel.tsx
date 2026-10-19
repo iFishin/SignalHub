@@ -40,7 +40,13 @@ import { useShortcuts } from "../lib/useShortcuts";
 import { percent, progressLabel } from "../lib/updateProgress";
 import { useUpdate } from "../lib/useUpdate";
 import { colorVars, resolveColors } from "../lib/palettes";
-import { presets, isActivePreset, stylePresets, isActiveStylePreset } from "../lib/presets";
+import {
+  presets,
+  isActivePreset,
+  stylePresets,
+  isActiveStylePreset,
+  applyStylePreset,
+} from "../lib/presets";
 import { nameChanged, withGroupName } from "../lib/groupMeta";
 import { SIGNALS, REPORTABLE_SIGNALS, type SignalState, type Snapshot } from "../lib/types";
 
@@ -753,7 +759,8 @@ function PerStateStyles({
     <>
       <Row label={m.presets}>
         {/* seg 而不是 chip：这是一组里选一个，和下面的形状 / 节奏两列同一件事。
-            预设给的是**完整**一份表，所以是整份替换而不是合并。 */}
+            预设只覆盖**形状和节奏**，颜色与静默超时合并时保留（见
+            `applyStylePreset`）—— 整份替换会把用户调好的那两样静默删掉。 */}
         <div className="seg">
           {stylePresets(m).map((preset) => (
             <button
@@ -761,7 +768,9 @@ function PerStateStyles({
               type="button"
               title={preset.hint}
               data-active={isActiveStylePreset(preset, settings)}
-              onClick={() => patch({ styles: preset.styles })}
+              onClick={() =>
+                patch({ styles: applyStylePreset(settings.styles, preset.styles) })
+              }
             >
               {preset.label}
             </button>
