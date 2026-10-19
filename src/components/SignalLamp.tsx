@@ -10,7 +10,7 @@ import { labelOf, orderVisible } from "../lib/lampSort";
 import { nameChanged, withGroupName } from "../lib/groupMeta";
 import { useNow } from "../lib/useNow";
 import { useToggles } from "../lib/useToggles";
-import { ApprovalBubble } from "./ApprovalBubble";
+import { ApprovalBubble, MAX_APPROVAL_BUBBLES } from "./ApprovalBubble";
 import type { Approval } from "../lib/useApprovals";
 import { updateSettings, type GroupMeta, type Settings } from "../lib/useSettings";
 import type { GroupView, SignalState } from "../lib/types";
@@ -206,6 +206,10 @@ export function SignalLamp({ aggregate, groups, settings, paused, approvals, onD
   // 待审批的条数：Rust 的 `approval_area` 按**同一个数**给窗口留高度（见 lamp.css
   // 的 `--bubble-h`）。数错了就是气泡被裁掉一半 —— 而那两个按钮是唯一的出路。
   const pending = approvals?.length ?? 0;
+  // 窗口高度只按**画出来的**条数留（Rust 的 `approval_area` 同样夹到 3 条）。
+  // 用真实条数算留白的话，4 条以上时牌子和气泡会叠在一起 —— 多出来的那几条
+  // 本来就不画（见 `ApprovalBubble`）。
+  const bubbles = Math.min(pending, MAX_APPROVAL_BUBBLES);
   const { size, quiet, collapsed, show, sign_opacity, hidden_groups } = settings;
   const m = useMessages();
   const lang = useLang();
@@ -401,9 +405,9 @@ export function SignalLamp({ aggregate, groups, settings, paused, approvals, onD
       style={
         {
           "--size": `${size}px`,
-          // 气泡占多高（见 lamp.css）：条数就是下面那个 `pending`，而 Rust 的
+          // 气泡占多高（见 lamp.css）：条数就是下面那个 `bubbles`，而 Rust 的
           // `approval_area` 按**同一个数**给窗口留高度 —— 三个地方一个数。
-          "--approvals": pending,
+          "--approvals": bubbles,
           ...lampVars(settings),
         } as React.CSSProperties
       }
