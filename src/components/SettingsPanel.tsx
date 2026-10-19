@@ -1,5 +1,8 @@
 import {
+  createContext,
+  useContext,
   useEffect,
+  useId,
   useState,
   type ChangeEvent,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -255,13 +258,23 @@ interface Props {
   snapshot: Snapshot;
 }
 
+/**
+ * `Row` 把这一行标签的 id 放进来，里面的开关 / 滑杆据此拿到**可访问名称**。
+ *
+ * 没有它的话，读屏用户听到的是「开关、开关、滑杆、滑杆……」—— 哪个是「允许局域网
+ * 访问」完全听不出来，而这个面板就是整个应用的控制面（issue #18）。
+ */
+const RowLabel = createContext<string | undefined>(undefined);
+
 function Switch({ on, onChange }: { on: boolean; onChange: (on: boolean) => void }) {
+  const labelId = useContext(RowLabel);
   return (
     <button
       type="button"
       className="switch"
       role="switch"
       aria-checked={on}
+      aria-labelledby={labelId}
       data-on={on}
       onClick={() => onChange(!on)}
     >
@@ -370,9 +383,10 @@ function Row({
   children: React.ReactNode;
 }) {
   const m = useMessages();
+  const labelId = useId();
   return (
     <div className="row" title={title}>
-      <span className="row-label">
+      <span className="row-label" id={labelId}>
         {label}
         {/* ↺ 紧跟在名字后面，而不是压在右边控件的后面：控件的位置于是不会因为
             「这一行改过没有」而左右跳。 */}
@@ -388,7 +402,7 @@ function Row({
           </button>
         )}
       </span>
-      {children}
+      <RowLabel.Provider value={labelId}>{children}</RowLabel.Provider>
       {hint && <p className="row-hint">{hint}</p>}
     </div>
   );
@@ -416,10 +430,12 @@ function Slider({
   onChange: (value: number) => void;
   format: (value: number) => string;
 }) {
+  const labelId = useContext(RowLabel);
   return (
     <div className="slider">
       <input
         type="range"
+        aria-labelledby={labelId}
         min={min}
         max={max}
         step={step}
