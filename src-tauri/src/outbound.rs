@@ -480,19 +480,37 @@ pub fn compose_custom(
 }
 
 /// 把模板里的 `{占位符}` 换掉。
+///
+/// **单遍扫描**，不是逐个 `replace`：后者的毛病是替换进去的值会被后面的占位符再
+/// 扫一遍 —— 一条内容恰好是 `{group}` 的说明会被换成一个组名，而那明明是人写的字。
 fn expand(template: &str, fields: &TemplateFields, json: bool) -> String {
-    let mut out = template.to_string();
-    for name in crate::config::TEMPLATE_PLACEHOLDERS {
-        let Some(value) = fields.get(name) else {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        // 占位符名只允许 ASCII 字母数字和下划线 —— 和保存期校验（`unknown_placeholder`）
+        // 用同一条形状规则，否则「校验说能用、实际换不掉」就成了新的哑谜。
+        let mut end = 0;
+        for (offset, ch) in after.char_indices() {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                end = offset + ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        if end > 0
+            && after[end..].starts_with('}')
+            && let Some(value) = fields.get(&after[..end])
+        {
+            out.push_str(&if json { json_escape(&value) } else { value });
+            rest = &after[end + 1..];
             continue;
-        };
-        let value = if json {
-            json_escape(&value)
-        } else {
-            value
-        };
-        out = out.replace(&format!("{{{name}}}"), &value);
+        }
+        out.push('{');
+        rest = after;
     }
+    out.push_str(rest);
     out
 }
 
@@ -1319,6 +1337,25 @@ mod tests {
             &TemplateFields::default(),
         );
         assert_eq!(request.body, r#"{"a":{}}/{nope}"#);
+    }
+
+    /// 替换进去的值**不再被扫一遍**：一条内容恰好是 `{group}` 的说明该原样留着，
+    /// 而不是被换成一个组名。
+    #[test]
+    fn substituted_values_are_not_expanded_again() {
+        let fields = TemplateFields {
+            group: "构建".into(),
+            message: "literal {group} here".into(),
+            ..TemplateFields::default()
+        };
+        let request = compose_custom(
+            "https://x",
+            &BTreeMap::new(),
+            "{message}",
+            "text/plain",
+            &fields,
+        );
+        assert_eq!(request.body, "literal {group} here");
     }
 
     /// 每个预设的 content-type 和 body 形状。**这张表就是「转发到底发了什么」的
