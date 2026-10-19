@@ -1,5 +1,7 @@
+import { useMemo } from "react";
 import type { Approval } from "../lib/useApprovals";
 import { useMessages } from "../lib/i18n";
+import { useNow } from "../lib/useNow";
 
 /**
  * 灯上一叠「等着你点」的气泡（从灯上审批，见 `approvals.rs`）。
@@ -22,6 +24,16 @@ interface Props {
 
 export function ApprovalBubble({ approvals, onDecide }: Props) {
   const m = useMessages();
+  // `age_ms` 是 Rust 在**拉列表那一刻**算的快照，之后不会自己变（列表只在登记 /
+  // 决定 / 过期时重推）。于是「已等待 12 秒」会一直停在收到它的那一刻 —— 而这条
+  // 数字唯一的用处就是「还要等多久」。用 `useNow` 每秒自己往前推。
+  const now = useNow(true);
+  // 收到一条时反推出它的开始时刻，之后按 now 算年龄；列表一刷新就跟着重算。
+  const startedAt = useMemo(
+    () => new Map(approvals.map((approval) => [approval.id, Date.now() - approval.age_ms])),
+    [approvals],
+  );
+
   if (approvals.length === 0) return null;
 
   const shown = approvals.slice(0, MAX_APPROVAL_BUBBLES);
@@ -34,7 +46,11 @@ export function ApprovalBubble({ approvals, onDecide }: Props) {
             <span className="approval-session" title={approval.session}>
               {approval.session}
             </span>
-            <span>{m.approvalWaiting(Math.round(approval.age_ms / 1000))}</span>
+            <span>
+              {m.approvalWaiting(
+                Math.round(Math.max(0, now - (startedAt.get(approval.id) ?? now)) / 1000),
+              )}
+            </span>
           </div>
           {/* 命令全文 / 文件路径 / 输入 JSON。`pre-wrap` + 滚动（高度是固定的，
               见 lamp.css —— 不能让它把窗口撑开）。 */}

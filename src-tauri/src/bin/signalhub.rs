@@ -659,11 +659,29 @@ fn run_command(flags: &Flags) -> Result<(), Failure> {
     ))
 }
 
+/// 路径段百分号编码。
+///
+/// 会话名是上报方随便起的（`feature/x`、`我的会话`、带空格的都有），直接拼进
+/// `/sessions/{session}` 会变成另一个路径或者一个非法 URI —— 表现是 `clear`
+/// 和 `SessionEnd` 静默地没清掉那条会话（issue #17）。
+fn encode_path_segment(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
 fn clear(flags: &Flags) -> Result<(), Failure> {    let endpoint = Endpoint::discover(flags)?;
     let session = flags.session.as_deref().unwrap_or("default");
 
     let (status, text) = read_response!(client()
-        .delete(&endpoint.url(&format!("/sessions/{session}")))
+        .delete(&endpoint.url(&format!("/sessions/{}", encode_path_segment(session))))
         .header("Authorization", &endpoint.auth())
         .call());
     let parsed = expect_success(status, &text)?;
@@ -1146,7 +1164,7 @@ fn send_action(
         }
         Action::Clear => {
             let (status, text) = read_response!(client()
-                .delete(&endpoint.url(&format!("/sessions/{session}")))
+                .delete(&endpoint.url(&format!("/sessions/{}", encode_path_segment(session))))
                 .header("Authorization", &endpoint.auth())
                 .call());
             expect_success(status, &text).map(|_| ())
@@ -1183,6 +1201,16 @@ mod tests {
     use super::*;
     // 只有这条用例用得着（非测试构建里是死代码，所以不放进上面的导入表）
     use crate::hookmap::TARGET_MAX;
+
+    /// 会话名进 URL 路径前必须编码：`feature/x` 会变成另一个路径，中文和空格
+    /// 会拼出非法 URI —— 两种都表现为 `clear` 静默地没清掉（issue #17）。
+    #[test]
+    fn session_names_are_encoded_before_going_into_the_path() {
+        assert_eq!(encode_path_segment("build-1"), "build-1");
+        assert_eq!(encode_path_segment("feature/x"), "feature%2Fx");
+        assert_eq!(encode_path_segment("我的会话"), "%E6%88%91%E7%9A%84%E4%BC%9A%E8%AF%9D");
+        assert_eq!(encode_path_segment("a b?c#d"), "a%20b%3Fc%23d");
+    }
 
     fn event(name: &str) -> Value {
         json!({ "hook_event_name": name, "session_id": "s-1", "cwd": "/proj" })

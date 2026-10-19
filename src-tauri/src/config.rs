@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// 圆点直径的允许范围。config.json 是用户可手改的文件，属于系统边界，
 /// 所以加载时要夹紧——否则一个手滑的 2000 会在屏幕上摊出一个巨型窗口。
@@ -1454,11 +1455,16 @@ pub(crate) fn atomic_write(path: &Path, contents: &str, mode: Option<u32>) -> io
     let name = path
         .file_name()
         .ok_or_else(|| io::Error::other("目标路径没有文件名"))?;
-    // 带上进程 id：两个实例同时写（托盘和设置窗各触发一次）时不至于互相踩同一个临时文件
+    // 带上进程 id **和一个进程内计数器**：单实例插件保证只有一个进程，真正并发
+    // 的是同一进程里的两个线程（出站钩子的「发送测试」会并发跑）。只用 pid 的话
+    // 两边会抢同一个临时文件 —— 一个 rename 成功、另一个失败，或者互相覆盖掉
+    // 一轮记录（issue #17）。
+    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
     let tmp = dir.join(format!(
-        ".{}.{}.tmp",
+        ".{}.{}.{}.tmp",
         name.to_string_lossy(),
-        std::process::id()
+        std::process::id(),
+        TMP_SEQ.fetch_add(1, Ordering::Relaxed),
     ));
 
     match write_then_rename(&tmp, &path, contents, mode) {
@@ -1558,8 +1564,43 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap(), "second", "覆盖要生效");
     }
 
-    /// **不留临时文件。** 半截的 `.config.json.<pid>.tmp` 落在用户的 `~/.signalhub`
-    /// 里，下次只会让人困惑「这是什么、能不能删」。
+    /// 同一进程里的两个线程同时写同一个文件 —— 出站钩子的「发送测试」就是并发
+    /// 跑所有勾选的地址，每个都可能顺手落盘一次。临时文件名只带 pid 时两边会
+    /// 抢同一个名字：一个 rename 成功、另一个 ENOENT，或者互相覆盖（issue #17）。
+    #[test]
+    fn concurrent_writes_in_one_process_do_not_collide() {
+        let dir = TempDir::new();
+        let path = dir.file("config.json");
+        let writers: Vec<_> = (0..4)
+            .map(|writer| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    for round in 0..50 {
+                        atomic_write(&path, &format!("{{\"w\":{writer},\"r\":{round}}}"), None)
+                            .expect("同一个进程里的并发写不该失败");
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+
+        // 最后留下的必须是**某一次完整的**写入，不能是两半拼起来的
+        let text = fs::read_to_string(&path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&text).expect("文件被写坏了");
+        assert!(parsed.get("w").is_some() && parsed.get("r").is_some(), "{text}");
+
+        let leftovers = fs::read_dir(&dir.0)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp"))
+            .count();
+        assert_eq!(leftovers, 0, "临时文件都不该留下");
+    }
+
+    /// **不留临时文件。** 半截的 `.config.json.<pid>.<seq>.tmp` 落在用户的
+    /// `~/.signalhub` 里，下次只会让人困惑「这是什么、能不能删」。
     #[test]
     fn atomic_write_leaves_no_temp_file_behind() {
         let dir = TempDir::new();
