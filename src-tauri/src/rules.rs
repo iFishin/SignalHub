@@ -54,8 +54,10 @@ pub fn silence(snapshot: &Snapshot, settings: &Settings) -> Option<Silence> {
 
 /// 会议组里有没有正在开着的会。
 ///
-/// 判据是**采集器的固定 session id**，不是组名：组名跟着界面语言变（「会议」/
-/// 「Meeting」），还可能被用户改名，拿名字认人迟早认错。
+/// 判据是**采集器的固定 session id + 信号源**，不是组名：组名跟着界面语言变
+/// （「会议」/「Meeting」），还可能被用户改名，拿名字认人迟早认错。而只认 id
+/// 也不够 —— 用户完全可能恰好手写一条 `--session meeting` 的上报；那条的
+/// `agent` 是 `claude-code` 之类，不是采集器的 `system`。
 ///
 /// **只认 `working`**：采集器散会时会报一条 `done`（「会议结束」），那条要按
 /// done 的 TTL 在灯上留一会儿。如果把它也算成「在开会」，那几十秒里会继续静音 ——
@@ -65,7 +67,11 @@ pub fn meeting_running(snapshot: &Snapshot) -> bool {
         .groups
         .iter()
         .flat_map(|g| &g.sessions)
-        .any(|s| s.id == crate::collect::Collector::Meeting.id() && s.state == Signal::Working)
+        .any(|s| {
+            s.id == crate::collect::Collector::Meeting.id()
+                && s.state == Signal::Working
+                && s.agent.as_deref() == Some(crate::collect::AGENT)
+        })
 }
 
 /// 有没有智能体正在干活。
@@ -232,6 +238,25 @@ mod tests {
             vec![session("meeting", Signal::Working, Some("system"))],
         )]);
         assert_eq!(silence(&snap, &settings), Some(Silence::Meeting));
+    }
+
+    /// 用户手写的会话恰好叫 `meeting` 时不能冒充采集器：判据里还要看信号源。
+    /// 采集器报的是 `system`，智能体会话报的是 `claude-code` 之类。
+    #[test]
+    fn a_users_session_named_meeting_is_not_the_collector() {
+        let snap = snapshot(vec![group(
+            "default",
+            Signal::Working,
+            0,
+            vec![session("meeting", Signal::Working, Some("claude-code"))],
+        )]);
+        assert!(!meeting_running(&snap), "没有 system 这个信号源，就不算会议");
+
+        let settings = Settings {
+            rule_busy_silence: false,
+            ..on()
+        };
+        assert_eq!(silence(&snap, &settings), None);
     }
 
     /// 散会那条 `done` 还挂在灯上时，不算「会议中」—— 通知要恢复。

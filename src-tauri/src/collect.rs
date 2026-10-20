@@ -144,30 +144,25 @@ impl Collector {
                 continue;
             }
 
-            let on = match self.sample() {
-                Ok(on) => {
-                    complaining = false;
-                    on
+            let sample = self.sample();
+            if let Err(why) = &sample {
+                if !complaining {
+                    complaining = true;
+                    complain(self, why);
                 }
-                Err(why) => {
-                    if !complaining {
-                        complaining = true;
-                        complain(self, &why);
-                    }
-                    // 问不出来就当「没有」：**绝不把失败变成一条状态**。
-                    false
-                }
-            };
+            } else {
+                complaining = false;
+            }
 
             let lang = crate::current_lang(app);
-            match (was_on, on) {
+            match step(was_on, &sample) {
                 // 开始了，以及持续中（每跳重报一次，把 TTL 续上）
-                (_, true) => {
+                Step::Running => {
                     was_on = true;
                     report(app, self, Signal::Working, self.message(lang), Some(TTL_MS));
                 }
                 // 收工：报一次 `done`，停留时间跟着设置里那个值
-                (true, false) => {
+                Step::Done => {
                     was_on = false;
                     report(
                         app,
@@ -177,10 +172,36 @@ impl Collector {
                         None,
                     );
                 }
-                // 一直没在发生：什么都不做
-                (false, false) => {}
+                // 一直没在发生 / 这次没问出来：都不报状态（见 `Step`）
+                Step::Quiet | Step::Unknown => {}
             }
         }
+    }
+}
+
+/// 这一拍该做什么。
+///
+/// **`Unknown` 必须单独一类。** 早期版本把「这次没问出来」直接当成 `false`，
+/// 于是采集器从「正在备份」变成一次 `tmutil` 失败时，会报一条「备份完成」——
+/// 把「不知道」说成了「结束了」。上一条的 TTL 会自己过期，那才是诚实的表现。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    /// 正在发生：报 `working`，顺手续 TTL。
+    Running,
+    /// 刚从发生变成没发生：报一次 `done`。
+    Done,
+    /// 一直没在发生：什么都不做。
+    Quiet,
+    /// 这次没问出来：什么都不做，**`was_on` 保持原样**。
+    Unknown,
+}
+
+fn step(was_on: bool, sample: &Result<bool, String>) -> Step {
+    match sample {
+        Ok(true) => Step::Running,
+        Ok(false) if was_on => Step::Done,
+        Ok(false) => Step::Quiet,
+        Err(_) => Step::Unknown,
     }
 }
 
@@ -459,7 +480,7 @@ mod mac {
 /// ```text
 /// Backup session status:
 /// {
-///     "Running" = 1;
+///     Running = 1;
 ///     ...
 /// }
 /// ```
@@ -709,6 +730,20 @@ mod tests {
             "问不出来不能当成没有"
         );
         assert!(any_in_use(unknown(), no()).is_err());
+    }
+
+    /// 「问不出来」绝不能变成「结束了」：那会报一条「备份完成 / 会议结束」，
+    /// 而真相是我们不知道。这一拍什么都不做，上一条的 TTL 自己过期。
+    #[test]
+    fn a_failed_query_is_unknown_not_done() {
+        let failed: Result<bool, String> = Err("tmutil 挂了".to_string());
+        assert_eq!(step(true, &failed), Step::Unknown);
+        assert_eq!(step(false, &failed), Step::Unknown);
+
+        assert_eq!(step(false, &Ok(true)), Step::Running);
+        assert_eq!(step(true, &Ok(true)), Step::Running);
+        assert_eq!(step(true, &Ok(false)), Step::Done);
+        assert_eq!(step(false, &Ok(false)), Step::Quiet);
     }
 
     /// 真机探针（默认忽略，CI 不跑）：证明 FFI 声明和本机框架对得上。

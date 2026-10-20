@@ -325,6 +325,9 @@ pub const DEFAULT_SOURCE: &str = "agent";
 /// 非 Unix 上直接丢掉，而不是存下来又不去探活：那样一个已经死掉的进程号会
 /// 永远有值，`refresh_liveness` 也没法判断，最后只能变成「假空闲」。
 fn effective_pid(pid: Option<u32>) -> Option<u32> {
+    // 0 在 `kill(0, …)` 里表示「当前进程组」，不是一个进程号。存下来只会让
+    // 这个会话在下一拍被当成「进程没了」直接清掉 —— 当作没给更诚实。
+    let pid = pid.filter(|pid| *pid > 0);
     if cfg!(unix) { pid } else { None }
 }
 
@@ -1318,6 +1321,19 @@ mod tests {
         req.pid = Some(pid);
         let ttl = ttl_of(req.state, req.ttl_ms);
         s.apply(t, req, ttl)
+    }
+
+    /// 0 不是进程号（`kill(0, …)` 指的是当前进程组），入库时就该丢掉 ——
+    /// 否则下一拍探活会把它当成「进程没了」，会话凭空消失。
+    #[test]
+    #[cfg(unix)]
+    fn pid_zero_is_treated_as_no_pid() {
+        assert_eq!(effective_pid(Some(0)), None);
+        assert_eq!(effective_pid(Some(4242)), Some(4242));
+
+        let (mut s, t) = (Store::default(), Instant::now());
+        rep_pid(&mut s, t, "a", Signal::Working, 0);
+        assert!(s.sessions.values().all(|session| session.pid.is_none()));
     }
 
     /// 进程还活着、只是没上报 → 转「空闲」，不是「沉默」。

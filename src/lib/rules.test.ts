@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 import { MEETING_BLUE, meetingTint } from "./rules";
 import type { GroupView } from "./types";
 
-function group(sessionIds: string[], name = "会议"): GroupView {
+function group(
+  sessionIds: string[],
+  name = "会议",
+  agent = "system",
+): GroupView {
   return {
     name,
     default_label: null,
@@ -13,7 +17,7 @@ function group(sessionIds: string[], name = "会议"): GroupView {
     sessions: sessionIds.map((id) => ({
       id,
       state: "working",
-      agent: "system",
+      agent,
       cwd: null,
       message: null,
       age_ms: 0,
@@ -42,6 +46,16 @@ describe("meetingTint", () => {
   it("matches by session id, not by group name", () => {
     expect(meetingTint(group(["claude-code"], "会议"), true)).toBeUndefined();
     expect(meetingTint(group(["meeting"], "随便改的名字"), true)).toBe(MEETING_BLUE);
+  });
+
+  /**
+   * 用户手写的会话恰好叫 `meeting`（或随便哪个 id）时不能冒充采集器 ——
+   * 判据里还有 agent：采集器报的是 `system`。
+   */
+  it("requires the system agent, not just the session id", () => {
+    expect(
+      meetingTint(group(["meeting"], "default", "claude-code"), true),
+    ).toBeUndefined();
   });
 
   it("ignores groups with no sessions", () => {
