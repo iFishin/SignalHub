@@ -224,6 +224,7 @@
 | 12 | C3 从灯上审批（`PermissionRequest` hook，默认关） | 完成（两处与计划不同，见下） | `5f4ca94` |
 | 13 | 领域外的收尾（B2 其余采集器：会议中） | 完成 | `bf703ad`（备份那条在 `495b651`） |
 | 14 | B4 预设规则（三个，不做表达式引擎） | 完成 | `42e48ba` |
+| 15 | 会话探活（活着但没上报 → 空闲，进程没了立刻收掉） | 完成（仅 Unix 探活，见下） | `20eca74` |
 
 **施工中发现的问题**：一律开 GitHub issue 存档（`gh issue create`），再在本表下面记一行「issue #N → 结论」。
 
@@ -581,3 +582,34 @@ webview 隐藏着也活着，它的时钟会混进来），测完把原文件恢
 - **没验证到的**：本机跑着用户自己的 `tauri dev`（单实例插件不让第二个实例起），
   所以三条规则没有在真 app 里点一遍；蓝色也没有在真窗口里看过 —— 单测覆盖了
   选择 / 阈值 / 暂停判据和 `meetingTint`，CSS 那一层只有变量覆盖这一种写法。
+
+### 会话探活（`20eca74`）
+
+**现象**：智能体窗口还开着、只是没有事件可报，灯上过一会儿会显示「会话已沉默」，再久一点变成「没有智能体在上报」—— 把「还开着」说成了「没了」。TTL 本身分不出「没上报」和「进程没了」，所以加一条进程号通路。
+
+**改法**：
+
+- `Report.pid`（可选）→ `Session.pid`。**只让内置接入带**：Claude Code 的 hook 命令追加 `--pid "$PPID"`；opencode / Pi / Hermes 的插件传自己进程的 `process.pid` / `os.getpid()`；`signalhub run` 传包装器的 pid。HTTP 上报、手写命令、其余几家 hook 都不带。
+- `Store::refresh_liveness(now, alive)` 在 `expire` **之前**跑（sweep 每 250ms）：
+  - pid 已经不在 → 立刻删，不等 TTL（`done` 也一样）。
+  - pid 还在、TTL 到了 → thinking / working / idle 转 `idle`，清掉上一句 message，`since` 不动；之后每 60 秒复查一次。
+  - permission / attention / error **不转**：进程活着不能说明授权已经批了、错误已经过去了，它们照旧走 TTL → stale → 30 分钟宽限。done 也照旧按时消失。
+  - 不带 pid 的会话完全按老路走。
+- `proc::alive`：Unix 上用 `kill(pid, 0)`（EPERM 也算活着）。Windows 上 `pid` 在入库时就被丢掉，行为与以前一样。
+- 上报没带 pid **不清空**已经记住的：C3 的 HTTP 审批钩子和手写 curl 都不带它，那些上报不该把探活能力顺手关掉。
+
+**验证**：
+
+- **端到端**（2026-10-20）：临时目录里放项目级 `.claude/settings.json`（没动用户级配置），命令就是装出来的那条 `signalhub hook claude-code --pid "$PPID" --port 18777`，跑一次 `claude -p`，本地记录器收到的上报体里 `pid` 与 hook 里展开的 `$PPID` 一致 —— 证明 `$PPID` 的展开、CLI 解析、请求体三段都接上了。
+- `proc::alive`：当前进程为真；0 与 `i32::MAX` 为假。
+- `Store` 六条：活着转空闲、死了立刻删、permission 保持沉默、done 按时消失、空闲不会转沉默、不带 pid 的上报不抹掉已有 pid。另有 `pid` 字段可选解析一条。
+- CLI：`--pid "$PPID"` 在不会展开的 shell 里原样传进来时**当作没给**（不能让整条 hook 失败）；`--pid` 能反序列化进服务端 `Report`。
+- 插件源码三份都带自己的进程号；hook 命令**只有 Claude Code 带**。
+
+**没验证到的 / 限制**：
+
+- Windows 没做探活（见上），仍是老的沉默路径。
+- 只有 Claude Code 的 `$PPID` 是实测的；Codex / Cursor / Gemini / Goose 没探过 hook 怎么派生，所以**故意不带**——把一个短命 shell 当进程号会让灯立刻收掉会话，比沉默更糟。
+- 老版本装过的 hook 要回「接入」页重装一次才会带上进程号；没重装的照旧按沉默处理（README 已写明）。
+- 没在真 app 里看「关掉 Claude Code 后牌子立刻消失」：本机用户自己的 `tauri dev` 占着单实例锁，第二个实例起不来。这一段目前只有单测 + 上面那条请求体端到端。
+- pid 复用没做启动时间校验：概率极低（进程死后 250ms 内就被复用），后果也只是牌子多留一会儿。真遇到再加。
