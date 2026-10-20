@@ -1014,7 +1014,8 @@ SignalHub/
       ├─ main.rs                 入口（二进制名 signalhub-app）
       ├─ lib.rs                  run()：插件、setup、命令注册
       ├─ state.rs                Signal / Session / Store ← 核心，含单测
-      ├─ sweep.rs                TTL 清扫 + 聚合重算
+      ├─ sweep.rs                TTL 清扫 + 聚合重算（每跳先探活、再过期）
+      ├─ proc.rs                 进程还活着吗（`kill(pid, 0)`）← 只给探活用
       ├─ notify.rs               通知出口（Notifier）— 让 HTTP 层能脱离 AppHandle 单测
       ├─ alerts.rs               告警决策：闸门（持续阈值）、按组静音、勿扰时段、分平台提示音名
       ├─ outbound.rs             出站钩子：按 when 过滤后 POST 或跑命令

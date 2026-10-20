@@ -460,7 +460,26 @@ const CLI_BINARY: &str = if cfg!(windows) {
 /// 不认 `hook` 参数，而单实例插件会把它变成「把已经开着的窗口叫到前面」—— 不报
 /// 状态，也不报错。
 pub fn resolve_hook_command(agent: Agent) -> String {
-    format!("{} hook {}", quote_program(&cli_program()), agent_name_for_cli(agent))
+    let base = format!(
+        "{} hook {}",
+        quote_program(&cli_program()),
+        agent_name_for_cli(agent)
+    );
+
+    // **只给实测过的一家带进程号。**
+    //
+    // Claude Code 通过 `/bin/sh -c` 跑命令，所以命令里的 `$PPID` 就是 claude
+    // 自己（2026-10-20 用 `claude -p` + `ps -o ppid=` 探针实测）。这个进程号让
+    // 灯能区分「只是没上报」和「进程已经没了」。
+    //
+    // 其余几家没探过它们的 hook 是怎么派生的：万一把一个短命的 shell 当成进程号，
+    // 服务端会按「进程没了」把会话立刻收掉 —— 那比现在的「沉默」糟得多。所以
+    // 它们继续走老路，等有人实测再加。
+    if agent == Agent::ClaudeCode && cfg!(unix) {
+        return format!("{base} --pid \"$PPID\"");
+    }
+
+    base
 }
 
 /// 我们自己的 CLI 该怎么调，**未加引号**。
@@ -669,6 +688,9 @@ function report(state, session, cwd, message) {
       state === "clear"
         ? ["clear", "--agent", AGENT]
         : [state, "--agent", AGENT, "--cwd", cwd]
+    // 这份插件就跑在智能体自己的进程里：这个 pid 就是「会话还活着」的凭据。
+    // 服务端靠它区分「只是没上报」和「进程已经没了」。
+    if (state !== "clear") args.push("--pid", String(process.pid))
     if (session) args.push("--session", session)
     if (message) args.push("--message", String(message).slice(0, 200))
     const child = spawn(CLI, args, {
@@ -809,6 +831,9 @@ function report(state, session, cwd, message) {
       state === "clear"
         ? ["clear", "--agent", AGENT]
         : [state, "--agent", AGENT, "--cwd", cwd]
+    // 这份插件就跑在智能体自己的进程里：这个 pid 就是「会话还活着」的凭据。
+    // 服务端靠它区分「只是没上报」和「进程已经没了」。
+    if (state !== "clear") args.push("--pid", String(process.pid))
     if (session) args.push("--session", session)
     if (message) args.push("--message", String(message).slice(0, 200))
     const child = spawn(CLI, args, {
@@ -897,6 +922,8 @@ def _report(state, session="", cwd=None, message=None):
         # Hermes 的 hook 参数里**没有**工作目录，但插件就跑在它自己的进程里，
         # 所以 os.getcwd() 就是「在哪个项目里干活」—— 按目录分组靠它。
         args += ["--cwd", cwd or os.getcwd()]
+        # 我们就在 Hermes 进程里：这个 pid 让灯能区分「没上报」和「进程没了」。
+        args += ["--pid", str(os.getpid())]
     if session:
         args += ["--session", session]
     if message:
@@ -2596,6 +2623,44 @@ mod tests {
                 agent.install_kind(),
                 InstallKind::JsonHooks,
                 "{agent:?} 是往共享 JSON 里插条目的，不该被当成插件"
+            );
+        }
+    }
+
+    /// 插件跑在智能体自己的进程里，所以它能给出**最可靠**的进程号。少了它，
+    /// 关掉窗口后灯要沉默半小时才消失（进程还在时则永远显示沉默）。
+    #[test]
+    fn every_generated_plugin_reports_its_own_process_id() {
+        for agent in PLUGIN_AGENTS {
+            let source = agent.plugin_source("signalhub");
+            let has_pid = source.contains("--pid")
+                && (source.contains("process.pid") || source.contains("os.getpid()"));
+            assert!(has_pid, "{agent:?} 的插件没有上报进程号");
+        }
+    }
+
+    /// 只有实测过 hook 派生方式的那一家能带 `$PPID`。
+    ///
+    /// 传错 pid（比如短命的 shell）会被服务端当成「进程没了」立刻收掉会话，
+    /// 比现在的「沉默」糟得多 —— 所以没探过的一律不带。
+    #[test]
+    fn only_claude_codes_hook_command_carries_the_process_id() {
+        let claude = resolve_hook_command(Agent::ClaudeCode);
+        if cfg!(unix) {
+            assert!(claude.ends_with("--pid \"$PPID\""), "{claude}");
+            assert!(is_our_hook_command(&claude), "带参数后仍要认得出来");
+        }
+
+        for agent in [
+            Agent::Codex,
+            Agent::Cursor,
+            Agent::Gemini,
+            Agent::Goose,
+            Agent::Opencode,
+        ] {
+            assert!(
+                !resolve_hook_command(agent).contains("--pid"),
+                "{agent:?} 还没探过 hook 怎么派生，不该带 pid"
             );
         }
     }

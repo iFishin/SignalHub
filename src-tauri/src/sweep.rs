@@ -22,7 +22,11 @@ pub fn spawn(notify: Notifier, store: Arc<Mutex<Store>>) {
             // store，那样推出去的快照和「什么东西变了」这个判断就对不上了。
             let snapshot = {
                 let mut guard = store.lock().expect("state store poisoned");
-                let changed = guard.expire(std::time::Instant::now());
+                let now = std::time::Instant::now();
+                // **先探活、再过期。** 顺序反了的话，进程刚死的会话会先被 expire
+                // 转成 stale（或跳进宽限期），探活那一趟就看不见它已经没了。
+                let mut changed = guard.refresh_liveness(now, &|pid| crate::proc::alive(pid));
+                changed |= guard.expire(now);
                 if changed { Some(guard.snapshot()) } else { None }
             };
             if let Some(snapshot) = snapshot {

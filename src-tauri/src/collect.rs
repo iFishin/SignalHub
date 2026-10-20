@@ -537,6 +537,7 @@ fn request(
         cwd: None,
         message: Some(message.to_string()),
         ttl_ms: ttl_ms.map(u64::from),
+        pid: None,
     }
 }
 

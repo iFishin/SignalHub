@@ -12,6 +12,7 @@ mod notify;
 mod open;
 mod outbound;
 mod panel;
+mod proc;
 mod receipts;
 mod rules;
 mod server;
@@ -170,6 +171,7 @@ fn set_state(
         cwd: None,
         message,
         ttl_ms: None,
+        pid: None,
     };
     let ttl = report_ttl(&app, &req);
     Ok(mutate(&app, &store, |guard, now| guard.apply(now, req, ttl)))
@@ -212,6 +214,7 @@ fn send_test_report(
         cwd: None,
         message: None,
         ttl_ms: Some(TEST_REPORT_TTL_MS),
+        pid: None,
     };
     // 显式给了 `ttl_ms`，所以设置里的值压不过它（`state_ttl` 的第一级）
     let ttl = report_ttl(&app, &req);
@@ -1298,6 +1301,7 @@ async fn try_agent(app: tauri::AppHandle, agent: String) -> Result<ProbeOutcome,
             message: None,
             // 短停留：试出来的东西不该在灯上赖着
             ttl_ms: Some(PROBE_TTL_MS),
+            pid: None,
         };
         let ttl = report_ttl(&app, &req);
         mutate(&app, &store, |guard, now| guard.apply(now, req, ttl));
@@ -2571,6 +2575,7 @@ mod tests {
                 cwd: None,
                 message: None,
                 ttl_ms: Some(TEST_REPORT_TTL_MS),
+                pid: None,
             },
             // 显式 TTL 是最高那一级，所以这里给个空设置也走它
             state_ttl(Signal::Permission, Some(TEST_REPORT_TTL_MS), &Settings::default()),

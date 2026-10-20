@@ -153,6 +153,7 @@ fn request(lang: Lang, state: Signal, message: String, ttl_ms: Option<u32>) -> R
         cwd: None,
         message: Some(message),
         ttl_ms: ttl_ms.map(u64::from),
+        pid: None,
     }
 }
 

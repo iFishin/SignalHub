@@ -413,6 +413,7 @@ fn apply_hook(ctx: &Ctx, agent: &str, payload: &Value) -> Option<(String, String
                 cwd: crate::hookmap::cwd_of(payload),
                 message: hook_message(ctx, payload),
                 ttl_ms: None,
+                pid: None,
             };
             ingest(ctx, report, None);
             Some((name, session, state.to_string()))
@@ -537,6 +538,7 @@ async fn approve_request(
             cwd: crate::hookmap::cwd_of(&payload),
             message: hook_message(&ctx, &payload),
             ttl_ms: None,
+            pid: None,
         },
         None,
     );
@@ -565,6 +567,7 @@ async fn approve_request(
                 cwd: None,
                 message: None,
                 ttl_ms: None,
+                pid: None,
             },
             None,
         );

@@ -163,6 +163,9 @@ struct Flags {
     group: Option<String>,
     message: Option<String>,
     ttl_ms: Option<u64>,
+    /// 上报方进程号。**内部选项**：装进 hook 命令的是 `$PPID`，由对方的 shell
+    /// 展开；自写集成想用也可以传自己的 pid。见 `state::Report::pid`。
+    pid: Option<u32>,
     json: bool,
     dry_run: bool,
     /// `install hooks`：用 **HTTP 方式**接入（不需要命令，目前只有 Claude Code）。
@@ -212,6 +215,12 @@ impl Flags {
                 "--ttl" => {
                     let raw = take_value(args, &mut index, "--ttl")?;
                     flags.ttl_ms = Some(parse_ttl(&raw)?);
+                }
+                "--pid" => {
+                    // 装进 hook 命令的是 `$PPID`，由对方的 shell 展开。万一对方
+                    // **不走 shell**，这串东西会原样传进来 —— 那时当作没给，
+                    // 而不是让整条 hook 报错（那会让上报彻底断掉）。
+                    flags.pid = take_value(args, &mut index, "--pid")?.parse().ok();
                 }
                 "--port" => {
                     let raw = take_value(args, &mut index, "--port")?;
@@ -474,6 +483,9 @@ fn apply_flag_extras(body: &mut Value, flags: &Flags) {
     if let Some(value) = flags.ttl_ms {
         body["ttl_ms"] = json!(value);
     }
+    if let Some(pid) = flags.pid {
+        body["pid"] = json!(pid);
+    }
 }
 
 /// `--source` 只认三个值。
@@ -551,6 +563,9 @@ fn post_state_quiet(
     let mut body = json!({ "state": state, "source": "custom" });
     apply_flag_extras(&mut body, flags);
     body["ttl_ms"] = json!(ttl_ms);
+    // 包装器自己就是被包命令的「会话进程」：它活着说明命令还在跑。包装器被
+    // Ctrl-C / kill -9 掉时收尾跑不到，这个进程号能让灯立刻收掉，而不是等 TTL。
+    body["pid"] = json!(std::process::id());
 
     let (status, text) = read_response!(client()
         .post(&endpoint.url("/state"))
@@ -1636,6 +1651,7 @@ mod tests {
             "--group", "builds",
             "--message", "compiling",
             "--ttl", "30s",
+            "--pid", "4242",
         ])
         .unwrap();
 
@@ -1650,6 +1666,15 @@ mod tests {
         assert_eq!(report.cwd.as_deref(), Some("/proj"));
         assert_eq!(report.message.as_deref(), Some("compiling"));
         assert_eq!(report.ttl_ms, Some(30_000));
+        assert_eq!(report.pid, Some(4242));
+    }
+
+    /// hook 命令里写的是 `--pid "$PPID"`。万一对方的 hook 不走 shell，这串会
+    /// 原样传进来 —— 那时必须**当作没给**，而不是让整条 hook 失败。
+    #[test]
+    fn an_unexpanded_pid_variable_is_ignored_instead_of_failing_the_hook() {
+        let (flags, _) = parse(&["hook", "claude-code", "--pid", "$PPID"]).unwrap();
+        assert_eq!(flags.pid, None);
     }
 
     // ---- 牌上的「正在做什么」 --------------------------------------------------

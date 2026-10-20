@@ -20,6 +20,10 @@ use crate::config::Settings;
 /// 环缩短得多慢。
 const STALE_GRACE: Duration = Duration::from_secs(30 * 60);
 
+/// 活着但没上报的会话多久复查一次进程。到点只续期、不改变可见状态 ——
+/// 进程死没死由 [`Store::refresh_liveness`] 每一跳的探活决定。
+const LIVENESS_RECHECK: Duration = Duration::from_secs(60);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Signal {
@@ -263,6 +267,14 @@ pub struct Report {
     pub cwd: Option<String>,
     pub message: Option<String>,
     pub ttl_ms: Option<u64>,
+    /// 上报方（智能体）的进程号。**可选，只有内置集成会带。**
+    ///
+    /// 用途只有一个：TTL 到期时区分「只是没上报」和「进程真的没了」——
+    /// 前者转成 `idle` 留在灯上，后者立刻清掉。不带的会话完全按老路走
+    /// （到期转 `stale`）。
+    ///
+    /// **只认 Unix**（见 [`effective_pid`]）；Windows 上会被丢掉，行为与没带一样。
+    pub pid: Option<u32>,
 }
 
 impl Report {
@@ -278,6 +290,7 @@ impl Report {
             cwd: None,
             message: None,
             ttl_ms: None,
+            pid: None,
         }
     }
 
@@ -307,6 +320,14 @@ impl Report {
 /// 没指定 `source` 时的类型。见 [`Report::source_id`]。
 pub const DEFAULT_SOURCE: &str = "agent";
 
+/// 进程号只在 Unix 上认（见 [`Report::pid`]）。
+///
+/// 非 Unix 上直接丢掉，而不是存下来又不去探活：那样一个已经死掉的进程号会
+/// 永远有值，`refresh_liveness` 也没法判断，最后只能变成「假空闲」。
+fn effective_pid(pid: Option<u32>) -> Option<u32> {
+    if cfg!(unix) { pid } else { None }
+}
+
 /// 没指定组时的组名。
 pub const DEFAULT_GROUP: &str = "default";
 
@@ -325,6 +346,9 @@ struct Session {
     /// 进入当前状态的时间，用于 UI 的「已持续多久」。
     /// 转入 `stale` 时刻意不改它，这样它读起来就是「沉默多久了」。
     since: SystemTime,
+    /// 上报方进程号。**没有就用不上探活**，到期照旧转 `stale`。
+    /// 见 [`Report::pid`] 与 [`Store::refresh_liveness`]。
+    pid: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -446,6 +470,9 @@ impl Store {
         // agent / cwd 是身份信息，沿用上一次；message 是事件细节，每次替换。
         let agent = req.agent.or_else(|| prev.and_then(|s| s.agent.clone()));
         let cwd = req.cwd.or_else(|| prev.and_then(|s| s.cwd.clone()));
+        // 进程号只在**这次带了**的时候更新：HTTP 审批钩子、手写 curl 都不带它，
+        // 那些上报不该把已经记住的进程号抹掉。
+        let pid = effective_pid(req.pid).or_else(|| prev.and_then(|s| s.pid));
         let since = match prev {
             Some(p) if p.state == req.state => p.since,
             _ => SystemTime::now(),
@@ -490,6 +517,7 @@ impl Store {
                 message,
                 expires_at,
                 since,
+                pid,
             },
         );
         self.enforce_session_cap();
@@ -588,6 +616,62 @@ impl Store {
     /// 监控是否暂停中。灯上那枚持续可见的角标和折叠态的窗口尺寸都要读它。
     pub fn paused(&self) -> bool {
         self.paused
+    }
+
+    /// 用「进程还在不在」修正会话 —— **必须在 [`Store::expire`] 之前调用**
+    /// （`sweep` 里就是这么排的）。
+    ///
+    /// 两件事：
+    ///
+    /// 1. **进程没了就立刻删。** 不等 TTL：智能体被 `kill -9` 时不会再发
+    ///    `SessionEnd`，而灯上还要错 5–10 分钟（再沉默 30 分钟）才消失。
+    /// 2. **进程还在、但 TTL 到了 → 转 `idle` 而不是 `stale`。** 进程活着说明
+    ///    会话没死，只是没有事件可报（长命令、长思考、用户离开）。这时说
+    ///    「会话已沉默」是错的 —— 灯上写「空闲」才是真的。
+    ///
+    /// 只把 thinking / working / idle 三档转成空闲：permission / attention /
+    /// error 是「有人在等」，进程活着**不能**说明那件事已经过去了，照旧走沉默
+    /// 那条路（TTL → stale → 宽限期后删除）。done 也一样 —— 它本来就会按时消失。
+    pub fn refresh_liveness(&mut self, now: Instant, alive: &dyn Fn(u32) -> bool) -> bool {
+        // 两趟处理，理由同 `expire`：先只读地判定，再动手改。
+        let mut to_remove = Vec::new();
+        let mut to_idle = Vec::new();
+        for (id, session) in &self.sessions {
+            let Some(pid) = session.pid else {
+                continue;
+            };
+            if !alive(pid) {
+                to_remove.push(id.clone());
+                continue;
+            }
+            if now < session.expires_at || session.state == Signal::Done {
+                continue;
+            }
+            if matches!(
+                session.state,
+                Signal::Thinking | Signal::Working | Signal::Idle
+            ) {
+                to_idle.push(id.clone());
+            }
+        }
+
+        for id in to_remove {
+            self.sessions.remove(&id);
+        }
+        for id in to_idle {
+            if let Some(session) = self.sessions.get_mut(&id) {
+                // 已经是 idle 的只续期：别把上报方自己写的「等待指令」擦掉
+                if session.state != Signal::Idle {
+                    session.state = Signal::Idle;
+                    // 上一句「正在执行 xxx」已经不成立了，留着会读成「空闲地在执行」
+                    session.message = None;
+                }
+                session.expires_at = now + LIVENESS_RECHECK;
+                // since 不动：读起来就是「安静了多久」
+            }
+        }
+
+        self.settle(now)
     }
 
     /// 处理静默超时的会话：转入 `stale`，而不是直接删掉。
@@ -1224,6 +1308,109 @@ mod tests {
         assert!(s.expire(t + idle_ttl));
         assert_eq!(s.aggregate(), Signal::Stale);
         assert_eq!(sessions(&s.snapshot()).len(), 1, "stale 会话要保留，不是删掉");
+    }
+
+    /// 带进程号的上报。
+    fn rep_pid(s: &mut Store, t: Instant, session: &str, state: Signal, pid: u32) -> bool {
+        let mut req = Report::new(state);
+        req.session = Some(session.to_string());
+        req.pid = Some(pid);
+        let ttl = ttl_of(req.state, req.ttl_ms);
+        s.apply(t, req, ttl)
+    }
+
+    /// 进程还活着、只是没上报 → 转「空闲」，不是「沉默」。
+    ///
+    /// 这是「关掉窗口但进程还在」和「进程已经没了」能分开显示的关键：前者
+    /// 不该在灯上留下一个灰掉的「会话已沉默」。
+    #[test]
+    fn a_live_process_turns_silence_into_idle_not_stale() {
+        let (mut s, t) = (Store::default(), Instant::now());
+        let mut req = Report::new(Signal::Working);
+        req.session = Some("a".into());
+        req.pid = Some(42);
+        req.message = Some("npm test".into());
+        let ttl = ttl_of(req.state, req.ttl_ms);
+        s.apply(t, req, ttl);
+
+        let expired = t + Signal::Working.default_ttl();
+        assert!(s.refresh_liveness(expired, &|pid| pid == 42));
+
+        let view = &sessions(&s.snapshot())[0];
+        assert_eq!(view.state, Signal::Idle);
+        assert_eq!(view.message, None, "上一句「正在执行」已经不成立了");
+        assert_eq!(s.aggregate(), Signal::Idle, "会话还在，不能变成 offline");
+        assert!(!s.expire(expired), "刚续过期，expire 不该再动它");
+    }
+
+    /// 进程没了就立刻收掉，不用等 TTL —— 被 `kill -9` 的智能体不会再发
+    /// `SessionEnd`，等下去只会让灯多错 5–10 分钟（再沉默半小时）。
+    #[test]
+    fn a_dead_process_is_dropped_before_its_ttl() {
+        let (mut s, t) = (Store::default(), Instant::now());
+        rep_pid(&mut s, t, "a", Signal::Working, 42);
+
+        assert!(s.refresh_liveness(t + Duration::from_secs(1), &|_| false));
+        assert_eq!(s.aggregate(), Signal::Offline);
+    }
+
+    /// 「有人在等」的三档不靠探活改判：进程活着**不能**说明授权已经批了。
+    /// 它们照旧走 TTL → stale → 宽限期那条路。
+    #[test]
+    fn permission_keeps_the_silence_path_even_when_the_process_lives() {
+        let (mut s, t) = (Store::default(), Instant::now());
+        rep_pid(&mut s, t, "a", Signal::Permission, 42);
+
+        let expired = t + Signal::Permission.default_ttl();
+        assert!(!s.refresh_liveness(expired, &|_| true), "探活不该改它");
+        assert!(s.expire(expired));
+        assert_eq!(s.aggregate(), Signal::Stale);
+    }
+
+    /// done 的语义是「这一轮干完了」，和进程在不在无关：照旧按时消失。
+    #[test]
+    fn done_still_disappears_on_schedule_with_a_live_process() {
+        let (mut s, t) = (Store::default(), Instant::now());
+        rep_pid(&mut s, t, "a", Signal::Done, 42);
+
+        let expired = t + Signal::Done.default_ttl();
+        assert!(!s.refresh_liveness(expired, &|_| true));
+        assert!(s.expire(expired));
+        assert_eq!(s.aggregate(), Signal::Offline);
+    }
+
+    /// 活着但没上报的 idle 会话不会过期 —— 它就是「空闲」，一直空闲也还是空闲。
+    #[test]
+    fn an_idle_session_with_a_live_process_never_goes_stale() {
+        let (mut s, t) = (Store::default(), Instant::now());
+        rep_pid(&mut s, t, "a", Signal::Idle, 42);
+
+        let expired = t + Signal::Idle.default_ttl();
+        assert!(!s.refresh_liveness(expired, &|_| true), "状态没变，不推帧");
+        assert!(!s.expire(expired), "已经续过期了");
+        assert_eq!(s.aggregate(), Signal::Idle);
+    }
+
+    /// 不带 pid 的上报（HTTP 审批钩子、手写 curl）不能把已经记住的进程号抹掉。
+    #[test]
+    fn a_report_without_a_pid_keeps_the_one_we_already_know() {
+        let (mut s, t) = (Store::default(), Instant::now());
+        rep_pid(&mut s, t, "a", Signal::Working, 42);
+
+        rep(&mut s, t, "a", Signal::Working);
+        assert!(s.refresh_liveness(t + Duration::from_secs(1), &|_| false));
+        assert_eq!(s.aggregate(), Signal::Offline, "旧的 pid 仍然管用");
+    }
+
+    /// `pid` 是可选字段：老客户端不带它必须照常解析。
+    #[test]
+    fn the_pid_field_is_optional_in_the_wire_format() {
+        let with_pid: Report =
+            serde_json::from_str(r#"{"state":"working","pid":123}"#).unwrap();
+        assert_eq!(with_pid.pid, Some(123));
+
+        let without: Report = serde_json::from_str(r#"{"state":"working"}"#).unwrap();
+        assert_eq!(without.pid, None);
     }
 
     /// 会话静默超时后转 stale，而不是消失 —— 这是「智能体不说话了」和
