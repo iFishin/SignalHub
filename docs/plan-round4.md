@@ -226,11 +226,14 @@
 
 **施工中发现的问题**：一律开 GitHub issue 存档（`gh issue create`），再在本表下面记一行「issue #N → 结论」。
 
-- **issue #3 → 待实测**：C3 的审批端点走 `require_auth`，而那个中间件会拒带 `Origin` 的
-  请求 —— Claude Code 的 HTTP hook 会不会带 `Origin`，官方文档没写。带了的表现是「装上了、
-  开关也开了，灯上却从来不弹气泡」（401 → `onFailure: continue` → 回终端问，**不阻塞**，
-  所以不会有人受伤，但功能静默失效）。`hooks.log` 里有没有 `approve: 等你点` 那行直接
-  区分两种情况。修法取决于答案，见 issue。
+- **issue #3 → 已实测（2026-10-20，`gh issue close 3`）**：Claude Code（v2.1.296）的
+  HTTP hook **不带 `Origin` 头** —— 客户端是 axios（Node 端，`User-Agent: axios/1.15.2`），
+  没有浏览器指纹。实测方法：一次性目录里放项目级 `.claude/settings.json`
+  （`type:"http"` hook 指向本地头记录器），跑一次 `claude -p`，没动用户级配置。对照本机
+  SignalHub：不带 Origin + token → 200；带 Origin（浏览器）→ 403（issue #10 的拦截照常）。
+  **C3 审批与 HTTP 式上报都能正常工作**，带 `Origin` 一律 403 的规则保留。若 CC 某天换
+  会带 `Origin` 的客户端，表现是静默退回终端询问（`onFailure: "continue"`），重跑同一
+  实验即可确认。
 - **issue #2 → 已修**：诊断文本会把转发钩子的密钥（`pushkey=…`）一起复制出去。
   修法是**在诊断输出里脱敏**（URL 的 query 只留 `?…`、敏感 `key=value` 只留键名、
   家目录缩成 `~`），并在 `hooks.log` 建文件时改成 **0600**。日志写入本身不动 ——
@@ -493,9 +496,9 @@ webview 隐藏着也活着，它的时钟会混进来），测完把原文件恢
   两条气泡（第二条只有「拒绝」+ 一行「这条在灯上看不全」）、`padding-bottom: 274px`、
   点「允许」调到 `decide_approval {id, decision:"allow"}`。
 - **没验证到的**：
-  - **真的让 Claude Code 打一次这个 hook。** 这台机器上没跑 Claude Code，所以「它会不会
-    带 `Origin` 头」这件事仍然未知 —— 带了会被 `require_auth` 拒（静默退回终端询问，
-    也就是功能不生效但不出错）。`onFailure: "continue"` 保证最坏情况就是「和没装一样」。
+  - ~~真的让 Claude Code 打一次这个 hook。~~ **2026-10-20 补上了**：CC v2.1.296 的
+    HTTP hook 用 axios 发，**不带 `Origin`**（项目级配置 + `claude -p` 实测，见 issue #3
+    的结论）。审批端点不会被 `require_auth` 的浏览器拦截误伤。
   - **接入页那个开关点下去**（`set_tool_approval` 命令本身）。它和 CLI 的
     `install hooks --approve` 走的是同一个 `hooks::install_approve`（CLI 那条验过了），
     只是多一步 `persist_settings`。开关的**效果**验过（改 `config.json` 后端点行为跟着变）。
