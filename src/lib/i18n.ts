@@ -238,6 +238,9 @@ export interface Messages {
   collectBackup: string;
   /** 采集器开关那一行的说明（秒数是 Rust 那边的间隔，跟它走） */
   collectBackupHint: (secs: number) => string;
+  /** 会议中采集器（B2）：开关那一行上的名字 */
+  collectMeeting: string;
+  collectMeetingHint: (secs: number) => string;
   /** 认不出的采集器 id：后端加了新的、前端没跟上时兜底，不该出现在正常流程里 */
   collectUnknown: (id: string) => string;
   /** 「自定义」一节：不在智能体清单里、也没声明成系统的 */
@@ -708,6 +711,9 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     collectBackup: "Time Machine 备份中",
     collectBackupHint: (secs) =>
       `每 ${secs} 秒看一次 Time Machine 的状态；开始备份时灯上多一组「备份」，结完自动报「备份完成」。只读系统状态，不读任何文件内容；万一它自己出了问题，限度是「那一组消失」，不会反过来影响别的。`,
+    collectMeeting: "会议中（麦克风 / 摄像头被占用）",
+    collectMeetingHint: (secs) =>
+      `每 ${secs} 秒看一次麦克风和摄像头有没有被别的应用占用；开会时灯上多一组「会议」，结束后自动报「会议结束」。只读「设备在不在用」，**不采集、不保存任何声音或画面**，也不会因此弹权限请求。`,
     collectUnknown: (id) => `采集器「${id}」`,
     otherSourcesTitle: "自定义",
     otherSourcesHint:
@@ -1173,6 +1179,9 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     collectBackup: "Time Machine backups",
     collectBackupHint: (secs) =>
       `Checks Time Machine every ${secs} seconds; while a backup is under way the lamp gains a "Backup" group, and it reports "Backup finished" once it is done. Read-only: it watches system state and reads no file contents. If it ever breaks on its own, the worst that happens is that group disappearing.`,
+    collectMeeting: "In a meeting (mic / camera in use)",
+    collectMeetingHint: (secs) =>
+      `Checks every ${secs} seconds whether another app is using the microphone or camera; while a call is on the lamp gains a "Meeting" group, and it reports "Meeting ended" afterwards. It only reads whether a device is in use — **it never captures or stores any audio or video**, and asking does not trigger a permission prompt.`,
     collectUnknown: (id) => `Collector "${id}"`,
     otherSourcesTitle: "Custom",
     otherSourcesHint:

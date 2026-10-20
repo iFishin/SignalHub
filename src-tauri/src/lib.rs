@@ -1071,6 +1071,7 @@ fn set_collector(app: tauri::AppHandle, id: String, on: bool) -> Result<(), Stri
     let collector = collect::find(&id).ok_or_else(|| format!("认不出这条采集器：{id}"))?;
     let mut settings = (*current_settings(&app)).clone();
     match collector {
+        collect::Collector::Meeting => settings.collect_meeting = on,
         collect::Collector::Backup => settings.collect_backup = on,
     }
     persist_settings(&app, settings).map(|_| ())

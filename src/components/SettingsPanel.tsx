@@ -1015,10 +1015,24 @@ interface CollectorRow {
 /** 采集器在开关那一行上的名字。id 是 Rust 那边的稳定标识（见 collect.rs 的 id()）。 */
 function collectorLabel(id: string, m: Messages): string {
   switch (id) {
+    case "meeting":
+      return m.collectMeeting;
     case "backup":
       return m.collectBackup;
     default:
       return m.collectUnknown(id);
+  }
+}
+
+/** 那一行的说明（秒数是 Rust 给的间隔）。认不出的 id 不硬安一个说法。 */
+function collectorHint(id: string, m: Messages, secs: number): string {
+  switch (id) {
+    case "meeting":
+      return m.collectMeetingHint(secs);
+    case "backup":
+      return m.collectBackupHint(secs);
+    default:
+      return "";
   }
 }
 
@@ -2348,7 +2362,7 @@ export function SettingsPanel({ snapshot }: Props) {
                 <Row
                   key={collector.id}
                   label={collectorLabel(collector.id, m)}
-                  hint={m.collectBackupHint(collector.interval_secs)}
+                  hint={collectorHint(collector.id, m, collector.interval_secs)}
                 >
                   <Switch
                     on={collector.enabled}

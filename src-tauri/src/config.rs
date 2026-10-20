@@ -950,6 +950,11 @@ pub struct Settings {
     /// 默认关：采集器读的是**这台机器的状态**，而「谁在备份」这件事跟大多数人
     /// 无关 —— 要它的人去接入页打开。
     pub collect_backup: bool,
+    /// 会议中（麦克风 / 摄像头被某个进程使用）→ 「会议」组（B2 的内置采集器）。
+    ///
+    /// 默认关，理由同上。它**只在 macOS 上有**（CoreAudio / CoreMediaIO 的
+    /// `DeviceIsRunningSomewhere`）—— 别的平台上这条采集器根本不出现在接入页。
+    pub collect_meeting: bool,
     /// 圆点形状
     pub shape: Shape,
     /// 配色方案（用户没单独指定颜色时的默认值）
@@ -1248,6 +1253,7 @@ impl Default for Settings {
             // 会改变智能体行为的开关一律默认关（红线 3）
             approve_tools: false,
             collect_backup: false,
+            collect_meeting: false,
             shape: Shape::default(),
             palette: Palette::default(),
             locale: Locale::default(),
@@ -1844,6 +1850,7 @@ mod tests {
             snap_to_edge: true,
             approve_tools: true,
             collect_backup: true,
+            collect_meeting: true,
             quiet: false,
             notify: false,
             hooks: vec![
@@ -2109,6 +2116,7 @@ mod tests {
         assert!(settings.notify, "缺的字段退回该字段的默认值");
         assert!(!settings.approve_tools, "会改智能体行为的开关，缺字段必须是关的");
         assert!(!settings.collect_backup, "读系统状态的采集器，缺字段必须是关的");
+        assert!(!settings.collect_meeting, "读系统状态的采集器，缺字段必须是关的");
         assert!(settings.colors.is_empty(), "缺的颜色表是空的，不是解析失败");
     }
 

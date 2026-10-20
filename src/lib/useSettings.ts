@@ -215,6 +215,12 @@ export interface Settings {
    * 看这个开关，所以前端只有读它这一件事。
    */
   collect_backup: boolean;
+  /**
+   * **会议中**（麦克风 / 摄像头被占用）→「会议」组（B2 的内置采集器，默认关）。
+   *
+   * 只有 macOS 有这个采集器；开关同样由 `set_collector` 改。
+   */
+  collect_meeting: boolean;
   shape: Shape;
   palette: Palette;
   /** 逐个状态的外观覆盖（颜色 / 形状 / 节奏）。没写的项跟随全局。 */
@@ -292,6 +298,7 @@ export const DEFAULTS: Settings = {
   devices: [],
   approve_tools: false,
   collect_backup: false,
+  collect_meeting: false,
   shape: "circle",
   palette: "default",
   styles: {},
