@@ -1020,6 +1020,7 @@ SignalHub/
       ├─ outbound.rs             出站钩子：按 when 过滤后 POST 或跑命令
       ├─ devices.rs              物理灯（WLED）：把状态色 POST 到灯上 ← 和出站钩子共用一份日志
       ├─ manual.rs               手动状态（专注倒计时 / 开会 / 离开）：自己也是一个信号源
+      ├─ collect.rs              内置采集器（B2）：会议中（CoreAudio / CMIO）、备份中（tmutil），每条一条线程
       ├─ shortcuts.rs            全局快捷键：四个组合 + 抢到了没有（设置 →「系统」页读它）
       ├─ approvals.rs            从灯上审批（C3）：登记表 + 决定 + 回给 Claude Code 的那段 JSON
       ├─ panel.rs                只读 Web 面板（`GET /`）：模板 + 一次注入 ← 只有 server 用它
