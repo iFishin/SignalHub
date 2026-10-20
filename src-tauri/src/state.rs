@@ -1310,7 +1310,8 @@ mod tests {
         assert_eq!(sessions(&s.snapshot()).len(), 1, "stale 会话要保留，不是删掉");
     }
 
-    /// 带进程号的上报。
+    /// 带进程号的上报。**探活只在 Unix 上生效**，所以这些用例也只在 Unix 上跑。
+    #[cfg(unix)]
     fn rep_pid(s: &mut Store, t: Instant, session: &str, state: Signal, pid: u32) -> bool {
         let mut req = Report::new(state);
         req.session = Some(session.to_string());
@@ -1324,6 +1325,7 @@ mod tests {
     /// 这是「关掉窗口但进程还在」和「进程已经没了」能分开显示的关键：前者
     /// 不该在灯上留下一个灰掉的「会话已沉默」。
     #[test]
+    #[cfg(unix)]
     fn a_live_process_turns_silence_into_idle_not_stale() {
         let (mut s, t) = (Store::default(), Instant::now());
         let mut req = Report::new(Signal::Working);
@@ -1346,6 +1348,7 @@ mod tests {
     /// 进程没了就立刻收掉，不用等 TTL —— 被 `kill -9` 的智能体不会再发
     /// `SessionEnd`，等下去只会让灯多错 5–10 分钟（再沉默半小时）。
     #[test]
+    #[cfg(unix)]
     fn a_dead_process_is_dropped_before_its_ttl() {
         let (mut s, t) = (Store::default(), Instant::now());
         rep_pid(&mut s, t, "a", Signal::Working, 42);
@@ -1357,6 +1360,7 @@ mod tests {
     /// 「有人在等」的三档不靠探活改判：进程活着**不能**说明授权已经批了。
     /// 它们照旧走 TTL → stale → 宽限期那条路。
     #[test]
+    #[cfg(unix)]
     fn permission_keeps_the_silence_path_even_when_the_process_lives() {
         let (mut s, t) = (Store::default(), Instant::now());
         rep_pid(&mut s, t, "a", Signal::Permission, 42);
@@ -1369,6 +1373,7 @@ mod tests {
 
     /// done 的语义是「这一轮干完了」，和进程在不在无关：照旧按时消失。
     #[test]
+    #[cfg(unix)]
     fn done_still_disappears_on_schedule_with_a_live_process() {
         let (mut s, t) = (Store::default(), Instant::now());
         rep_pid(&mut s, t, "a", Signal::Done, 42);
@@ -1381,6 +1386,7 @@ mod tests {
 
     /// 活着但没上报的 idle 会话不会过期 —— 它就是「空闲」，一直空闲也还是空闲。
     #[test]
+    #[cfg(unix)]
     fn an_idle_session_with_a_live_process_never_goes_stale() {
         let (mut s, t) = (Store::default(), Instant::now());
         rep_pid(&mut s, t, "a", Signal::Idle, 42);
@@ -1393,6 +1399,7 @@ mod tests {
 
     /// 不带 pid 的上报（HTTP 审批钩子、手写 curl）不能把已经记住的进程号抹掉。
     #[test]
+    #[cfg(unix)]
     fn a_report_without_a_pid_keeps_the_one_we_already_know() {
         let (mut s, t) = (Store::default(), Instant::now());
         rep_pid(&mut s, t, "a", Signal::Working, 42);
