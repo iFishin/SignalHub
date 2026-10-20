@@ -47,4 +47,15 @@ describe("meetingTint", () => {
   it("ignores groups with no sessions", () => {
     expect(meetingTint(group([]), true)).toBeUndefined();
   });
+
+  /**
+   * 散会那条 `done`（「会议结束」）要在灯上留一会儿，但那时**已经不是会议中**：
+   * 蓝色要撤掉，通知也要恢复（Rust 侧同一判据）。
+   */
+  it("stops painting once the meeting reports done", () => {
+    const finished = group(["meeting"]);
+    finished.sessions[0].state = "done";
+    finished.aggregate = "done";
+    expect(meetingTint(finished, true)).toBeUndefined();
+  });
 });

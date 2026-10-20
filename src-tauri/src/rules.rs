@@ -52,14 +52,20 @@ pub fn silence(snapshot: &Snapshot, settings: &Settings) -> Option<Silence> {
     None
 }
 
-/// 会议组里有没有活着的会话。
+/// 会议组里有没有正在开着的会。
 ///
 /// 判据是**采集器的固定 session id**，不是组名：组名跟着界面语言变（「会议」/
 /// 「Meeting」），还可能被用户改名，拿名字认人迟早认错。
+///
+/// **只认 `working`**：采集器散会时会报一条 `done`（「会议结束」），那条要按
+/// done 的 TTL 在灯上留一会儿。如果把它也算成「在开会」，那几十秒里会继续静音 ——
+/// 散会后刚回到电脑前的一条授权提醒就被吞掉了，而且按暂停的语义不会补发。
 pub fn meeting_running(snapshot: &Snapshot) -> bool {
-    snapshot.groups.iter().flat_map(|g| &g.sessions).any(|s| {
-        s.id == crate::collect::Collector::Meeting.id()
-    })
+    snapshot
+        .groups
+        .iter()
+        .flat_map(|g| &g.sessions)
+        .any(|s| s.id == crate::collect::Collector::Meeting.id() && s.state == Signal::Working)
 }
 
 /// 有没有智能体正在干活。
@@ -226,6 +232,22 @@ mod tests {
             vec![session("meeting", Signal::Working, Some("system"))],
         )]);
         assert_eq!(silence(&snap, &settings), Some(Silence::Meeting));
+    }
+
+    /// 散会那条 `done` 还挂在灯上时，不算「会议中」—— 通知要恢复。
+    #[test]
+    fn a_finished_meeting_no_longer_silences() {
+        let settings = Settings {
+            rule_busy_silence: false,
+            ..on()
+        };
+        let snap = snapshot(vec![group(
+            "会议",
+            Signal::Done,
+            0,
+            vec![session("meeting", Signal::Done, Some("system"))],
+        )]);
+        assert_eq!(silence(&snap, &settings), None);
     }
 
     #[test]

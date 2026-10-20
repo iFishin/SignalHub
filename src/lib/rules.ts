@@ -20,16 +20,20 @@ export const MEETING_BLUE = "#4c8dff";
  * 这一组要不要按「会议」上色。
  *
  * 开关关着时永远返回 `undefined` —— 用户没开这个预设，蓝色就不该出现。
- * 判据是组里有没有那个固定 id 的会话：采集器每 5 秒重报一次，会议结束报 `done`
- * 之后会话还在（直到 TTL 到期），那几十秒里牌仍然算「会议」—— 蓝色淡出的时机
- * 和牌本身一致，不会出现「字还在、颜色先没了」。
+ *
+ * 判据是「那个固定 id 的会话还在 `working`」：采集器散会时会报一条 `done`
+ * （「会议结束」），那条要按 done 的 TTL 在灯上留一会儿 —— 如果继续画蓝，看起来
+ * 就像会还没散。Rust 侧的静音判据（`rules.rs::meeting_running`）也用同一个条件，
+ * 两边必须一致：蓝色和静音是同一件事的两种表现。
  */
 export function meetingTint(
   group: GroupView,
   enabled: boolean,
 ): string | undefined {
   if (!enabled) return undefined;
-  return group.sessions.some((s) => s.id === MEETING_SESSION_ID)
+  return group.sessions.some(
+    (s) => s.id === MEETING_SESSION_ID && s.state === "working",
+  )
     ? MEETING_BLUE
     : undefined;
 }
