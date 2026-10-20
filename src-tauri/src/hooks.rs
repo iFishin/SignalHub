@@ -476,7 +476,10 @@ pub fn resolve_hook_command(agent: Agent) -> String {
     // 服务端会按「进程没了」把会话立刻收掉 —— 那比现在的「沉默」糟得多。所以
     // 它们继续走老路，等有人实测再加。
     if agent == Agent::ClaudeCode && cfg!(unix) {
-        return format!("{base} --pid \"$PPID\"");
+        // 前缀赋值把进程号放进**环境变量**，而不是新加一个命令行选项：
+        // 用户 PATH 上如果放的是旧版本的 CLI，它不认识新选项，会把整条 hook
+        // 判成错误、上报直接断掉；环境变量则会被旧 CLI 原样忽略。
+        return format!("SIGNALHUB_PID=\"$PPID\" {base}");
     }
 
     base
@@ -688,15 +691,16 @@ function report(state, session, cwd, message) {
       state === "clear"
         ? ["clear", "--agent", AGENT]
         : [state, "--agent", AGENT, "--cwd", cwd]
-    // 这份插件就跑在智能体自己的进程里：这个 pid 就是「会话还活着」的凭据。
-    // 服务端靠它区分「只是没上报」和「进程已经没了」。
-    if (state !== "clear") args.push("--pid", String(process.pid))
     if (session) args.push("--session", session)
     if (message) args.push("--message", String(message).slice(0, 200))
     const child = spawn(CLI, args, {
       detached: true,
       windowsHide: true,
       stdio: "ignore",
+      // 我们就在智能体自己的进程里，这个 pid 就是「会话还活着」的凭据。
+      // 走环境变量而不是命令行选项：旧版 CLI 不认识新选项会把整条上报判成
+      // 失败，而环境变量它根本不看。
+      env: { ...process.env, SIGNALHUB_PID: String(process.pid) },
     })
     child.on("error", () => {})
     child.unref()
@@ -831,15 +835,16 @@ function report(state, session, cwd, message) {
       state === "clear"
         ? ["clear", "--agent", AGENT]
         : [state, "--agent", AGENT, "--cwd", cwd]
-    // 这份插件就跑在智能体自己的进程里：这个 pid 就是「会话还活着」的凭据。
-    // 服务端靠它区分「只是没上报」和「进程已经没了」。
-    if (state !== "clear") args.push("--pid", String(process.pid))
     if (session) args.push("--session", session)
     if (message) args.push("--message", String(message).slice(0, 200))
     const child = spawn(CLI, args, {
       detached: true,
       windowsHide: true,
       stdio: "ignore",
+      // 我们就在智能体自己的进程里，这个 pid 就是「会话还活着」的凭据。
+      // 走环境变量而不是命令行选项：旧版 CLI 不认识新选项会把整条上报判成
+      // 失败，而环境变量它根本不看。
+      env: { ...process.env, SIGNALHUB_PID: String(process.pid) },
     })
     child.on("error", () => {})
     child.unref()
@@ -922,14 +927,15 @@ def _report(state, session="", cwd=None, message=None):
         # Hermes 的 hook 参数里**没有**工作目录，但插件就跑在它自己的进程里，
         # 所以 os.getcwd() 就是「在哪个项目里干活」—— 按目录分组靠它。
         args += ["--cwd", cwd or os.getcwd()]
-        # 我们就在 Hermes 进程里：这个 pid 让灯能区分「没上报」和「进程没了」。
-        args += ["--pid", str(os.getpid())]
     if session:
         args += ["--session", session]
     if message:
         args += ["--message", str(message)[:200]]
     try:
         kwargs = {}
+        # 我们就在 Hermes 进程里。走环境变量而不是命令行选项：旧版 CLI 不认识
+        # 新选项会把整条上报判成失败，而环境变量它根本不看。
+        kwargs["env"] = {**os.environ, "SIGNALHUB_PID": str(os.getpid())}
         if sys.platform != "win32":
             # 脱离 Hermes 的进程组：它被 Ctrl+C 带走时上报不该跟着死
             kwargs["start_new_session"] = True
@@ -1718,7 +1724,31 @@ fn binary_name(program: &str) -> &str {
 
 /// 取命令的第一个词，能正确处理带引号的路径。
 fn first_token(command: &str) -> Option<&str> {
-    let trimmed = command.trim_start();
+    let mut trimmed = command.trim();
+
+    // 跳过开头的环境变量赋值（`NAME=value`）。Claude Code 的 hook 命令是
+    // `SIGNALHUB_PID="$PPID" signalhub hook ...`，直接取第一个词会把赋值
+    // 当成程序名，于是「是不是我们写的」「程序还解析得到吗」都会答错。
+    loop {
+        let token = trimmed.split_whitespace().next()?;
+        let Some((name, _)) = token.split_once('=') else {
+            break;
+        };
+        // 只认合法的 shell 变量名，免得把带 `=` 的普通参数也跳掉
+        let mut chars = name.chars();
+        let is_name = chars
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !is_name {
+            break;
+        }
+        trimmed = trimmed[token.len()..].trim_start();
+    }
+
+    if trimmed.is_empty() {
+        return None;
+    }
     if let Some(rest) = trimmed.strip_prefix('"') {
         return rest.split('"').next();
     }
@@ -2211,6 +2241,15 @@ mod tests {
         assert_eq!(first_token("'/a b/cli' hook x"), Some("/a b/cli"));
         assert_eq!(first_token("   "), None);
         assert_eq!(first_token(""), None);
+        // 开头的环境变量赋值不是程序名（Claude Code 的 hook 就是这么写的）
+        assert_eq!(
+            first_token(r#"SIGNALHUB_PID="$PPID" signalhub hook claude-code"#),
+            Some("signalhub")
+        );
+        assert_eq!(
+            first_token(r#"A=1 B=2 "/Applications/My App/signalhub" hook x"#),
+            Some("/Applications/My App/signalhub")
+        );
     }
 
     /// 「这条命令现在还跑得起来吗」：只看程序那一段，参数不参与判断。
@@ -2549,6 +2588,10 @@ mod tests {
         assert!(is_our_hook_command(r"C:\tools\signalhub.exe hook cursor"));
         // 路径含空格时必须引起来 —— resolve_hook_command 就是这么写的
         assert!(is_our_hook_command(r#""/Users/me/a b/signalhub" hook claude-code"#));
+        // 前面带环境变量赋值时也要认得出来（Claude Code 的进程号就是这么带的）
+        assert!(is_our_hook_command(
+            r#"SIGNALHUB_PID="$PPID" signalhub hook claude-code"#
+        ));
     }
 
     /// 未加引号的含空格路径不是一个有效命令（shell 会把它拆成两个参数），
@@ -2633,7 +2676,7 @@ mod tests {
     fn every_generated_plugin_reports_its_own_process_id() {
         for agent in PLUGIN_AGENTS {
             let source = agent.plugin_source("signalhub");
-            let has_pid = source.contains("--pid")
+            let has_pid = source.contains("SIGNALHUB_PID")
                 && (source.contains("process.pid") || source.contains("os.getpid()"));
             assert!(has_pid, "{agent:?} 的插件没有上报进程号");
         }
@@ -2647,8 +2690,11 @@ mod tests {
     fn only_claude_codes_hook_command_carries_the_process_id() {
         let claude = resolve_hook_command(Agent::ClaudeCode);
         if cfg!(unix) {
-            assert!(claude.ends_with("--pid \"$PPID\""), "{claude}");
-            assert!(is_our_hook_command(&claude), "带参数后仍要认得出来");
+            assert!(
+                claude.starts_with("SIGNALHUB_PID=\"$PPID\" "),
+                "{claude}"
+            );
+            assert!(is_our_hook_command(&claude), "带环境变量后仍要认得出来");
         }
 
         for agent in [
@@ -2659,7 +2705,7 @@ mod tests {
             Agent::Opencode,
         ] {
             assert!(
-                !resolve_hook_command(agent).contains("--pid"),
+                !resolve_hook_command(agent).contains("SIGNALHUB_PID"),
                 "{agent:?} 还没探过 hook 怎么派生，不该带 pid"
             );
         }

@@ -75,7 +75,7 @@ Three channels that do not rely on colour:
 
 **Every state has a silence timeout** (`working` / `attention` / `error` 300s, `thinking` / `permission` / `idle` 600s, `done` 30s; all configurable). What happens after it depends on whether that reporter **knows the agent's process**:
 
-- **It does** (Claude Code, the opencode / Pi / Hermes plugins, `signalhub run`): if the process is still alive the session turns **idle** (the window is open, there just were no events to report); if the process is gone the session is removed immediately, without waiting for the timeout. **"Needs permission / attention / error" are not re-judged this way** — a live process does not prove the request was answered, so they still go stale.
+- **It does** (Claude Code's command hooks, the opencode / Pi / Hermes plugins, `signalhub run`; Claude Code's optional HTTP hook mode carries no PID): if the process is still alive the session turns **idle** (the window is open, there just were no events to report); if the process is gone the session is removed immediately, without waiting for the timeout. **"Needs permission / attention / error" are not re-judged this way** — a live process does not prove the request was answered, so they still go stale.
 - **It does not** (HTTP reporters, hand-written commands, the other hooks): the session turns `stale` (grey, steady) and is deleted 30 minutes later.
 
 That way "the agent crashed / stopped talking" and "the agent is idle and waiting" look different, and you never get a lamp that keeps blinking for an agent that is long gone. **Hooks installed by an older version must be re-installed from the Connect page** to pick this up; until then they keep the old silence behaviour.

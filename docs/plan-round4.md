@@ -589,7 +589,8 @@ webview 隐藏着也活着，它的时钟会混进来），测完把原文件恢
 
 **改法**：
 
-- `Report.pid`（可选）→ `Session.pid`。**只让内置接入带**：Claude Code 的 hook 命令追加 `--pid "$PPID"`；opencode / Pi / Hermes 的插件传自己进程的 `process.pid` / `os.getpid()`；`signalhub run` 传包装器的 pid。HTTP 上报、手写命令、其余几家 hook 都不带。
+- `Report.pid`（可选）→ `Session.pid`。**只让内置接入带**：Claude Code 的 hook 命令前缀 `SIGNALHUB_PID="$PPID"`；opencode / Pi / Hermes 的插件把 `SIGNALHUB_PID` 设成自己进程的 `process.pid` / `os.getpid()`；`signalhub run` 直接用包装器的 pid。HTTP 上报、手写命令、其余几家 hook 都不带。
+- **进程号走环境变量，不新增命令行选项。** 用户 PATH 上如果放的是旧版本 CLI（拷过去的，而不是软链接），它不认识新选项，会把整条 hook 判成错误 —— 上报直接断掉；环境变量则被原样忽略，最坏也只是退回沉默。`first_token` 因此学会跳过开头的 `NAME=value`，否则「是不是我们写的」「命令还解析得到吗」都会答错。
 - `Store::refresh_liveness(now, alive)` 在 `expire` **之前**跑（sweep 每 250ms）：
   - pid 已经不在 → 立刻删，不等 TTL（`done` 也一样）。
   - pid 还在、TTL 到了 → thinking / working / idle 转 `idle`，清掉上一句 message，`since` 不动；之后每 60 秒复查一次。
@@ -600,16 +601,19 @@ webview 隐藏着也活着，它的时钟会混进来），测完把原文件恢
 
 **验证**：
 
-- **端到端**（2026-10-20）：临时目录里放项目级 `.claude/settings.json`（没动用户级配置），命令就是装出来的那条 `signalhub hook claude-code --pid "$PPID" --port 18777`，跑一次 `claude -p`，本地记录器收到的上报体里 `pid` 与 hook 里展开的 `$PPID` 一致 —— 证明 `$PPID` 的展开、CLI 解析、请求体三段都接上了。
+- **端到端**（2026-10-20）：临时目录里放项目级 `.claude/settings.json`（没动用户级配置），命令就是装出来的那条 `SIGNALHUB_PID="$PPID" signalhub hook claude-code --port 18777`，跑一次 `claude -p`，本地记录器收到的上报体里 `pid` 与 hook 里展开的 `$PPID` 一致 —— 证明 `$PPID` 的展开、环境变量、请求体三段都接上了。
 - `proc::alive`：当前进程为真；0 与 `i32::MAX` 为假。
 - `Store` 六条：活着转空闲、死了立刻删、permission 保持沉默、done 按时消失、空闲不会转沉默、不带 pid 的上报不抹掉已有 pid。另有 `pid` 字段可选解析一条。
-- CLI：`--pid "$PPID"` 在不会展开的 shell 里原样传进来时**当作没给**（不能让整条 hook 失败）；`--pid` 能反序列化进服务端 `Report`。
+- CLI：`SIGNALHUB_PID` 不是正整数时**当作没给**（`$PPID` 没展开、`0`、空串都算）；服务端 `Report` 的 `pid` 字段可选解析。
+- 识别逻辑：`first_token` 会跳过 `SIGNALHUB_PID="$PPID"` 这段赋值，安装 / 卸载 / 「命令还解析得到吗」照常工作。
 - 插件源码三份都带自己的进程号；hook 命令**只有 Claude Code 带**。
 
 **没验证到的 / 限制**：
 
 - Windows 没做探活（见上），仍是老的沉默路径。
 - 只有 Claude Code 的 `$PPID` 是实测的；Codex / Cursor / Gemini / Goose 没探过 hook 怎么派生，所以**故意不带**——把一个短命 shell 当进程号会让灯立刻收掉会话，比沉默更糟。
-- 老版本装过的 hook 要回「接入」页重装一次才会带上进程号；没重装的照旧按沉默处理（README 已写明）。
+- 老版本装过的 hook 要回「接入」页重装一次才会带上进程号；没重装的照旧按沉默处理（README 已写明）。接入页目前**看不出**命令 / 插件是旧的、也不会提示重装 —— issue #19。
+- Claude Code 的 `--http` 式接入没有命令行，不带 pid（它直接 POST）。
+- Windows 上还没有探活（pid 入库即丢），仍是老的沉默路径 —— issue #20。
 - 没在真 app 里看「关掉 Claude Code 后牌子立刻消失」：本机用户自己的 `tauri dev` 占着单实例锁，第二个实例起不来。这一段目前只有单测 + 上面那条请求体端到端。
 - pid 复用没做启动时间校验：概率极低（进程死后 250ms 内就被复用），后果也只是牌子多留一会儿。真遇到再加。

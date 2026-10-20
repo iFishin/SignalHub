@@ -122,7 +122,7 @@ Authorization: Bearer <token>
 | `ttl_ms` | number | | 按状态默认 | 覆盖默认过期时间；长任务显式传大值。**优先级最高** —— 用户可以在设置里改每个状态的停留时长，但显式传的值仍然压过它 |
 | `pid` | number | | `null` | 上报方进程号。**一般不用传**，内置接入自动带上（见下）。服务端用它区分「只是没上报」和「进程真的没了」：进程还在 → 超时转 `idle`；进程没了 → 立刻删掉这个会话。**只在 Unix 上生效**，Windows 上忽略 |
 
-**`pid` 不是给「改状态」用的，是给「会话还在不在」用的。** 带它的只有内置接入：Claude Code 的 hook 命令里是 `--pid "$PPID"`（`$PPID` 是被实测确认过的 claude 进程），opencode / Pi / Hermes 的插件传的是自己进程的 pid，`signalhub run` 传的是包装器自己的。HTTP 上报、手写命令和其余几家 hook 都不带 —— 它们的行为与以前完全一样（超时转 `stale`）。**别随手传一个 shell 的 pid**：那个 shell 退出之后，会话会被当成「进程没了」立刻清掉。
+**`pid` 不是给「改状态」用的，是给「会话还在不在」用的。** 带它的只有内置接入：Claude Code 的 hook 命令是 `SIGNALHUB_PID="$PPID" signalhub hook …`（`$PPID` 是被实测确认过的 claude 进程），opencode / Pi / Hermes 的插件把 `SIGNALHUB_PID` 设成自己的进程号，`signalhub run` 直接用自己的 pid。**走环境变量而不是新选项**：用户 PATH 上如果是旧版 CLI，它不认识新选项会把整条上报判成失败，而环境变量它根本不看。HTTP 上报、手写命令和其余几家 hook 都不带 —— 它们的行为与以前完全一样（超时转 `stale`）。**别随手传一个 shell 的 pid**：那个 shell 退出之后，会话会被当成「进程没了」立刻清掉。
 
 响应 `200`：
 

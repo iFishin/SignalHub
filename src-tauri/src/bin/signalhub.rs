@@ -163,9 +163,6 @@ struct Flags {
     group: Option<String>,
     message: Option<String>,
     ttl_ms: Option<u64>,
-    /// 上报方进程号。**内部选项**：装进 hook 命令的是 `$PPID`，由对方的 shell
-    /// 展开；自写集成想用也可以传自己的 pid。见 `state::Report::pid`。
-    pid: Option<u32>,
     json: bool,
     dry_run: bool,
     /// `install hooks`：用 **HTTP 方式**接入（不需要命令，目前只有 Claude Code）。
@@ -215,12 +212,6 @@ impl Flags {
                 "--ttl" => {
                     let raw = take_value(args, &mut index, "--ttl")?;
                     flags.ttl_ms = Some(parse_ttl(&raw)?);
-                }
-                "--pid" => {
-                    // 装进 hook 命令的是 `$PPID`，由对方的 shell 展开。万一对方
-                    // **不走 shell**，这串东西会原样传进来 —— 那时当作没给，
-                    // 而不是让整条 hook 报错（那会让上报彻底断掉）。
-                    flags.pid = take_value(args, &mut index, "--pid")?.parse().ok();
                 }
                 "--port" => {
                     let raw = take_value(args, &mut index, "--port")?;
@@ -483,9 +474,27 @@ fn apply_flag_extras(body: &mut Value, flags: &Flags) {
     if let Some(value) = flags.ttl_ms {
         body["ttl_ms"] = json!(value);
     }
-    if let Some(pid) = flags.pid {
+}
+
+/// 把上报方进程号补进请求体（有就补）。
+///
+/// **为什么走环境变量、不走命令行选项**：装进别人配置里的命令可能由**旧版本**
+/// 的 CLI 执行（用户把 CLI 拷贝到 PATH 而没有跟着应用一起升级）。旧 CLI 不认识
+/// 新选项，会把整条 hook 当成错误 —— 上报直接断掉；而环境变量它根本不看，最坏
+/// 也只是退回「沉默」那条老路。插件式接入同理（见 `hooks.rs` 的模板）。
+fn apply_env_pid(body: &mut Value) {
+    if let Some(pid) = env_pid() {
         body["pid"] = json!(pid);
     }
+}
+
+fn env_pid() -> Option<u32> {
+    parse_pid(&std::env::var("SIGNALHUB_PID").ok()?)
+}
+
+/// 只认正整数。没被 shell 展开的 `$PPID`、0、空串都算「没给」。
+fn parse_pid(raw: &str) -> Option<u32> {
+    raw.trim().parse().ok().filter(|pid: &u32| *pid > 0)
 }
 
 /// `--source` 只认三个值。
@@ -522,6 +531,7 @@ fn report(state: &str, flags: &Flags) -> Result<(), Failure> {
     if body.get("source").is_none() {
         body["source"] = json!(inferred_source(flags.agent.as_deref()));
     }
+    apply_env_pid(&mut body);
 
     let (status, text) = read_response!(client()
         .post(&endpoint.url("/state"))
@@ -1024,6 +1034,7 @@ fn hook_body(
     agent: &str,
     payload: &Value,
     flags: &Flags,
+    pid: Option<u32>,
 ) -> Value {
     // 走 hook 报的**一定是智能体**：这个子命令就是给我们装进各家配置里的那条命令用的
     let mut body = json!({ "state": state, "session": session, "agent": agent, "source": "agent" });
@@ -1036,6 +1047,11 @@ fn hook_body(
     // payload 里的 cwd / session 是准的；但用户在命令行上显式写的选项优先 ——
     // 装出来的 hook 命令本来一个选项都不带，所以这条只在手改过命令时才会生效。
     apply_flag_extras(&mut body, flags);
+    // 进程号由调用方读好传进来（而不是在这里读环境变量）：这个函数要能单测，
+    // 而进程级的环境变量在并行测试里改不得。
+    if let Some(pid) = pid {
+        body["pid"] = json!(pid);
+    }
     body
 }
 
@@ -1125,7 +1141,15 @@ fn hook(agent: &str, flags: &Flags) -> Result<(), Failure> {
     // 上报的请求体**在这里构造一次**：它既是发出去的内容，也是攒下来等重放的内容。
     // 清除没有请求体（会话名就在 URL 里），所以是 `None`。
     let report_body = match &action {
-        Action::Report(state) => Some(hook_body(t(), state, &session, agent, &payload, flags)),
+        Action::Report(state) => Some(hook_body(
+            t(),
+            state,
+            &session,
+            agent,
+            &payload,
+            flags,
+            env_pid(),
+        )),
         Action::Clear => None,
     };
 
@@ -1651,7 +1675,6 @@ mod tests {
             "--group", "builds",
             "--message", "compiling",
             "--ttl", "30s",
-            "--pid", "4242",
         ])
         .unwrap();
 
@@ -1666,15 +1689,17 @@ mod tests {
         assert_eq!(report.cwd.as_deref(), Some("/proj"));
         assert_eq!(report.message.as_deref(), Some("compiling"));
         assert_eq!(report.ttl_ms, Some(30_000));
-        assert_eq!(report.pid, Some(4242));
     }
 
-    /// hook 命令里写的是 `--pid "$PPID"`。万一对方的 hook 不走 shell，这串会
-    /// 原样传进来 —— 那时必须**当作没给**，而不是让整条 hook 失败。
+    /// `$PPID` 没被 shell 展开时会一整个传进来 —— 当作没给，而不是把「$PPID」
+    /// 当成一个进程号，更不能让整条 hook 失败。
     #[test]
-    fn an_unexpanded_pid_variable_is_ignored_instead_of_failing_the_hook() {
-        let (flags, _) = parse(&["hook", "claude-code", "--pid", "$PPID"]).unwrap();
-        assert_eq!(flags.pid, None);
+    fn only_a_plain_positive_number_counts_as_a_pid() {
+        assert_eq!(parse_pid("4242"), Some(4242));
+        assert_eq!(parse_pid(" 7 "), Some(7));
+        for raw in ["$PPID", "", "0", "12x", "-1", "99999999999999999999"] {
+            assert_eq!(parse_pid(raw), None, "{raw:?} 不该被当成 pid");
+        }
     }
 
     // ---- 牌上的「正在做什么」 --------------------------------------------------
@@ -1827,8 +1852,17 @@ mod tests {
         });
         let flags = Flags::default();
 
-        let body = hook_body(&cli_text::ZH, "working", "s-1", "claude-code", &payload, &flags);
+        let body = hook_body(
+            &cli_text::ZH,
+            "working",
+            "s-1",
+            "claude-code",
+            &payload,
+            &flags,
+            Some(4242),
+        );
         assert_eq!(body["message"], "改 state.rs");
+        assert_eq!(body["pid"], 4242, "hook 路径也要带上进程号");
 
         let report: state::Report =
             serde_json::from_value(body).expect("服务端应能解析 hook 构造的请求体");
@@ -1838,7 +1872,7 @@ mod tests {
 
         // 没有工具名的事件：这个键**根本不出现**，而不是发个空串
         let plain = json!({"hook_event_name": "Stop", "session_id": "s-1"});
-        let body = hook_body(&cli_text::ZH, "done", "s-1", "claude-code", &plain, &flags);
+        let body = hook_body(&cli_text::ZH, "done", "s-1", "claude-code", &plain, &flags, None);
         assert!(body.get("message").is_none(), "{body}");
     }
 
