@@ -273,7 +273,7 @@ pub struct Report {
     /// 前者转成 `idle` 留在灯上，后者立刻清掉。不带的会话完全按老路走
     /// （到期转 `stale`）。
     ///
-    /// **只认 Unix**（见 [`effective_pid`]）；Windows 上会被丢掉，行为与没带一样。
+    /// **只认 Unix**（见 `effective_pid`）；Windows 上会被丢掉，行为与没带一样。
     pub pid: Option<u32>,
 }
 
