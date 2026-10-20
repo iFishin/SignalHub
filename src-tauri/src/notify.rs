@@ -184,7 +184,10 @@ fn decide_alert(
 ) {
     let muted = &settings.muted_groups;
     let alerting = alerts::alerting_aggregate(snapshot, muted);
-    let quiet = is_quiet_now(app);
+    // 勿扰时段和 B4 预设共用同一个语义：**这一轮彻底不弹，也不在结束后补发**。
+    // 补发意味着散会后面对一屏「开会期间发生的事」—— 灯已经照常显示过了，
+    // 再补一遍只是换个时间打扰。
+    let quiet = is_quiet_now(app) || crate::rules::silence(snapshot, settings).is_some();
 
     let threshold = Duration::from_secs(settings.alert_after_secs as u64);
     // 决定和轮次**在同一次加锁里取**：分两次的话，中间可能被另一次状态推送插进来，
@@ -233,6 +236,11 @@ fn decide_alert(
                     .snapshot();
                 if alerts::alerting_aggregate(&snapshot, muted) != alerting {
                     return; // 已经不是那个状态了
+                }
+                // 等待期间进了会议 / 有会话开始干活：这一轮按「不打扰」处理，
+                // 和勿扰时段一样不补发（见 `decide_alert` 顶部）。
+                if crate::rules::silence(&snapshot, &live).is_some() {
+                    return;
                 }
                 if !sustained(&snapshot, muted, alerting, threshold) {
                     // 还是那个状态，但没真的持续够久 —— 这正是这个阈值存在的
@@ -318,6 +326,11 @@ fn spawn_reminders(
                 .snapshot();
             // 事情过去了：状态变了、被静音了、或者暂停了
             if alerts::alerting_aggregate(&snapshot, muted) != alerting {
+                return;
+            }
+            // 会议中 / 有会话在跑：停掉这条提醒链，**不延后补发** —— 和勿扰、
+            // 静音同一条规矩（每一步现读，散会后的下一步不会再被拦）。
+            if crate::rules::silence(&snapshot, &settings).is_some() {
                 return;
             }
 

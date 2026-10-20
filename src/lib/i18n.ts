@@ -179,6 +179,15 @@ export interface Messages {
   alertAfterHint: string;
   quietHours: string;
   alertHint: string;
+  /** B4 预设规则那一节的标题 / 总说明 */
+  rulesTitle: string;
+  rulesHint: string;
+  ruleStuckPush: string;
+  ruleStuckPushHint: string;
+  ruleBusySilence: string;
+  ruleBusySilenceHint: string;
+  ruleMeeting: string;
+  ruleMeetingHint: string;
   delayNow: string;
 
   // 全局入口（左栏底部）与「打开某个目录」那两个按钮（系统页）
@@ -652,6 +661,18 @@ export const MESSAGES: Record<Lang, Messages> = {
     quietHours: "勿扰时段",
     alertHint:
       "需要授权、需要关注或出错时弹一条系统通知。声音挂在通知上，所以关掉通知也就没有声音。勿扰时段里不弹也不出声，灯照常显示 —— 而且不补发：早上醒来收到一堆昨晚的通知，正是勿扰想避免的。",
+    rulesTitle: "预设规则",
+    rulesHint:
+      "三条写死的规则，各自一个开关 —— 不做表达式引擎。它们只决定「什么时候打扰你」，不改变灯的聚合、排序和转发。",
+    ruleStuckPush: "授权卡住 60 秒 → 再推一次手机",
+    ruleStuckPushHint:
+      "某组停在「需要授权」超过 60 秒还没人处理时，用「转发」里配好的手机推送钩子（Bark / PushDeer / ntfy……）再发一次 —— 没配钩子就没有东西可发。一动就批准的权限请求不值得吵你。",
+    ruleBusySilence: "有会话在跑 → 暂停通知",
+    ruleBusySilenceHint:
+      "任一智能体处于「思考 / 执行」时，不弹系统通知和重复提醒（授权提醒也一样）。灯照常显示、上报照常进来；忙完那一轮不会补发。",
+    ruleMeeting: "会议中 → 灯变蓝 + 静音",
+    ruleMeetingHint:
+      "配合「会议中」采集器：开会期间会议那块牌画成蓝色，系统通知与提醒暂停；散会后不补发。蓝色只表达「在开会」，不改变排序和托盘。",
     delayNow: "立刻",
     alertForwardHint: "想让状态变化转发到服务器，或跑一条命令？在「转发」页。",
 
@@ -1118,6 +1139,18 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     quietHours: "Quiet hours",
     alertHint:
       "A system notification when approval, attention or error happens. Sound rides on the notification, so turning notifications off silences it too. During quiet hours nothing pops or sounds and the lamp still shows — and nothing is replayed: waking to a pile of last night's notifications is exactly what quiet hours avoids.",
+    rulesTitle: "Presets",
+    rulesHint:
+      "Three hard-coded rules, each with its own switch — no expression engine. They only decide when to interrupt you; aggregation, ordering and forwarding are untouched.",
+    ruleStuckPush: "Approval stuck 60s → push again",
+    ruleStuckPushHint:
+      "When a group has been waiting for approval for over 60 seconds, send one more message through the phone-push hooks configured in Forwarding (Bark / PushDeer / ntfy…). No hook, nothing to send. Approvals that pass in a second are not worth the noise.",
+    ruleBusySilence: "An agent is working → hold notifications",
+    ruleBusySilenceHint:
+      "While any agent is thinking or working, system notifications and reminders (including approval ones) are held. The lamp and reporting keep working; nothing is replayed when the work finishes.",
+    ruleMeeting: "In a meeting → blue lamp + silence",
+    ruleMeetingHint:
+      "Works with the \"In a meeting\" collector: while a call is on, that sign turns blue and notifications are held; nothing is replayed after it ends. Blue only means \"in a meeting\" — ordering and the tray are unchanged.",
     delayNow: "Now",
     alertForwardHint:
       "Want state changes forwarded to your server, or a command run? See the Forwarding tab.",

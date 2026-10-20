@@ -14,6 +14,7 @@ import { ApprovalBubble, MAX_APPROVAL_BUBBLES } from "./ApprovalBubble";
 import type { Approval } from "../lib/useApprovals";
 import { updateSettings, type GroupMeta, type Settings } from "../lib/useSettings";
 import type { GroupView, SignalState } from "../lib/types";
+import { meetingTint } from "../lib/rules";
 
 /** 与 Rust 侧 `config::MAX_SIGNS` 一致。超出的牌服务端已经截断。 */
 const MAX_SIGNS = 4;
@@ -437,15 +438,23 @@ export function SignalLamp({ aggregate, groups, settings, paused, approvals, onD
       onContextMenu={openLampMenu}
       {...drag}
     >
-      {rows.map((group, index) =>
-        !expanded ? (
+      {rows.map((group, index) => {
+        // B4 预设 3：会议中那一组画成蓝色。`--state` 是圆点 / 圆环颜色的唯一入口，
+        // 覆盖它之后 `--edge`（描边）也跟着派生 —— 见 state.css 的 `[data-state]`。
+        // 折叠态同样上色：收起来时那一排点正是「开会」最该被看见的地方。
+        const tint = meetingTint(group, settings.rule_meeting);
+        const dotStyle = {
+          ...progressStyle(group),
+          ...(tint ? { "--state": tint } : {}),
+        } as React.CSSProperties;
+        return !expanded ? (
           <span
             // 折叠后只有点，没有可读的文字，所以 key 用下标；组名可能为空（占位那块）
             key={index}
             className="dot lamp-dot"
             data-state={group.aggregate}
             data-shape={shapes[group.aggregate]}
-            style={progressStyle(group)}
+            style={dotStyle}
             onContextMenu={(event) => openGroupMenu(event, group.name)}
           />
         ) : (
@@ -462,7 +471,7 @@ export function SignalLamp({ aggregate, groups, settings, paused, approvals, onD
               className="dot"
               data-state={group.aggregate}
               data-shape={shapes[group.aggregate]}
-              style={progressStyle(group)}
+              style={dotStyle}
             />
             <div className="sign-body">
               <div className="sign-line">
@@ -581,8 +590,8 @@ export function SignalLamp({ aggregate, groups, settings, paused, approvals, onD
               </span>
             )}
           </div>
-        ),
-      )}
+        );
+      })}
       {/* 待审批的气泡。**绝对定位**（见 lamp.css）：不参与 flex 布局，所以折叠态
           那种横排也不用另写一套，牌的宽高一个像素都不变。 */}
       {pending > 0 && onDecide && (

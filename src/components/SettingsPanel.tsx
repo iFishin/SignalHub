@@ -2075,6 +2075,10 @@ export function SettingsPanel({ snapshot }: Props) {
         const extraDelay = alertChoices.some((d) => d.value === settings.alert_after_secs)
           ? null
           : settings.alert_after_secs;
+        // 预设 3 依赖「会议中」采集器。还没加载出来时先按「能做到」显示（避免
+        // 行在眼前跳出来又消失）；加载完发现这台机器没有这个采集器，就不显示 ——
+        // 做不到的开关不摆出来。
+        const canMeet = !collectors || collectors.some((c) => c.id === "meeting");
 
         return (
           <>
@@ -2157,6 +2161,46 @@ export function SettingsPanel({ snapshot }: Props) {
               </div>
             </Row>
             <p className="hint">{m.alertHint}</p>
+
+            {/* B4：三条写死的预设规则。**不是规则编辑器** —— 每条一个开关，
+                说明写清楚它什么时候会改变打扰行为。 */}
+            <div className="section">
+              <div className="section-title">{m.rulesTitle}</div>
+              <p className="hint">{m.rulesHint}</p>
+              <Row
+                label={m.ruleStuckPush}
+                hint={m.ruleStuckPushHint}
+                onReset={resetFor(settings, "rule_stuck_push", patch)}
+              >
+                <Switch
+                  on={settings.rule_stuck_push}
+                  onChange={(on) => patch({ rule_stuck_push: on })}
+                />
+              </Row>
+              <Row
+                label={m.ruleBusySilence}
+                hint={m.ruleBusySilenceHint}
+                onReset={resetFor(settings, "rule_busy_silence", patch)}
+              >
+                <Switch
+                  on={settings.rule_busy_silence}
+                  onChange={(on) => patch({ rule_busy_silence: on })}
+                />
+              </Row>
+              {canMeet && (
+                <Row
+                  label={m.ruleMeeting}
+                  hint={m.ruleMeetingHint}
+                  onReset={resetFor(settings, "rule_meeting", patch)}
+                >
+                  <Switch
+                    on={settings.rule_meeting}
+                    onChange={(on) => patch({ rule_meeting: on })}
+                  />
+                </Row>
+              )}
+            </div>
+
             {/* 想去「转发到服务器」的人多半先来提醒页找，给一条通往「通知转发」的路 */}
             <div className="row">
               <span className="muted-text">{m.alertForwardHint}</span>

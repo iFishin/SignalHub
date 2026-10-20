@@ -249,6 +249,21 @@ export interface Settings {
   quiet_hours: QuietHours;
   /** 「需要你注意」的状态要**持续**这么多秒才弹通知。0 = 立刻弹。 */
   alert_after_secs: number;
+  /**
+   * **预设 1**：授权卡住超过 60 秒时，用「转发」里的钩子再推一次手机
+   * （Bark / PushDeer / ntfy……）。默认关，没有钩子就没有东西可发。
+   */
+  rule_stuck_push: boolean;
+  /**
+   * **预设 2**：有智能体在「思考 / 执行」时暂停通知和重复提醒。
+   *
+   * 只管「打扰」这一层：灯和上报照常，忙完也不补发（和勿扰时段同一个语义）。
+   */
+  rule_busy_silence: boolean;
+  /**
+   * **预设 3**：会议组存在时把它画成蓝色并暂停通知。需要「会议中」采集器。
+   */
+  rule_meeting: boolean;
   /** 托盘图标是否跟随当前聚合状态变色。 */
   tray_follows_state: boolean;
   /** 界面语言。"auto" = 跟随系统。 */
@@ -311,6 +326,9 @@ export const DEFAULTS: Settings = {
   sound: true,
   quiet_hours: { enabled: false, start: 22, end: 8 },
   alert_after_secs: 5,
+  rule_stuck_push: false,
+  rule_busy_silence: false,
+  rule_meeting: false,
   tray_follows_state: true,
   locale: "auto",
   group_meta: {},

@@ -70,6 +70,80 @@ pub fn fire(
     }
 }
 
+/// 给「卡住的某个状态」补推一次（B4 预设 1）。
+///
+/// 和 [`fire`] 的区别只有一个：**不看跃迁**，看「这一组现在还是不是这个状态」。
+/// 选择钩子的规则和 `Hook::fires` 同源 —— 不限定组的钩子要求全局聚合就是它，
+/// 限定了组的钩子要求命中的是这一组（见 [`reminder_fires`]）。
+/// 摘要里的「持续了多久」自动从 `since_ms` 算出来，收件人一眼看到「卡了 1m」。
+///
+/// 返回发了几条：**0 = 没有配好任何一条匹配的钩子**（界面据此说「先配一条」）。
+/// 单条失败不影响别的，也不影响规则线程 —— 和真实触发同一条 [`dispatch`]。
+pub fn remind(
+    settings: &Settings,
+    snapshot: &Snapshot,
+    state: Signal,
+    group: &str,
+    lang: Lang,
+    log: &OutboundLog,
+) -> usize {
+    let Some(view) = snapshot.groups.iter().find(|g| g.name == group) else {
+        return 0;
+    };
+    let subject = Subject {
+        state,
+        label: settings.display_label(view),
+        message: view.message.as_deref(),
+        since_ms: view.since_ms,
+    };
+    let line = summarize(lang, lang::text(lang).summary_prefix, &subject);
+    let payload = match serde_json::to_string(&Payload {
+        snapshot,
+        at_ms: now_ms(),
+    }) {
+        Ok(payload) => payload,
+        Err(err) => {
+            eprintln!("[signalhub] 序列化提醒载荷失败: {err}");
+            return 0;
+        }
+    };
+    let fields = TemplateFields::from_subject(&subject, snapshot.aggregate.name(), &line, now_ms());
+
+    let mut sent = 0;
+    for hook in settings
+        .hooks
+        .iter()
+        .filter(|hook| hook.action.is_configured())
+        .filter(|hook| reminder_fires(hook, snapshot.aggregate.name(), state.name(), group))
+    {
+        dispatch(
+            hook.action.clone(),
+            line.clone(),
+            payload.clone(),
+            fields.clone(),
+            log.clone(),
+        );
+        sent += 1;
+    }
+    sent
+}
+
+/// 一条钩子该不该收到这次「补推」。
+///
+/// 判据和 `Hook::fires` 对齐，只是把「跃迁了」换成「现在还是这个状态」：
+/// 不限定组的看全局聚合，限定了组的看这一组。`when` 是空的钩子（任何变化都触发）
+/// 也会收到 —— 它本来就想知道所有事。
+fn reminder_fires(hook: &Hook, aggregate: &str, state: &str, group: &str) -> bool {
+    if !hook.matches(state) {
+        return false;
+    }
+    if hook.groups.is_empty() {
+        aggregate == state
+    } else {
+        hook.groups.iter().any(|name| name == group)
+    }
+}
+
 /// 把所有**已配置**的钩子各发一遍 —— 「发送测试」按钮。
 ///
 /// 它**忽略 `when`、忽略组过滤、忽略跃迁判据**：用户就是想现在验证一次「这条通路通不通」，
@@ -1741,5 +1815,103 @@ mod tests {
             ci_errors.fires("permission", false, &[("ci".into(), Signal::Error)]),
             "别的组更紧急不该把 ci 的失败吞掉"
         );
+    }
+
+    fn hook_with_groups(when: &[&str], groups: &[&str]) -> Hook {
+        Hook {
+            when: when.iter().map(|s| s.to_string()).collect(),
+            groups: groups.iter().map(|s| s.to_string()).collect(),
+            action: HookAction::Command {
+                command: "true".into(),
+            },
+        }
+    }
+
+    /// 补推（预设 1）的选择规则：`when` 要匹配**这个状态**；不限定组的钩子要求
+    /// 全局聚合就是它，限定了组的钩子要求命中的是这一组。
+    #[test]
+    fn a_reminder_targets_the_same_hooks_as_a_real_transition() {
+        let anywhere = hook_with_groups(&[], &[]);
+        let permission_only = hook_with_groups(&["permission"], &[]);
+        let deploy = hook_with_groups(&[], &["deploy"]);
+        let ci = hook_with_groups(&["permission"], &["ci"]);
+
+        assert!(reminder_fires(&anywhere, "permission", "permission", "deploy"));
+        assert!(reminder_fires(
+            &permission_only,
+            "permission",
+            "permission",
+            "deploy"
+        ));
+        assert!(reminder_fires(&deploy, "permission", "permission", "deploy"));
+        assert!(reminder_fires(&ci, "permission", "permission", "ci"));
+
+        // 全局聚合不是它：不限定组的钩子不发（它的 `when` 就是按整体配的）
+        assert!(!reminder_fires(&permission_only, "error", "permission", "deploy"));
+        // 限定了别的组：不发
+        assert!(!reminder_fires(&ci, "permission", "permission", "deploy"));
+        // `when` 里没有这个状态：不发
+        assert!(!reminder_fires(&hook_with_groups(&["error"], &[]), "permission", "permission", "deploy"));
+    }
+
+    /// 「卡住补推」整条路真的跑一遍：选钩子 → 拼摘要（带上卡了多久）→ 发出去 → 记日志。
+    ///
+    /// 它和 `fire` 共用 `dispatch`，但还是单独走一遍：这条路的触发条件不是跃迁，
+    /// 最容易写错的是「选了钩子却拼错主语」（摘要里写成了全局聚合、或者没带等待时间）。
+    #[test]
+    fn a_reminder_reaches_the_group_hook_with_how_long_it_has_been_stuck() {
+        let (addr, server) = one_shot_server("HTTP/1.1 200 OK");
+        let settings = Settings {
+            hooks: vec![Hook {
+                when: vec!["permission".into()],
+                groups: vec!["ci".into()],
+                // 用纯文本预设：这条测试要断言的是**摘要那一行**（卡了多久），
+                // 而默认的 Raw 只发 JSON，摘要根本不进去。
+                action: HookAction::Http {
+                    url: format!("http://{addr}/phone"),
+                    headers: BTreeMap::new(),
+                    preset: HttpPreset::Text,
+                    body: None,
+                    content_type: None,
+                },
+            }],
+            ..Settings::default()
+        };
+        let since = now_ms() - 60_000;
+        let snapshot = Snapshot {
+            aggregate: Signal::Permission,
+            paused: false,
+            since_ms: since,
+            message: Some("等你批准".into()),
+            groups: vec![crate::state::GroupView {
+                name: "ci".into(),
+                default_label: None,
+                aggregate: Signal::Permission,
+                message: Some("等你批准".into()),
+                since_ms: since,
+                stale_progress: None,
+                sessions: Vec::new(),
+            }],
+        };
+        let log = OutboundLog::default();
+
+        assert_eq!(
+            remind(&settings, &snapshot, Signal::Permission, "ci", Lang::Zh, &log),
+            1
+        );
+        // 不是这个状态：没东西可发（也不会去连第二条连接）
+        assert_eq!(
+            remind(&settings, &snapshot, Signal::Error, "ci", Lang::Zh, &log),
+            0
+        );
+
+        let seen = server.join().unwrap();
+        assert!(seen.starts_with("POST /phone "), "实际请求: {seen}");
+        assert!(seen.contains("等你批准"), "摘要该带上组里那句话: {seen}");
+        assert!(seen.contains("(1m)"), "摘要该带上已经等了多久: {seen}");
+
+        let attempt = wait_for_attempt(&log);
+        assert!(attempt.ok, "结果该是成功的: {attempt:?}");
+        assert_eq!(attempt.target, format!("http://{addr}/phone"));
     }
 }

@@ -1014,6 +1014,23 @@ pub struct Settings {
     /// 弹一下就被自动批准）。立刻弹的话，用户被叫过去看到的是一个已经解决的
     /// 问题。等一会儿能过滤掉这类「一闪而过」。
     pub alert_after_secs: u16,
+    /// **预设 1**：某个组卡在「需要授权」超过 60 秒时，用「转发」里配好的钩子
+    /// **再推一次**到手机（Bark / PushDeer / ntfy 那些）。
+    ///
+    /// 默认关。它自己不是一条推送通道 —— 没配钩子就没有东西可发，界面上写清楚。
+    /// 一动就批准掉的那种权限请求不值得吵你；卡住的才值得。
+    pub rule_stuck_push: bool,
+    /// **预设 2**：有会话正在「思考 / 执行」时，暂停系统通知与重复提醒。
+    ///
+    /// 默认关。灯照常显示、上报照常进来；停的只是「弹出来打扰你」这一层。
+    /// 和勿扰时段同一个语义：**这一轮不弹，也不在忙完之后补发**。
+    pub rule_busy_silence: bool,
+    /// **预设 3**：会议组存在时，灯上那一组画成蓝色，并且暂停通知（和预设 2
+    /// 共用同一套暂停逻辑）。需要配合「会议中」采集器使用。
+    ///
+    /// 默认关。蓝色不参与状态语义（状态色里没有蓝），它表达的是「正在开会」，
+    /// 不是「更紧急」—— 所以只在灯上画，不影响排序、托盘和钩子。
+    pub rule_meeting: bool,
     /// 托盘图标是否跟随当前聚合状态变色。关掉就回到单色模板图（跟着菜单栏明暗反色）。
     pub tray_follows_state: bool,
     /// 上报没带 `group` 时，怎么给它兜一个。
@@ -1269,6 +1286,10 @@ impl Default for Settings {
             quiet_hours: QuietHours::default(),
             muted_groups: Vec::new(),
             alert_after_secs: DEFAULT_ALERT_DELAY_SECS,
+            // 预设规则默认关：它们会改变「什么时候打扰你」，属于用户明确要了才生效的行为
+            rule_stuck_push: false,
+            rule_busy_silence: false,
+            rule_meeting: false,
             tray_follows_state: true,
             group_by: GroupBy::default(),
             // 默认只监听本机。见字段注释：开了之后唯一的防线就是 token
@@ -1918,6 +1939,9 @@ mod tests {
             },
             muted_groups: vec!["quiet".into()],
             alert_after_secs: 30,
+            rule_stuck_push: true,
+            rule_busy_silence: true,
+            rule_meeting: true,
             tray_follows_state: false,
             group_by: GroupBy::Cwd,
             lan_access: true,
@@ -2116,6 +2140,9 @@ mod tests {
         assert!(settings.notify, "缺的字段退回该字段的默认值");
         assert!(!settings.approve_tools, "会改智能体行为的开关，缺字段必须是关的");
         assert!(!settings.collect_backup, "读系统状态的采集器，缺字段必须是关的");
+        assert!(!settings.rule_stuck_push, "会改变打扰时机的预设，缺字段必须是关的");
+        assert!(!settings.rule_busy_silence, "会改变打扰时机的预设，缺字段必须是关的");
+        assert!(!settings.rule_meeting, "会改变打扰时机的预设，缺字段必须是关的");
         assert!(!settings.collect_meeting, "读系统状态的采集器，缺字段必须是关的");
         assert!(settings.colors.is_empty(), "缺的颜色表是空的，不是解析失败");
     }

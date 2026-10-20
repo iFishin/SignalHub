@@ -13,6 +13,7 @@ mod open;
 mod outbound;
 mod panel;
 mod receipts;
+mod rules;
 mod server;
 mod shortcuts;
 mod shell;
@@ -2457,6 +2458,8 @@ pub fn run() {
             for collector in collect::Collector::ALL {
                 collector.spawn(app.handle().clone());
             }
+            // 预设规则（B4）：一条线程、5 秒一拍，只读快照和设置。
+            rules::spawn(app.handle().clone());
             // 更新检查是**静默**的后台任务（见 update.rs 顶部）：失败只写日志，
             // 绝不在用户没点过「检查更新」的时候弹东西。
             update::spawn_auto_check(app.handle().clone());

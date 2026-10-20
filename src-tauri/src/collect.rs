@@ -24,7 +24,7 @@ use tauri::{AppHandle, Manager};
 
 /// 上报的 agent 名。接入页按 `source` 分组（见 B1 的「信号源」），所以这个名字只
 /// 回答「谁报的」——`system` 读作「这台机器自己」。
-const AGENT: &str = "system";
+pub const AGENT: &str = "system";
 
 /// 采集间隔。**红线：≥ 5 秒**（见 plan §4 B2）。一次工具调用能推几十次状态，而
 /// 备份状态五分钟才变一次 —— 采太勤只是白耗电。
