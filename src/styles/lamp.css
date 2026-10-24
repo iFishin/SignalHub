@@ -639,6 +639,12 @@ body,
 .lamp-root:hover .sign,
 .lamp-root:hover .lamp-dot {
   opacity: 1;
+  /* 安静压暗后的反转字（data-sign-translucent）要随悬停一起收回来：hover 把 opacity
+     拉回 1，牌面重新不透明、底色又是深色的 —— 深字压深底就不可读了。直接在元素上
+     重写这些自定义属性（继承来的根级值靠元素级声明赢）。 */
+  --sign-fg: #ececef;
+  --sign-muted: #9b9ba3;
+  --sign-line: rgba(255, 255, 255, 0.14);
 }
 
 @keyframes pulse {

@@ -124,9 +124,48 @@ export function resolveAnimations(settings: Settings): Record<SignalState, strin
  */
 export const SIGN_TRANSLUCENT_BELOW = 50;
 
-/** 这一档透明度下，牌里的字要不要翻成深色。边界（50 本身）**不翻**。 */
-export function signTextInverted(sign_opacity: number): boolean {
-  return sign_opacity < SIGN_TRANSLUCENT_BELOW;
+/**
+ * 安静模式把没事的牌压到几乎看不见（`lamp.css` 的 `[data-quiet][data-aggregate=…]`
+ * 那档 `opacity: 0.15`）。它和「用户把透明度滑到一半以下」走同一条反转逻辑，只是
+ * 触发条件不同：安静时牌面被压暗，**透明度等价值≈15**（CSS `opacity: 0.15` 即 alpha
+ * 0.15，和滑杆百分比口径同源），必然低于 [`SIGN_TRANSLUCENT_BELOW`]。
+ *
+ * **为什么要翻**：低透明度下牌底（`rgba(28, 28, 32, alpha)`）透出来的东西是桌面本身；
+ * 近白的字落在浅色桌面上就不可读。安静的 0.15 同理 —— 亮白字在「几乎透明」的
+ * 牌上就是没人能读的。翻成深字，在深色桌面上读得到，在浅色桌面上也读得到。
+ *
+ * **边界**：安静 + 没事时（idle / stale / offline / off）才压暗；有事（thinking /
+ * working / done …）时安静不压，不该翻。那层判断在组件里（`SignalLamp` 按
+ * `[data-aggregate]` 决定压不压），这里只认「这次牌面是不是处于低透明度」。
+ */
+export const QUIET_FADE_OPACITY = 15;
+
+/**
+ * 安静模式下当前聚合是否被压暗（`lamp.css` 的安静规则一字不差：idle / stale /
+ * offline / off；且用户没开「穿透」——穿透时灯是常亮的，安静那道压暗规则被
+ * `[data-quiet][data-pass-through]` 兜住）。
+ */
+export function isQuietDimmed(
+  quiet: boolean,
+  aggregate: SignalState,
+  passThrough = false,
+): boolean {
+  const DIMMED: readonly SignalState[] = ["idle", "stale", "offline", "off"];
+  return quiet && !passThrough && (DIMMED as readonly string[]).includes(aggregate);
+}
+
+/**
+ * 牌面要不要翻字。**单函数、单真相**：
+ *
+ * - 用户把滑杆压到一半以下 → `sign_opacity` 本身 < [`SIGN_TRANSLUCENT_BELOW`] → 翻。
+ * - 安静把牌压到几乎透明 → 视为 [`QUIET_FADE_OPACITY`] → 翻。
+ *
+ * 返回 true 时 `SignalLamp` / `SettingsPanel` 就挂 `data-sign-translucent`
+ * （颜色真相在 `lamp.css` 里）。
+ */
+export function signTextInverted(sign_opacity: number, quietDimmed = false): boolean {
+  const effective = quietDimmed ? Math.min(sign_opacity, QUIET_FADE_OPACITY) : sign_opacity;
+  return effective < SIGN_TRANSLUCENT_BELOW;
 }
 
 /**

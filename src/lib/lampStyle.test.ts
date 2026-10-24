@@ -5,6 +5,7 @@ import {
   resolveShapes,
   signTextInverted,
   stateOverridden,
+  isQuietDimmed,
   SIGN_TRANSLUCENT_BELOW,
 } from "./lampStyle";
 import { DEFAULTS, type Settings } from "./useSettings";
@@ -221,5 +222,47 @@ describe("signTextInverted", () => {
     expect(signTextInverted(0)).toBe(true);
     expect(signTextInverted(DEFAULTS.sign_opacity)).toBe(false);
     expect(signTextInverted(100)).toBe(false);
+  });
+
+  /**
+   * 安静模式把没事的牌压到 ≈15（`QUIET_FADE_OPACITY`，CSS 安静档 `opacity: 0.15`），
+   * 必然低于翻字线 50 —— 于是安静里的「没事」照样要翻字。
+   *
+   * **为什么**：低透明度是「字该不该亮」的统一判据，不是滑杆的事。安静压暗、滑杆压低，
+   * 底层都是「牌几乎透明、底色透出桌面」；透明度低于一半就翻，这是灯的设计线。
+   */
+  it("flips when quiet dimmed the sign below the line", () => {
+    expect(signTextInverted(DEFAULTS.sign_opacity, true)).toBe(true);
+    expect(signTextInverted(86, true)).toBe(true);
+  });
+
+  /** 没事时安静不压（working / thinking / done …），不该翻。 */
+  it("does not flip when quiet left the sign bright", () => {
+    expect(signTextInverted(DEFAULTS.sign_opacity, false)).toBe(false);
+    expect(signTextInverted(86, false)).toBe(false);
+  });
+});
+
+describe("isQuietDimmed", () => {
+  /** 没事的聚合：安静会压暗它们。 */
+  it("dims the not-working aggregates", () => {
+    expect(isQuietDimmed(true, "idle")).toBe(true);
+    expect(isQuietDimmed(true, "stale")).toBe(true);
+    expect(isQuietDimmed(true, "offline")).toBe(true);
+    expect(isQuietDimmed(true, "off")).toBe(true);
+  });
+
+  /** 有事的聚合：安静不压，灯亮着呢。 */
+  it("does not dim working aggregates", () => {
+    expect(isQuietDimmed(true, "thinking")).toBe(false);
+    expect(isQuietDimmed(true, "working")).toBe(false);
+    expect(isQuietDimmed(true, "done")).toBe(false);
+    expect(isQuietDimmed(true, "attention")).toBe(false);
+  });
+
+  /** 不穿透时安静生效；用户开了穿透，灯就是常亮的，安静那道压暗规则被兔住。 */
+  it("ignores quiet while pass-through is on", () => {
+    expect(isQuietDimmed(true, "idle", true)).toBe(false);
+    expect(isQuietDimmed(false, "idle")).toBe(false);
   });
 });

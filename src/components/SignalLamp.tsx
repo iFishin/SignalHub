@@ -4,7 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { inTauri } from "../lib/env";
 import { signalLabel } from "../lib/signals";
 import { useLang, useMessages, type Messages, type Lang } from "../lib/i18n";
-import { lampVars, resolveShapes, signTextInverted } from "../lib/lampStyle";
+import { lampVars, resolveShapes, signTextInverted, isQuietDimmed } from "../lib/lampStyle";
 import { transitions, type AggregateMap } from "../lib/lampTransitions";
 import { labelOf, orderVisible } from "../lib/lampSort";
 import { nameChanged, withGroupName } from "../lib/groupMeta";
@@ -216,6 +216,10 @@ export function SignalLamp({ aggregate, groups, settings, paused, approvals, onD
   const lang = useLang();
   // 穿透也能从托盘和全局快捷键改，所以订阅而不是读一次 —— 灯上那枚角标必须跟着变。
   const toggles = useToggles();
+  // 安静模式把没事的牌压暗（lamp.css 的 `[data-quiet][data-aggregate=…]`）时，压暗后
+  // 的透明度（≈15）已经低于翻字线 —— 照同一套逻辑把字翻成深色，和用户把滑杆压到
+  // 一半以下是同一条反转路径（见 `signTextInverted` / `isQuietDimmed`）。
+  const quietDimmed = isQuietDimmed(quiet, aggregate, toggles.pass_through);
 
   // 形状是逐状态的（一个窗口里多块牌可以不一样），所以先整份算出来，再按每块牌
   // 的状态取。颜色和动画走 lampVars 的 CSS 变量，shape走元素属性 —— 形状不是
@@ -417,7 +421,7 @@ export function SignalLamp({ aggregate, groups, settings, paused, approvals, onD
       /* 牌面淡过一半就把牌里的字翻成深色（阈值见 `lampStyle.ts`，颜色在 `lamp.css`）。
          挂属性而不是推内联变量：和旁边这几个 `data-*` 开关同一套做法，
          那组颜色也就仍然只有 CSS 一个出处。 */
-      data-sign-translucent={signTextInverted(sign_opacity) || undefined}
+      data-sign-translucent={signTextInverted(sign_opacity, quietDimmed) || undefined}
       data-paused={paused || undefined}
       // 有气泡时窗口要高出一块（Rust 算的），CSS 按同一个数把内容区收上去
       data-approvals={pending || undefined}
