@@ -887,6 +887,16 @@ struct AgentStatus {
     /// （它只是执行了一个不存在的程序，然后照常继续），灯也不亮。这是「装了却没
     /// 反应」里最值得主动指出的一种，所以把它算在服务端、摆到界面上。
     command_ok: bool,
+    /// 配置里那条命令是不是**旧版本**写的（和当前版本会写的那条不同）。
+    ///
+    /// **`installed && stale`** = 升级后没重装：功能还在，行为停在旧版本 ——
+    /// 典型是 Claude Code 的 `SIGNALHUB_PID="$PPID"` 前缀（0.3.2 起才有），
+    /// 没重装的人界面上看到「已接入」，灯却回到「沉默」而不是「空闲」。
+    /// 和 `command_ok`（程序还跑不跑得起来）是两个不同的问题，所以分开报。
+    ///
+    /// 插件式接入这里是 `false`：它的标记行只是 CLI 路径、不承载版本，判断
+    /// 「插件源码是不是旧的」要看内容版本（issue #19 的后续），这里不误报。
+    stale: bool,
     /// 装进去的是 **HTTP 式**（`Some(true)`）还是命令式（`Some(false)`）。
     /// `None` = 没装。
     ///
@@ -913,6 +923,13 @@ fn detect_agents() -> Vec<AgentStatus> {
             // **HTTP 式没有命令可解析**，所以 `command_ok` 在那种情况下无意义 ——
             // 界面按 `http` 那个字段改口（见 `SettingsPanel` 的 `agentTryHint`）。
             let http = hooks::installed_http(agent);
+            // 装的是不是旧版本写的命令。只对**命令式**（往共享 JSON 里插 handler）
+            // 有意义：HTTP 式配置里写的是 url、没有 command；插件式的标记行是 CLI
+            // 路径、不承载版本（见 `AgentStatus::stale` 的说明）。
+            let stale = hooks::install_kind(agent) == hooks::InstallKind::JsonHooks
+                && command.as_deref().is_some_and(|cmd| {
+                    hooks::command_stale(cmd, &hooks::resolve_hook_command(agent))
+                });
             AgentStatus {
                 id,
                 name: agent.name(),
@@ -923,6 +940,7 @@ fn detect_agents() -> Vec<AgentStatus> {
                     .unwrap_or_default(),
                 command,
                 command_ok,
+                stale,
                 http,
             }
         })

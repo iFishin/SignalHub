@@ -232,6 +232,15 @@ export interface Messages {
   agentMissing: string;
   /** 「已接入」但配置里那条命令现在跑不起来了 —— 静默失效，最该被看见的一种 */
   agentCommandBroken: string;
+  /**
+   * 「已接入」但配置里那条命令是**旧版本**写的（升级后没重装）。
+   *
+   * 和 `agentCommandBroken` 不同：那条是「跑不起来」，这条是「跑得起来、行为是旧的」。
+   * 不提示的话，界面和正常的「已接入」一模一样，而功能已经停在上一版。
+   */
+  agentUpdateAvailable: string;
+  /** 就地把旧命令改写成当前版本的命令（不用先卸载） */
+  agentReinstall: string;
   /** 接入行上的回执：最近一次上报（多久以前 + 报的是什么状态） */
   agentReceiptAgo: (age: string, state: string) => string;
   /** 接入行上的回执：本次运行以来收到多少条 */
@@ -720,6 +729,9 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     agentMissing: "未检测到",
     agentCommandBroken:
       "接入是装上了，但配置里那条命令现在跑不起来 —— 智能体不会报错，灯也不会亮。多半是应用被挪走或删掉了，重新点一次「接入」就会改写成当前路径：",
+    agentUpdateAvailable:
+      "接入是旧版本写的 —— 命令还在跑，但行为停在上一版（典型：智能体进程号没跟着传，灯会在超时后回到「沉默」）。点「重新接入」就地改写成当前版本的命令：",
+    agentReinstall: "重新接入",
     agentReceiptAgo: (age, state) => `最近上报 ${age}前 · ${state}`,
     agentReceiptCount: (n) => `本次运行 ${n} 条`,
     agentReceiptNever:
@@ -1200,6 +1212,9 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     agentMissing: "Not detected",
     agentCommandBroken:
       "Installed, but the command in the config no longer runs — the agent will not complain and the lamp will not light. Usually the app was moved or deleted; clicking Install again rewrites it to the current path:",
+    agentUpdateAvailable:
+      "Installed with a command written by an older version — it still runs, but behaves like that version (typically: the agent's process id is not passed along, so the lamp falls back to stale instead of idle). Click Reconnect to rewrite it to the current version's command:",
+    agentReinstall: "Reconnect",
     agentReceiptAgo: (age, state) => `Last report ${age} ago · ${state}`,
     agentReceiptCount: (n) => `${n} this run`,
     agentReceiptNever:

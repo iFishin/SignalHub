@@ -30,6 +30,15 @@ export interface AgentStatus {
    */
   command_ok: boolean;
   /**
+   * 装过，但配置里那条命令是**旧版本**写的（和当前版本会写的那条不同）。
+   *
+   * **`installed && stale` = 升级后没重装**：功能还在，行为停在旧版本 —— 典型是
+   * Claude Code 的 `SIGNALHUB_PID="$PPID"` 前缀（0.3.2 起才有）。和 `command_ok`
+   * （程序还跑不跑得起来）是两个不同的问题：那条答「还跑得动吗」，这条答
+   * 「跑的是不是这一版的命令」。插件式接入不参与（源码版本要另立判据）。
+   */
+  stale: boolean;
+  /**
    * 装进去的是 HTTP 式（`true`）还是命令式（`false`）；`null` = 没装。
    *
    * 两种模式写进同一个配置，界面要说得出「你在跑哪条路」—— 否则用户看到「已接入」

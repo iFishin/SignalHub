@@ -2279,6 +2279,15 @@ export function SettingsPanel({ snapshot }: Props) {
                           {agent.command && <code className="mono">{agent.command}</code>}
                         </span>
                       )}
+                      {/* 装的是**旧版本**写的命令 —— 界面和正常的「已接入」一模一样，
+                          行为却停在上一版（典型：Claude Code 的 `SIGNALHUB_PID` 前缀）。
+                          只提示、不自动改：写入仍然由「重新接入」按钮触发。 */}
+                      {agent.installed && agent.stale && (
+                        <span className="agent-result">
+                          {m.agentUpdateAvailable}
+                          {agent.command && <code className="mono">{agent.command}</code>}
+                        </span>
+                      )}
                       {change && (
                         <span className="agent-result muted-text">
                           {/* 插件式接入：说「写到哪个文件」而不是「几个事件」——
@@ -2352,6 +2361,19 @@ export function SettingsPanel({ snapshot }: Props) {
                           onClick={() => tryAgent(agent)}
                         >
                           {busy ? m.agentTryBusy : m.agentTry}
+                        </button>
+                      )}
+                      {/* 旧版本写的命令：单独给一个「重新接入」，不用先卸载。
+                          安装本身是幂等的（同一条事件原地更新），所以这一步只改
+                          命令原文，不动事件清单。 */}
+                      {agent.installed && agent.stale && (
+                        <button
+                          type="button"
+                          className="btn btn-tiny"
+                          disabled={busy}
+                          onClick={() => changeAgent(agent, true)}
+                        >
+                          {m.agentReinstall}
                         </button>
                       )}
                       {/* **HTTP 方式**（只有 Claude Code）。放在「接入」左边：

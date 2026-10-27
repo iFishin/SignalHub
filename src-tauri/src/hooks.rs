@@ -306,6 +306,94 @@ pub fn command_resolves(command: &str) -> bool {
     }
 }
 
+/// 装过之后，配置里那条命令是不是「当前版本该写」的那条（issue #19）。
+///
+/// `installed` 是配置里**实际写着**的那条（[`installed_command`]），`expected` 是
+/// 这个版本会写的那条（[`resolve_hook_command`]）。两条不一致 = 升级后没重装：
+/// 功能还在，行为停在旧版本 —— 典型就是 Claude Code 的 `SIGNALHUB_PID="$PPID"`
+/// 前缀（0.3.2 起才有），没重装的人界面上看到「已接入」，灯却回到「沉默」。
+///
+/// **比较宽容在哪**：只把程序名 canonicalize 一次（[`command_key`]）—— PATH 上的
+/// 裸名和同目录的绝对路径算同一条命令，用户调过 PATH 不会被误报。其余部分照旧比：
+/// 参数变了、环境变量前缀多了/少了，都是「装的不是这一版」。
+///
+/// **不自动改用户配置**：这个判据只决定界面上要不要提示「重新接入」，写入仍然由
+/// 用户点按钮触发（见 `lib.rs` 的 `detect_agents`）。
+pub fn command_stale(installed: &str, expected: &str) -> bool {
+    command_key(installed) != command_key(expected)
+}
+
+/// 一条命令的可比 key。
+///
+/// 按 shell 规则切词（支持引号、前导的环境变量赋值），然后：
+///
+/// - 环境变量赋值（`SIGNALHUB_PID="$PPID"`）记成 `env:NAME=VALUE`。**它是命令的
+///   一部分**：进程号从哪来正是这一版要改的东西，不能当噪声抹掉。
+/// - 裸名程序（`signalhub`）resolve 到 PATH 上的绝对路径；带路径的程序按原样。
+///
+/// 只要 key 有一处不同，两条命令就是两条不同的命令。
+fn command_key(command: &str) -> String {
+    let chars: Vec<char> = command.chars().collect();
+    let mut tokens: Vec<String> = Vec::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        while i < chars.len() && chars[i].is_whitespace() {
+            i += 1;
+        }
+        if i >= chars.len() {
+            break;
+        }
+        // 读一个 shell 词：引号内的空白不是分隔符
+        let mut word = String::new();
+        let mut quote: Option<char> = None;
+        while i < chars.len() {
+            let c = chars[i];
+            if let Some(q) = quote {
+                if c == q {
+                    quote = None;
+                } else {
+                    word.push(c);
+                }
+            } else if c == '"' || c == '\'' {
+                quote = Some(c);
+            } else if c.is_whitespace() {
+                break;
+            } else {
+                word.push(c);
+            }
+            i += 1;
+        }
+        tokens.push(command_word_key(&word));
+    }
+    tokens.join("\u{1}")
+}
+
+/// 一个 shell 词的 key：环境变量赋值 / 程序名 / 普通参数。
+fn command_word_key(word: &str) -> String {
+    if let Some((name, value)) = word.split_once('=') {
+        // 只认合法的 shell 变量名：`--foo=bar` 这种普通参数不按赋值处理
+        let valid = !name.is_empty()
+            && name
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if valid {
+            return format!("env:{name}={value}");
+        }
+    }
+    if word.contains(['/', '\\']) {
+        // 带路径的程序：按原样（引号已在切词时剥掉）
+        format!("path:{word}")
+    } else {
+        // 裸名：能 resolve 就换成绝对路径 —— 裸名和绝对路径是同一个程序
+        match on_path(binary_name(word)) {
+            Some(path) => format!("cmd:{}", path.display()),
+            None => format!("cmd:{word}"),
+        }
+    }
+}
+
 /// 事件名清单。[`须写 matcher`]: 只有 Claude Code 的 SessionStart 需要
 /// —— 不加限制的话，上下文压缩时触发的 SessionStart 会被当成「会话开始」，
 /// 在智能体仍工作时把灯报成 idle。
@@ -2268,6 +2356,52 @@ mod tests {
         assert!(!command_resolves("/definitely/not/here/signalhub hook claude-code"));
         assert!(!command_resolves(""));
         assert!(!command_resolves("\"\""), "空引号 = 空程序名");
+    }
+
+    /// issue #19 的核心：升级前写的命令（没有 `SIGNALHUB_PID` 前缀）和这一版该写的
+    /// 不是同一条 —— 界面必须能提示「重新接入」，否则功能看着在、行为停在旧版本。
+    #[test]
+    fn a_command_without_the_new_env_prefix_is_stale() {
+        assert!(command_stale(
+            "signalhub hook claude-code",
+            "SIGNALHUB_PID=\"$PPID\" signalhub hook claude-code"
+        ));
+        // 反过来也一样：判断的是「是不是同一条」，不是「谁比谁新」
+        assert!(command_stale(
+            "SIGNALHUB_PID=\"$PPID\" signalhub hook claude-code",
+            "signalhub hook claude-code"
+        ));
+    }
+
+    /// 同一条命令（安装过一次、没升级）不能报 stale —— 否则每次打开接入页都在
+    /// 骗用户「有更新」。空白差异、引号差异都不算不同。
+    #[test]
+    fn the_same_command_is_not_stale() {
+        let command = "SIGNALHUB_PID=\"$PPID\" signalhub hook claude-code";
+        assert!(!command_stale(command, command));
+        assert!(!command_stale(
+            "  signalhub   hook   claude-code  ",
+            "signalhub hook claude-code"
+        ));
+        // 带引号和不带引号是同一条（shell 里等价）
+        assert!(!command_stale(
+            "\"signalhub\" hook claude-code",
+            "signalhub hook claude-code"
+        ));
+    }
+
+    /// 环境变量的**值**也算数：只差 pid 变量名的命令不是同一条（那是另一个机制）。
+    #[test]
+    fn env_values_are_part_of_the_command() {
+        assert!(command_stale(
+            "SIGNALHUB_PID=\"$PPID\" signalhub hook claude-code",
+            "SIGNALHUB_PID=\"$PPID_OTHER\" signalhub hook claude-code"
+        ));
+        // 普通参数里的 `=` 不是环境变量赋值，仍然按参数比
+        assert!(command_stale(
+            "signalhub hook claude-code --foo=1",
+            "signalhub hook claude-code --foo=2"
+        ));
     }
 
     /// 这是最重要的一条：settings.json 里往往还有别的东西
