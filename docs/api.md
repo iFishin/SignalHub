@@ -146,7 +146,7 @@ Authorization: Bearer <token>
 
 - `hook` 报的是 `agent`（这条命令就是给我们装进各家配置里的那条用的）；
 - `run` 报的是 `custom`（包装器是用户自己的东西）；
-- 手写的 `signalhub working` 按 `--agent` 推：是我们那 8 家的名字就算 `agent`，否则算 `custom`。
+- 手写的 `signalhub working` 按 `--agent` 推：是我们那 9 家的名字就算 `agent`，否则算 `custom`。
 
 **它只管一件事**：接入页把「收到过上报、但不在智能体清单里」的那些分成两组显示，好让「系统采集器」和「我自己的脚本」不至于混在一起。灯的聚合、分组、TTL、通知全都与它无关 —— 所以填错、不填，灯的行为一模一样。
 
@@ -512,6 +512,7 @@ signalhub watch --json > states.jsonl             # 每次变化一行 JSON，�
 | 智能体 | 文件 | 形态 |
 |---|---|---|
 | Claude Code | `~/.claude/settings.json` | 嵌套 `{ matcher?, hooks: [ { type, command, async } ] }` |
+| CSC (CoStrict CLI) | `~/.costrict/settings.json` | 同上（Claude Code 的分支，hook 机制同构；`csc` / `costrict` 两个名字都认） |
 | Codex | `~/.codex/hooks.json` | 同上 |
 | Cursor | `~/.cursor/hooks.json` | 扁平 `{ command, timeout }`，且顶层必须有 `version: 1` |
 
@@ -1132,7 +1133,7 @@ signalhub install hooks claude-code --http   # 需要 app 正在运行（要读�
 | 延迟 | 每次事件一个进程 | 一次本地 HTTP |
 | 「正在做什么」那一行 | CLI 生成 | 应用生成（同一组词，见 `lang.rs`） |
 | 局域网访问开着时 | 照常工作 | **端点关闭（403）** |
-| 适配范围 | 8 家 | 只有 Claude Code |
+| 适配范围 | 9 家 | 只有 Claude Code |
 
 两种模式写进**同一个**配置，所以「换一种」是原地改写整条 handler（不会留下
 `url` 和 `command` 并存的怪条目），`uninstall` 也两种都认。

@@ -20,6 +20,11 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Agent {
     ClaudeCode,
+    /// CoStrict CLI（`csc`）。Claude Code 的分支，hook 机制完全同构：
+    /// 配置在 `~/.costrict/settings.json`、事件名和条目格式一致、stdin 的
+    /// JSON 字段也一致（issue #22）。所以除路径和上报名外全部复用 Claude Code
+    /// 那一套。
+    Csc,
     Codex,
     Cursor,
     Gemini,
@@ -35,6 +40,8 @@ impl Agent {
         let key = raw.trim().to_ascii_lowercase().replace('_', "-");
         Ok(match key.as_str() {
             "claude-code" | "claude" | "claudecode" => Agent::ClaudeCode,
+            // CoStrict CLI：命令叫 `csc`，包名 @costrict/csc，两种写法都收
+            "csc" | "costrict" | "costrict-cli" | "co-strict" => Agent::Csc,
             "codex" | "codex-cli" => Agent::Codex,
             "cursor" => Agent::Cursor,
             "gemini" | "gemini-cli" => Agent::Gemini,
@@ -55,6 +62,7 @@ impl Agent {
     pub fn name(self) -> &'static str {
         match self {
             Agent::ClaudeCode => "Claude Code",
+            Agent::Csc => "CSC",
             Agent::Codex => "Codex",
             Agent::Cursor => "Cursor",
             Agent::Gemini => "Gemini CLI",
@@ -79,6 +87,8 @@ impl Agent {
     fn config_relative_path(self) -> &'static str {
         match self {
             Agent::ClaudeCode => ".claude/settings.json",
+            // CoStrict CLI：自己的家目录，结构和 Claude Code 的 settings.json 一样
+            Agent::Csc => ".costrict/settings.json",
             Agent::Codex => ".codex/hooks.json",
             Agent::Cursor => ".cursor/hooks.json",
             Agent::Gemini => ".gemini/settings.json",
@@ -97,8 +107,9 @@ impl Agent {
 
 /// 全部智能体，按加入顺序。`parse` 的报错信息和 CLI 的 help 都用它，
 /// 免得新增一个之后忘改其中一处、报错里少列一个。
-pub const ALL_NAMES: [&str; 8] = [
+pub const ALL_NAMES: [&str; 9] = [
     "claude-code",
+    "csc",
     "codex",
     "cursor",
     "gemini",
@@ -122,9 +133,8 @@ impl Agent {
     fn install_kind(self) -> InstallKind {
         match self {
             Agent::Opencode | Agent::Pi | Agent::Hermes => InstallKind::PluginFile,
-            Agent::ClaudeCode | Agent::Codex | Agent::Cursor | Agent::Gemini | Agent::Goose => {
-                InstallKind::JsonHooks
-            }
+            Agent::ClaudeCode | Agent::Csc | Agent::Codex | Agent::Cursor | Agent::Gemini
+            | Agent::Goose => InstallKind::JsonHooks,
         }
     }
 
@@ -136,6 +146,7 @@ impl Agent {
     fn marker_dir(self) -> &'static str {
         match self {
             Agent::ClaudeCode => ".claude",
+            Agent::Csc => ".costrict",
             Agent::Codex => ".codex",
             Agent::Cursor => ".cursor",
             Agent::Gemini => ".gemini",
@@ -150,6 +161,7 @@ impl Agent {
     fn command_names(self) -> &'static [&'static str] {
         match self {
             Agent::ClaudeCode => &["claude"],
+            Agent::Csc => &["csc"],
             Agent::Codex => &["codex"],
             // Cursor 的命令行工具新旧两个名字都用过
             Agent::Cursor => &["cursor-agent", "cursor"],
@@ -404,7 +416,10 @@ fn command_word_key(word: &str) -> String {
 fn events(agent: Agent) -> &'static [(&'static str, Option<&'static str>)] {
     match agent {
         Agent::Opencode | Agent::Pi | Agent::Hermes => &[],
-        Agent::ClaudeCode => &[
+        // CSC 与 Claude Code 的事件表**逐条一致**（issue #22：分支同构，含
+        // SessionStart 的 matcher）。共用一份而不是抄两遍 —— 抄本漂移的代价是
+        // 静默少装一个事件。
+        Agent::ClaudeCode | Agent::Csc => &[
             ("SessionStart", Some("startup|resume")),
             ("UserPromptSubmit", None),
             ("PreToolUse", None),
@@ -634,6 +649,7 @@ fn cli_beside(exe: &std::path::Path) -> Option<std::path::PathBuf> {
 fn agent_name_for_cli(agent: Agent) -> &'static str {
     match agent {
         Agent::ClaudeCode => "claude-code",
+        Agent::Csc => "csc",
         Agent::Codex => "codex",
         Agent::Cursor => "cursor",
         Agent::Gemini => "gemini",
@@ -675,7 +691,7 @@ pub fn cli_name(agent: Agent) -> &'static str {
 /// 得不全而被认成别的意思。`None` = 插件式接入，没有能跑的命令。
 pub fn probe_payload(agent: Agent) -> Option<String> {
     let event = match agent {
-        Agent::ClaudeCode | Agent::Codex | Agent::Goose => "UserPromptSubmit",
+        Agent::ClaudeCode | Agent::Csc | Agent::Codex | Agent::Goose => "UserPromptSubmit",
         // Cursor 用 camelCase
         Agent::Cursor => "beforeSubmitPrompt",
         // Gemini 也是 PascalCase，但「开始一轮」叫 BeforeAgent
@@ -1907,7 +1923,7 @@ impl HookSpec {
             HookSpec::Command(command) => match agent {
                 // `async: true` 是 Claude Code / Codex 的扩展字段，也让 hook 在后台
                 // 跑、不阻塞智能体。注意异步 hook 不受 timeout 约束（docs/api.md §4.4）。
-                Agent::ClaudeCode | Agent::Codex => {
+                Agent::ClaudeCode | Agent::Csc | Agent::Codex => {
                     json!({ "type": "command", "command": command, "async": true })
                 }
                 // Gemini / Goose 会**同步等待** hook（两家都没有 async 开关），所以给
@@ -1969,7 +1985,7 @@ fn handler_group(agent: Agent, spec: &HookSpec, matcher: Option<&str>) -> Value 
         }
         // Cursor 的 groups 形态不同：没有 `hooks` 数组，命令直接摆在组里
         Agent::Cursor => spec.body(agent),
-        Agent::ClaudeCode | Agent::Codex | Agent::Gemini | Agent::Goose => {
+        Agent::ClaudeCode | Agent::Csc | Agent::Codex | Agent::Gemini | Agent::Goose => {
             let mut group = Map::new();
             if let Some(matcher) = matcher {
                 group.insert("matcher".into(), json!(matcher));
@@ -2247,6 +2263,24 @@ mod tests {
         // 这条是刻意的，别在重构时被「统一」掉
         assert_eq!(Agent::Goose.marker_dir(), ".config/goose");
         assert!(Agent::Goose.config_relative_path().contains(".agents/plugins"));
+    }
+
+    /// CSC（issue #22）：Claude Code 的分支，**除配置路径和上报名外全部同构**。
+    ///
+    /// 这条钉的是「复用而不是抄一份」：事件表和条目形状如果哪天只改了 Claude Code
+    /// 那边，这里会立刻发现 —— 而抄一份的漂移是静默的（少装一个事件，谁都不会报错）。
+    #[test]
+    fn csc_is_a_claude_code_clone_with_its_own_home() {
+        assert_eq!(Agent::parse("csc").unwrap(), Agent::Csc);
+        assert_eq!(Agent::parse("costrict").unwrap(), Agent::Csc);
+        assert_eq!(Agent::parse("CoStrict-CLI").unwrap(), Agent::Csc);
+        assert_eq!(Agent::Csc.config_relative_path(), ".costrict/settings.json");
+        assert_eq!(Agent::Csc.marker_dir(), ".costrict");
+        // 事件表逐条一致
+        assert_eq!(events(Agent::Csc), events(Agent::ClaudeCode));
+        // 条目形状一致（async: true：不阻塞智能体）
+        let spec = HookSpec::Command("signalhub hook csc".to_string());
+        assert_eq!(spec.body(Agent::Csc), spec.body(Agent::ClaudeCode));
     }
 
     /// 「装过没有」的判据是**配置里有没有我们的 handler**，不是「配置文件在不在」
@@ -2681,6 +2715,35 @@ mod tests {
         let root = read(&path);
         assert_eq!(root["hooks"]["PreToolUse"][0]["hooks"][0]["async"], true);
         assert_eq!(root["hooks"]["Interrupt"][0]["hooks"][0]["command"], "/opt/signalhub hook codex");
+    }
+
+    /// CSC（issue #22）写进 `~/.costrict/settings.json` 的形状必须和 Claude Code
+    /// 一样：matcher-group 里套 `{type, command, async}`。分支同构，但写盘路径是
+    /// 自己的 —— 这条同时钉住「路径换了、形状没换」。
+    #[test]
+    fn csc_writes_a_claude_code_shaped_hook_to_its_own_settings() {
+        let dir = TempDir::new();
+        let path = dir.file("settings.json");
+
+        install_at(
+            Agent::Csc,
+            &HookSpec::Command("/opt/signalhub hook csc".to_string()),
+            None,
+            &path,
+            false,
+        )
+        .unwrap();
+        let root = read(&path);
+        // SessionStart 带 matcher，形状与 Claude Code 一致
+        assert_eq!(
+            root["hooks"]["SessionStart"][0]["matcher"],
+            "startup|resume"
+        );
+        assert_eq!(
+            root["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+            "/opt/signalhub hook csc"
+        );
+        assert_eq!(root["hooks"]["PreToolUse"][0]["hooks"][0]["async"], true);
     }
 
     // ---- 命令识别 ----

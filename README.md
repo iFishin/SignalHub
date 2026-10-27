@@ -161,7 +161,7 @@ signalhub watch --until done --timeout 10m        # CI 里等某个状态
 ## 接入智能体
 
 ```bash
-signalhub install hooks claude-code      # 也支持 codex / cursor / gemini / goose / opencode / pi / hermes
+signalhub install hooks claude-code      # 也支持 csc / codex / cursor / gemini / goose / opencode / pi / hermes
 signalhub install hooks claude-code --dry-run   # 先看看会改什么
 ```
 

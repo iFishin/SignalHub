@@ -122,6 +122,8 @@ pub fn map_event(agent: &str, payload: &Value) -> Option<Action> {
     let event = event_name(payload)?;
     match agent {
         "claude-code" => map_claude(event, payload),
+        // CSC 的载荷与事件名和 Claude Code 完全同构（issue #22），共用一份映射
+        "csc" => map_claude(event, payload),
         "codex" => map_codex(event),
         "cursor" => map_cursor(event, payload),
         "gemini" => map_gemini(event),

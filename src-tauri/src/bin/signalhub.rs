@@ -512,7 +512,7 @@ fn parse_source(raw: &str) -> Result<String, Failure> {
 
 /// 没声明 `--source` 时按名字推。**这是推断，所以它只是缺省值**：`--source` 永远优先。
 ///
-/// 推的是「这个名字是不是我们那 8 家」：是就按智能体算，否则按自定义算。手写
+/// 推的是「这个名字是不是我们那 9 家」：是就按智能体算，否则按自定义算。手写
 /// `signalhub report` 的两种常见情形（给某家没有一键接入的智能体补一条上报 / 自己的
 /// 脚本报进度）正好被这条规则分开，而分错的后果只是「接入」页里那一行落在别的组，
 /// 补一句 `--source` 就能改。
@@ -1449,6 +1449,40 @@ mod tests {
         ));
     }
 
+    /// CSC（issue #22）与 Claude Code 的映射**逐条一致** —— 它是同一个 hook 机制的
+    /// 分支，认错一条的表现是那种事件在灯上完全没有反应。
+    #[test]
+    fn csc_maps_exactly_like_claude_code() {
+        for name in [
+            "SessionStart",
+            "UserPromptSubmit",
+            "PreToolUse",
+            "PostToolUse",
+            "PostToolUseFailure",
+            "PermissionRequest",
+            "PermissionDenied",
+            "Notification",
+            "SubagentStart",
+            "PreCompact",
+            "PostCompact",
+            "Stop",
+            "StopFailure",
+            "TeammateIdle",
+            "SessionEnd",
+        ] {
+            let payload = event(name);
+            assert_eq!(
+                action_of("csc", &payload),
+                action_of("claude-code", &payload),
+                "{name} 两个名字给出了不同的动作"
+            );
+        }
+        assert_eq!(state_of("csc", &event("PreToolUse")), Some("working"));
+        assert_eq!(state_of("csc", &event("PermissionRequest")), Some("permission"));
+        assert_eq!(state_of("csc", &event("Stop")), Some("done"));
+        assert!(matches!(map_event("csc", &event("SessionEnd")), Some(Action::Clear)));
+    }
+
     /// 实测踩到的 bug：`Stop` 之后约 9 秒会跟来一个 `SubagentStop`。
     /// 把它映射成 working 会把刚设好的 done 覆盖掉 —— 于是轮次明明结束了，
     /// 灯却继续闪绿直到 TTL 到期。三家都有这个事件，所以三家都忽略它：
@@ -2045,7 +2079,7 @@ mod tests {
         assert!(err.message.contains("custom"), "错误里要写清认哪几个: {}", err.message);
     }
 
-    /// 没声明 `--source` 时按名字推：我们那 8 家（含简称）算智能体，其余算自定义。
+    /// 没声明 `--source` 时按名字推：我们那 9 家（含简称）算智能体，其余算自定义。
     #[test]
     fn the_source_is_inferred_from_the_agent_name() {
         assert_eq!(inferred_source(Some("claude-code")), "agent");
