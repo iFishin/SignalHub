@@ -334,6 +334,25 @@ pub fn command_resolves(command: &str) -> bool {
     }
 }
 
+/// 装的是不是**旧版本**写的（接入页的 `stale` 与 `diagnose` 共用这一个判据）。
+///
+/// 两种接入各有一套：
+/// - **命令式**：配置里那条命令 vs 当前版本会写的那条（[`command_stale`]）。
+/// - **插件式**：源码里的格式版本 vs 这一版的模板版本（[`plugin_is_current`]）——
+///   插件没有一条可比的命令。
+///
+/// 没装就是 `false`（「没装」不是「旧」）。
+pub fn installed_is_stale(agent: Agent) -> bool {
+    if !is_installed(agent) {
+        return false;
+    }
+    match agent.install_kind() {
+        InstallKind::JsonHooks => installed_command(agent)
+            .is_some_and(|cmd| command_stale(&cmd, &resolve_hook_command(agent))),
+        InstallKind::PluginFile => !plugin_is_current(agent),
+    }
+}
+
 /// 装过之后，配置里那条命令是不是「当前版本该写」的那条（issue #19）。
 ///
 /// `installed` 是配置里**实际写着**的那条（[`installed_command`]），`expected` 是
@@ -410,16 +429,22 @@ fn command_word_key(word: &str) -> String {
             return format!("env:{name}={value}");
         }
     }
-    if word.contains(['/', '\\']) {
-        // 带路径的程序：按原样（引号已在切词时剥掉）
-        format!("path:{word}")
+    // 程序名要解析到**同一个真实文件**：
+    // - 带路径的按路径；能 canonicalize 就连软链一起解开（`/Applications/...` 和
+    //   `~/.local/bin` 里指向它的软链是同一个程序）。
+    // - 裸名先在 PATH 上找，再解开软链 —— 否则「安装时写绝对路径、现在 PATH 里有
+    //   软链」会被误判成两条不同的命令（真机上踩到的第一个误报）。
+    let resolved = if word.contains(['/', '\\']) {
+        std::fs::canonicalize(word)
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|_| word.to_string())
     } else {
-        // 裸名：能 resolve 就换成绝对路径 —— 裸名和绝对路径是同一个程序
-        match on_path(binary_name(word)) {
-            Some(path) => format!("cmd:{}", path.display()),
-            None => format!("cmd:{word}"),
-        }
-    }
+        on_path(binary_name(word))
+            .and_then(|path| std::fs::canonicalize(path).ok())
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| word.to_string())
+    };
+    format!("cmd:{resolved}")
 }
 
 /// 事件名清单。[`须写 matcher`]: 只有 Claude Code 的 SessionStart 需要
@@ -2495,6 +2520,24 @@ mod tests {
         assert!(command_stale(
             "signalhub hook claude-code --foo=1",
             "signalhub hook claude-code --foo=2"
+        ));
+    }
+
+    /// 软链和它的目标必须是**同一个程序**：安装时写绝对路径、后来 PATH 里放了个
+    /// 指向它的软链（或反过来），不能被报成「旧版本」—— 这是真机上抓到的第一个
+    /// 误报（`~/.local/bin/signalhub` → `/Applications/…/signalhub`）。
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_and_its_target_are_the_same_command() {
+        let dir = TempDir::new();
+        let real = dir.file("signalhub");
+        fs::write(&real, "#!/bin/sh\n").unwrap();
+        let link = dir.file("signalhub-link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        assert!(!command_stale(
+            &format!("{} hook claude-code", real.display()),
+            &format!("{} hook claude-code", link.display())
         ));
     }
 

@@ -924,16 +924,9 @@ fn detect_agents() -> Vec<AgentStatus> {
             // 界面按 `http` 那个字段改口（见 `SettingsPanel` 的 `agentTryHint`）。
             let http = hooks::installed_http(agent);
             let installed = hooks::is_installed(agent);
-            // 装的是不是**旧版本**写的。两种接入各有一套判据（见 `AgentStatus::stale`）：
-            // - 命令式：配置里那条命令 vs 当前版本会写的那条（`command_stale`）
-            // - 插件式：源码里的格式版本 vs 这一版的模板版本（`plugin_is_current`）
-            // HTTP 式两样都没有（写的是 url），不参与 stale 判断。
-            let stale = match hooks::install_kind(agent) {
-                hooks::InstallKind::JsonHooks => command.as_deref().is_some_and(|cmd| {
-                    hooks::command_stale(cmd, &hooks::resolve_hook_command(agent))
-                }),
-                hooks::InstallKind::PluginFile => installed && !hooks::plugin_is_current(agent),
-            };
+            // 装的是不是**旧版本**写的（判据和 `diagnose` 共用一份，见
+            // `hooks::installed_is_stale`）。
+            let stale = hooks::installed_is_stale(agent);
             AgentStatus {
                 id,
                 name: agent.name(),

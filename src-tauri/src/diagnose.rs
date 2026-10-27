@@ -96,6 +96,15 @@ pub fn text(receipts: &Receipts, filter: Option<Agent>) -> String {
         write_config(&mut out, agent);
         write_config_command(&mut out, agent);
         write_plugin_shape(&mut out, agent);
+        // 装的是不是旧版本写的（issue #19）：诊断文本是「接不上时拿什么去问」的
+        // 答案，旧版本装的东西必须能在这里看出来 —— 它的表现是「功能在、行为是旧的」，
+        // 和「完全没装」长得一模一样。
+        if hooks::installed_is_stale(agent) {
+            let _ = writeln!(
+                out,
+                "接入版本 旧 —— 升级后没重装；回接入页点一次「重新接入」"
+            );
+        }
         match receipts.iter().find(|receipt| receipt.agent == name) {
             Some(receipt) => {
                 let _ = writeln!(
