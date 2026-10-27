@@ -191,6 +191,22 @@ pub enum InstallKind {
 /// 不含在里面：找的是这一行里的这个子串，几种语言共用一份实现。
 const PLUGIN_MARKER: &str = "signalhub-hook:";
 
+/// 插件源码内容的**格式版本**。
+///
+/// 标记行（[`PLUGIN_MARKER`]）里只有 CLI 路径，不承载版本；而插件源码本身是会变的
+/// （新增事件映射、改上报方式……）。光看标记行，升级后没重装的人和刚装完的人
+/// 一模一样 —— 界面显示「已接入」，行为却停在旧版本（issue #19）。
+///
+/// 这个数字**只在插件模板内容变化时 +1**，和 app 版本无关：改一版模板就抬一次，
+/// 让 `detect_agents` 能把旧文件标成「有更新」。第一次引入时，老文件没有这一行，
+/// 自然也算旧 —— 正好提示还装着老插件的人重接一次。
+const PLUGIN_FORMAT: u32 = 1;
+
+/// 写进模板里的那一行（注释号由模板自己给，JS 是 `//`、Python 是 `#`）。
+fn plugin_format_line() -> String {
+    format!("signalhub-plugin-format: {PLUGIN_FORMAT}")
+}
+
 /// 这台机器上有没有这个智能体。
 ///
 /// **看的是痕迹，不是注册表** —— 没有哪个智能体会把自己登记到系统里，能用的信号
@@ -759,6 +775,7 @@ const GOOSE_MANIFEST: &str = r#"{
 /// 猜事件名会得到一个永远亮着或永远不亮的灯（而不报错）。
 const OPENCODE_PLUGIN: &str = r#"// 由 SignalHub 生成 —— 请勿手改。要更新就回 SignalHub 的「接入」页重新点一次接入。
 // %MARKER%
+// %FORMAT%
 //
 // opencode 启动时会自动加载这个目录下所有的 js / ts 文件，于是这份文件就成了
 // 「opencode 说什么 → signalhub 命令行」的翻译器。
@@ -909,6 +926,7 @@ export default {
 /// Pi 扩展模板。两个占位符同 [`OPENCODE_PLUGIN`]。
 const PI_PLUGIN: &str = r#"// 由 SignalHub 生成 —— 请勿手改。要更新就回 SignalHub 的「接入」页重新点一次接入。
 // %MARKER%
+// %FORMAT%
 //
 // pi 启动时会自动发现 ~/.pi/agent/extensions/ 下的扩展，于是这份文件就成了
 // 「pi 说什么 → signalhub 命令行」的翻译器。
@@ -999,6 +1017,7 @@ description: Report this Hermes session's status to SignalHub
 /// Hermes 插件模板（写进 `__init__.py`）。两个占位符同 [`OPENCODE_PLUGIN`]。
 const HERMES_PLUGIN: &str = r#"# 由 SignalHub 生成 —— 请勿手改。要更新就回 SignalHub 的「接入」页重新点一次接入。
 # %MARKER%
+# %FORMAT%
 """把 Hermes 的会话生命周期转成一条 `signalhub` 命令行。
 
 Hermes 在 CLI 和网关里都会加载 ~/.hermes/plugins/ 下的插件，于是这份文件就成了
@@ -1101,12 +1120,15 @@ impl Agent {
         match self {
             Agent::Opencode => OPENCODE_PLUGIN
                 .replace("%MARKER%", &self.plugin_marker_line(program))
+                .replace("%FORMAT%", &plugin_format_line())
                 .replace("%CLI%", &as_string_literal(program)),
             Agent::Pi => PI_PLUGIN
                 .replace("%MARKER%", &self.plugin_marker_line(program))
+                .replace("%FORMAT%", &plugin_format_line())
                 .replace("%CLI%", &as_string_literal(program)),
             Agent::Hermes => HERMES_PLUGIN
                 .replace("%MARKER%", &self.plugin_marker_line(program))
+                .replace("%FORMAT%", &plugin_format_line())
                 .replace("%CLI%", &as_string_literal(program)),
             _ => unreachable!("这个智能体不是插件式安装（见 install_kind）"),
         }
@@ -1167,6 +1189,44 @@ fn plugin_command_in(text: &str) -> Option<String> {
         .find_map(|line| line.split_once(PLUGIN_MARKER))
         .map(|(_, rest)| rest.trim().to_string())
         .filter(|command| !command.is_empty())
+}
+
+/// 从一份插件源码里摘出格式版本。没有这一行 = 老版本（或手写）写的。
+fn plugin_format_in(text: &str) -> Option<u32> {
+    text.lines().find_map(|line| {
+        line.split_once("signalhub-plugin-format:")
+            .and_then(|(_, rest)| rest.trim().parse().ok())
+    })
+}
+
+/// 装的插件源码是不是**这一版**的格式。
+///
+/// `installed && !plugin_is_current` = 该重新接入 —— 和命令式的
+/// [`command_stale`] 是同一类判断（issue #19），只是插件没有「那条命令」可比，
+/// 只能比模板自己的版本号。
+///
+/// 目录形状的家（Hermes）看任意一份文件：目录整个是我们的，版本行写在哪份里
+/// 不用记（同 [`plugin_command_at`] 的理由）。
+pub fn plugin_is_current(agent: Agent) -> bool {
+    let Ok(root) = config_path(agent) else {
+        return false;
+    };
+    if root.is_file() {
+        return fs::read_to_string(&root)
+            .ok()
+            .and_then(|text| plugin_format_in(&text))
+            == Some(PLUGIN_FORMAT);
+    }
+    fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|entry| {
+                fs::read_to_string(entry.path())
+                    .ok()
+                    .and_then(|text| plugin_format_in(&text))
+                    == Some(PLUGIN_FORMAT)
+            })
+        })
+        .unwrap_or(false)
 }
 
 
@@ -2843,6 +2903,27 @@ mod tests {
     /// （标记行 / 转义 / clear 守卫）就会自动覆盖它。
     const PLUGIN_AGENTS: [Agent; 3] = [Agent::Opencode, Agent::Pi, Agent::Hermes];
 
+    /// 插件源码里必须带格式版本行（issue #19 的插件半场）：没有它，升级后
+    /// 界面就分不出「装着老插件」和「刚装的插件」—— 两者都显示「已接入」，
+    /// 行为却可能已经差了一版。
+    #[test]
+    fn the_plugin_source_carries_a_format_version() {
+        for agent in PLUGIN_AGENTS {
+            let source = agent.plugin_source("/opt/signalhub");
+            assert_eq!(
+                plugin_format_in(&source),
+                Some(PLUGIN_FORMAT),
+                "{} 的源码没有格式版本行",
+                agent.name()
+            );
+        }
+        // 老文件 / 手写文件没有这一行 —— 必须判成「不是这一版」
+        assert_eq!(
+            plugin_format_in("// 旧插件\n// signalhub-hook: /opt/signalhub\n"),
+            None
+        );
+    }
+
     #[test]
     fn the_two_install_kinds_are_classified_explicitly() {
         for agent in PLUGIN_AGENTS {
@@ -2854,6 +2935,7 @@ mod tests {
         }
         for agent in [
             Agent::ClaudeCode,
+            Agent::Csc,
             Agent::Codex,
             Agent::Cursor,
             Agent::Gemini,
