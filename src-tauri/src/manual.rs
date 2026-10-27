@@ -266,6 +266,42 @@ pub fn clear(app: &AppHandle) {
     }
 }
 
+/// 给**某一组**手动设一个状态（issue #1：灯不只是展示）。
+///
+/// 和托盘那三个手动状态的区别：那几个占固定的「我 / Me」组；这个的组由用户决定
+/// ——「我点的是哪盏灯」就是哪一组。所以会话 id 带上组名（`manual:<组>`）：
+/// 不同的组各设各的，互不覆盖；同一组再设一次是替换。
+///
+/// 停留时长同样给 [`LONG_TTL_MS`]：撑得过一个工作日，但撑不过夜 —— 忘了收也不会
+/// 第二天还挂着一块假状态。收掉用右键菜单里现有的「清除该组的状态」。
+///
+/// **不压过智能体**：它只是一条普通上报，组里要是有更紧急的会话（比如正在等授权），
+/// 聚合仍按原有优先级来 —— 手动控制是「把盏灯当灯用」，不是绕过状态机。
+pub fn set_group(app: &AppHandle, group: &str, state: Signal) {
+    let lang = crate::current_lang(app);
+    let req = group_request(lang, group, state);
+    let ttl = crate::report_ttl(app, &req);
+    let store = app.state::<crate::SharedStore>();
+    crate::mutate(app, &store, |guard, now| guard.apply(now, req, ttl));
+}
+
+/// 某一组的手动状态那条上报。抽成纯函数，字段就是这条功能的全部对外表现
+/// （哪个组、哪个状态、牌上那行字、活多久），理由同 [`request`]。
+fn group_request(lang: Lang, group: &str, state: Signal) -> Report {
+    Report {
+        state,
+        // 会话 id 带上组名：不同组的手动状态各占一条，互不覆盖
+        session: Some(format!("manual:{group}")),
+        group: Some(group.to_string()),
+        agent: Some(AGENT.to_string()),
+        source: Some("custom".to_string()),
+        cwd: None,
+        message: Some(lang::text(lang).manual_set.to_string()),
+        ttl_ms: Some(u64::from(LONG_TTL_MS)),
+        pid: None,
+    }
+}
+
 /// 到点还差多少分钟（向上取整）。`None` = 已经到点了。
 ///
 /// 向上取整：还剩 30 秒时牌上写「1 分钟」比写「0 分钟」诚实。抽成纯函数是因为
@@ -413,5 +449,29 @@ mod tests {
         let second = token.next();
         assert!(!token.is_current(first), "旧线程还当自己是当前那个");
         assert!(token.is_current(second));
+    }
+
+    /// 从灯上右键给某一组手动设状态（issue #1）：**组和会话 id 都跟着用户点的那盏
+    /// 灯走**，停留时长和「开会 / 离开」同一档（撑得过一天、撑不过夜）。
+    #[test]
+    fn a_group_manual_state_targets_that_group() {
+        for lang in [Lang::Zh, Lang::En] {
+            let report = group_request(lang, "ci", Signal::Error);
+            assert_eq!(report.state, Signal::Error);
+            assert_eq!(report.group.as_deref(), Some("ci"));
+            // 会话 id 带上组名：不同组各设各的，互不覆盖
+            assert_eq!(report.session.as_deref(), Some("manual:ci"));
+            assert_eq!(report.ttl_ms, Some(u64::from(LONG_TTL_MS)));
+            assert_eq!(report.source.as_deref(), Some("custom"));
+            assert_eq!(
+                report.message.as_deref(),
+                Some(lang::text(lang).manual_set)
+            );
+
+            // 另一组是另一条会话（不是把上一组顶掉）
+            let other = group_request(lang, "deploy", Signal::Working);
+            assert_eq!(other.session.as_deref(), Some("manual:deploy"));
+            assert_ne!(other.session, report.session);
+        }
     }
 }

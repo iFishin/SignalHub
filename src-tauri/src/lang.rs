@@ -129,6 +129,9 @@ pub struct NativeText {
     pub manual_clear: &'static str,
     /// 专注到点时牌上那行字，同时也是那条通知的标题。
     pub manual_focus_done: &'static str,
+    /// 从灯上右键给**某一组**手动设状态时，牌上那行字（组名和状态已经由灯画出来了，
+    /// 这一行只说明「是手动设的」）。
+    pub manual_set: &'static str,
 
     // ---- 窗口 ----
     pub settings_window_title: &'static str,
@@ -250,6 +253,7 @@ static ZH: NativeText = NativeText {
     manual_away: "离开",
     manual_clear: "清除手动状态",
     manual_focus_done: "专注结束",
+    manual_set: "手动设置",
 
     settings_window_title: "SignalHub 设置",
 
@@ -283,6 +287,7 @@ static EN: NativeText = NativeText {
     manual_away: "Away",
     manual_clear: "Clear manual state",
     manual_focus_done: "Focus finished",
+    manual_set: "Set manually",
 
     settings_window_title: "SignalHub Settings",
 

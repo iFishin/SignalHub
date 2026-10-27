@@ -8,8 +8,10 @@
 //! —— 只能挂在应用上按 id 分派，见 `crate::run` 里的 `on_menu_event`。
 
 use std::sync::Mutex;
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{IsMenuItem, Menu, MenuItem, Submenu};
 use tauri::{AppHandle, Manager, WebviewWindow};
+
+use crate::state::Signal;
 
 /// 刚才右键点的是哪一组。
 ///
@@ -26,6 +28,32 @@ const CLEAR: &str = "group:clear";
 const TOGGLE: &str = "group:toggle";
 const SETTINGS: &str = "group:settings";
 const OPEN_DIR: &str = "group:open-dir";
+/// 「手动状态」子菜单里那些项的 id 前缀（后面接状态名，见 [`manual_state_for`]）。
+/// 和上面几个固定 id 同一个命名空间（`group:`），但不会撞：那几个没有 `manual:`
+/// 这一段。
+const MANUAL_PREFIX: &str = "group:manual:";
+
+/// 手动状态子菜单里给哪几个状态。**顺序就是菜单顺序**（从「在干活」到「空闲」）。
+///
+/// 只给可上报的状态，且不放 `permission`：那是「智能体在等你批准」的意思，
+/// 手动把一盏灯画成红色闪烁会让人以为终端里真有个确认框在等。
+const MANUAL_STATES: [Signal; 6] = [
+    Signal::Working,
+    Signal::Thinking,
+    Signal::Done,
+    Signal::Attention,
+    Signal::Error,
+    Signal::Idle,
+];
+
+/// 手动状态子菜单的 id → 状态。`None` = 不是这一项。
+fn manual_state_for(id: &str) -> Option<Signal> {
+    let name = id.strip_prefix(MANUAL_PREFIX)?;
+    MANUAL_STATES
+        .iter()
+        .copied()
+        .find(|state| state.name() == name)
+}
 
 /// 灯上**通用**菜单的 id（空白处和占位牌用的那张）。同样与托盘、与组菜单都不
 /// 重合：三边的菜单事件都会走到 `AppHandle::on_menu_event`。
@@ -68,6 +96,28 @@ pub fn show(app: &AppHandle, window: &WebviewWindow, group: &str) -> Result<(), 
     .map_err(menu_err)?;
     let clear =
         MenuItem::with_id(app, CLEAR, t.menu_clear, true, None::<&str>).map_err(menu_err)?;
+    // 「手动状态」子菜单（issue #1）：灯不只是展示 —— 点哪盏灯，就能把那盏灯设成
+    // 自己要的状态。它不是第二套状态机：走 `manual::set_group` 的普通上报路径，
+    // 收掉用下面那个「清除该组的状态」。
+    let lang = crate::current_lang(app);
+    let manual_items = MANUAL_STATES
+        .iter()
+        .map(|state| {
+            MenuItem::with_id(
+                app,
+                format!("{MANUAL_PREFIX}{}", state.name()),
+                crate::lang::signal_label(lang, *state),
+                true,
+                None::<&str>,
+            )
+            .map_err(menu_err)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let manual_refs: Vec<&dyn IsMenuItem<tauri::Wry>> = manual_items
+        .iter()
+        .map(|item| item as &dyn IsMenuItem<tauri::Wry>)
+        .collect();
+    let manual = Submenu::with_items(app, t.manual_title, true, &manual_refs).map_err(menu_err)?;
     // 措辞跟着当前形态走：写「切换」的话得先看一眼灯才知道会切成什么
     let toggle = MenuItem::with_id(
         app,
@@ -80,11 +130,16 @@ pub fn show(app: &AppHandle, window: &WebviewWindow, group: &str) -> Result<(), 
     let open_settings =
         MenuItem::with_id(app, SETTINGS, t.menu_settings, true, None::<&str>).map_err(menu_err)?;
 
-    let menu = Menu::with_items(
-        app,
-        &[&open_dir, &hide, &mute, &clear, &toggle, &open_settings],
-    )
-    .map_err(menu_err)?;
+    let items: [&dyn IsMenuItem<tauri::Wry>; 7] = [
+        &open_dir,
+        &manual,
+        &hide,
+        &mute,
+        &clear,
+        &toggle,
+        &open_settings,
+    ];
+    let menu = Menu::with_items(app, &items).map_err(menu_err)?;
 
     popup(window, &menu)
 }
@@ -155,7 +210,9 @@ pub fn handle(app: &AppHandle, id: &str) -> bool {
         return true;
     }
 
-    if !matches!(id, OPEN_DIR | HIDE | MUTE | CLEAR | TOGGLE | SETTINGS) {
+    if !matches!(id, OPEN_DIR | HIDE | MUTE | CLEAR | TOGGLE | SETTINGS)
+        && manual_state_for(id).is_none()
+    {
         // 托盘菜单那些 id（quit / toggle / …）也走这条路，不是我们的就放行
         return false;
     }
@@ -176,6 +233,12 @@ pub fn handle(app: &AppHandle, id: &str) -> bool {
         // 没记下组名说明这张菜单不是我们弹的，什么都不做比猜一个组安全
         return true;
     };
+
+    // 手动设状态：用户点的是哪一盏，就设哪一组（见 `manual::set_group`）
+    if let Some(state) = manual_state_for(id) {
+        crate::manual::set_group(app, &group, state);
+        return true;
+    }
 
     let result = match id {
         OPEN_DIR => open_project_dir(app, &group),
@@ -238,4 +301,45 @@ fn hide_group(app: &AppHandle, group: &str) -> Result<(), String> {
 
 fn menu_err(err: tauri::Error) -> String {
     format!("构造右键菜单失败: {err}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 子菜单的每一项都必须映射回它自己的状态 —— 一个漏掉的 id 表现为「点了没反应」
+    /// 而且不报错（和托盘手动状态那边同一个坑，见 `manual::action_for`）。
+    #[test]
+    fn every_manual_item_maps_to_its_own_state() {
+        let mut seen = Vec::new();
+        for state in MANUAL_STATES {
+            let id = format!("{MANUAL_PREFIX}{}", state.name());
+            assert_eq!(manual_state_for(&id), Some(state), "{id} 映射错了");
+            assert!(!seen.contains(&id), "{id} 和另一项撞了");
+            seen.push(id);
+        }
+        // 六个状态互不相同（不然菜单里会出现两个点了同样的项）
+        let mut names: Vec<&str> = MANUAL_STATES.iter().map(|state| state.name()).collect();
+        let total = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), total);
+    }
+
+    /// 别的菜单 id（组菜单的、托盘的）不能被这里认领 —— 认错了就会在点「清除该组
+    /// 的状态」时顺手把状态改掉。
+    #[test]
+    fn other_menu_ids_are_not_manual_items() {
+        for id in ["group:clear", "group:mute", "manual_clear", "group:manual:"] {
+            assert_eq!(manual_state_for(id), None, "{id} 被当成手动状态了");
+        }
+    }
+
+    /// `permission` 刻意不在子菜单里：手动画成「等你批准」会让人以为终端里真有个
+    /// 确认框在等。
+    #[test]
+    fn permission_is_not_offered_manually() {
+        let id = format!("{MANUAL_PREFIX}permission");
+        assert_eq!(manual_state_for(&id), None);
+    }
 }
