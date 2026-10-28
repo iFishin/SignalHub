@@ -94,6 +94,7 @@ pub fn tool_doing(lang: Lang, verb: crate::hookmap::Verb, target: &str) -> Strin
 /// 而那是最难自查的一类问题）。
 pub struct NativeText {
     // ---- 托盘菜单 ----
+    pub tray_inbox: &'static str,
     pub tray_show_hide: &'static str,
     pub tray_settings: &'static str,
     pub tray_pause: &'static str,
@@ -135,6 +136,7 @@ pub struct NativeText {
 
     // ---- 窗口 ----
     pub settings_window_title: &'static str,
+    pub inbox_window_title: &'static str,
 
     // ---- 转发摘要 ----
     /// 转发出去那行字的方括号前缀。收件人一眼知道是谁发的。
@@ -228,6 +230,7 @@ pub fn stuck_for(lang: Lang, minutes: u64) -> String {
 }
 
 static ZH: NativeText = NativeText {
+    tray_inbox: "收件箱…",
     tray_show_hide: "显示 / 隐藏灯球",
     tray_settings: "设置…",
     tray_pause: "暂停 / 恢复监控",
@@ -256,12 +259,14 @@ static ZH: NativeText = NativeText {
     manual_set: "手动设置",
 
     settings_window_title: "SignalHub 设置",
+    inbox_window_title: "SignalHub 收件箱",
 
     summary_prefix: "SignalHub",
     summary_prefix_test: "SignalHub 测试",
 };
 
 static EN: NativeText = NativeText {
+    tray_inbox: "Inbox…",
     tray_show_hide: "Show / hide lamp",
     tray_settings: "Settings…",
     tray_pause: "Pause / resume monitoring",
@@ -290,6 +295,7 @@ static EN: NativeText = NativeText {
     manual_set: "Set manually",
 
     settings_window_title: "SignalHub Settings",
+    inbox_window_title: "SignalHub Inbox",
 
     summary_prefix: "SignalHub",
     summary_prefix_test: "SignalHub test",
@@ -352,6 +358,7 @@ mod tests {
     fn no_english_string_is_left_in_chinese() {
         let en = text(Lang::En);
         let all = [
+            en.tray_inbox,
             en.tray_show_hide,
             en.tray_settings,
             en.tray_pause,
@@ -375,6 +382,7 @@ mod tests {
             en.manual_clear,
             en.manual_focus_done,
             en.settings_window_title,
+            en.inbox_window_title,
             en.summary_prefix,
             en.summary_prefix_test,
         ];

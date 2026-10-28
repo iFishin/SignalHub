@@ -1,7 +1,8 @@
 //! 全局快捷键。
 //!
 //! 两个来源合在一起：**点击穿透的键盘出路**（唯一一个非有不可的 —— 穿透之后鼠标
-//! 点不到灯了，没有它就是把自己锁在外面）和三个对着「当前最差那一组」的动作。
+//! 点不到灯了，没有它就是把自己锁在外面）、三个对着「当前最差那一组」的动作，
+//! 以及打开收件箱。
 //!
 //! **快捷键是固定的，不做可配。** 可配需要一套按键录制器、一套校验（重复、保留键、
 //! 平台差异）、一份持久化和每次改动重新注册；而它解决的问题（「想换成别的组合」）
@@ -21,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
-// ---- 四个组合 ---------------------------------------------------------------
+// ---- 五个组合 ---------------------------------------------------------------
 //
 // 常量是**唯一真值**：文案（`shortcut_label`）和注册（`register`）都从它派生。
 // 这里曾经有过一份独立的 label 常量，结果和真正注册的组合漂移了 —— 而且漂移了
@@ -59,6 +60,9 @@ const MUTE_WORST: (Modifiers, Code) = (Modifiers::CONTROL.union(Modifiers::ALT),
 
 /// 清除最差那一组的状态（和牌上的右键「清除该组的状态」同一个动作）。
 const CLEAR_WORST: (Modifiers, Code) = (Modifiers::CONTROL.union(Modifiers::ALT), Code::Digit0);
+
+/// 打开 / 关闭收件箱。这是「看 → 做」的主入口：不打开它，灯仍然只是显示器。
+const OPEN_INBOX: (Modifiers, Code) = (Modifiers::CONTROL.union(Modifiers::ALT), Code::KeyI);
 
 // ---- 人话写法 ---------------------------------------------------------------
 
@@ -154,10 +158,10 @@ pub struct ShortcutStatus {
     pub ok: bool,
 }
 
-/// 四个动作的处境，注册时算一次，之后不再变。
+/// 五个动作的处境，注册时算一次，之后不再变。
 pub type SharedShortcuts = Arc<Mutex<Vec<ShortcutStatus>>>;
 
-/// 注册全部四个。**不阻断启动**：抢不到一个快捷键不该让 app 起不来（穿透那个
+/// 注册全部五个。**不阻断启动**：抢不到一个快捷键不该让 app 起不来（穿透那个
 /// 抢不到也还有托盘菜单能退出）。
 pub fn register_all(app: &AppHandle) -> Vec<ShortcutStatus> {
     vec![
@@ -166,6 +170,7 @@ pub fn register_all(app: &AppHandle) -> Vec<ShortcutStatus> {
         }),
         register(app, "mute", MUTE_WORST, mute_worst),
         register(app, "clear", CLEAR_WORST, clear_worst),
+        register(app, "inbox", OPEN_INBOX, crate::inbox::toggle),
         register(app, "pass_through", PASS_THROUGH, toggle_pass_through),
     ]
 }
@@ -310,6 +315,7 @@ mod tests {
             ("lamp", TOGGLE_LAMP),
             ("mute", MUTE_WORST),
             ("clear", CLEAR_WORST),
+            ("inbox", OPEN_INBOX),
         ] {
             assert!(
                 mods.contains(Modifiers::CONTROL) || mods.contains(Modifiers::SUPER),
@@ -328,12 +334,18 @@ mod tests {
         }
     }
 
-    /// 四个组合互不相同。相同的话第二个注册会失败 —— 那会表现成「有一个动作永远
+    /// 五个组合互不相同。相同的话第二个注册会失败 —— 那会表现成「有一个动作永远
     /// 不生效」，而这是最容易在改快捷键时犯的错。
     #[test]
-    fn the_four_shortcuts_are_distinct() {
+    fn the_five_shortcuts_are_distinct() {
         let mut seen: Vec<(Modifiers, Code)> = Vec::new();
-        for spec in [PASS_THROUGH, TOGGLE_LAMP, MUTE_WORST, CLEAR_WORST] {
+        for spec in [
+            PASS_THROUGH,
+            TOGGLE_LAMP,
+            MUTE_WORST,
+            CLEAR_WORST,
+            OPEN_INBOX,
+        ] {
             assert!(!seen.contains(&spec), "{spec:?} 和另一个重复了");
             seen.push(spec);
         }
@@ -342,7 +354,13 @@ mod tests {
     /// 文案必须真的描述那个注册的组合 —— 这条测试就是那个「会发现的东西」。
     #[test]
     fn every_label_matches_its_registered_shortcut() {
-        for (mods, code) in [PASS_THROUGH, TOGGLE_LAMP, MUTE_WORST, CLEAR_WORST] {
+        for (mods, code) in [
+            PASS_THROUGH,
+            TOGGLE_LAMP,
+            MUTE_WORST,
+            CLEAR_WORST,
+            OPEN_INBOX,
+        ] {
             let label = shortcut_label(mods, code);
             assert_eq!(
                 mods.contains(Modifiers::ALT),

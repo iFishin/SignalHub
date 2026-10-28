@@ -244,6 +244,7 @@ pub fn init(app: AppHandle) -> tauri::Result<()> {
                 crate::manual::action_for(id).expect("上面刚判断过")(app)
             }
             "quit" => app.exit(0),
+            "inbox" => crate::inbox::toggle(app),
             "toggle" => toggle_lamp(app),
             "settings" => crate::reveal_settings(app),
             "pause" => toggle_monitor(app),
@@ -296,6 +297,9 @@ pub fn rebuild_menu(app: &AppHandle, lang: crate::config::Lang) {
 
 fn build_menu(app: &AppHandle, lang: crate::config::Lang) -> tauri::Result<Menu<tauri::Wry>> {
     let t = crate::lang::text(lang);
+    // 收件箱：把「谁需要你」从灯上搬到一个能点的列表里。放在最上面 ——
+    // 它是这个应用从「看」到「做」的主入口。
+    let inbox = MenuItem::with_id(app, "inbox", t.tray_inbox, true, None::<&str>)?;
     // 这些构造器都要求传 &M（M: Manager），所以统一用 app
     let toggle = MenuItem::with_id(app, "toggle", t.tray_show_hide, true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", t.tray_settings, true, None::<&str>)?;
@@ -352,6 +356,7 @@ fn build_menu(app: &AppHandle, lang: crate::config::Lang) -> tauri::Result<Menu<
     Menu::with_items(
         app,
         &[
+            &inbox,
             &toggle,
             &settings,
             &pause,

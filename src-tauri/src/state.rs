@@ -586,6 +586,20 @@ impl Store {
         (removed, self.settle(now))
     }
 
+    /// 某个会话的进程号。**只给本机界面用**（收件箱的「跳过去」）——
+    /// `SessionView` 刻意不带 pid：那东西也是 `/v1/state` 的返回，会去只读面板
+    /// 和手机，进程号没有理由跟着出门。
+    pub fn session_pid(&self, id: &str) -> Option<u32> {
+        self.sessions.get(id).and_then(|session| session.pid)
+    }
+
+    /// 某个会话的工作目录（同样只给「跳过去」用）。会话已经过期时返回 `None`。
+    pub fn session_cwd(&self, id: &str) -> Option<String> {
+        self.sessions
+            .get(id)
+            .and_then(|session| session.cwd.clone())
+    }
+
     /// 清掉某一组的全部会话（用户从灯上右键「清除该组」）。
     ///
     /// 返回 `(移除了几个会话, 可见状态是否变化)` —— 两个值要分开报，理由同

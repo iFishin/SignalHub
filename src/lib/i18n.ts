@@ -490,6 +490,38 @@ export interface Messages {
   stylePresetRhythmHint: string;
   stylePresetCalm: string;
   stylePresetCalmHint: string;
+
+  // 收件箱（0.4）
+  inbox: {
+    title: string;
+    need: string;
+    running: string;
+    done: string;
+    quiet: string;
+    emptyTitle: string;
+    emptyHint: string;
+    paused: string;
+    jump: string;
+    allow: string;
+    deny: string;
+    mute: string;
+    unmute: string;
+    clear: string;
+    close: string;
+    settings: string;
+    truncated: string;
+    allowBlocked: string;
+    allowed: string;
+    denied: string;
+    cleared: string;
+    muted: (group: string) => string;
+    unmuted: (group: string) => string;
+    waiting: (age: string) => string;
+    keys: string;
+    jumpUnsupported: string;
+    approvalHint: string;
+    closeHint: string;
+  };
 }
 
 /** 英文里数词要分单复数，中文不分。 */
@@ -891,6 +923,7 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       lamp: "显示 / 隐藏灯",
       mute: "静音最差的那一组",
       clear: "清除最差的那一组",
+      inbox: "打开收件箱",
       pass_through: "切换点击穿透",
     },
     shortcutTaken: "被别的程序占用了",
@@ -943,7 +976,7 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
 
     quit: "退出 SignalHub",
 
-    lampHint: "左键折叠 / 展开 · 右键单组菜单",
+    lampHint: "左键打开收件箱 · 双击折叠 / 展开 · 右键单组菜单",
     groupsCount: (n) => `（${n} 组）`,
     moreGroups: (n) => `还有 ${n} 组`,
     expandNow: "已展开",
@@ -975,6 +1008,37 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       "每个状态一套自己的节奏：推理快、执行慢、出错频闪，不在工作的常亮",
     stylePresetCalm: "只在需要时闪",
     stylePresetCalmHint: "干活的那几个状态都常亮，只有需要关注 / 授权 / 出错才闪",
+
+    inbox: {
+      title: "收件箱",
+      need: "需要你",
+      running: "运行中",
+      done: "刚刚完成",
+      quiet: "空闲 / 沉默",
+      emptyTitle: "现在没有需要你处理的事",
+      emptyHint: "智能体在跑的时候这里会安静；有授权、出错或完成时会出现在这里。",
+      paused: "监控已暂停",
+      jump: "跳转",
+      allow: "允许",
+      deny: "拒绝",
+      mute: "静音该组",
+      unmute: "取消静音",
+      clear: "清除",
+      close: "关闭",
+      settings: "设置…",
+      truncated: "命令太长，只能拒绝；要放行请回终端里看全。",
+      allowBlocked: "这条在灯上看不全，只能拒绝",
+      allowed: "已允许，等智能体继续",
+      denied: "已拒绝",
+      cleared: "已清除这个会话",
+      muted: (group) => `已静音「${group}」`,
+      unmuted: (group) => `已取消静音「${group}」`,
+      waiting: (age) => `等了 ${age}`,
+      keys: "↑↓ 选择 · Enter 跳转 · A 允许 · D 拒绝 · Esc 关闭",
+      jumpUnsupported: "精确定位终端目前只在 macOS 上；已尝试打开项目目录。",
+      approvalHint: "这是智能体主动请求的授权；允许只对被问到的这一次生效。",
+      closeHint: "关闭收件箱（Esc）",
+    },
   },
 
   en: {
@@ -1375,6 +1439,7 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
       lamp: "Show / hide the lamp",
       mute: "Mute the worst group",
       clear: "Clear the worst group",
+      inbox: "Open the inbox",
       pass_through: "Toggle click-through",
     },
     shortcutTaken: "taken by another app",
@@ -1427,7 +1492,7 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
 
     quit: "Quit SignalHub",
 
-    lampHint: "Left-click to collapse / expand · right-click for a group menu",
+    lampHint: "Click to open the inbox · double-click to collapse / expand · right-click for a group menu",
     groupsCount: (n) => ` (${plural(n, "group", "groups")})`,
     moreGroups: (n) => `+${n} more`,
     expandNow: "Expanded",
@@ -1459,6 +1524,39 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
       "A rhythm per state: thinking fast, working slow, error strobing, non-working solid",
     stylePresetCalm: "Blink only when needed",
     stylePresetCalmHint: "The working states stay solid; only attention / approval / error blink",
+
+    inbox: {
+      title: "Inbox",
+      need: "Needs you",
+      running: "Running",
+      done: "Just finished",
+      quiet: "Idle / quiet",
+      emptyTitle: "Nothing needs you right now",
+      emptyHint:
+        "While agents are running this stays quiet; approvals, errors and completions show up here.",
+      paused: "Monitoring paused",
+      jump: "Jump",
+      allow: "Allow",
+      deny: "Deny",
+      mute: "Mute group",
+      unmute: "Unmute",
+      clear: "Clear",
+      close: "Close",
+      settings: "Settings…",
+      truncated:
+        "The command is too long to show in full; it can only be denied here. Open the terminal to allow it.",
+      allowBlocked: "Too long to allow from here — deny it or check the terminal",
+      allowed: "Allowed — waiting for the agent to continue",
+      denied: "Denied",
+      cleared: "Session cleared",
+      muted: (group) => `Muted “${group}”`,
+      unmuted: (group) => `Unmuted “${group}”`,
+      waiting: (age) => `waiting ${age}`,
+      keys: "↑↓ select · Enter jump · A allow · D deny · Esc close",
+      jumpUnsupported: "Exact terminal focus is macOS-only for now; tried opening the project folder.",
+      approvalHint: "This is a permission the agent asked for; allowing applies only to this request.",
+      closeHint: "Close the inbox (Esc)",
+    },
   },
 };
 

@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { SignalLamp } from "./components/SignalLamp";
 import { SettingsPanel } from "./components/SettingsPanel";
+import { InboxWindow } from "./components/InboxWindow";
 import { useSignal } from "./lib/useSignal";
 import { useSettings } from "./lib/useSettings";
 import { usePalettePush } from "./lib/palettes";
@@ -70,6 +71,13 @@ export default function App() {
 
   if (windowKind() === "settings") {
     return <SettingsPanel snapshot={snapshot} />;
+  }
+
+  // 收件箱：和设置窗共用同一份快照订阅与审批订阅，只是换一个组件画。
+  // **审批走同一个 `decide`**，不另开一条 IPC —— 「看不全不给放行」那条规则在
+  // Rust 的登记表里，任何入口都得经过它。
+  if (windowKind() === "inbox") {
+    return <InboxWindow snapshot={snapshot} approvals={approvals} decide={decide} />;
   }
 
 

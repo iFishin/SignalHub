@@ -41,6 +41,23 @@
         "center": true,
         "visible": false,
         "maximizable": false
+      },
+      {
+        "label": "inbox",
+        "title": "SignalHub 收件箱",
+        "url": "index.html?window=inbox",
+        "width": 420,
+        "height": 560,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": true,
+        "visible": false,
+        "maximizable": false,
+        "minimizable": false,
+        "closable": false
       }
     ],
     "security": {

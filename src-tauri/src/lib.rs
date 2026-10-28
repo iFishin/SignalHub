@@ -4,6 +4,8 @@ mod collect;
 mod devices;
 mod diagnose;
 mod hookmap;
+mod inbox;
+mod jump;
 mod lang;
 mod lamps;
 mod manual;
@@ -450,6 +452,41 @@ fn open_app_dir(what: String) -> Result<(), String> {
 #[tauri::command]
 fn open_settings(app: tauri::AppHandle) {
     reveal_settings(&app);
+}
+
+/// 打开 / 关闭收件箱。灯左键单击、托盘菜单、全局快捷键都走它（见 `inbox.rs`）。
+#[tauri::command]
+fn toggle_inbox(app: tauri::AppHandle) {
+    inbox::toggle(&app);
+}
+
+/// 收件箱里的 Esc / 关闭按钮。**只隐藏**，不销毁窗口 —— 和设置窗同一个理由。
+#[tauri::command]
+fn hide_inbox(app: tauri::AppHandle) {
+    inbox::hide(&app);
+}
+
+/// 静音 / 取消静音某一组（收件箱行内的动作）。
+///
+/// 和灯右键菜单、通知按钮共用 `set_group_muted` —— 同一件事有三条入口时，
+/// 各写一遍行为迟早分叉。
+#[tauri::command]
+fn mute_group(app: tauri::AppHandle, group: String, muted: bool) -> Result<Settings, String> {
+    set_group_muted(&app, &group, muted)
+}
+
+/// 把焦点切到某个会话所在的终端（收件箱的「跳转」）。
+///
+/// `pid` / `cwd` 只在锁里取出来，**出锁之后才跑外部命令** —— 否则一次 osascript
+/// 卡住就会把整条上报链路一起堵住。
+#[tauri::command]
+fn jump_to_session(app: tauri::AppHandle, session: String) -> jump::JumpResult {
+    let store = app.state::<SharedStore>();
+    let (pid, cwd) = {
+        let guard = store.lock().expect("state store poisoned");
+        (guard.session_pid(&session), guard.session_cwd(&session))
+    };
+    jump::to_session(pid, cwd.as_deref())
 }
 
 /// 今日各状态的累计时长，按时长从多到少。
@@ -2241,10 +2278,9 @@ fn wire_settings_window(app: &tauri::App) {
         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
             api.prevent_close();
             let _ = window_handle.hide();
-            #[cfg(target_os = "macos")]
-            let _ = window_handle
-                .app_handle()
-                .set_activation_policy(tauri::ActivationPolicy::Accessory);
+            // 收件箱可能还开着 —— 那个窗口也需要 Regular / 焦点，不能在这里
+            // 无条件退回 Accessory。判断收在 `inbox::restore_activation` 一处。
+            inbox::restore_activation(window_handle.app_handle());
         }
     });
 }
@@ -2293,11 +2329,9 @@ pub fn run() {
         // 单实例要最先注册：多开会让端口文件和状态互相打架，表现为「灯球
         // 偶尔不动」这种极难排查的现象。
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            // 第二个实例起来时把灯球亮出来 —— 用户多半是没找到它才又点了一次图标
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            // 第二个实例起来时打开收件箱 —— 用户多半是点了应用图标 / `open -a`
+            // 想看看「现在有什么要处理」。灯球本身一直可见，再把它 show 一遍没有信息量。
+            crate::inbox::show(app);
         }))
         // 只记位置、不记尺寸：尺寸由设置和会话数决定，是程序自己管的，
         // 让插件跟着恢复会和 apply_window_size 打架。
@@ -2363,6 +2397,10 @@ pub fn run() {
             open_releases,
             open_app_dir,
             open_settings,
+            toggle_inbox,
+            hide_inbox,
+            jump_to_session,
+            mute_group,
             get_toggles,
             set_autostart,
             set_pass_through,
@@ -2465,6 +2503,7 @@ pub fn run() {
                 .expect("shortcut status poisoned") = registered;
 
             wire_settings_window(app);
+            inbox::wire(app);
             // 右键菜单是运行时构造的，`Menu` 自己没有事件回调 —— 只能挂在应用上，
             // 靠 id 分派。托盘菜单有它自己的回调，两边的 id 不重合，互不打扰。
             app.on_menu_event(|app, event| {

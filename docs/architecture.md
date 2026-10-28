@@ -854,6 +854,22 @@ macOS 的 `.app.tar.gz` 只用 `flate2` + `tar`（插件里的**非可选**依�
 
 还有一条**只能真机验**的：未签名的 macOS 应用被更新替换之后，Gatekeeper 会不会拦。验过之前不要对外说 macOS 上自动更新可用（见 `docs/plan-round3.md` 的 R5）。
 
+### 3.25 收件箱与跳转（0.4）
+
+灯解决的是「抬头看一眼」，但真正要花时间的是**接下来那一步**：找到是哪个窗口、点允许、切过去。收件箱把这一步做成一个贴着灯出现的小窗口，而不是设置面板里的又一页 —— 设置是低频配置，收件箱是高频操作。
+
+**窗口**：独立的 `inbox` webview（420×560，深色 HUD、无边框、始终置顶）。开在灯**左侧**、底边对齐；左边放不下就放右边，两边都放不下才居中（`inbox::place` 是纯函数，带负坐标工作区的单测）。失焦 / Esc / × 都只隐藏不销毁 —— 和设置窗同一个理由；隐藏时如果设置窗也没开，把激活策略退回 Accessory。
+
+**数据**：仍然只有两个来源 —— `useSignal` 的快照（会话）和 `useApprovals` 的登记表（待审批）。`inboxRows.ts` 把两者摊成「需要你 / 运行中 / 刚刚完成 / 空闲」四段，**一个会话最多一行**（同时有审批时合并，否则同一窗口会出现两次，一次能点允许、一次不能）。排序规则：需要你里 `error > permission > attention`，同类里等得最久的在前；审批的等待时间取审批自己的 `age_ms`。
+
+**审批**：允许 / 拒绝走的是灯上气泡同一个 `Registry::decide`，「看不全不给放行」在 Rust 登记表里挡着，收件箱只是一个新入口。审批的 `detail` 仍然只进本机窗口，不进 `/v1/state`、通知和出站钩子。
+
+**跳转**（`jump.rs`，macOS 优先）：会话的 `pid` → `ps -o tty=` → `ttys003` → tmux pane（`list-panes` 按 `pane_tty` 匹配，选中后按 client tty 找外层终端标签页）或 Terminal.app / iTerm2 的标签页（AppleScript，按 tty 精确匹配；第一次会请求「控制终端」的自动化权限）。找不到精确标签页时按父进程链认出终端 / IDE，激活应用；再不行才在 Finder 里打开项目目录。**每一层都在返回值里说清楚做到了哪一步**，不猜、不假装。所有外部命令走 argv、不过 shell；tty 只放行 `[A-Za-z0-9/._-]` 且拒绝 `..`。
+
+**入口**：灯左键单击（双击才是折叠 / 展开 —— 单击等 280ms 的双击窗口，拖拽优先并取消待执行的单击）、`⌃⌥I`（`Ctrl+Alt+I`）、托盘菜单第一项、第二次启动应用（单实例回调打开收件箱）。
+
+**限制**：精确定位终端目前只在 macOS 上；Windows / Linux 先做到「打开项目目录」。IDE 内置终端没有能精确定位标签页的公开接口，只能激活编辑器。ad-hoc 签名的版本更新后，「控制终端」的自动化授权可能需要重给 —— 和这个应用没有 Apple 证书这件事是同一个根因。
+
 ## 4. 悬浮窗实现
 
 ### 4.1 窗口配置
@@ -1007,11 +1023,13 @@ SignalHub/
 │  │  ├─ useOutboundLog.ts       出站钩子的最近一次结果
 │  │  ├─ useToggles.ts           托盘那三个布尔开关
 │  │  ├─ useNow.ts               按秒跳的时钟（只给需要它的页跑定时器）
-│  │  └─ useLocalClock.ts        把当前本地时钟推给 Rust（勿扰时段 + 统计跨天用）
+│  │  ├─ useLocalClock.ts        把当前本地时钟推给 Rust（勿扰时段 + 统计跨天用）
+│  │  └─ inboxRows.ts            收件箱分段/排序/去重（纯函数 + 单测）
 │  └─ styles/
 │     ├─ theme.css               调色板与尺寸变量
 │     ├─ state.css               状态配色 tokens（灯球与会话小圆点共用）
 │     ├─ lamp.css                灯球布局与动画
+│     ├─ inbox.css               收件箱（深色 HUD、列表、审批详情）
 │     └─ settings.css            设置面板
 └─ src-tauri/                    ── 后端 (Rust)
    ├─ tauri.conf.json
@@ -1029,11 +1047,13 @@ SignalHub/
       ├─ manual.rs               手动状态（专注倒计时 / 开会 / 离开）：自己也是一个信号源
       ├─ collect.rs              内置采集器（B2）：会议中（CoreAudio / CMIO）、备份中（tmutil），每条一条线程
       ├─ rules.rs                B4 预设规则：授权卡住 60 秒补推、忙时静音、会议变蓝（不做表达式引擎）
-      ├─ shortcuts.rs            全局快捷键：四个组合 + 抢到了没有（设置 →「系统」页读它）
+      ├─ shortcuts.rs            全局快捷键：五个组合 + 抢到了没有（设置 →「系统」页读它）
       ├─ approvals.rs            从灯上审批（C3）：登记表 + 决定 + 回给 Claude Code 的那段 JSON
       ├─ panel.rs                只读 Web 面板（`GET /`）：模板 + 一次注入 ← 只有 server 用它
       ├─ panel.html              上面那份模板（编译期 `include_str!` 进二进制）
       ├─ menu.rs                 灯上右键的原生菜单：隐藏 / 静音该组、清除该组、切形态、开设置
+      ├─ inbox.rs                收件箱窗口：定位在灯旁边、开/关、失焦即收起
+      ├─ jump.rs                 跳到会话所在终端：pid → tty → tmux / Terminal / iTerm2，兜底激活应用或打开目录
       ├─ config.rs               ~/.signalhub 路径、token、端口文件、用户设置
       ├─ hooks.rs                智能体 hook 的安装/卸载（入站；与 outbound.rs 方向相反）
       ├─ server.rs               axum 路由 + 鉴权 + 端口发现，含 16 个 HTTP 层单测

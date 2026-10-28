@@ -20,6 +20,8 @@ import { meetingTint } from "../lib/rules";
 const MAX_SIGNS = 4;
 /** 超过这个位移就算拖窗口，否则算点击。 */
 const DRAG_THRESHOLD_PX = 4;
+/** 两次点击在这个窗口内算双击。单次要等这么久才执行 —— 否则分不出双击。 */
+const DOUBLE_CLICK_MS = 280;
 /** 跃迁脉冲的时长（ms）。必须和 lamp.css 里 `pulse-in` 的一致。 */
 const PULSE_MS = 420;
 /** 折叠态悬停临时展开的时长（ms）。到点或鼠标移开就收回折叠态。 */
@@ -131,23 +133,37 @@ function progressStyle(group: GroupView): React.CSSProperties | undefined {
  * 同一个元素上既要能拖窗口、又要能响应点击。
  *
  * 不能用 `data-tauri-drag-region`：它让系统在 mousedown 时接管鼠标，之后的
- * click 事件就不可靠了 —— 于是「点一下折叠」会时灵时不灵。改成自己判断：
+ * click 事件就不可靠了 —— 于是「点一下打开收件箱」会时灵时不灵。改成自己判断：
  * 按下后位移超过阈值才算拖拽（此时才把拖拽交给系统），否则算点击。
+ *
+ * 单击和双击走同一条路径：单击等一个双击窗口再执行，双击取消那个计时器 ——
+ * 这样「打开收件箱」和「折叠 / 展开」不会同时发生。
  *
  * 只认主键，所以右键原地就能弹菜单，不会顺带被当成一次点击。
  */
 /** 牌尾那几枚小动作必须**吃掉鼠标事件**。
  *
  *  `useDragOrClick` 挂在 `.lamp-root` 上：事件冒上去，按下会开始记拖拽原点、松开
- *  会被当成「点了一下灯」→ 折叠/展开。所以 mousedown / mouseup / click 三个都要拦。
+ *  会被当成「点了一下灯」→ 打开收件箱。所以 mousedown / mouseup / click 三个都要拦。
  */
 function stopMouse(event: React.MouseEvent) {
   event.stopPropagation();
 }
 
-function useDragOrClick(onClick: () => void) {
+function useDragOrClick(onClick: () => void, onDoubleClick: () => void) {
   const origin = useRef<{ x: number; y: number } | null>(null);
   const dragging = useRef(false);
+  // 单击要等一个双击窗口才能执行。**不能「先执行单击、双击再撤销」** —— 打开收件箱
+  // 不是能撤销的动作（会闪一下窗口）。280ms 的延迟在鼠标操作里几乎察觉不到。
+  const single = useRef<number | null>(null);
+  const lastClick = useRef(0);
+
+  useEffect(
+    () => () => {
+      if (single.current !== null) window.clearTimeout(single.current);
+    },
+    [],
+  );
 
   return {
     onMouseDown: (event: React.MouseEvent) => {
@@ -163,6 +179,13 @@ function useDragOrClick(onClick: () => void) {
       );
       if (moved < DRAG_THRESHOLD_PX) return;
       dragging.current = true;
+      // 拖拽优先：上一次单击还在等双击窗口的话，取消它 —— 否则拖到一半会突然
+      // 弹出收件箱。
+      if (single.current !== null) {
+        window.clearTimeout(single.current);
+        single.current = null;
+      }
+      lastClick.current = 0;
       if (inTauri) {
         getCurrentWindow().startDragging().catch(console.error);
       }
@@ -171,7 +194,26 @@ function useDragOrClick(onClick: () => void) {
       const wasClick = origin.current !== null && !dragging.current;
       origin.current = null;
       dragging.current = false;
-      if (wasClick) onClick();
+      if (!wasClick) return;
+
+      const now = performance.now();
+      if (now - lastClick.current < DOUBLE_CLICK_MS) {
+        lastClick.current = 0;
+        if (single.current !== null) {
+          window.clearTimeout(single.current);
+          single.current = null;
+        }
+        onDoubleClick();
+        return;
+      }
+
+      lastClick.current = now;
+      if (single.current !== null) window.clearTimeout(single.current);
+      single.current = window.setTimeout(() => {
+        single.current = null;
+        lastClick.current = 0;
+        onClick();
+      }, DOUBLE_CLICK_MS);
     },
   };
 }
@@ -322,14 +364,19 @@ export function SignalLamp({ aggregate, groups, settings, paused, approvals, onD
   // 那一刻，也就是 0s。折叠形态和关掉这一格的牌上没有这个数字，不起定时器。
   const now = useNow(show.age && expanded);
 
-  const toggle = () => {
+  const toggleCollapsed = () => {
     if (!inTauri) return;
     // 窗口尺寸由 Rust 算（它才知道可见牌的高度和设置），前端只负责「点了一下」。
     // 形态存在设置里，所以下次启动还是用户上次选的那个。
     invoke("toggle_collapsed").catch(console.error);
   };
 
-  const drag = useDragOrClick(toggle);
+  const openInbox = () => {
+    if (!inTauri) return;
+    invoke("toggle_inbox").catch(console.error);
+  };
+
+  const drag = useDragOrClick(openInbox, toggleCollapsed);
 
   // 就地改名：被点开的那一组（原始组名）+ 输入框里的草稿 + 打开那一刻填进去的值。
   //
@@ -481,7 +528,7 @@ export function SignalLamp({ aggregate, groups, settings, paused, approvals, onD
               <div className="sign-line">
                 {show.name && group.name && renaming?.group === group.name ? (
                   /* 就地改名的输入框。**必须吃掉 mousedown / mouseup / click**：
-                     否则按一下就开始拖窗口、松开又被当成「点了一下灯」→ 折叠。
+                     否则按一下就开始拖窗口、松开又被当成「点了一下灯」→ 打开收件箱。
                      Enter 提交、Esc 取消、失焦提交（同 macOS 各处的手感）。 */
                   <input
                     className="sign-rename"
@@ -516,7 +563,7 @@ export function SignalLamp({ aggregate, groups, settings, paused, approvals, onD
                       className="sign-name"
                       title={m.renameHint}
                       /* **只吃 mouseup，不吃 mousedown**：冒到 `.lamp-root` 上的
-                         mouseup 会被当成「点了一下灯」→ 折叠（见 `useDragOrClick`）。
+                         mouseup 会被当成「点了一下灯」→ 打开收件箱（见 `useDragOrClick`）。
                          而 mousedown 留着，从名字上照样能把灯拖走 —— 拖拽靠的是
                          mousemove 上的 `startDragging()`，那条路不受影响。 */
                       onMouseUp={stopMouse}
