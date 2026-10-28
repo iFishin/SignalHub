@@ -78,20 +78,25 @@ body,
   --sign-fg: #f4f4f7;
   --sign-muted: #d7d7df;
   --sign-line: rgba(255, 255, 255, 0.22);
-  --sign-outline: rgba(0, 0, 0, 0.7);
+  --sign-outline: rgba(0, 0, 0, 0.78);
+  /* 描边宽度跟着牌的字号走：默认档（size 22 → 11px 字）≈1px，紧凑档（size 16 →
+     8px 字）收到 0.75px 的下限，免得 1px 的边把细笔画糊死；大档按 0.09em 自然加粗。
+     `em` 在 `.sign` 上解析（这里是自定义属性，用到时才按使用元素的字号算）。 */
+  --sign-outline-w: max(0.75px, 0.09em);
 }
 
 /* 描边只加在牌里的字上（`text-shadow` 会被子元素继承，所以挂在 `.sign` 一处就够）。
    四向偏移而不是 `0 0 1px` 的模糊阴影：模糊会糊成一圈光晕，那是「发光」，这个项目
-   不要。0.5px 在 2× 屏上正好是一个物理像素；1× 屏上会淡一点，但仍然是可见的一圈。 */
+   不要。宽度见 `--sign-outline-w`（默认档约 1px）：0.5px 在浅色背景上仍偏
+   「空心字」，约 1px 在 2× 屏上是两个物理像素，字心还留得住、亮底上却已经像深色勾边字。 */
 .lamp-root[data-sign-translucent] .sign,
 .lamp-root[data-sign-translucent] .lamp-dot-flag,
 .lamp-root[data-sign-translucent] .lamp-dot-more {
   text-shadow:
-    0.5px 0 0 var(--sign-outline),
-    -0.5px 0 0 var(--sign-outline),
-    0 0.5px 0 var(--sign-outline),
-    0 -0.5px 0 var(--sign-outline);
+    var(--sign-outline-w) 0 0 var(--sign-outline),
+    calc(-1 * var(--sign-outline-w)) 0 0 var(--sign-outline),
+    0 var(--sign-outline-w) 0 var(--sign-outline),
+    0 calc(-1 * var(--sign-outline-w)) 0 var(--sign-outline);
 }
 
 .lamp-root:active {
