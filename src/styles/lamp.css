@@ -7,8 +7,9 @@
  *                  （深色圆角方块 + 彩点），这样悬浮灯和图标看起来是一个东西。
  *   折叠        —— 每组一颗裸灯，没有牌面。点一下就切回展开。
  *
- * 朴素简约仍然成立：没有阴影、没有渐变、没有发光。要的是**结构**（外框、
- * 底色、文字位），不是装饰。
+ * 朴素简约仍然成立：没有装饰性的阴影、渐变、发光。要的是**结构**（外框、
+ * 底色、文字位），不是装饰。唯一的例外是低透明度下给文字加的那圈对比描边
+ * （`[data-sign-translucent]`）—— 那是可读性手段，不是装饰。
  *
  * 两条硬性约束：
  * 1) html/body/#root 必须完全透明，否则 webview 会画出白底，透明窗口就白做了。
@@ -67,16 +68,30 @@ body,
   -webkit-user-select: none;
 }
 
-/* 牌面淡过一半：牌里的字翻成深色。
+/* 牌面淡过一半：牌里的字换成「浅字 + 深描边」。
    **阈值不在这里** —— 它是 `lampStyle.ts::SIGN_TRANSLUCENT_BELOW`（`SignalLamp.tsx`
-   按它挂这个属性）。这里只负责「翻成哪几个颜色」，数字只有那一份。
-   为什么翻：α 低到一半以下时透出来的桌面比牌面还显眼，近白的字落在浅色桌面/窗口上
-   就没了，深字反而读得出来。注意这治不了深色桌面那一半 —— 那种情况下唯一的解是给
-   文字垫底色，而那是装饰（见文件头的「朴素简约」）。 */
+   按它挂这个属性）。这里只负责「换成哪一套颜色」，数字只有那一份。
+   为什么描边而不是按桌面实时反色：那要读灯后面的桌面像素，macOS 上必须拿「屏幕
+   录制」权限（见 `lampStyle.ts` 那段注释）。描边不依赖背景信息：深色桌面上靠浅字，
+   浅色桌面上靠那圈黑边勾出字形。 */
 .lamp-root[data-sign-translucent] {
-  --sign-fg: #1c1c20;
-  --sign-muted: #5c5c64;
-  --sign-line: rgba(28, 28, 32, 0.16);
+  --sign-fg: #f4f4f7;
+  --sign-muted: #d7d7df;
+  --sign-line: rgba(255, 255, 255, 0.22);
+  --sign-outline: rgba(0, 0, 0, 0.7);
+}
+
+/* 描边只加在牌里的字上（`text-shadow` 会被子元素继承，所以挂在 `.sign` 一处就够）。
+   四向偏移而不是 `0 0 1px` 的模糊阴影：模糊会糊成一圈光晕，那是「发光」，这个项目
+   不要。0.5px 在 2× 屏上正好是一个物理像素；1× 屏上会淡一点，但仍然是可见的一圈。 */
+.lamp-root[data-sign-translucent] .sign,
+.lamp-root[data-sign-translucent] .lamp-dot-flag,
+.lamp-root[data-sign-translucent] .lamp-dot-more {
+  text-shadow:
+    0.5px 0 0 var(--sign-outline),
+    -0.5px 0 0 var(--sign-outline),
+    0 0.5px 0 var(--sign-outline),
+    0 -0.5px 0 var(--sign-outline);
 }
 
 .lamp-root:active {
@@ -137,8 +152,9 @@ body,
   overflow: hidden;
 }
 
-/* 气泡里的字**不跟着牌面淡**：牌淡到一半会把字翻成深色，而气泡的底色是实的
-   深色 —— 跟着翻就变成深字压深底，什么都看不见。 */
+/* 气泡里的字**不跟着牌面换**：牌淡到一半会变成「浅字 + 描边」，而气泡的底色是实的
+   深色 —— 它自己就是「深底浅字」，不需要牌那套描边（描边也只挂在 `.sign` 上，气泡
+   本来继承不到）。这里把颜色钉回气泡自己的一套。 */
 .lamp-root[data-sign-translucent] .approval {
   --sign-fg: #ececef;
   --sign-muted: #9b9ba3;
@@ -634,17 +650,14 @@ body,
   opacity: 0.15;
 }
 
-/* 悬停恢复，否则压暗之后找不到它来拖。规则放在压暗规则之后：两者特异性
-   相同（都是 3 个类/属性），靠源码顺序决定胜负。 */
+/* 悬停恢复，否则安静压暗之后找不到它来拖。规则放在压暗规则之后：两者特异性
+   相同（都是 3 个类/属性），靠源码顺序决定胜负。
+   **只恢复不透明度，不动字色和描边**：安静压暗是 `opacity: .15`，拉回 1 之后牌面
+   按用户设的 alpha 显形；而「低透明度 + 悬停」时牌面仍然是淡的（滑杆决定的是背景
+   alpha，不是元素 opacity），那套浅字 + 描边必须留着，否则一碰它就又看不清了。 */
 .lamp-root:hover .sign,
 .lamp-root:hover .lamp-dot {
   opacity: 1;
-  /* 安静压暗后的反转字（data-sign-translucent）要随悬停一起收回来：hover 把 opacity
-     拉回 1，牌面重新不透明、底色又是深色的 —— 深字压深底就不可读了。直接在元素上
-     重写这些自定义属性（继承来的根级值靠元素级声明赢）。 */
-  --sign-fg: #ececef;
-  --sign-muted: #9b9ba3;
-  --sign-line: rgba(255, 255, 255, 0.14);
 }
 
 @keyframes pulse {

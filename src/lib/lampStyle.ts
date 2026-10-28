@@ -106,21 +106,25 @@ export function resolveAnimations(settings: Settings): Record<SignalState, strin
 }
 
 /**
- * 牌面淡到这条线以下，牌里的字就翻成深色（`lamp.css` 的 `[data-sign-translucent]`）。
+ * 牌面淡到这条线以下，牌里的字改成「浅字 + 深描边」（`lamp.css` 的
+ * `[data-sign-translucent]`）。
  *
  * **为什么需要它**：牌底是 `rgba(28,28,32, α)`，牌里的字是近白的 `#ececef`（组名）
  * / `#9b9ba3`（状态、消息、时长）。α 高的时候那是一块「深色牌 + 浅字」，对比来自
  * 牌面本身；α 低到一半以下，透出来的桌面比牌面还显眼，字其实是画在**桌面**上的
- * —— 浅色桌面或浅色窗口上，近白的字就没了。反过来用深色字是这块牌唯一还读得出来
- * 的排法。
+ * —— 浅色桌面或浅色窗口上，近白的字就没了。
  *
- * **为什么是 50**：α = 0.5 时桌面已经透出一半，正好是「深底浅字」和「浅底深字」
- * 两种读法都还站得住的位置 —— 往上白字有牌面托着，往下白字就只剩桌面的运气。
- * 这是显示判断不是物理量，所以写成常数；改它就等于改这条线。
+ * **为什么不是按桌面实时反色**：那要读灯后面的像素（macOS 的 CoreGraphics /
+ * ScreenCaptureKit），必须先拿到「屏幕录制」权限。这个应用为了一个常驻小灯去要
+ * 那种权限不划算，而且它是 ad-hoc 签名、每次更新 cdhash 都会变，授权多半还得重给。
+ * 所以改用不依赖背景信息的排法：字本身保持浅色，四周补一圈深色描边。深色桌面上
+ * 靠浅字读，浅色桌面上靠描边勾出字形 —— 一套字两边都能读。
  *
- * **它治不了什么**：桌面本身是深的时候，深字同样会糊。要让两边都稳，只能给文字
- * 垫底色或描边 —— 那是装饰，和「朴素简约：没有阴影 / 渐变 / 发光」冲突。用户想
- * 让字一直清楚，正解是把透明度调回 50% 以上（那一档牌面托得住浅字）。
+ * **为什么是 50**：α = 0.5 是「牌面还托得住浅字」和「字已经在桌面上了」的分界。
+ * 往上描边只会让字变脏，往下没有描边就只剩桌面的运气。
+ *
+ * **它治不了什么**：极浅背景上浅色字心会和背景融在一起，只剩描边的字形（像空心
+ * 字）；字号很小时那圈边也会占掉笔画的宽度。这是在不读桌面的前提下能做到的上限。
  */
 export const SIGN_TRANSLUCENT_BELOW = 50;
 
@@ -132,7 +136,7 @@ export const SIGN_TRANSLUCENT_BELOW = 50;
  *
  * **为什么要翻**：低透明度下牌底（`rgba(28, 28, 32, alpha)`）透出来的东西是桌面本身；
  * 近白的字落在浅色桌面上就不可读。安静的 0.15 同理 —— 亮白字在「几乎透明」的
- * 牌上就是没人能读的。翻成深字，在深色桌面上读得到，在浅色桌面上也读得到。
+ * 牌上就是没人能读的。和滑杆压低走同一条路：浅字 + 深描边。
  *
  * **边界**：安静 + 没事时（idle / stale / offline / off）才压暗；有事（thinking /
  * working / done …）时安静不压，不该翻。那层判断在组件里（`SignalLamp` 按
@@ -155,15 +159,15 @@ export function isQuietDimmed(
 }
 
 /**
- * 牌面要不要翻字。**单函数、单真相**：
+ * 牌面要不要换成「浅字 + 深描边」。**单函数、单真相**：
  *
- * - 用户把滑杆压到一半以下 → `sign_opacity` 本身 < [`SIGN_TRANSLUCENT_BELOW`] → 翻。
- * - 安静把牌压到几乎透明 → 视为 [`QUIET_FADE_OPACITY`] → 翻。
+ * - 用户把滑杆压到一半以下 → `sign_opacity` 本身 < [`SIGN_TRANSLUCENT_BELOW`] → 换。
+ * - 安静把牌压到几乎透明 → 视为 [`QUIET_FADE_OPACITY`] → 换。
  *
  * 返回 true 时 `SignalLamp` / `SettingsPanel` 就挂 `data-sign-translucent`
- * （颜色真相在 `lamp.css` 里）。
+ * （颜色和描边都在 `lamp.css` 里）。
  */
-export function signTextInverted(sign_opacity: number, quietDimmed = false): boolean {
+export function signTextNeedsContrast(sign_opacity: number, quietDimmed = false): boolean {
   const effective = quietDimmed ? Math.min(sign_opacity, QUIET_FADE_OPACITY) : sign_opacity;
   return effective < SIGN_TRANSLUCENT_BELOW;
 }

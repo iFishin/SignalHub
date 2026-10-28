@@ -3,7 +3,7 @@ import {
   lampVars,
   resolveAnimations,
   resolveShapes,
-  signTextInverted,
+  signTextNeedsContrast,
   stateOverridden,
   isQuietDimmed,
   SIGN_TRANSLUCENT_BELOW,
@@ -203,43 +203,43 @@ describe("stateOverridden", () => {
   });
 });
 
-describe("signTextInverted", () => {
+describe("signTextNeedsContrast", () => {
   /**
-   * 钉住那条线本身：**50 不翻，49 翻**。
+   * 钉住那条线本身：**50 不换，49 换**。
    *
    * 这条边界是灯（`SignalLamp.tsx` 挂 `data-sign-translucent`）和样式表
-   * （`lamp.css` 里那组深色变量）唯一的接口 —— 一边改成 `<=`、另一边还是 `<`，
-   * 表现就是「滑杆停在 50，设置页说字已经翻深色了，灯上却没翻」。之所以判据写在
-   * TS 里而不是 CSS 里：纯 CSS 没法比较数值，而阈值必须跟着设置值走。
+   * （`lamp.css` 里那组「浅字 + 描边」变量）唯一的接口 —— 一边改成 `<=`、另一边
+   * 还是 `<`，表现就是「滑杆停在 50，设置页说字已经带描边了，灯上却没有」。之所以
+   * 判据写在 TS 里而不是 CSS 里：纯 CSS 没法比较数值，而阈值必须跟着设置值走。
    */
-  it("flips below the line, not at it", () => {
-    expect(signTextInverted(SIGN_TRANSLUCENT_BELOW - 1)).toBe(true);
-    expect(signTextInverted(SIGN_TRANSLUCENT_BELOW)).toBe(false);
+  it("switches below the line, not at it", () => {
+    expect(signTextNeedsContrast(SIGN_TRANSLUCENT_BELOW - 1)).toBe(true);
+    expect(signTextNeedsContrast(SIGN_TRANSLUCENT_BELOW)).toBe(false);
   });
 
-  /** 两端：全透明（0）要翻，默认那档（86）和满不透明都不翻。 */
+  /** 两端：全透明（0）要换，默认那档（86）和满不透明都不换。 */
   it("covers both ends", () => {
-    expect(signTextInverted(0)).toBe(true);
-    expect(signTextInverted(DEFAULTS.sign_opacity)).toBe(false);
-    expect(signTextInverted(100)).toBe(false);
+    expect(signTextNeedsContrast(0)).toBe(true);
+    expect(signTextNeedsContrast(DEFAULTS.sign_opacity)).toBe(false);
+    expect(signTextNeedsContrast(100)).toBe(false);
   });
 
   /**
    * 安静模式把没事的牌压到 ≈15（`QUIET_FADE_OPACITY`，CSS 安静档 `opacity: 0.15`），
-   * 必然低于翻字线 50 —— 于是安静里的「没事」照样要翻字。
+   * 必然低于换字线 50 —— 于是安静里的「没事」照样要换。
    *
-   * **为什么**：低透明度是「字该不该亮」的统一判据，不是滑杆的事。安静压暗、滑杆压低，
-   * 底层都是「牌几乎透明、底色透出桌面」；透明度低于一半就翻，这是灯的设计线。
+   * **为什么**：低透明度是「字该不该带描边」的统一判据，不是滑杆的事。安静压暗、滑杆
+   * 压低，底层都是「牌几乎透明、底色透出桌面」；透明度低于一半就换，这是灯的设计线。
    */
-  it("flips when quiet dimmed the sign below the line", () => {
-    expect(signTextInverted(DEFAULTS.sign_opacity, true)).toBe(true);
-    expect(signTextInverted(86, true)).toBe(true);
+  it("switches when quiet dimmed the sign below the line", () => {
+    expect(signTextNeedsContrast(DEFAULTS.sign_opacity, true)).toBe(true);
+    expect(signTextNeedsContrast(86, true)).toBe(true);
   });
 
-  /** 没事时安静不压（working / thinking / done …），不该翻。 */
-  it("does not flip when quiet left the sign bright", () => {
-    expect(signTextInverted(DEFAULTS.sign_opacity, false)).toBe(false);
-    expect(signTextInverted(86, false)).toBe(false);
+  /** 没事时安静不压（working / thinking / done …），不该换。 */
+  it("does not switch when quiet left the sign bright", () => {
+    expect(signTextNeedsContrast(DEFAULTS.sign_opacity, false)).toBe(false);
+    expect(signTextNeedsContrast(86, false)).toBe(false);
   });
 });
 

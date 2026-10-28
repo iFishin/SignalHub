@@ -615,7 +615,7 @@ export const MESSAGES: Record<Lang, Messages> = {
     palette: "配色方案",
     signOpacity: "背景透明度",
     signOpacityHint:
-      "牌面淡过一半，近白的字就压不住了 —— 现在牌里的字自动改用深色。",
+      "牌面淡过一半，牌里的字会自动加一圈深色描边 —— 深色窗口、浅色桌面上都还读得出来。",
     signWidth: "牌宽",
     signHeight: "牌高",
     blinkSpeed: "闪烁节奏",
@@ -1094,7 +1094,7 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     palette: "Palette",
     signOpacity: "Sign opacity",
     signOpacityHint:
-      "Past half transparency the panel is too faint to carry light text, so the text in the sign switches to dark.",
+      "Past half transparency the sign text gets a thin dark outline, so it stays readable on both dark windows and light desktops.",
     signWidth: "Sign width",
     signHeight: "Sign height",
     blinkSpeed: "Blink speed",

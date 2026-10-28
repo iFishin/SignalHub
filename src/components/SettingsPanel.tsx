@@ -12,7 +12,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { inTauri } from "../lib/env";
 import { signalLabel } from "../lib/signals";
 import { labelOf } from "../lib/lampSort";
-import { signTextInverted, stateOverridden, lampVars, resolveShapes } from "../lib/lampStyle";
+import { signTextNeedsContrast, stateOverridden, lampVars, resolveShapes } from "../lib/lampStyle";
 import {
   commitHeader,
   withoutHeader,
@@ -333,7 +333,7 @@ function LampPreview({ settings }: { settings: Settings }) {
         style={
           { "--size": `${settings.size}px`, ...lampVars(settings) } as React.CSSProperties
         }
-        data-sign-translucent={signTextInverted(settings.sign_opacity) || undefined}
+        data-sign-translucent={signTextNeedsContrast(settings.sign_opacity) || undefined}
       >
         {cards.map((card) => (
           <div
@@ -1860,7 +1860,7 @@ export function SettingsPanel({ snapshot }: Props) {
             </Row>
             <Row
               label={m.signOpacity}
-              hint={signTextInverted(settings.sign_opacity) ? m.signOpacityHint : undefined}
+              hint={signTextNeedsContrast(settings.sign_opacity) ? m.signOpacityHint : undefined}
               onReset={resetFor(settings, "sign_opacity", patch)}
             >
               <Slider
