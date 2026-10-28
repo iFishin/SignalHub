@@ -224,7 +224,7 @@
 | 12 | C3 从灯上审批（`PermissionRequest` hook，默认关） | 完成（两处与计划不同，见下） | `5f4ca94` |
 | 13 | 领域外的收尾（B2 其余采集器：会议中） | 完成 | `bf703ad`（备份那条在 `495b651`） |
 | 14 | B4 预设规则（三个，不做表达式引擎） | 完成 | `42e48ba` |
-| 15 | 会话探活（活着但没上报 → 空闲，进程没了立刻收掉） | 完成（仅 Unix 探活，见下） | `20eca74`（命令形态改环境变量见 `011b712`） |
+| 15 | 会话探活（活着但没上报 → 保持工作态，进程没了立刻收掉；0.3.4 修正长任务被降成空闲） | 完成（仅 Unix 探活，见下） | `20eca74`（命令形态改环境变量见 `011b712`） |
 
 **施工中发现的问题**：一律开 GitHub issue 存档（`gh issue create`），再在本表下面记一行「issue #N → 结论」。
 
@@ -600,7 +600,7 @@ webview 隐藏着也活着，它的时钟会混进来），测完把原文件恢
 - **进程号走环境变量，不新增命令行选项。** 用户 PATH 上如果放的是旧版本 CLI（拷过去的，而不是软链接），它不认识新选项，会把整条 hook 判成错误 —— 上报直接断掉；环境变量则被原样忽略，最坏也只是退回沉默。`first_token` 因此学会跳过开头的 `NAME=value`，否则「是不是我们写的」「命令还解析得到吗」都会答错。
 - `Store::refresh_liveness(now, alive)` 在 `expire` **之前**跑（sweep 每 250ms）：
   - pid 已经不在 → 立刻删，不等 TTL（`done` 也一样）。
-  - pid 还在、TTL 到了 → thinking / working / idle 转 `idle`，清掉上一句 message，`since` 不动；之后每 60 秒复查一次。
+  - pid 还在、TTL 到了 → thinking / working / idle **保持原状态**、只续期，之后每 60 秒复查一次。长任务（构建、长时间推理）期间一个事件都没有，但它就是还在干活 —— 结束与否由智能体自己的结束事件（`Stop` / `agent_end` / `execution.succeeded`）决定。**0.3.4 前**这里会把 thinking / working 降成 `idle` 并清掉 message，于是任务还在跑、灯先自己暗下去（用户报的「跑几分钟就沉默」）。
   - permission / attention / error **不转**：进程活着不能说明授权已经批了、错误已经过去了，它们照旧走 TTL → stale → 30 分钟宽限。done 也照旧按时消失。
   - 不带 pid 的会话完全按老路走。
 - `proc::alive`：Unix 上用 `kill(pid, 0)`（EPERM 也算活着）。Windows 上 `pid` 在入库时就被丢掉，行为与以前一样。
@@ -609,15 +609,16 @@ webview 隐藏着也活着，它的时钟会混进来），测完把原文件恢
 **验证**：
 
 - **端到端**（2026-10-20）：临时目录里放项目级 `.claude/settings.json`（没动用户级配置），命令就是装出来的那条 `SIGNALHUB_PID="$PPID" signalhub hook claude-code --port 18777`，跑一次 `claude -p`，本地记录器收到的上报体里 `pid` 与 hook 里展开的 `$PPID` 一致 —— 证明 `$PPID` 的展开、环境变量、请求体三段都接上了。
+- **长任务**（2026-10-28）：向运行中的 dev 实例 POST 一条 `working` + `ttl_ms: 3000` + 一个活着的 `sleep` 进程号；5 秒（超过 TTL）和 71 秒（超过一次 60 秒复查）后会话都还是 `working`、message 还在；`kill` 掉那个进程后 2 秒内会话消失、聚合回到 `offline`。
 - `proc::alive`：当前进程为真；0 与 `i32::MAX` 为假。
-- `Store` 六条：活着转空闲、死了立刻删、permission 保持沉默、done 按时消失、空闲不会转沉默、不带 pid 的上报不抹掉已有 pid。另有 `pid` 字段可选解析一条。
+- `Store` 六条：活着保持 working / thinking、死了立刻删、permission 保持沉默、done 按时消失、空闲不会转沉默、不带 pid 的上报不抹掉已有 pid。另有 `pid` 字段可选解析一条。
 - CLI：`SIGNALHUB_PID` 不是正整数时**当作没给**（`$PPID` 没展开、`0`、空串都算）；服务端 `Report` 的 `pid` 字段可选解析。
 - 识别逻辑：`first_token` 会跳过 `SIGNALHUB_PID="$PPID"` 这段赋值，安装 / 卸载 / 「命令还解析得到吗」照常工作。
 - 插件源码三份都带自己的进程号；hook 命令**只有 Claude Code 带**。
 
 **没验证到的 / 限制**：
 
-- 只有 Claude Code 的 `$PPID` 是实测的；Codex / Cursor / Gemini / Goose 没探过 hook 怎么派生，所以**故意不带**——把一个短命 shell 当进程号会让灯立刻收掉会话，比沉默更糟。
+- 只有 Claude Code 的 `$PPID` 是实测的；Codex / Cursor / Gemini / Goose 没探过 hook 怎么派生，所以**故意不带**——把一个短命 shell 当进程号会让灯立刻收掉会话，比沉默更糟。这些接入（和 CSC）的长任务仍按 TTL 走，`working` 300 秒后转 `stale` —— issue #23。
 - 老版本装过的 hook 要回「接入」页重装一次才会带上进程号；没重装的照旧按沉默处理（README 已写明）。接入页目前**看不出**命令 / 插件是旧的、也不会提示重装 —— issue #19。
 - Claude Code 的 `--http` 式接入没有命令行，不带 pid（它直接 POST）。
 - Windows 上还没有探活（pid 入库即丢），仍是老的沉默路径 —— issue #20。

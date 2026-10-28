@@ -628,17 +628,20 @@ impl Store {
     ///
     /// 1. **进程没了就立刻删。** 不等 TTL：智能体被 `kill -9` 时不会再发
     ///    `SessionEnd`，而灯上还要错 5–10 分钟（再沉默 30 分钟）才消失。
-    /// 2. **进程还在、但 TTL 到了 → 转 `idle` 而不是 `stale`。** 进程活着说明
-    ///    会话没死，只是没有事件可报（长命令、长思考、用户离开）。这时说
-    ///    「会话已沉默」是错的 —— 灯上写「空闲」才是真的。
+    /// 2. **进程还在、但 TTL 到了 → 保持最后的状态，只续期。** 长任务（一次跑
+    ///    20 分钟的构建、一段十分钟的推理）在这期间**一个事件都不会触发**；
+    ///    如果因为「多久没说话」就把 `working` 降成 `idle`，灯会在任务还在跑的时候
+    ///    自己安静下去 —— 用户看到的是「跑了几分钟就沉默了」。一轮工作什么时候
+    ///    结束，由智能体自己的结束事件（`Stop` / `agent_end` /
+    ///    `execution.succeeded` …）说了算，不由「沉默时长」说了算。
     ///
-    /// 只把 thinking / working / idle 三档转成空闲：permission / attention /
-    /// error 是「有人在等」，进程活着**不能**说明那件事已经过去了，照旧走沉默
-    /// 那条路（TTL → stale → 宽限期后删除）。done 也一样 —— 它本来就会按时消失。
+    /// `permission` / `attention` / `error` 是「有人在等」，进程活着**不能**说明
+    /// 那件事已经过去了，照旧走沉默那条路（TTL → stale → 宽限期后删除）。
+    /// `done` 也一样 —— 它本来就会按时消失。
     pub fn refresh_liveness(&mut self, now: Instant, alive: &dyn Fn(u32) -> bool) -> bool {
         // 两趟处理，理由同 `expire`：先只读地判定，再动手改。
         let mut to_remove = Vec::new();
-        let mut to_idle = Vec::new();
+        let mut to_extend = Vec::new();
         for (id, session) in &self.sessions {
             let Some(pid) = session.pid else {
                 continue;
@@ -650,27 +653,23 @@ impl Store {
             if now < session.expires_at || session.state == Signal::Done {
                 continue;
             }
+            // 在这里续期的三档都是「进程活着就还可能继续」的：working / thinking
+            // 的长任务、以及本来就在等指令的 idle。状态本身不动，所以下面不改
+            // 字段，返回的「有没有可见变化」也不会因为它们而变 true。
             if matches!(
                 session.state,
                 Signal::Thinking | Signal::Working | Signal::Idle
             ) {
-                to_idle.push(id.clone());
+                to_extend.push(id.clone());
             }
         }
 
         for id in to_remove {
             self.sessions.remove(&id);
         }
-        for id in to_idle {
+        for id in to_extend {
             if let Some(session) = self.sessions.get_mut(&id) {
-                // 已经是 idle 的只续期：别把上报方自己写的「等待指令」擦掉
-                if session.state != Signal::Idle {
-                    session.state = Signal::Idle;
-                    // 上一句「正在执行 xxx」已经不成立了，留着会读成「空闲地在执行」
-                    session.message = None;
-                }
                 session.expires_at = now + LIVENESS_RECHECK;
-                // since 不动：读起来就是「安静了多久」
             }
         }
 
@@ -1336,13 +1335,14 @@ mod tests {
         assert!(s.sessions.values().all(|session| session.pid.is_none()));
     }
 
-    /// 进程还活着、只是没上报 → 转「空闲」，不是「沉默」。
+    /// 进程还活着、只是没上报 → **保持 last state**，不是「空闲」，更不是「沉默」。
     ///
-    /// 这是「关掉窗口但进程还在」和「进程已经没了」能分开显示的关键：前者
-    /// 不该在灯上留下一个灰掉的「会话已沉默」。
+    /// 这条是长任务的关键：一次 20 分钟的构建 / 十分钟的推理期间一个 hook 事件
+    /// 都没有；若按「沉默多久」把它降成 idle，灯会在任务还在跑的时候自己暗下去。
+    /// 结束与否由智能体自己的结束事件决定（`Stop` → done、`agent_end` → done …）。
     #[test]
     #[cfg(unix)]
-    fn a_live_process_turns_silence_into_idle_not_stale() {
+    fn a_live_process_keeps_working_through_a_long_task() {
         let (mut s, t) = (Store::default(), Instant::now());
         let mut req = Report::new(Signal::Working);
         req.session = Some("a".into());
@@ -1352,13 +1352,36 @@ mod tests {
         s.apply(t, req, ttl);
 
         let expired = t + Signal::Working.default_ttl();
-        assert!(s.refresh_liveness(expired, &|pid| pid == 42));
+        // 状态没变 → 不该白白推一帧
+        assert!(!s.refresh_liveness(expired, &|pid| pid == 42));
 
         let view = &sessions(&s.snapshot())[0];
-        assert_eq!(view.state, Signal::Idle);
-        assert_eq!(view.message, None, "上一句「正在执行」已经不成立了");
-        assert_eq!(s.aggregate(), Signal::Idle, "会话还在，不能变成 offline");
+        assert_eq!(view.state, Signal::Working, "长任务不能被降成空闲");
+        assert_eq!(view.message.as_deref(), Some("npm test"), "上一句在跑的东西还成立");
+        assert_eq!(s.aggregate(), Signal::Working);
         assert!(!s.expire(expired), "刚续过期，expire 不该再动它");
+
+        // 再过一分钟还是活着、还是没有事件 → 继续续期，仍然 working
+        let later = expired + Duration::from_secs(61);
+        assert!(!s.refresh_liveness(later, &|pid| pid == 42));
+        assert_eq!(s.aggregate(), Signal::Working);
+
+        // 任务结束（进程退出 / 没发结束事件）→ 探活立刻收掉，不留假灯
+        assert!(s.refresh_liveness(later, &|_| false));
+        assert_eq!(s.aggregate(), Signal::Offline);
+    }
+
+    /// 长思考同理：十分钟不出事件也不能降成空闲。
+    #[test]
+    #[cfg(unix)]
+    fn a_live_process_keeps_thinking_through_a_long_reasoning_turn() {
+        let (mut s, t) = (Store::default(), Instant::now());
+        rep_pid(&mut s, t, "a", Signal::Thinking, 42);
+
+        let expired = t + Signal::Thinking.default_ttl();
+        assert!(!s.refresh_liveness(expired, &|pid| pid == 42));
+        assert_eq!(s.aggregate(), Signal::Thinking);
+        assert!(!s.expire(expired));
     }
 
     /// 进程没了就立刻收掉，不用等 TTL —— 被 `kill -9` 的智能体不会再发
