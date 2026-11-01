@@ -12,11 +12,14 @@ dist
 dist-ssr
 *.local
 
+# macOS 在外接卷（exFAT/NTFS）上生成的 AppleDouble 元数据文件
+._*
+.DS_Store
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
 .idea
-.DS_Store
 *.suo
 *.ntvs*
 *.njsproj
