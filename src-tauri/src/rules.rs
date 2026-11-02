@@ -179,6 +179,7 @@ mod tests {
             message: None,
             age_ms: 0,
             stale_progress: None,
+            machine: None,
         }
     }
 

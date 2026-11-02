@@ -44,6 +44,13 @@ export interface SessionView {
    * 由服务端算好，前端不必复刻 TTL 常量。
    */
   stale_progress: number | null;
+  /**
+   * 这条会话来自哪台远程机器（多机中枢）。`null` / 缺省 = 本机会话。
+   *
+   * 前端靠它做两件事：收件箱那一行加机器徽章、**把「跳转到终端」关掉** ——
+   * 那个 `cwd` 在对端机器上，在本机打开只会是一个不存在的目录。
+   */
+  machine?: string | null;
 }
 
 /**

@@ -52,10 +52,14 @@
    摘要 / 等了多久）；数据已在 history / timeline / stats 里。
 2. **Away approvals**：把只读 Web 面板升级成带 token 的 PWA，配合 outbound 的手机推送，
    能看命令并允许 / 拒绝。
-3. **团队 / 多机 hub**：一台机器做 hub，团队所有 agent 的状态汇到一块看板 / 办公室物理灯。
+3. ~~**团队 / 多机 hub**~~ —— **已落地，见 [plan-multi-machine.md](./plan-multi-machine.md)**（v0.4.2）。一台机器当 hub，把别的机器的看板拉过来合并进同一盏灯；对端不用升级，只要开「允许局域网访问」并把 token 抄过来。
 4. 再往后才是更多 agent 适配器和主题 —— 那些不解决需求性。
 
 ## 发布记录
+
+- **v0.4.2**（2026-11）：多机中枢（上面第 3 项）。远程会话直接喂进同一个 `Store`，
+  所以灯、收件箱、统计、物理灯、只读面板全部零改动生效；`machines` 默认空数组时
+  快照与 0.4.1 逐字节一致。
 
 - **v0.4.0**（2026-10-28）：tag `v0.4.0` → `21ad2d5`；Release workflow `40712336996`
   四平台全绿（macOS aarch64 / x64、Windows、Linux），产物含 dmg、Windows setup +

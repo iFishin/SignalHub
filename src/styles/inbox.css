@@ -200,6 +200,23 @@ html[data-window="inbox"] body {
   font-size: 10.5px;
 }
 
+/* 多机中枢：这一行来自另一台机器。
+   用一枚小胶囊而不是纯文字 —— 它要在一行已经挤了「名字 / 智能体 / 状态 / 等了
+   多久」的地方一眼被认出来，而纯灰字会读成名字的一部分。 */
+.inbox-machine {
+  flex: none;
+  padding: 0 5px;
+  border: 1px solid #3a3a44;
+  border-radius: 999px;
+  color: #a8a8b3;
+  font-size: 10px;
+  line-height: 15px;
+  max-width: 84px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .inbox-state {
   flex: none;
   color: var(--state, #d7d7df);

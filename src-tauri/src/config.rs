@@ -605,6 +605,85 @@ pub fn device_problem(device: &Device) -> Option<String> {
     None
 }
 
+/// 另一台机器 —— 多机中枢（见 `docs/plan-multi-machine.md`）。
+///
+/// 方向和其他所有配置项都相反：钩子 / 物理灯是**我们往外发**，这个是**我们往外读**。
+/// 拉而不是推的决定性理由是「对端不用升级」：`GET /v1/state` 从 0.1 就有，
+/// 所以一台 0.4.1 的机器立刻能当对端（见方案 §1）。
+///
+/// **只有三样东西，没有「协议版本」**：对端就是 SignalHub 自己的 HTTP 接口，
+/// 给它加一个版本号只会多出一处要维护的兼容矩阵。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Machine {
+    /// 显示名，同时也是**命名空间**（远程会话的 id 和组名都挂在它下面）。
+    ///
+    /// 所以它必须非空、唯一，而且**改了等于换了一台机器** —— 旧会话会以新名字重新
+    /// 进来，旧的那些在 TTL 到期后自然消失。这条写进文档，别让人以为改名是「重命名」。
+    ///
+    /// 允许中文 / 空格：它只出现在界面上和组名里，从不进 URL。
+    #[serde(default)]
+    pub id: String,
+    /// 对端地址。`192.168.1.20:41320`、`http://host:port`、`https://…` 都认；
+    /// 顺手把 `/v1/state` 粘进来也认（见 `remote::endpoint`）。
+    ///
+    /// **空着保留**，和 [`Device::host`] 一个脾气：那是「刚点了添加、还没填」这个
+    /// 编辑时必然经过的中间态，存下去被丢掉的话，界面上就是「刚点出来的那一行自己
+    /// 没了」。真正轮询时按空地址过滤。
+    #[serde(default)]
+    pub url: String,
+    /// 对端的 token（对端机器上 `~/.signalhub/token` 的内容）。
+    ///
+    /// 明文存在 `config.json` 里，和本机 token 同一个待遇 —— 它本来就在同一个目录、
+    /// 同样的权限下。**不额外加密**：为此引一个密钥链依赖，收益只是「拿到 config.json
+    /// 的人多花五分钟」，而那个前提已经是「他已经能读你的家目录」了。
+    #[serde(default)]
+    pub token: String,
+    /// 关掉但留着配置。默认 `true` —— 一条被加进来的机器就是「我要看它」，
+    /// 加完还要再点一次开关才生效是多余的一步。
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+/// `serde` 的 `default` 需要一个返回 `true` 的函数（`bool::default()` 是 `false`，
+/// 而 [`Machine::enabled`] 的缺省必须是 `true`）。
+fn default_true() -> bool {
+    true
+}
+
+/// 能配几台机器。
+///
+/// 上界不是防性能（20 台 × 2 秒一次也就 10 req/s），而是防**误操作**：把一整段
+/// 主机名列表粘进来、或者脚本反复往配置里追加时，界面会变成一屏滚不到头的输入框，
+/// 而每一台都在真的发请求。
+pub const MAX_MACHINES: usize = 20;
+
+/// 轮询间隔的可调范围（毫秒）。
+///
+/// 下界 1 秒：再快就只是给对端增加无意义的负载，而人眼分辨不出 1 秒以内的差别。
+/// 上界 10 秒：TTL 是它的 3 倍（见 `remote`），10 秒意味着掉线要 30 秒才在灯上
+/// 显形 —— 再慢就失去「及时发现」的意义了。
+pub const MIN_MACHINE_POLL_MS: u64 = 1000;
+pub const MAX_MACHINE_POLL_MS: u64 = 10_000;
+
+/// 一台机器配置上的问题。空地址不算错（理由见 [`Machine::url`]）。
+///
+/// 只挡**明显的粘贴事故**：地址里有空格。不校验形状 —— `wled.local` 那样的
+/// mDNS 名字、`https://` 的反代都是正经用法，「通不通」只有真拉一次才知道，
+/// 那是「测试连接」要回答的。
+pub fn machine_problem(machine: &Machine) -> Option<String> {
+    let url = machine.url.trim();
+    if url.is_empty() {
+        return None;
+    }
+    if url.chars().any(char::is_whitespace) {
+        return Some(format!("地址里不能有空格：{:?}", machine.url));
+    }
+    if machine.id.trim().is_empty() {
+        return Some("还没有填名称 —— 名称是这台机器在灯上的命名空间".to_string());
+    }
+    None
+}
+
 /// 额外请求头的条数上限。
 ///
 /// 转发目标（尤其是别人给你的一个 webhook 地址）算**不可信输入**：一个几千条的
@@ -1061,6 +1140,31 @@ pub struct Settings {
     /// **改完立刻生效**（不像 `lan_access` 要重启）：它只是一个路由的开关，
     /// 读的是这份设置的当前值，不涉及重新绑定。
     pub web_panel: bool,
+    /// 其他机器 —— **多机中枢**（见 `docs/plan-multi-machine.md`）。
+    ///
+    /// 我们是**拉**的一方：每 `machine_poll_ms` 去每台机器的 `GET /v1/state` 取一次
+    /// 快照，把它们的会话按 `m:{机器}:{会话}` 的名字喂进本机同一个 `Store`。于是灯、
+    /// 收件箱、托盘、通知、统计、物理灯、只读面板**全部零改动**就看到了多机内容。
+    ///
+    /// **默认空 = 一条请求都不发**（红线：新增外发默认关）。空数组时快照与没有这个
+    /// 功能时逐字节一致，这是升级不改变既有行为的硬约束。
+    ///
+    /// 和 `lan_access` 是**两个方向**，别混：那个管「别人能不能上报给我」，这个管
+    /// 「我要不要去看别人」。两个都开是正常用法（互为 hub）。
+    #[serde(default)]
+    pub machines: Vec<Machine>,
+    /// 轮询间隔（毫秒）。远程会话的 TTL 是它的 3 倍 —— 所以这个值同时决定了
+    /// 「对端掉线后多久在灯上显形」。
+    ///
+    /// 默认 2 秒：TTL 6 秒，掉线半分钟内必然转 `stale`，而 2 秒一次本地请求的开销
+    /// 可以忽略。
+    #[serde(default = "default_machine_poll_ms")]
+    pub machine_poll_ms: u64,
+}
+
+/// [`Settings::machine_poll_ms`] 的缺省值。见那里的说明。
+fn default_machine_poll_ms() -> u64 {
+    2000
 }
 
 /// 兜底分组的依据。
@@ -1295,6 +1399,9 @@ impl Default for Settings {
             // 默认只监听本机。见字段注释：开了之后唯一的防线就是 token
             lan_access: false,
             web_panel: false,
+            // 多机中枢默认一台都不配 —— 空数组 = 一条请求都不发
+            machines: Vec::new(),
+            machine_poll_ms: default_machine_poll_ms(),
         }
     }
 }
@@ -1381,6 +1488,31 @@ impl Settings {
         for device in &mut self.devices {
             device.host = device.host.trim().to_string();
         }
+        // 多机中枢。规则比 devices 多两条，因为**机器名是命名空间**：
+        //
+        // - 名称空 = 没法做命名空间，整条丢掉（不是「先留着待填」—— 一个没有名字的
+        //   机器连报错都指不出是哪台）。
+        // - 名称重复 = 两台机器的会话会挤进同一个命名空间，而组名 / 会话 id 会互相
+        //   覆盖。**先出现的赢**，因为那是用户先写的那个。
+        // - 地址空仍保留（理由同 devices）。
+        //
+        // 顺序不能反：先去空白再判空，否则一个只打了空格的名称会被当成有名字。
+        for machine in &mut self.machines {
+            machine.id = machine.id.trim().to_string();
+            machine.url = machine.url.trim().to_string();
+            machine.token = machine.token.trim().to_string();
+        }
+        self.machines.retain(|machine| !machine.id.is_empty());
+        {
+            // 用一个 set 记见过的名字。`HashSet` 而不是排序去重：要的是**保序**去重
+            // （先出现的赢），排序会把用户排的顺序打乱。
+            let mut seen = std::collections::HashSet::new();
+            self.machines.retain(|machine| seen.insert(machine.id.clone()));
+        }
+        self.machines.truncate(MAX_MACHINES);
+        self.machine_poll_ms = self
+            .machine_poll_ms
+            .clamp(MIN_MACHINE_POLL_MS, MAX_MACHINE_POLL_MS);
         self
     }
 
@@ -1950,6 +2082,14 @@ mod tests {
             web_panel: true,
             // 物理灯同理：列表为空时「漏了 devices 字段」这种错看不出来
             devices: vec![Device { host: "192.168.1.50".into() }],
+            // 多机同理 —— 而且它比 devices 更容易漏（两个新字段，其中一个还是标量）
+            machines: vec![Machine {
+                id: "mac-mini".into(),
+                url: "http://192.168.1.20:41320".into(),
+                token: "t0ken".into(),
+                enabled: false,
+            }],
+            machine_poll_ms: 3000,
             webhook_url: None,
             colors: BTreeMap::new(),
         };
@@ -2599,6 +2739,77 @@ mod tests {
         assert_eq!(wild.clamped().size, MAX_SIZE);
         let tiny = Settings { size: 1, ..Settings::default() };
         assert_eq!(tiny.clamped().size, MIN_SIZE);
+    }
+
+    // ---- 多机中枢 -------------------------------------------------------------
+
+    /// **默认一台都不配。** 这条比看着重要：空数组 = 一条请求都不发，也是
+    /// 「升级后灯的牌数和 0.4.1 完全一致」这条硬约束的前提（见方案 §0.2 红线 2）。
+    #[test]
+    fn no_machines_are_configured_by_default() {
+        let settings = Settings::default();
+        assert!(settings.machines.is_empty());
+        assert_eq!(settings.machine_poll_ms, 2000);
+    }
+
+    /// 机器名是**命名空间**，所以：空的丢掉、重复的留第一个、地址空着保留。
+    ///
+    /// 地址那一条和 `devices` 同一个脾气 —— 「刚点了添加、还没填」是编辑时必然
+    /// 经过的中间态，存下去被丢掉的话界面上就是「刚点出来的那一行自己没了」。
+    #[test]
+    fn machine_ids_are_trimmed_deduped_and_never_empty() {
+        let machine = |id: &str, url: &str| Machine {
+            id: id.into(),
+            url: url.into(),
+            token: " t0ken ".into(),
+            enabled: true,
+        };
+        let settings = Settings {
+            machines: vec![
+                machine("  mac-mini  ", " 192.168.1.20:41320 "),
+                // 只打了空格的名称 = 没有名称
+                machine("   ", "192.168.1.21:41320"),
+                // 重复：命名空间会撞，留先出现的那个
+                machine("mac-mini", "192.168.1.99:41320"),
+                // 地址空着保留
+                machine("server", ""),
+            ],
+            ..Settings::default()
+        }
+        .clamped();
+
+        let ids: Vec<&str> = settings.machines.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["mac-mini", "server"]);
+        assert_eq!(settings.machines[0].url, "192.168.1.20:41320");
+        assert_eq!(settings.machines[0].token, "t0ken", "token 也要去空白");
+        assert_eq!(settings.machines[1].url, "");
+    }
+
+    /// 轮询间隔夹在 1–10 秒。下界是「再快只是给对端加负载」，上界是「再慢掉线就
+    /// 要半分钟以上才在灯上显形」。
+    #[test]
+    fn the_poll_interval_is_clamped() {
+        let fast = Settings { machine_poll_ms: 10, ..Settings::default() }.clamped();
+        assert_eq!(fast.machine_poll_ms, MIN_MACHINE_POLL_MS);
+        let slow = Settings { machine_poll_ms: 600_000, ..Settings::default() }.clamped();
+        assert_eq!(slow.machine_poll_ms, MAX_MACHINE_POLL_MS);
+    }
+
+    /// 地址里有空格 = 把「192.168.1.50 那台」整句粘进来了。只挡这一种明显的粘贴
+    /// 事故，不校验形状（mDNS 名字、https 反代都是正经用法）。
+    #[test]
+    fn a_pasted_sentence_is_flagged_but_a_hostname_is_not() {
+        let mut machine = Machine {
+            id: "mini".into(),
+            url: "192.168.1.50 那台".into(),
+            token: String::new(),
+            enabled: true,
+        };
+        assert!(machine_problem(&machine).is_some());
+        machine.url = "mini.local:41320".into();
+        assert!(machine_problem(&machine).is_none());
+        machine.url = String::new();
+        assert!(machine_problem(&machine).is_none(), "空地址是编辑中的正常态");
     }
 
     // ---- 兜底分组 ----

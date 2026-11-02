@@ -16,6 +16,7 @@ mod outbound;
 mod panel;
 mod proc;
 mod receipts;
+mod remote;
 mod rules;
 mod server;
 mod shortcuts;
@@ -144,6 +145,12 @@ type SharedReceipts = Arc<receipts::Receipts>;
 /// 光看 stderr 是查不出来的（从 Dock 启动的话根本没地方看）。
 type SharedOutbound = outbound::OutboundLog;
 
+/// 多机中枢的健康状态（见 `remote.rs`）。
+///
+/// 和 `SharedReceipts` 同一个道理：轮询线程写它，「多机」页读它。两份真值就会
+/// 撒谎，所以只能有一份。
+type SharedMachines = remote::Registry;
+
 #[tauri::command]
 fn get_state(store: tauri::State<'_, SharedStore>) -> Snapshot {
     store.lock().expect("state store poisoned").snapshot()
@@ -174,6 +181,7 @@ fn set_state(
         message,
         ttl_ms: None,
         pid: None,
+        machine: None,
     };
     let ttl = report_ttl(&app, &req);
     Ok(mutate(&app, &store, |guard, now| guard.apply(now, req, ttl)))
@@ -217,6 +225,7 @@ fn send_test_report(
         message: None,
         ttl_ms: Some(TEST_REPORT_TTL_MS),
         pid: None,
+        machine: None,
     };
     // 显式给了 `ttl_ms`，所以设置里的值压不过它（`state_ttl` 的第一级）
     let ttl = report_ttl(&app, &req);
@@ -1133,6 +1142,48 @@ fn set_collector(app: tauri::AppHandle, id: String, on: bool) -> Result<(), Stri
     persist_settings(&app, settings).map(|_| ())
 }
 
+/// 「多机」页：每台对端最近一次拉取的结果。
+///
+/// **只读**：轮询线程是唯一写入方（见 `remote.rs`）。这里不给前端「改健康状态」的
+/// 能力 —— 那个值是事实，不是设置。
+#[tauri::command]
+fn list_machines(machines: tauri::State<'_, SharedMachines>) -> Vec<remote::Health> {
+    machines
+        .lock()
+        .expect("registry poisoned")
+        .values()
+        .cloned()
+        .collect()
+}
+
+/// 「测试连接」：立刻拉一次，就地显示结果。
+///
+/// 地址和 token 由界面传进来（而不是从设置里读）：用户点测试时那一行**可能还没
+/// 保存**，读设置会测到一个刚被改掉的旧值 —— 而「点了测试，结果测的是别的地址」
+/// 是这个交互里最坏的一种表现。
+#[tauri::command]
+async fn probe_machine(id: String, url: String, token: String) -> remote::Health {
+    // 拉取是阻塞的（`ureq`），扔进 async 命令里必须挪到阻塞线程池，否则会占着
+    // 一个 worker 直到超时（最长 3 秒）—— 那期间这条 IPC 之外的命令也排队。
+    tauri::async_runtime::spawn_blocking(move || {
+        remote::probe(&config::Machine {
+            id,
+            url,
+            token,
+            enabled: true,
+        })
+    })
+    .await
+    .unwrap_or_else(|err| remote::Health {
+        id: String::new(),
+        ok: false,
+        last_ok_ms: 0,
+        latency_ms: 0,
+        error: Some(format!("测试没能跑起来：{err}")),
+        sessions: 0,
+    })
+}
+
 #[tauri::command]
 fn set_tool_approval(
     app: tauri::AppHandle,
@@ -1354,6 +1405,7 @@ async fn try_agent(app: tauri::AppHandle, agent: String) -> Result<ProbeOutcome,
             // 短停留：试出来的东西不该在灯上赖着
             ttl_ms: Some(PROBE_TTL_MS),
             pid: None,
+            machine: None,
         };
         let ttl = report_ttl(&app, &req);
         mutate(&app, &store, |guard, now| guard.apply(now, req, ttl));
@@ -2398,6 +2450,8 @@ pub fn run() {
         .manage(manual::SharedManual::default())
         // 等用户点的那些审批（灯上的气泡读它，见 approvals.rs）
         .manage(approvals::SharedApprovals::default())
+        // 多机中枢的健康状态（轮询线程写，「多机」页读，见 remote.rs）
+        .manage(remote::registry())
         .invoke_handler(tauri::generate_handler![
             get_state,
             set_state,
@@ -2442,6 +2496,8 @@ pub fn run() {
             set_tool_approval,
             list_collectors,
             set_collector,
+            list_machines,
+            probe_machine,
             uninstall_agent_hooks,
             try_agent,
             diagnose,
@@ -2557,7 +2613,7 @@ pub fn run() {
                     }));
             }
             server::spawn(
-                notify,
+                notify.clone(),
                 server::Shared {
                     // 全部取自 app 里 manage 的那几份 —— 各写一遍真值迟早会漂移
                     store: app.state::<SharedStore>().inner().clone(),
@@ -2568,6 +2624,17 @@ pub fn run() {
                     approvals: app.state::<approvals::SharedApprovals>().inner().clone(),
                 },
                 token,
+            );
+
+            // 多机中枢（见 `remote.rs`）。**排在 `server::spawn` 之后**：它是纯
+            // 出站轮询，不依赖本机的监听端口；而且 `notify` 已经被上面那个 move
+            // 吃掉了，所以这里传的是克隆 —— 同一个组合版通知器（记统计、发通知、
+            // 转发都在里面），不是另造一个。
+            remote::spawn(
+                app.state::<SharedStore>().inner().clone(),
+                app.state::<SharedSettings>().inner().clone(),
+                app.state::<SharedMachines>().inner().clone(),
+                notify,
             );
 
             Ok(())
@@ -2648,6 +2715,7 @@ mod tests {
                 message: None,
                 ttl_ms: Some(TEST_REPORT_TTL_MS),
                 pid: None,
+                machine: None,
             },
             // 显式 TTL 是最高那一级，所以这里给个空设置也走它
             state_ttl(Signal::Permission, Some(TEST_REPORT_TTL_MS), &Settings::default()),

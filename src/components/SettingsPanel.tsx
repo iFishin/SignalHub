@@ -19,7 +19,7 @@ import {
   MAX_HOOK_HEADERS,
 } from "../lib/hookHeaders";
 import { useLang, useMessages, type Lang, type Messages } from "../lib/i18n";
-import { useSettings, updateSettings, DEFAULTS, HTTP_PRESETS, type Settings, type Shape, type Palette, type HttpPreset, type Hook, type Device, type StateStyle, type GroupMeta } from "../lib/useSettings";
+import { useSettings, updateSettings, DEFAULTS, HTTP_PRESETS, type Settings, type Shape, type Palette, type HttpPreset, type Hook, type Device, type Machine, type MachineHealth, type StateStyle, type GroupMeta } from "../lib/useSettings";
 import {
   useToggles,
   setAutostart,
@@ -151,6 +151,29 @@ function blinkOptions(m: Messages): { label: string; value: string }[] {
 /** 勿扰时段的起止小时。只有小时没有分钟 —— 见 config::QuietHours 的说明。 */
 const HOURS = Array.from({ length: 24 }, (_, hour) => hour);
 
+/**
+ * 多机中枢的轮询间隔档位（毫秒）。**与 Rust 侧的 1–10 秒区间一致**。
+ *
+ * 给档位而不是让用户敲数字：这个值的意义是「多久发现一次变化」，1.5 秒和 2 秒
+ * 的差别没人分得出来，但敲错一个 0 就变成 20 秒 —— 那时掉线要一分钟才显形。
+ */
+const MACHINE_POLL_CHOICES = [1000, 2000, 3000, 5000, 10_000];
+
+/**
+ * 新加一台机器时用的名字。
+ *
+ * **必须非空且唯一**：机器名是命名空间，空名字在 Rust 侧会被整条丢掉 ——
+ * 用户点了「添加」却什么都没出现是最坏的一种表现。重名则会让两台机器的会话
+ * 挤进同一个命名空间，互相覆盖。
+ */
+function nextMachineId(machines: Machine[]): string {
+  const taken = new Set(machines.map((machine) => machine.id));
+  for (let n = machines.length + 1; ; n += 1) {
+    const id = `machine-${n}`;
+    if (!taken.has(id)) return id;
+  }
+}
+
 /** 「持续多久才提醒」的档位。0 = 立刻。 */
 function alertDelayOptions(m: Messages): { label: string; value: number }[] {
   return [
@@ -190,6 +213,7 @@ type Tab =
   | "alert"
   | "hooks"
   | "connect"
+  | "machines"
   | "guide"
   | "system";
 
@@ -228,6 +252,9 @@ function tabGroups(m: Messages): { title: string; entries: { id: Tab; label: str
       title: m.railConnect,
       entries: [
         { id: "connect", label: m.tabConnect },
+        // 紧挨着「接入」：接入管「别人怎么报给我」，多机管「我怎么看别人」——
+        // 同一件事的两个方向，放在一起才找得到。
+        { id: "machines", label: m.tabMachines },
         { id: "guide", label: m.tabGuide },
       ],
     },
@@ -1079,7 +1106,8 @@ export function SettingsPanel({ snapshot }: Props) {
   // 这块面板一秒重绘一次不便宜，没显示的东西不值得为它重绘。
   const visible = useVisible();
   const now = useNow(
-    visible && (tab === "status" || tab === "hooks" || tab === "connect"),
+    visible &&
+      (tab === "status" || tab === "hooks" || tab === "connect" || tab === "machines"),
   );
 
   const [endpoint, setEndpoint] = useState<Endpoint | null>(null);
@@ -1274,6 +1302,111 @@ export function SettingsPanel({ snapshot }: Props) {
     setError(null);
     updateSettings({ ...settings, ...next }).catch(reported);
   };
+
+  // ---- 多机中枢 -------------------------------------------------------------
+  //
+  // 和物理灯同一套交互：**草稿 + 失焦提交**。机器名是命名空间、地址是网络端点，
+  // 每敲一个字存一次意味着「192.168.1.2」这个半截地址会在存盘的瞬间被轮询器拿去
+  // 拉一次 —— 那台机器可能真的存在，只是不是你想连的那台。
+  const [machineDraft, setMachineDraft] = useState<{
+    index: number;
+    field: "id" | "url" | "token";
+    value: string;
+  } | null>(null);
+
+  const setMachines = (machines: Machine[]) => patch({ machines });
+
+  const addMachine = () => {
+    // 增删一台之后下标就全变了，按 index 存的测试结果会挂到别人身上 ——
+    // 宁可直接清空（最坏是多点一次「测试」）。
+    setMachineProbe({});
+    setMachines([
+      ...settings.machines,
+      // 名称先给一个不会重名的占位：命名空间必须非空，而空名字那一行在 Rust 侧
+      // 会被整条丢掉 —— 用户点了「添加」却什么都没出现是最坏的一种表现。
+      { id: nextMachineId(settings.machines), url: "", token: "", enabled: true },
+    ]);
+  };
+
+  const commitMachineDraft = () => {
+    if (!machineDraft) return;
+    const { index, field, value } = machineDraft;
+    setMachineDraft(null);
+    const machine = settings.machines[index];
+    if (!machine) return;
+    const next = value.trim();
+    if (next === machine[field].trim()) return; // 没改就别白存一次
+    setMachines(
+      settings.machines.map((item, i) =>
+        i === index ? { ...item, [field]: next } : item,
+      ),
+    );
+  };
+
+  /**
+   * 「测试连接」：拿**界面上现在这一份**（含还没提交的草稿）去拉一次。
+   *
+   * 不读设置：用户点测试时那一行往往还没失焦保存，读设置会测到一个旧地址 ——
+   * 「点了测试，结果测的是别的机器」是这个交互里最坏的一种表现。
+   */
+  const [machineProbe, setMachineProbe] = useState<
+    Record<number, MachineHealth | "testing">
+  >({});
+
+  const probeMachine = (index: number) => {
+    const machine = settings.machines[index];
+    if (!machine) return;
+    const draft = machineDraft?.index === index ? machineDraft : null;
+    const field = (name: "id" | "url" | "token") =>
+      draft?.field === name ? draft.value : machine[name];
+    setMachineProbe((prev) => ({ ...prev, [index]: "testing" }));
+    invoke<MachineHealth>("probe_machine", {
+      id: field("id"),
+      url: field("url"),
+      token: field("token"),
+    })
+      .then((health) =>
+        setMachineProbe((prev) => ({ ...prev, [index]: health })),
+      )
+      .catch((err) =>
+        setMachineProbe((prev) => ({
+          ...prev,
+          [index]: {
+            id: machine.id,
+            ok: false,
+            last_ok_ms: 0,
+            latency_ms: 0,
+            error: String(err),
+            sessions: 0,
+          },
+        })),
+      );
+  };
+
+  /** 轮询线程写、这里读。只在这页停留时刷，别的地方不需要这份数据。 */
+  const [machineHealth, setMachineHealth] = useState<MachineHealth[]>([]);
+  useEffect(() => {
+    if (!inTauri || tab !== "machines") return;
+    let alive = true;
+    const load = () => {
+      invoke<MachineHealth[]>("list_machines")
+        .then((rows) => {
+          if (alive) setMachineHealth(rows);
+        })
+        .catch(() => {
+          // 读不到就当没有：这一页显示的是一份「现在怎么样」，读不到时留空比
+          // 编一个「未连接」更诚实（那条也是它自己的状态，不是读失败）。
+        });
+    };
+    load();
+    // 3 秒一次：轮询间隔最小 1 秒、健康状态本身就是「最近一次结果」，
+    // 比它刷得更勤只是白白重绘这一页。
+    const timer = window.setInterval(load, 3000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [tab]);
 
   /** 单独改「牌上显示哪几段」里的一段。 */
   const setField = (key: keyof Settings["show"], on: boolean) =>
@@ -2717,6 +2850,199 @@ export function SettingsPanel({ snapshot }: Props) {
               <p className="hint">{m.connectHookHint}</p>
             </div>
 
+          </>
+        );
+      }
+
+      case "machines": {
+        // 健康状态按机器名查。轮询器是唯一写入方（见 remote.rs），这里只读。
+        const healthOf = (id: string) =>
+          machineHealth.find((row) => row.id === id);
+
+        return (
+          <>
+            <p className="hint">{m.machines.hint}</p>
+
+            <div className="section">
+              <div className="section-title">{m.machines.title}</div>
+              {settings.machines.length === 0 && (
+                <p className="empty">{m.machines.empty}</p>
+              )}
+              {settings.machines.map((machine, index) => {
+                const probe = machineProbe[index];
+                const health = healthOf(machine.id);
+                // 界面上现在这一份（含还没失焦的草稿）—— 三个输入框共用这一套，
+                // 否则「改了地址但还没保存」时状态那一行说的还是旧地址的事。
+                const draft = machineDraft?.index === index ? machineDraft : null;
+                const shown = (field: "id" | "url" | "token") =>
+                  draft?.field === field ? draft.value : machine[field];
+                const configured = machine.url.trim().length > 0;
+                const result =
+                  probe === "testing"
+                    ? m.machines.testing
+                    : probe
+                      ? probe.ok
+                        ? m.machines.connected(probe.latency_ms, probe.sessions)
+                        : probe.error
+                      : health
+                        ? health.ok
+                          ? m.machines.connected(health.latency_ms, health.sessions)
+                          : (health.error ??
+                            (health.last_ok_ms > 0
+                              ? m.machines.lastOk(
+                                  formatAge(health.last_ok_ms, now),
+                                )
+                              : m.machines.never))
+                        : configured
+                          ? m.machines.never
+                          : null;
+                const resultOk =
+                  probe && probe !== "testing" ? probe.ok : (health?.ok ?? false);
+
+                return (
+                  <div className="hook" key={index}>
+                    <div className="hook-head">
+                      <span className="hook-title">
+                        {machine.id.trim() || m.machines.name}
+                        {!configured && (
+                          <span className="hook-warn">{m.noTarget}</span>
+                        )}
+                      </span>
+                      <Switch
+                        on={machine.enabled}
+                        onChange={(on) =>
+                          setMachines(
+                            settings.machines.map((item, i) =>
+                              i === index ? { ...item, enabled: on } : item,
+                            ),
+                          )
+                        }
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-tiny"
+                        onClick={() => {
+                          setMachineProbe({});
+                          setMachines(
+                            settings.machines.filter((_, i) => i !== index),
+                          );
+                        }}
+                      >
+                        {m.machines.remove}
+                      </button>
+                    </div>
+
+                    {/* 名称 / 地址 / Token 三行。名称允许中文和空格 —— 它只出现在
+                        界面上和组名里，从不进 URL。地址和 token 用等宽字体：
+                        抄错一个字符是这一页最常见的失败。 */}
+                    <input
+                      className="input"
+                      spellCheck={false}
+                      placeholder={m.machines.name}
+                      aria-label={m.machines.name}
+                      title={m.machines.nameHint}
+                      value={shown("id")}
+                      onChange={(event) =>
+                        setMachineDraft({
+                          index,
+                          field: "id",
+                          value: event.target.value,
+                        })
+                      }
+                      onBlur={commitMachineDraft}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") event.currentTarget.blur();
+                      }}
+                    />
+                    <input
+                      className="input mono"
+                      spellCheck={false}
+                      placeholder={m.machines.url}
+                      aria-label={m.machines.url}
+                      title={m.machines.urlHint}
+                      value={shown("url")}
+                      onChange={(event) =>
+                        setMachineDraft({
+                          index,
+                          field: "url",
+                          value: event.target.value,
+                        })
+                      }
+                      onBlur={commitMachineDraft}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") event.currentTarget.blur();
+                      }}
+                    />
+                    <input
+                      className="input mono"
+                      spellCheck={false}
+                      type="password"
+                      placeholder={m.machines.token}
+                      aria-label={m.machines.token}
+                      title={m.machines.tokenHint}
+                      value={shown("token")}
+                      onChange={(event) =>
+                        setMachineDraft({
+                          index,
+                          field: "token",
+                          value: event.target.value,
+                        })
+                      }
+                      onBlur={commitMachineDraft}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") event.currentTarget.blur();
+                      }}
+                    />
+
+                    <div className="row-start">
+                      <button
+                        type="button"
+                        className="btn btn-tiny"
+                        disabled={!configured || probe === "testing"}
+                        onClick={() => probeMachine(index)}
+                      >
+                        {probe === "testing" ? m.machines.testing : m.machines.test}
+                      </button>
+                      {/* 「现在通不通」和「上次什么时候通」是两个问题，都要答。
+                          没配地址时不渲染 —— 那时无从测起，写「还没连上过」会
+                          让人以为配好了但连不上。 */}
+                      {result && (
+                        <span className="hook-result mono" data-ok={resultOk}>
+                          {result}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+              <button type="button" className="btn" onClick={addMachine}>
+                {m.machines.add}
+              </button>
+            </div>
+
+            {/* 轮询间隔。**和「多久发现掉线」是同一个旋钮**：远程会话的存活时间是
+                它的三倍，所以调慢一半，掉线在灯上显形也慢一半。 */}
+            <div className="section">
+              <Row label={m.machines.poll}>
+                <select
+                  className="input input-tiny"
+                  value={settings.machine_poll_ms}
+                  onChange={(event) =>
+                    patch({ machine_poll_ms: Number(event.target.value) })
+                  }
+                >
+                  {MACHINE_POLL_CHOICES.map((ms) => (
+                    <option key={ms} value={ms}>
+                      {m.machines.pollSeconds(ms / 1000)}
+                    </option>
+                  ))}
+                </select>
+              </Row>
+              <p className="hint">{m.machines.pollHint}</p>
+            </div>
+
+            <p className="hint">{m.machines.peerHint}</p>
+            <p className="hint">{m.machines.note}</p>
           </>
         );
       }

@@ -103,6 +103,54 @@ export interface Device {
   host: string;
 }
 
+/**
+ * 另一台机器（多机中枢）。
+ *
+ * 方向和其他所有配置项都相反：钩子 / 物理灯是**我们往外发**，这个是**我们往外读**
+ * —— 每 `machine_poll_ms` 去对端的 `GET /v1/state` 取一次快照，把它的会话按
+ * `m:{id}:{会话}` 的名字喂进本机同一个 Store。于是灯、收件箱、统计、物理灯全部
+ * 自动看到多机内容。
+ *
+ * 对端**不用升级**：`GET /v1/state` 从 0.1 就有，只要它开了「允许局域网访问」，
+ * 把 token 抄过来就能用。
+ */
+export interface Machine {
+  /**
+   * 显示名，同时也是**命名空间**（远程会话的 id 和组名都挂在它下面）。
+   *
+   * 所以它必须非空、唯一，而且**改了等于换了一台机器** —— 旧会话会以新名字重新
+   * 进来，旧的那些在 TTL 到期后自然消失。
+   */
+  id: string;
+  /**
+   * 对端地址。`192.168.1.20:41320` / `http://host:port` 都认；顺手把
+   * `/v1/state` 粘进来也认。空着 = 「刚添加还没填」，不会发请求。
+   */
+  url: string;
+  /** 对端的 token（对端 `~/.signalhub/token` 的内容）。 */
+  token: string;
+  /** 关掉但留着配置。 */
+  enabled: boolean;
+}
+
+/**
+ * 一台机器的健康状态（`list_machines` / `probe_machine` 的返回）。
+ *
+ * **只读**：轮询线程是唯一写入方。界面上显示它，但改不了它 —— 那是事实，不是设置。
+ */
+export interface MachineHealth {
+  id: string;
+  ok: boolean;
+  /** 最近一次成功的时间（epoch 毫秒，0 = 从来没成功过）。 */
+  last_ok_ms: number;
+  /** 最近一次成功拉取的耗时（毫秒）。 */
+  latency_ms: number;
+  /** 最近一次失败的原因。成功时为 null。 */
+  error: string | null;
+  /** 这次拉回来几个会话。 */
+  sessions: number;
+}
+
 /** 展开的牌上显示哪几段内容。四段都可以单独关掉 —— 有人只要一眼颜色，
  *  有人要看清「卡在哪一步」。 */
 export interface SignFields {
@@ -291,6 +339,18 @@ export interface Settings {
   lan_access: boolean;
   /** 只读 Web 面板（`GET /`）：手机 / 平板上打开一个链接就能看灯。**默认关。** */
   web_panel: boolean;
+  /**
+   * 其他机器 —— **多机中枢**。默认空数组 = 一条请求都不发。
+   *
+   * 我们是**拉**的一方（见 `Machine`）：轮询器把对端的会话按命名空间喂进本机同一个
+   * 状态机，所以灯、收件箱、统计、物理灯全部零改动就看到了多机内容。
+   */
+  machines: Machine[];
+  /**
+   * 轮询间隔（毫秒，1000–10000）。远程会话的 TTL 是它的 3 倍 —— 所以这个值同时
+   * 决定了「对端掉线后多久在灯上显形」。
+   */
+  machine_poll_ms: number;
 }
 
 /**
@@ -335,6 +395,8 @@ export const DEFAULTS: Settings = {
   group_by: "none",
   lan_access: false,
   web_panel: false,
+  machines: [],
+  machine_poll_ms: 2000,
 };
 
 const SETTINGS_EVENT = "signalhub://settings";

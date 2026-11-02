@@ -275,6 +275,14 @@ pub struct Report {
     ///
     /// **只认 Unix**（见 `effective_pid`）；Windows 上会被丢掉，行为与没带一样。
     pub pid: Option<u32>,
+    /// 这条会话来自哪台远程机器（多机中枢，见 `docs/plan-multi-machine.md`）。
+    ///
+    /// **`serde(skip)` 是刻意的**：HTTP 上报**不能**声称自己来自某台机器 —— 这个
+    /// 字段只由轮询器（`remote.rs`）在 Rust 侧设置。于是接口契约一个字都没变，
+    /// `docs/api.md` 也不用为它加一节；别人在 body 里写 `"machine": "x"` 会被
+    /// 静默忽略（服务端没有 `deny_unknown_fields`）。
+    #[serde(skip)]
+    pub machine: Option<String>,
 }
 
 impl Report {
@@ -291,6 +299,7 @@ impl Report {
             message: None,
             ttl_ms: None,
             pid: None,
+            machine: None,
         }
     }
 
@@ -352,6 +361,8 @@ struct Session {
     /// 上报方进程号。**没有就用不上探活**，到期照旧转 `stale`。
     /// 见 [`Report::pid`] 与 [`Store::refresh_liveness`]。
     pid: Option<u32>,
+    /// 来自哪台远程机器（见 [`Report::machine`]）。`None` = 本机会话。
+    machine: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -367,6 +378,11 @@ pub struct SessionView {
     /// 由服务端算好给前端画细环。不在前端算是因为那要求前端也复刻一遍 TTL 常量
     /// —— 而 `age_ms` 是「距上次状态变化」，并不等于「沉默多久」。
     pub stale_progress: Option<f32>,
+    /// 来自哪台远程机器（多机中枢）。`None` = 本机会话。
+    ///
+    /// 前端靠它做两件事：收件箱那一行加机器徽章、**把「跳转到终端」关掉** ——
+    /// 那个 `cwd` 在对端机器上，在本机打开只会是一个不存在的目录。
+    pub machine: Option<String>,
 }
 
 /// 一个组在灯球上的样子：一块牌。
@@ -458,6 +474,28 @@ impl Store {
     /// 锁**（`SharedSettings`），在这个已经持着状态锁的地方再去拿它会多一对锁序，
     /// 而算它只需要一次不涉及状态的纯计算。
     pub fn apply(&mut self, now: Instant, req: Report, ttl: Duration) -> bool {
+        self.apply_tagged(now, req, ttl)
+    }
+
+    /// 记一次**来自远程机器**的上报（多机中枢，见 `remote.rs`）。
+    ///
+    /// 和 [`Store::apply`] 走的是同一段逻辑，只是先给这条上报盖上机器戳 —— 这是
+    /// 「远程会话就是普通会话」这条决定的落地方式：不另立数据结构，于是灯、收件箱、
+    /// 托盘、通知、统计、物理灯、只读面板全部零改动就看到了多机内容。
+    ///
+    /// `machine` 由轮询器给，**不来自 HTTP**（见 [`Report::machine`] 的 `serde(skip)`）。
+    pub fn apply_remote(
+        &mut self,
+        now: Instant,
+        mut req: Report,
+        ttl: Duration,
+        machine: &str,
+    ) -> bool {
+        req.machine = Some(machine.to_string());
+        self.apply_tagged(now, req, ttl)
+    }
+
+    fn apply_tagged(&mut self, now: Instant, req: Report, ttl: Duration) -> bool {
         // 先取出会话名和组名，之后就只移动 req 的各个字段，不再整体借用它
         let session = req.session_id().to_string();
         let group = req.group_id().to_string();
@@ -476,6 +514,9 @@ impl Store {
         // 进程号只在**这次带了**的时候更新：HTTP 审批钩子、手写 curl 都不带它，
         // 那些上报不该把已经记住的进程号抹掉。
         let pid = effective_pid(req.pid).or_else(|| prev.and_then(|s| s.pid));
+        // 机器戳同理只在这次带了的时候更新 —— 轮询器每次都带，所以实际上只有
+        // 「本机上报 vs 远程会话」这两种来源各自稳定。
+        let machine = req.machine.or_else(|| prev.and_then(|s| s.machine.clone()));
         let since = match prev {
             Some(p) if p.state == req.state => p.since,
             _ => SystemTime::now(),
@@ -521,6 +562,7 @@ impl Store {
                 expires_at,
                 since,
                 pid,
+                machine,
             },
         );
         self.enforce_session_cap();
@@ -621,6 +663,43 @@ impl Store {
         }
 
         (ids.len(), self.settle(now))
+    }
+
+    /// 清掉某台远程机器的全部会话（多机中枢）。
+    ///
+    /// 用户把一台机器从设置里删掉、或者把它关掉时调用 —— 否则那些会话会一直挂在
+    /// 灯上直到 TTL 到期，而「配置里已经没有这台机器了，牌还在」是最难解释的一种
+    /// 不一致。**关掉也算删掉**：`enabled: false` 的语义就是「我不要看它」。
+    ///
+    /// 返回 `(移除了几个, 可见状态是否变化)`，理由同 [`Store::clear_group`]。
+    pub fn clear_machine(&mut self, machine: &str, now: Instant) -> (usize, bool) {
+        let ids: Vec<String> = self
+            .sessions
+            .values()
+            .filter(|s| s.machine.as_deref() == Some(machine))
+            .map(|s| s.id.clone())
+            .collect();
+
+        for id in &ids {
+            self.sessions.remove(id);
+        }
+
+        (ids.len(), self.settle(now))
+    }
+
+    /// 当前快照里出现过的所有远程机器名。
+    ///
+    /// 轮询器拿它和设置里的列表求差集，用来清掉「配置里已经没有的机器」。不从设置
+    /// 反推：会话可能来自一次已经改掉的配置，唯一可信的来源是状态本身。
+    pub fn remote_machines(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .sessions
+            .values()
+            .filter_map(|s| s.machine.clone())
+            .collect();
+        names.sort();
+        names.dedup();
+        names
     }
 
     /// `now` 只用于静默进度档位（见 `progress_step`）—— 暂停本身不改变进度，
@@ -755,8 +834,10 @@ impl Store {
             .map(|name| {
                 let winner = self.winner_in(&name);
                 let sessions = self.views_in(&name, now);
-                // 按会话分组时组名是个 UUID，牌上没法直接画（见 `session_label`）
-                let default_label = session_label(&name, &sessions);
+                // 远程组（多机中枢）优先：`mac-mini/ci` 要读成 `mac-mini · ci`。
+                // 再退回「按会话分组」那种 UUID → 「目录 · 智能体」的翻译。
+                let default_label = remote_label(&name, &sessions)
+                    .or_else(|| session_label(&name, &sessions));
                 GroupView {
                     default_label,
                     aggregate: winner.map(|s| s.state).unwrap_or(Signal::Offline),
@@ -818,6 +899,7 @@ impl Store {
                     .unwrap_or_default()
                     .as_millis() as u64,
                 stale_progress: stale_progress(s, now),
+                machine: s.machine.clone(),
             })
             .collect();
         views.sort_by(|a, b| {
@@ -930,6 +1012,35 @@ fn session_label(name: &str, sessions: &[SessionView]) -> Option<String> {
         (None, Some(project)) => Some(project),
         (None, None) => None,
     }
+}
+
+/// 远程组的显示名：`mac-mini/ci` → `mac-mini · ci`。
+///
+/// 多机中枢（见 `docs/plan-multi-machine.md` §2.5）。组名里的 `/` 是命名空间分隔符，
+/// 直接画在牌上会读成「一个叫 mac-mini/ci 的组」，而它其实是「mac-mini 这台机器上的
+/// ci 组」—— 一个斜杠之差，含义完全不同。
+///
+/// **判据是数据而不是字符串**：组内**所有**会话都带同一个 `machine` 才算远程组。
+/// 不用「组名里有没有 `/`」：用户完全可以自己起一个叫 `feat/login` 的组，那和机器
+/// 没有关系，把它改写成 `feat · login` 就是凭空造了一层不存在的语义。
+///
+/// 混合的情况（组里既有本机会话又有远程会话）返回 `None` —— 那意味着有人的组名
+/// 恰好撞上了 `{机器}/{组}` 这个形状，此时退回原始组名最诚实。
+fn remote_label(name: &str, sessions: &[SessionView]) -> Option<String> {
+    let machine = sessions.first()?.machine.as_deref()?;
+    if !sessions.iter().all(|s| s.machine.as_deref() == Some(machine)) {
+        return None;
+    }
+    // 组名去掉「机器/」前缀。前缀对不上（不该发生，但组名是外部输入）时退回机器名。
+    let rest = name
+        .strip_prefix(machine)
+        .and_then(|tail| tail.strip_prefix('/'))
+        .map(str::trim)
+        .filter(|rest| !rest.is_empty());
+    Some(match rest {
+        Some(rest) => format!("{machine} · {rest}"),
+        None => machine.to_string(),
+    })
 }
 
 /// 静默进度分几档。
@@ -1073,6 +1184,7 @@ mod tests {
             message: None,
             age_ms: 0,
             stale_progress: None,
+            machine: None,
         }
     }
 

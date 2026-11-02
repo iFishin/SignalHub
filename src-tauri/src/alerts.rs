@@ -552,6 +552,7 @@ mod tests {
             message: message.map(str::to_string),
             age_ms: 0,
             stale_progress: None,
+            machine: None,
         }
     }
 

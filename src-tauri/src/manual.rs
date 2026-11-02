@@ -154,6 +154,7 @@ fn request(lang: Lang, state: Signal, message: String, ttl_ms: Option<u32>) -> R
         message: Some(message),
         ttl_ms: ttl_ms.map(u64::from),
         pid: None,
+        machine: None,
     }
 }
 
@@ -299,6 +300,7 @@ fn group_request(lang: Lang, group: &str, state: Signal) -> Report {
         message: Some(lang::text(lang).manual_set.to_string()),
         ttl_ms: Some(u64::from(LONG_TTL_MS)),
         pid: None,
+        machine: None,
     }
 }
 

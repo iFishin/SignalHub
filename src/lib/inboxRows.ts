@@ -22,6 +22,13 @@ export interface InboxRow {
   message: string | null;
   ageMs: number;
   cwd: string | null;
+  /**
+   * 来自哪台远程机器（多机中枢）。`null` = 本机会话。
+   *
+   * 有值时界面要做两件事：加一个机器徽章、**把「跳转」关掉** —— 那个 `cwd` 在
+   * 对端机器上，在本机打开只会是一个不存在的目录。
+   */
+  machine: string | null;
   /** 有这条时，这一行同时是一条待审批；行内会画允许 / 拒绝。 */
   approval?: Approval;
 }
@@ -91,6 +98,7 @@ export function buildInbox(
         message: session.message,
         ageMs: approval?.age_ms ?? session.age_ms,
         cwd: session.cwd,
+        machine: session.machine ?? null,
         approval,
       });
       seen.add(session.id);
@@ -111,6 +119,8 @@ export function buildInbox(
       message: approval.target,
       ageMs: approval.age_ms,
       cwd: null,
+      // 审批登记表只登记本机的会话（跨机器审批这一轮不做），所以这条一定是本机
+      machine: null,
       approval,
     });
   }

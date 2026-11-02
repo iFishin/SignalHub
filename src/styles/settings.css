@@ -790,6 +790,16 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   overflow-wrap: anywhere;
 }
 
+/* 多机页那一行结果要能一眼分清「通」和「不通」：同一行里既有延迟也有错误原因，
+   全靠文字读会慢半拍。只改颜色，不动排版 —— 它在 `row-start` 里和按钮并排。 */
+.hook-result[data-ok="true"] {
+  color: var(--ok, #16a34a);
+}
+
+.hook-result[data-ok="false"] {
+  color: var(--danger, #d0342c);
+}
+
 .btn-tiny {
   padding: 2px 8px;
   font-size: 11px;

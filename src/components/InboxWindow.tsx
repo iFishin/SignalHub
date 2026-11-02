@@ -103,6 +103,13 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
   const jump = useCallback(
     (row: InboxRow) => {
       if (!inTauri) return;
+      // 远程会话的 `cwd` 在对端机器上 —— 在本机打开只会是一个不存在的目录，
+      // 而「点了跳转，Finder 弹出一句找不到」比直接说清楚糟得多。
+      // 跨机器跳转这一轮不做（见方案 §6）。
+      if (row.machine) {
+        say(m.inbox.remoteJump(row.machine));
+        return;
+      }
       invoke<JumpResult>("jump_to_session", { session: row.session })
         .then((result) => {
           // 真正切了窗口 / 应用就把它收起来，让用户直接落在目标上；
@@ -115,7 +122,7 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
         })
         .catch((err) => say(String(err)));
     },
-    [hide, say],
+    [hide, m.inbox, say],
   );
 
   const decideRow = useCallback(
@@ -238,6 +245,9 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
         <span className="inbox-dot" aria-hidden />
         <div className="inbox-body">
           <div className="inbox-line">
+            {/* 机器徽章排在名字前面：一眼就能看出这一行不是本机的，也就不会
+                去点那个跳转按钮。 */}
+            {row.machine && <span className="inbox-machine">{row.machine}</span>}
             <span className="inbox-name">{row.label}</span>
             {row.agent && <span className="inbox-agent">{row.agent}</span>}
             <span className="inbox-state">{signalLabel(lang, row.state)}</span>

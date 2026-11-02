@@ -50,6 +50,7 @@ export interface Messages {
   tabGroups: string;
   tabAlert: string;
   tabConnect: string;
+  tabMachines: string;
   tabHooks: string;
   tabGuide: string;
   tabSystem: string;
@@ -492,6 +493,35 @@ export interface Messages {
   stylePresetCalmHint: string;
 
   // 收件箱（0.4）
+  /** 「多机」页（多机中枢，见 docs/plan-multi-machine.md）。 */
+  machines: {
+    title: string;
+    hint: string;
+    empty: string;
+    add: string;
+    name: string;
+    nameHint: string;
+    url: string;
+    urlHint: string;
+    token: string;
+    tokenHint: string;
+    enabled: string;
+    test: string;
+    testing: string;
+    remove: string;
+    /** 连通时那一行：延迟 + 会话数。 */
+    connected: (ms: number, sessions: number) => string;
+    /** 从来没成功连上过。 */
+    never: string;
+    /** 上次成功是什么时候。 */
+    lastOk: (ago: string) => string;
+    poll: string;
+    pollHint: string;
+    pollSeconds: (seconds: number) => string;
+    note: string;
+    peerHint: string;
+  };
+
   inbox: {
     title: string;
     need: string;
@@ -519,6 +549,8 @@ export interface Messages {
     waiting: (age: string) => string;
     keys: string;
     jumpUnsupported: string;
+    /** 远程会话的跳转：说明为什么跳不了。 */
+    remoteJump: (machine: string) => string;
     approvalHint: string;
     closeHint: string;
   };
@@ -573,6 +605,7 @@ export const MESSAGES: Record<Lang, Messages> = {
     tabGroups: "分组",
     tabAlert: "提醒",
     tabConnect: "接入",
+    tabMachines: "多机",
     tabHooks: "转发",
     tabGuide: "指南",
     tabSystem: "系统",
@@ -1009,6 +1042,33 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     stylePresetCalm: "只在需要时闪",
     stylePresetCalmHint: "干活的那几个状态都常亮，只有需要关注 / 授权 / 出错才闪",
 
+    machines: {
+      title: "多机中枢",
+      hint: "把别的机器上的看板拉过来，合并进同一盏灯 —— 灯、收件箱、统计、物理灯都算上。",
+      empty:
+        "还没有配置任何机器。加一台之后，它的智能体状态会以「机器名 · 组名」出现在灯上。",
+      add: "添加一台",
+      name: "名称",
+      nameHint: "这台机器在灯上的名字，也是它的命名空间。改了等于换了一台机器。",
+      url: "地址",
+      urlHint: "对端的局域网地址，如 192.168.1.20:41320。在对端「设置 → 接入」里能看到。",
+      token: "Token",
+      tokenHint: "对端 ~/.signalhub/token 的内容，同样在「设置 → 接入」里。",
+      enabled: "启用",
+      test: "测试连接",
+      testing: "连接中…",
+      remove: "删除",
+      connected: (ms, sessions) => `连通 · ${ms}ms · ${sessions} 个会话`,
+      never: "还没连上过",
+      lastOk: (ago) => `上次成功 ${ago}`,
+      poll: "轮询间隔",
+      pollHint:
+        "多久去每台机器取一次。远程会话的存活时间是它的三倍 —— 所以它也决定了掉线多久之后在灯上显形。",
+      pollSeconds: (seconds) => `${seconds} 秒`,
+      note: "远程会话只能看：不能在灯上审批，也不能跳转到终端（那个目录在对端机器上）。",
+      peerHint: "对端要打开「允许局域网访问」，把 token 抄过来即可 —— 对端不用升级到新版本。",
+    },
+
     inbox: {
       title: "收件箱",
       need: "需要你",
@@ -1036,6 +1096,7 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       waiting: (age) => `等了 ${age}`,
       keys: "↑↓ 选择 · Enter 跳转 · A 允许 · D 拒绝 · Esc 关闭",
       jumpUnsupported: "精确定位终端目前只在 macOS 上；已尝试打开项目目录。",
+      remoteJump: (machine) => `这是 ${machine} 上的会话，跳转只对本机有效`,
       approvalHint: "这是智能体主动请求的授权；允许只对被问到的这一次生效。",
       closeHint: "关闭收件箱（Esc）",
     },
@@ -1083,6 +1144,7 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     tabGroups: "Groups",
     tabAlert: "Alerts",
     tabConnect: "Connect",
+    tabMachines: "Machines",
     tabHooks: "Forwarding",
     tabGuide: "Guide",
     tabSystem: "System",
@@ -1525,6 +1587,36 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     stylePresetCalm: "Blink only when needed",
     stylePresetCalmHint: "The working states stay solid; only attention / approval / error blink",
 
+    machines: {
+      title: "Multi-machine hub",
+      hint: "Pull other machines' boards in and merge them into one light — cards, inbox, stats and the physical lamp included.",
+      empty:
+        "No machines yet. Once you add one, its agent states show up as “machine · group” on the light.",
+      add: "Add a machine",
+      name: "Name",
+      nameHint:
+        "How this machine is called on the light, and its namespace. Renaming is the same as swapping in a different machine.",
+      url: "Address",
+      urlHint:
+        "The peer's LAN address, e.g. 192.168.1.20:41320. Shown on the peer under Settings → Connect.",
+      token: "Token",
+      tokenHint: "The contents of the peer's ~/.signalhub/token — also under Settings → Connect.",
+      enabled: "Enabled",
+      test: "Test",
+      testing: "Connecting…",
+      remove: "Remove",
+      connected: (ms, sessions) => `Connected · ${ms}ms · ${sessions} sessions`,
+      never: "Never connected",
+      lastOk: (ago) => `Last ok ${ago}`,
+      poll: "Poll interval",
+      pollHint:
+        "How often to fetch each machine. A remote session lives three times this long — so it also sets how quickly a dropped peer shows up on the light.",
+      pollSeconds: (seconds) => `${seconds}s`,
+      note: "Remote sessions are read-only here: no approvals from the light, and no jumping to a terminal (that directory is on the other machine).",
+      peerHint:
+        "The peer needs “Allow LAN access” turned on and its token copied over — it does not need to be upgraded.",
+    },
+
     inbox: {
       title: "Inbox",
       need: "Needs you",
@@ -1554,6 +1646,7 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
       waiting: (age) => `waiting ${age}`,
       keys: "↑↓ select · Enter jump · A allow · D deny · Esc close",
       jumpUnsupported: "Exact terminal focus is macOS-only for now; tried opening the project folder.",
+      remoteJump: (machine) => `This session is on ${machine} — jumping only works for local sessions`,
       approvalHint: "This is a permission the agent asked for; allowing applies only to this request.",
       closeHint: "Close the inbox (Esc)",
     },
