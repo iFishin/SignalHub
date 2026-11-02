@@ -18,8 +18,17 @@
 //! [`JumpKind::App`]，让界面能明说只走到哪一步。
 
 use serde::Serialize;
+
+// 只有 macOS 那条路会真的去跑外部命令（`mod mac`，见文件末尾）；别的平台走的是
+// 「打开项目目录」的兜底，用不到它。不加 cfg 的话 Linux / Windows 上的
+// `clippy -D warnings` 会直接报未使用导入 —— 而 macOS 上又必须有它。
+#[cfg(target_os = "macos")]
 use std::process::Command;
 
+/// **非 macOS 上只有 `Unsupported` / `NotFound` 会被构造**：其余四个属于「精确定位
+/// 终端标签页」那条只在 macOS 存在的路径。类型本身要跨平台统一（前端只有一套渲染，
+/// 不按平台分叉），所以变体全留着；这里只是别让 `-D warnings` 把它们当死代码。
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JumpKind {
