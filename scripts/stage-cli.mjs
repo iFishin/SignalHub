@@ -20,7 +20,7 @@
 
 import { execFileSync } from "node:child_process";
 import { chmodSync, copyFileSync, mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -72,9 +72,22 @@ execFileSync("cargo", args, {
 });
 
 const profile = debug ? "debug" : "release";
+
+// 构建目录跟着 `CARGO_TARGET_DIR` 走。
+//
+// 不认它的后果很直接：把构建目录指到别处（项目放在不支持 xattr 的外接卷上时必须
+// 这么做，否则 macOS 会在构建产物旁边生成 `._*` AppleDouble 文件，而 tauri 的
+// 构建脚本会把权限目录里每个文件当 UTF-8 TOML 读 —— 撞上二进制就 panic）之后，
+// cargo 把二进制写在那边，这里却还去 `src-tauri/target` 找，复制那一步报 ENOENT。
+//
+// 相对路径按当前工作目录解析，和 cargo 自己的规则一致。
+const targetRoot = process.env.CARGO_TARGET_DIR?.trim()
+  ? resolve(process.env.CARGO_TARGET_DIR)
+  : join(root, "src-tauri", "target");
+
 const from = debug
-  ? join(root, "src-tauri", "target", profile, `signalhub${exe}`)
-  : join(root, "src-tauri", "target", triple, profile, `signalhub${exe}`);
+  ? join(targetRoot, profile, `signalhub${exe}`)
+  : join(targetRoot, triple, profile, `signalhub${exe}`);
 const to = join(root, "src-tauri", "binaries", `signalhub-${triple}${exe}`);
 
 mkdirSync(dirname(to), { recursive: true });
