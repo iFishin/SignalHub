@@ -20,7 +20,7 @@
 
 import { execFileSync } from "node:child_process";
 import { chmodSync, copyFileSync, mkdirSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -73,17 +73,31 @@ execFileSync("cargo", args, {
 
 const profile = debug ? "debug" : "release";
 
-// 构建目录跟着 `CARGO_TARGET_DIR` 走。
+// 构建目录**问 cargo 自己**，不自己判断。
 //
-// 不认它的后果很直接：把构建目录指到别处（项目放在不支持 xattr 的外接卷上时必须
-// 这么做，否则 macOS 会在构建产物旁边生成 `._*` AppleDouble 文件，而 tauri 的
-// 构建脚本会把权限目录里每个文件当 UTF-8 TOML 读 —— 撞上二进制就 panic）之后，
-// cargo 把二进制写在那边，这里却还去 `src-tauri/target` 找，复制那一步报 ENOENT。
+// 为什么必须问：构建产物不一定落在 `src-tauri/target`。`CARGO_TARGET_DIR` 环境变量
+// 和 `.cargo/config.toml` 里的 `build.target-dir` 都能把它挪走，而后者在项目放在
+// 不支持 xattr 的外接卷上时是**必须**的 —— 否则 macOS 会在构建产物旁边生成 `._*`
+// AppleDouble 文件，而 tauri 的构建脚本会把权限目录里每个文件当 UTF-8 TOML 读，
+// 撞上二进制就 panic。
 //
-// 相对路径按当前工作目录解析，和 cargo 自己的规则一致。
-const targetRoot = process.env.CARGO_TARGET_DIR?.trim()
-  ? resolve(process.env.CARGO_TARGET_DIR)
-  : join(root, "src-tauri", "target");
+// `cargo metadata` 把三种来源（环境变量 / 配置文件 / 默认值）合并成同一个答案，
+// 我们照着用就行，不必自己维护一套优先级。
+const targetRoot = (() => {
+  try {
+    const meta = execFileSync(
+      "cargo",
+      ["metadata", "--format-version", "1", "--no-deps", "--manifest-path", manifest],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    );
+    const dir = JSON.parse(meta).target_directory;
+    if (dir) return dir;
+  } catch {
+    // metadata 读不出来（cargo 太老、清单坏了）就退回默认位置 —— 这一步不该
+    // 因为「查不到构建目录」而失败，真正的失败会在下面复制那里说清楚。
+  }
+  return join(root, "src-tauri", "target");
+})();
 
 const from = debug
   ? join(targetRoot, profile, `signalhub${exe}`)

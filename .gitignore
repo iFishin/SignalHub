@@ -16,6 +16,9 @@ dist-ssr
 ._*
 .DS_Store
 
+# 本机专用的 cargo 配置（把构建目录指到 APFS，见该文件里的说明）
+.cargo/config.toml
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
