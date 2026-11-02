@@ -380,7 +380,14 @@ fn emit(app: &tauri::AppHandle, snapshot: &Snapshot) {
 
 /// 给「手上已有 AppHandle」的命令和托盘用。
 pub fn push(app: &tauri::AppHandle, snapshot: &Snapshot) {
-    (app.state::<Notifier>().inner())(snapshot);
+    // `Notifier` 只能在 `setup` 里注册（它要 `AppHandle` 才构造得出来），而 `setup`
+    // 跑在窗口创建**之后** —— 前端有可能抢先调用命令走到这里，那时 `state()` 会
+    // panic（issue #24 的同一个窗口期）。这里用 `try_state` 兜住：`setup` 还没跑完
+    // 时还没有任何东西可推，跳过是对的，不存在「漏掉一次通知」。
+    let Some(notifier) = app.try_state::<Notifier>() else {
+        return;
+    };
+    (notifier.inner())(snapshot);
 }
 
 #[cfg(test)]

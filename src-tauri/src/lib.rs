@@ -2325,6 +2325,19 @@ pub fn run() {
     // 第一件事就装它：后面任何一步崩了都要留下记录
     install_panic_hook();
 
+    // 设置**必须在窗口创建之前**读好并注册，不能等到 `setup` 里（issue #24）。
+    //
+    // 前端一挂载就 `invoke("get_settings")`（见 `useSettings.ts`），而 `setup` 是在
+    // 窗口创建**之后**才跑的 —— 中间有一段窗口期。Windows 上 WebView2 起得比后端快
+    // （冷启动、盘慢、杀毒扫描）时，前端会抢在 `setup` 的 `manage()` 之前调用命令，
+    // `state::<SharedSettings>()` 找不到状态，Tauri 直接 panic：
+    //
+    //   state() called before manage() for Arc<Mutex<Arc<Settings>>>   (tauri 2.12.2)
+    //
+    // `load_settings()` 不依赖 `AppHandle`，所以能提到这里；`.manage()` 在 `build()`
+    // 里、窗口创建之前执行，前端再快也只能在那之后才拿得到 webview。
+    let settings = config::load_settings();
+
     tauri::Builder::default()
         // 单实例要最先注册：多开会让端口文件和状态互相打架，表现为「灯球
         // 偶尔不动」这种极难排查的现象。
@@ -2350,6 +2363,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         // 自动更新。**目前只在 macOS 上真正生效**（见 update.rs 顶部）。
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // 设置排在最前：前端发出的第一条命令就是 `get_settings`，它必须已经在了
+        // （issue #24，见 `run()` 开头那段注释）
+        .manage(Arc::new(Mutex::new(Arc::new(settings))))
         .manage(SharedStore::new(Mutex::new(Store::default())))
         .manage(SharedUi::default())
         .manage(SharedGeometry::default())
@@ -2446,8 +2462,10 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            let settings = config::load_settings();
-            app.manage(Arc::new(Mutex::new(Arc::new(settings.clone()))));
+            // 设置已经在 Builder 链上注册过了（见 `run()` 开头，issue #24）。
+            // 这里从状态里读回来，而不是再 `load_settings()` 一次 —— 读两次会让
+            // 内存里这份和 `server::Shared` 拿到的那个 `Arc` 各走各的。
+            let settings = current_settings(app.handle());
 
             // **先取一次缩放比**（唯一的同步查询），再套用尺寸：否则
             // `apply_window_size` 会拿默认的 1.0 去算物理尺寸，在 2× 屏上把
