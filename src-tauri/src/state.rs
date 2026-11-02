@@ -273,7 +273,8 @@ pub struct Report {
     /// 前者转成 `idle` 留在灯上，后者立刻清掉。不带的会话完全按老路走
     /// （到期转 `stale`）。
     ///
-    /// **只认 Unix**（见 `effective_pid`）；Windows 上会被丢掉，行为与没带一样。
+    /// **两个平台都认**（Unix 用 `kill(pid, 0)`，Windows 用 `OpenProcess` +
+    /// `WaitForSingleObject`，见 `proc.rs`）；0 会被丢掉，行为与没带一样。
     pub pid: Option<u32>,
     /// 这条会话来自哪台远程机器（多机中枢，见 `docs/plan-multi-machine.md`）。
     ///
@@ -329,15 +330,15 @@ impl Report {
 /// 没指定 `source` 时的类型。见 [`Report::source_id`]。
 pub const DEFAULT_SOURCE: &str = "agent";
 
-/// 进程号只在 Unix 上认（见 [`Report::pid`]）。
+/// 入库前把进程号收拾干净（见 [`Report::pid`]）。
 ///
-/// 非 Unix 上直接丢掉，而不是存下来又不去探活：那样一个已经死掉的进程号会
-/// 永远有值，`refresh_liveness` 也没法判断，最后只能变成「假空闲」。
+/// 只做两件事：丢掉 0（它不是进程号，见下）和保留正值。**两个平台都认** ——
+/// `proc::alive` 在 Windows 上也有实现（`OpenProcess` + `WaitForSingleObject`），
+/// 所以这里不再需要平台闸。
 fn effective_pid(pid: Option<u32>) -> Option<u32> {
-    // 0 在 `kill(0, …)` 里表示「当前进程组」，不是一个进程号。存下来只会让
-    // 这个会话在下一拍被当成「进程没了」直接清掉 —— 当作没给更诚实。
-    let pid = pid.filter(|pid| *pid > 0);
-    if cfg!(unix) { pid } else { None }
+    // 0 在 `kill(0, …)` 里表示「当前进程组」、在 Windows 上也不是合法 pid。
+    // 存下来只会让这个会话在下一拍被当成「进程没了」直接清掉 —— 当作没给更诚实。
+    pid.filter(|pid| *pid > 0)
 }
 
 /// 没指定组时的组名。

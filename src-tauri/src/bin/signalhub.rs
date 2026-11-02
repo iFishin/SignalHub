@@ -61,8 +61,8 @@ mod diagnose;
 mod hookmap;
 
 use hookmap::{
-    clip, cwd_of, event_name, map_event, session_id, tool_target, tool_verb, Action, Verb,
-    TOOL_NAME_MAX,
+    clip, cwd_of, event_name, in_tool_ttl_ms, map_event, session_id, tool_target, tool_verb,
+    Action, Verb, TOOL_NAME_MAX,
 };
 
 // CLI 自己的文案（中英各一份）。**故意不挂进 `lib.rs` 的模块树**：只有这个二进制
@@ -1049,8 +1049,20 @@ fn hook_body(
     apply_flag_extras(&mut body, flags);
     // 进程号由调用方读好传进来（而不是在这里读环境变量）：这个函数要能单测，
     // 而进程级的环境变量在并行测试里改不得。
-    if let Some(pid) = pid {
-        body["pid"] = json!(pid);
+    match pid {
+        Some(pid) => body["pid"] = json!(pid),
+        // **没有进程号时，唯一能说明「它还在跑」的就是这条事件本身**（issue #23）：
+        // `PreToolUse` 一到就代表「有个工具开始跑了，它跑完之前不会有别的事件」，
+        // 而 `PostToolUse` 要等工具结束才来。一次超过 5 分钟的构建 / 测试期间
+        // 一个事件都没有，默认 TTL 会把灯转成「沉默」—— 哪怕进程正满负荷跑。
+        //
+        // 有进程号的会话**不走这条**：探活在 TTL 到期时续期、进程没了就立刻收，
+        // 那比任何猜测都准，也不需要把「崩了」的绿牌多留半小时。
+        None => {
+            if let Some(ms) = in_tool_ttl_ms(agent, payload) {
+                body["ttl_ms"] = json!(ms);
+            }
+        }
     }
     body
 }
@@ -1908,6 +1920,47 @@ mod tests {
         let plain = json!({"hook_event_name": "Stop", "session_id": "s-1"});
         let body = hook_body(&cli_text::ZH, "done", "s-1", "claude-code", &plain, &flags, None);
         assert!(body.get("message").is_none(), "{body}");
+    }
+
+    /// 没有进程号时，「工具开始」那一帧要自带一段够长的停留时长（issue #23）；
+    /// 有进程号时不带 —— 探活比猜测准。
+    #[test]
+    fn a_tool_start_without_a_pid_carries_a_long_ttl() {
+        let payload = json!({
+            "hook_event_name": "PreToolUse",
+            "session_id": "s-1",
+            "tool_name": "Bash",
+            "tool_input": {"command": "npm run build"},
+        });
+        let flags = Flags::default();
+
+        let body = hook_body(&cli_text::ZH, "working", "s-1", "codex", &payload, &flags, None);
+        assert_eq!(
+            body["ttl_ms"],
+            json!(hookmap::IN_TOOL_TTL_MS),
+            "没有进程号时，长工具调用不该在 5 分钟后转成沉默"
+        );
+        // 服务端得认得这个键（没有 `deny_unknown_fields`，拼错就是静默丢掉）
+        let report: state::Report =
+            serde_json::from_value(body).expect("服务端应能解析 hook 构造的请求体");
+        assert_eq!(report.ttl_ms, Some(hookmap::IN_TOOL_TTL_MS));
+
+        // 有进程号：不带 ttl_ms，走探活那条路
+        let body = hook_body(
+            &cli_text::ZH,
+            "working",
+            "s-1",
+            "codex",
+            &payload,
+            &flags,
+            Some(4242),
+        );
+        assert!(body.get("ttl_ms").is_none(), "{body}");
+
+        // 不是「工具开始」的事件：也不带
+        let stop = json!({"hook_event_name": "Stop", "session_id": "s-1"});
+        let body = hook_body(&cli_text::ZH, "done", "s-1", "codex", &stop, &flags, None);
+        assert!(body.get("ttl_ms").is_none(), "{body}");
     }
 
     /// 不传 `--group` 时这个键**根本不出现**，而不是发一个空串。

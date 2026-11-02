@@ -96,6 +96,12 @@ getrandom = "0.3"
 # 跨平台构建会多一道坎。
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 
+# Windows 的进程探活（`proc::alive`）要 `OpenProcess` + `WaitForSingleObject`。
+# 只在那个平台上编译。版本与 Tauri 依赖树里已经锁定的那份一致（0.61.2），
+# 所以不会多编译一份 crate。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

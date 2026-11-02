@@ -412,7 +412,10 @@ fn apply_hook(ctx: &Ctx, agent: &str, payload: &Value) -> Option<(String, String
                 source: Some("agent".to_string()),
                 cwd: crate::hookmap::cwd_of(payload),
                 message: hook_message(ctx, payload),
-                ttl_ms: None,
+                // HTTP 式接入**永远没有进程号**（它连命令行都没有），所以正是
+                // `in_tool_ttl_ms` 要照顾的那一半：工具一开始跑就给足停留时长，
+                // 免得一次超过 5 分钟的构建把灯转成「沉默」（issue #23）。
+                ttl_ms: crate::hookmap::in_tool_ttl_ms(agent, payload),
                 pid: None,
                 machine: None,
             };

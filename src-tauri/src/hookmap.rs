@@ -113,6 +113,50 @@ pub fn clip(text: &str, max: usize) -> String {
     out
 }
 
+/// 「一次工具调用可能要跑很久」的那一档 TTL（issue #23）。
+///
+/// **要解决的是什么**：`working` 的默认停留时长是 300 秒，而一次
+/// `npm run build` / 跑测试 / 装依赖轻易超过 5 分钟。这期间智能体**一个 hook
+/// 事件都不会发**（`PostToolUse` 要等工具结束才来），于是灯会转成「沉默」——
+/// 哪怕那个进程正在满负荷跑。用户看到的是「几分钟就沉默了」。
+///
+/// **为什么用 TTL 而不是加进程号**：进程号要靠每家的 hook 派生方式（`$PPID` 是不是
+/// 那个长命进程）逐家实测，而这件事 `PreToolUse` 自己就说了 —— 它一到就代表
+/// 「有个工具开始跑了，它跑完之前不会有别的事件」。这条判据对**所有**智能体、
+/// 命令式与 HTTP 式两种接入都成立，不需要任何平台代码。
+///
+/// **30 分钟**：足够盖住一次长构建或一整轮测试，又不至于让一个崩在工具里的会话
+/// 亮一整天。真挂了的代价是绿牌多留一会儿 —— 比谎报「沉默」轻。
+pub const IN_TOOL_TTL_MS: u64 = 30 * 60 * 1000;
+
+/// 这个数不能随手改：它必须明显长于 `working` 的默认 300 秒（否则这条规则
+/// 一点用都没有），又不能长到「崩在工具里之后绿一整天」。写死成编译期断言，
+/// 改错的时候编译不过，而不是等到用户看见一块亮着的绿牌。
+const _: () = assert!(IN_TOOL_TTL_MS >= 15 * 60 * 1000 && IN_TOOL_TTL_MS <= 60 * 60 * 1000);
+
+/// 这一条上报要不要带上 [`IN_TOOL_TTL_MS`]。
+///
+/// **只在「工具开始」那一侧延长，不在 `PostToolUse` 上**：工具刚结束的那一帧之后
+/// 智能体马上会发 `Stop` 或下一个 `PreToolUse`，用默认 TTL 更诚实 —— 真挂了的话
+/// 5 分钟就灰，而不是半小时。
+///
+/// **带进程号的会话也不需要它**（`state::sweep` 的探活比任何猜测都准：活着就续期、
+/// 没了就立刻收），所以调用方只在没有进程号时才用这个值。见
+/// `bin/signalhub.rs` 的 `hook_body` 与 `server.rs` 的 `apply_hook`。
+pub fn in_tool_ttl_ms(agent: &str, payload: &Value) -> Option<u64> {
+    let event = event_name(payload)?;
+    let started = match agent {
+        "claude-code" | "csc" | "codex" | "goose" => event == "PreToolUse",
+        // Gemini 用 BeforeTool / AfterTool
+        "gemini" => event == "BeforeTool",
+        // Cursor 是 camelCase；`beforeShellExecution` 同样意味着一段长命令开始了
+        "cursor" => matches!(event, "preToolUse" | "beforeShellExecution"),
+        // 插件式（opencode / Pi / Hermes）报的是进程内 pid，本来就有探活
+        _ => false,
+    };
+    started.then_some(IN_TOOL_TTL_MS)
+}
+
 pub enum Action {
     Report(&'static str),
     Clear,
@@ -307,6 +351,54 @@ pub fn approval_detail(tool: &str, input: &Value) -> (String, bool) {
     let clipped = clip(text, DETAIL_MAX);
     let truncated = clipped != text;
     (clipped, truncated)
+}
+
+#[cfg(test)]
+mod in_tool_ttl_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// 五家命令式接入的「工具开始」事件名各不相同，但都该拿到那一档长 TTL。
+    #[test]
+    fn every_agents_tool_start_gets_the_long_ttl() {
+        for (agent, event) in [
+            ("claude-code", "PreToolUse"),
+            ("csc", "PreToolUse"),
+            ("codex", "PreToolUse"),
+            ("goose", "PreToolUse"),
+            ("gemini", "BeforeTool"),
+            ("cursor", "preToolUse"),
+            ("cursor", "beforeShellExecution"),
+        ] {
+            assert_eq!(
+                in_tool_ttl_ms(agent, &json!({ "hook_event_name": event })),
+                Some(IN_TOOL_TTL_MS),
+                "{agent} / {event}"
+            );
+        }
+    }
+
+    /// **工具结束不延长**：那时智能体马上会发下一个事件，用默认 TTL 才诚实。
+    #[test]
+    fn a_tool_finishing_does_not_extend_anything() {
+        for (agent, event) in [
+            ("claude-code", "PostToolUse"),
+            ("claude-code", "Stop"),
+            ("codex", "PostToolUse"),
+            ("gemini", "AfterTool"),
+            ("cursor", "postToolUse"),
+        ] {
+            assert_eq!(in_tool_ttl_ms(agent, &json!({ "hook_event_name": event })), None);
+        }
+    }
+
+    /// 插件式接的是进程内 pid，本来就有探活，不该被这条规则覆盖。
+    #[test]
+    fn plugin_style_agents_are_left_alone() {
+        for agent in ["opencode", "pi", "hermes", "some-other-tool"] {
+            assert_eq!(in_tool_ttl_ms(agent, &json!({ "hook_event_name": "PreToolUse" })), None);
+        }
+    }
 }
 
 #[cfg(test)]
