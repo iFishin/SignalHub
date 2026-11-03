@@ -478,6 +478,11 @@ export interface Messages {
   webPanelHint: string;
   /** 面板开着**且**允许局域网访问时的代价（同一 WiFi 下任何设备都能看） */
   webPanelLanWarning: string;
+  /** 「在面板上审批」（A4） */
+  webApprove: string;
+  webApproveHint: string;
+  /** 面板审批开着、但「从灯上审批」本身是关的 */
+  webApproveNeedsTools: string;
 
   quit: string;
 
@@ -1060,9 +1065,13 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     webPanel: "只读 Web 面板",
     webPanelUrl: "面板地址",
     webPanelHint:
-      "打开后可以在手机 / 平板上看灯（状态、每组在做什么、已持续多久），只读 —— 面板上没有能改变任何东西的按钮。改完立刻生效。",
+      "打开后可以在手机 / 平板上看灯（状态、每组在做什么、已持续多久）。默认只读 —— 只有下面那个「在面板上审批」也打开，才会多出允许 / 拒绝两个按钮。改完立刻生效。",
     webPanelLanWarning:
       "注意：局域网访问也开着，所以同一 WiFi 下的任何设备，只要拿到上面那条带 token 的链接，就能看到你的灯。别把链接发到群里，也别在公共 WiFi 上开着。",
+    webApprove: "在面板上审批",
+    webApproveHint:
+      "打开后，等你批准的调用会出现在面板上，可以直接点允许 / 拒绝（拒绝还能选一句理由）。这是明确同意把命令原文和文件路径送到那个页面上 —— 它可能正投在客厅的平板上，或者那条链接被转发过。只在「从灯上审批」也开着时有用。",
+    webApproveNeedsTools: "「从灯上审批」现在是关的，所以这个开关暂时不会做任何事。",
 
     quit: "退出 SignalHub",
 
@@ -1634,9 +1643,13 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     webPanel: "Read-only web panel",
     webPanelUrl: "Panel URL",
     webPanelHint:
-      "Turn this on to watch the lamp from a phone or tablet (the state, what each group is doing, how long it has been that way). Read-only — there is nothing on the panel that can change anything. Takes effect immediately.",
+      "Turn this on to watch the lamp from a phone or tablet (the state, what each group is doing, how long it has been that way). Read-only by default — the allow / deny buttons only appear when \"Approve from the panel\" below is also on. Takes effect immediately.",
     webPanelLanWarning:
       "Note: LAN access is on too, so any device on the same WiFi can see your lamp as long as it has the link above (which carries the token). Don't share that link, and don't leave this on while you're on public WiFi.",
+    webApprove: "Approve from the panel",
+    webApproveHint:
+      "Turn this on and the calls waiting for your approval show up on the panel, with allow / deny buttons (deny can carry a reason). This is an explicit yes to sending the raw command text and file paths to that page — it may be sitting on a tablet in the living room, or that link may have been forwarded. Only does anything while \"Approve from the lamp\" is also on.",
+    webApproveNeedsTools: "\"Approve from the lamp\" is off, so this switch won't do anything yet.",
 
     quit: "Quit SignalHub",
 

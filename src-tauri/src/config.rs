@@ -1140,6 +1140,20 @@ pub struct Settings {
     /// **改完立刻生效**（不像 `lan_access` 要重启）：它只是一个路由的开关，
     /// 读的是这份设置的当前值，不涉及重新绑定。
     pub web_panel: bool,
+    /// **在 Web 面板上审批**（`docs/plan-approval.md` A4）：手机 / 平板点「允许 / 拒绝」。
+    ///
+    /// **默认关，而且它是「从灯上审批」下面的第二道开关**：`approve_tools` 关着时
+    /// 根本没有待审批的东西，这个开关什么都不做。
+    ///
+    /// 它为什么需要单独一个开关（而不是跟着面板一起开）：面板本来是**只读**的，
+    /// 而且它刻意连审批详情都不拉 —— 详情里有命令原文、文件路径。打开这个开关
+    /// 就是**明确同意把那些东西送到这个页面上**，而那个页面可能正被投在客厅的
+    /// 平板上、或者一条转发出去的链接里。
+    ///
+    /// 说清楚它**不是**一道安全边界：拿到 token 的人本来就能直接 curl
+    /// `/v1/approvals`。这道开关管的是「我们自己的页面会不会把详情画出来」，
+    /// 不是「别人能不能拿」。真正的门仍然是 token。
+    pub web_approve: bool,
     /// 其他机器 —— **多机中枢**（见 `docs/plan-multi-machine.md`）。
     ///
     /// 我们是**拉**的一方：每 `machine_poll_ms` 去每台机器的 `GET /v1/state` 取一次
@@ -1399,6 +1413,8 @@ impl Default for Settings {
             // 默认只监听本机。见字段注释：开了之后唯一的防线就是 token
             lan_access: false,
             web_panel: false,
+            // 会改变智能体行为的开关，缺字段必须是关的（同 `approve_tools`）
+            web_approve: false,
             // 多机中枢默认一台都不配 —— 空数组 = 一条请求都不发
             machines: Vec::new(),
             machine_poll_ms: default_machine_poll_ms(),
@@ -2085,6 +2101,8 @@ mod tests {
             // 面板也要设成非默认值 —— 它是这条往返里最容易漏的一个（`GET /` 的
             // 那个开关只在服务端读，前端不碰）
             web_panel: true,
+            // 面板审批同理：它只被 `panel.rs` 读，前端设置页改的是同一份 JSON
+            web_approve: true,
             // 物理灯同理：列表为空时「漏了 devices 字段」这种错看不出来
             devices: vec![Device { host: "192.168.1.50".into() }],
             // 多机同理 —— 而且它比 devices 更容易漏（两个新字段，其中一个还是标量）
@@ -2284,6 +2302,10 @@ mod tests {
         assert!(!settings.quiet);
         assert!(settings.notify, "缺的字段退回该字段的默认值");
         assert!(!settings.approve_tools, "会改智能体行为的开关，缺字段必须是关的");
+        assert!(
+            !settings.web_approve,
+            "会让审批详情进浏览器页面的开关，缺字段必须是关的"
+        );
         assert!(!settings.collect_backup, "读系统状态的采集器，缺字段必须是关的");
         assert!(!settings.rule_stuck_push, "会改变打扰时机的预设，缺字段必须是关的");
         assert!(!settings.rule_busy_silence, "会改变打扰时机的预设，缺字段必须是关的");

@@ -30,6 +30,9 @@ pub fn page(settings: &Settings, lang: Lang) -> String {
         "labels": labels(lang),
         "groups": group_labels(settings),
         "refresh_ms": REFRESH_MS,
+        // 面板审批（A4）。**关着时页面连 `/v1/approvals` 都不会去拉** ——
+        // 详情里有命令原文和文件路径，而「只读面板」这个承诺得靠这里守住。
+        "approve": settings.web_approve,
     });
 
     // **`<` 必须转义掉。** 颜色和组名是用户可写的字符串（`config.json` 能手改），
@@ -139,6 +142,18 @@ mod tests {
         let html = page(&settings, Lang::Zh);
         assert!(!html.contains("</script><script>alert"), "数据逃出了 script 标签");
         assert!(html.contains("\\u003c/script"), "该转义成 \\u003c");
+    }
+
+    /// 面板审批（A4）默认关 —— 关着时页面里那段 JS **连 `/v1/approvals` 都不拉**，
+    /// 详情（命令原文 / 文件路径）根本不出服务端。
+    #[test]
+    fn the_approve_flag_is_off_unless_asked_for() {
+        assert!(page(&Settings::default(), Lang::Zh).contains("\"approve\":false"));
+        let on = Settings {
+            web_approve: true,
+            ..Settings::default()
+        };
+        assert!(page(&on, Lang::Zh).contains("\"approve\":true"));
     }
 
     /// 语言跟着应用走：中文那套词是系统通知里的原话。

@@ -83,6 +83,52 @@
 
   .empty { text-align: center; color: var(--dim); margin-top: 30px; }
 
+  /* ---- 审批（A4）：只在 CONFIG.approve 为真时出现 ---- */
+  .approvals { margin-top: 26px; display: flex; flex-direction: column; gap: 10px; }
+  .approvals[hidden] { display: none; }
+  .approvals-title { font-size: 12px; color: var(--dim); letter-spacing: .04em; }
+
+  .appr { border-left: 3px solid transparent; }
+  .appr[data-danger="1"] { border-left-color: #d0342c; }
+  .appr-danger {
+    margin-top: 8px; font-size: 13px; color: #ff9a9a;
+    border-left: 2px solid #d0342c; padding-left: 8px;
+  }
+  .appr-detail {
+    margin: 8px 0 0; max-height: 132px; overflow: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px; line-height: 1.45; color: #d7d7df;
+    white-space: pre-wrap; word-break: break-all;
+  }
+  .appr-warn { margin-top: 8px; font-size: 12px; color: #e8b84b; }
+
+  .appr-actions { display: flex; gap: 8px; margin-top: 10px; }
+  .appr-actions button {
+    flex: 1; position: relative; overflow: hidden;
+    font: inherit; font-size: 14px; padding: 9px 10px;
+    border-radius: 9px; border: 1px solid var(--line);
+    background: #1e242e; color: var(--fg); cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .appr-actions button:active { background: #262e3a; }
+  .appr-actions .primary { border-color: #2e6b45; background: #16301f; }
+  /* 「按住确认」：危险的那条允许按钮要按满 800ms 才生效（和灯上一致） */
+  .appr-actions .hold .fill {
+    position: absolute; inset: 0; width: calc(var(--hold, 0) * 100%);
+    background: rgba(255, 255, 255, .16); pointer-events: none;
+  }
+  .appr-actions .hold .lbl { position: relative; }
+  .appr-actions .narrow { flex: 0 0 42px; color: var(--dim); }
+
+  .appr-reasons { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .appr-reasons[hidden] { display: none; }
+  .appr-reasons button {
+    font: inherit; font-size: 12px; padding: 6px 10px;
+    border-radius: 999px; border: 1px solid var(--line);
+    background: #1a1f28; color: #c3c9d4; cursor: pointer;
+  }
+  .appr-done { margin-top: 8px; font-size: 12px; color: var(--dim); }
+
   /* 没拿到数据时只留提示：灯和状态行藏起来 —— 挂着一个是空的「…」比不显示更差 */
   body[data-mode="hint"] .lamp,
   body[data-mode="hint"] .state,
@@ -117,6 +163,8 @@
   <section class="groups" id="groups"></section>
   <p class="empty" id="empty" hidden></p>
 
+  <section class="approvals" id="approvals" hidden></section>
+
   <div class="hint" id="hint" hidden></div>
 
   <footer id="foot"></footer>
@@ -138,6 +186,7 @@ const CONFIG = __CONFIG__;
 const WORDS = {
   zh: {
     readonly: "只读",
+    approvable: "可审批",
     since: "已持续",
     sessions: "个会话",
     unreachable: "连不上服务",
@@ -148,9 +197,34 @@ const WORDS = {
     howTo: "在地址后面加上 ?t=&lt;token&gt;，或者从 设置 → 接入 → 只读 Web 面板 里复制完整链接。",
     refresh: "每 1 秒刷新",
     clock: "「已持续」按你这台设备的时钟算",
+    // ---- 审批（A4）----
+    // 这几个词和灯窗里的那份（`src/lib/i18n.ts`）说的是同一句话。**故意各存一份**：
+    // 这个页面是不经构建、直接嵌进二进制的静态模板，让它去读前端那套 i18n 就得
+    // 引入一个构建步骤 —— 为一屏字不值得。
+    waiting: "等你批准",
+    allow: "允许",
+    deny: "拒绝",
+    hold: "按住 0.8 秒确认",
+    tooLong: "这条在面板上看不全，只能拒绝 —— 要放行请回电脑上看",
+    reasonUnsafe: "太危险",
+    reasonSafer: "换个更安全的做法",
+    reasonExplain: "先解释再试",
+    reason: "给个理由",
+    // 认不出来的键就不画横幅：**不画比画一条错的强**（和灯上同一条规矩）
+    danger: {
+      delete: "这条会删文件",
+      "force-push": "这条会改写远端历史",
+      rewrite: "这条会丢掉本地改动",
+      sql: "这条会删表 / 删库",
+      "pipe-shell": "这条会下载并直接执行脚本",
+      disk: "这条会直接写磁盘",
+      privilege: "这条会提权",
+      permissions: "这条会把权限放开",
+    },
   },
   en: {
     readonly: "read-only",
+    approvable: "can approve",
     since: "for",
     sessions: "sessions",
     unreachable: "cannot reach the service",
@@ -160,6 +234,25 @@ const WORDS = {
     howTo: "Append ?t=&lt;token&gt; to the URL, or copy the full link from Settings → Connect → Read-only web panel.",
     refresh: "refreshes every 1s",
     clock: "\"for\" is measured with this device's clock",
+    waiting: "waiting for you",
+    allow: "Allow",
+    deny: "Deny",
+    hold: "Hold 0.8s to confirm",
+    tooLong: "This one doesn't fit here — you can only deny it. Go back to the computer to allow it.",
+    reasonUnsafe: "Too dangerous",
+    reasonSafer: "Do it more safely",
+    reasonExplain: "Explain first",
+    reason: "Add a reason",
+    danger: {
+      delete: "This deletes files",
+      "force-push": "This rewrites remote history",
+      rewrite: "This discards local changes",
+      sql: "This drops tables / databases",
+      "pipe-shell": "This downloads and runs a script",
+      disk: "This writes to a disk directly",
+      privilege: "This escalates privileges",
+      permissions: "This opens up permissions",
+    },
   },
 };
 
@@ -176,7 +269,7 @@ const linkEl = document.getElementById("link");
 const badgeEl = document.getElementById("badge");
 const footEl = document.getElementById("foot");
 
-badgeEl.textContent = w.readonly;
+badgeEl.textContent = CONFIG.approve ? w.approvable : w.readonly;
 footEl.textContent = "SignalHub " + CONFIG.version + " · " + w.refresh;
 
 const color = (state) => CONFIG.colors[state] || "#8b929e";
@@ -262,6 +355,220 @@ function render(snap) {
   emptyEl.textContent = label("offline");
 }
 
+// ---- 审批（A4）------------------------------------------------------------
+//
+// **只在 CONFIG.approve 为真时才存在。** 关着的时候这个页面连 `/v1/approvals`
+// 都不会去拉 —— 那些详情是命令原文和文件路径，而「只读面板」这个承诺就是靠
+// 这里守住的（见 `docs/plan-approval.md` A4）。
+//
+// 和灯窗那边刻意不一样的一处：**没有自定义理由**。手机上打字本来就难受，而
+// 拒绝的理由是给模型看的、要短要准，三个预设已经覆盖了绝大多数情况。
+
+const approvalsEl = document.getElementById("approvals");
+const HOLD_MS = 800;
+const REASONS = ["unsafe", "safer", "explain"];
+
+// 每一条的开始时刻：`age_ms` 是服务端**拉列表那一刻**算的快照，之后不会自己变，
+// 而这一行的用处就是「还要等多久」。和灯窗那边同一套算法。
+let startedAt = new Map();
+let approvalsSig = "";
+
+function reasonText(key) {
+  return { unsafe: w.reasonUnsafe, safer: w.reasonSafer, explain: w.reasonExplain }[key];
+}
+
+async function decide(id, decision, reason) {
+  const body = reason ? { decision, reason } : { decision };
+  try {
+    await fetch("/v1/approvals/" + encodeURIComponent(id), {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + token,
+        "Content-Type": "application/json",
+        // 记进审计：这一下是从浏览器点的。**同源请求不会触发预检**，所以这个
+        // 自定义头不会把请求变成 OPTIONS（跨源才会）。
+        "x-signalhub-source": "web",
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    /* 网络抖一下：下一轮轮询会把这条重新画出来，用户再点一次就行 */
+  }
+  pollApprovals();
+}
+
+// 危险的那条：按满 800ms 才生效（和灯上一致）。
+function holdButton(label, onConfirm) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "hold primary";
+  const fill = document.createElement("span");
+  fill.className = "fill";
+  const text = document.createElement("span");
+  text.className = "lbl";
+  text.textContent = label;
+  btn.append(fill, text);
+
+  let start = 0;
+  let raf = 0;
+  const stop = () => {
+    cancelAnimationFrame(raf);
+    btn.style.setProperty("--hold", 0);
+  };
+  const tick = () => {
+    const p = Math.min(1, (performance.now() - start) / HOLD_MS);
+    btn.style.setProperty("--hold", p);
+    if (p >= 1) {
+      stop();
+      onConfirm();
+      return;
+    }
+    raf = requestAnimationFrame(tick);
+  };
+
+  btn.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    start = performance.now();
+    raf = requestAnimationFrame(tick);
+  });
+  btn.addEventListener("pointerup", stop);
+  btn.addEventListener("pointerleave", stop);
+  btn.addEventListener("pointercancel", stop);
+  // 键盘也要能确认（按住空格），否则这一条在只有键盘的设备上点不动
+  btn.addEventListener("keydown", (e) => {
+    if ((e.key === " " || e.key === "Enter") && !e.repeat) {
+      e.preventDefault();
+      start = performance.now();
+      raf = requestAnimationFrame(tick);
+    }
+  });
+  btn.addEventListener("keyup", stop);
+  btn.setAttribute("aria-label", label + " · " + w.hold);
+  btn.title = w.hold;
+  return btn;
+}
+
+function plainButton(label, cls, onClick) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  if (cls) btn.className = cls;
+  btn.textContent = label;
+  btn.addEventListener("click", onClick);
+  return btn;
+}
+
+function approvalCard(a) {
+  const el = document.createElement("article");
+  el.className = "card appr";
+  el.dataset.id = a.id;
+  const danger = a.danger ? w.danger[a.danger] : null;
+  if (danger) el.dataset.danger = "1";
+
+  const head = document.createElement("div");
+  head.className = "card-head";
+  const chip = document.createElement("span");
+  chip.className = "chip";
+  chip.style.background = "#8b929e";
+  chip.textContent = a.tool || "?";
+  const name = document.createElement("span");
+  name.className = "name";
+  name.textContent = a.session || "";
+  const age = document.createElement("span");
+  age.className = "appr-age age";
+  age.textContent = w.waiting + " " + (ageText(startedAt.get(a.id)) || "");
+  head.append(chip, name, age);
+  el.append(head);
+
+  if (danger) {
+    const banner = document.createElement("div");
+    banner.className = "appr-danger";
+    banner.textContent = danger;
+    el.append(banner);
+  }
+
+  const detail = document.createElement("pre");
+  detail.className = "appr-detail";
+  detail.textContent = a.detail || "";
+  el.append(detail);
+
+  // 看不全就不给放行 —— 规则在服务端挡着（`Registry::decide`），这里只是不给它
+  // 一个点了没反应的地方。
+  if (a.allowable === false) {
+    const warn = document.createElement("div");
+    warn.className = "appr-warn";
+    warn.textContent = w.tooLong;
+    el.append(warn);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "appr-actions";
+  if (a.allowable !== false) {
+    actions.append(
+      danger
+        ? holdButton(w.allow, () => decide(a.id, "allow"))
+        : plainButton(w.allow, "primary", () => decide(a.id, "allow")),
+    );
+  }
+  actions.append(plainButton(w.deny, "", () => decide(a.id, "deny")));
+
+  const reasons = document.createElement("div");
+  reasons.className = "appr-reasons";
+  reasons.hidden = true;
+  for (const key of REASONS) {
+    reasons.append(plainButton(reasonText(key), "", () => decide(a.id, "deny", key)));
+  }
+  const toggle = plainButton("▾", "narrow", () => {
+    reasons.hidden = !reasons.hidden;
+  });
+  toggle.title = w.reason;
+  toggle.setAttribute("aria-label", w.reason);
+  actions.append(toggle);
+  el.append(actions, reasons);
+  return el;
+}
+
+function rebuildApprovals(list) {
+  approvalsEl.replaceChildren();
+  const title = document.createElement("div");
+  title.className = "approvals-title";
+  title.textContent = w.waiting + " · " + list.length;
+  approvalsEl.append(title);
+  for (const a of list) approvalsEl.append(approvalCard(a));
+}
+
+function renderApprovals(list) {
+  const sig = list.map((a) => a.id).join("|");
+  if (sig !== approvalsSig) {
+    approvalsSig = sig;
+    startedAt = new Map(list.map((a) => [a.id, Date.now() - (a.age_ms || 0)]));
+    rebuildApprovals(list);
+  } else {
+    // 结构没变就**别重建 DOM** —— 用户可能正按着那个「按住确认」的按钮，
+    // 或者刚展开理由。只把「等了多久」往前推。
+    for (const el of approvalsEl.querySelectorAll(".appr")) {
+      const age = el.querySelector(".appr-age");
+      const since = startedAt.get(el.dataset.id);
+      if (age && since) age.textContent = w.waiting + " " + (ageText(since) || "");
+    }
+  }
+  approvalsEl.hidden = list.length === 0;
+}
+
+async function pollApprovals() {
+  if (!CONFIG.approve) return;
+  try {
+    const res = await fetch("/v1/approvals", {
+      headers: { Authorization: "Bearer " + token },
+      cache: "no-store",
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    renderApprovals(data.approvals || []);
+  } catch (err) {
+    /* 连不上就维持现状：下一轮再说 */
+  }
+}
+
 function showHint(headline, body) {
   document.body.dataset.mode = "hint";
   hintEl.hidden = false;
@@ -304,6 +611,9 @@ async function poll() {
     hintEl.hidden = true;
     delete document.body.dataset.mode;
     render(await res.json());
+    // **串行地等**：这两次都是本地几 KB 的请求，串起来一秒钟绰绰有余，
+    // 而并发的话「审批还没回来、状态先画出来」会出现半秒的错位。
+    await pollApprovals();
   } catch (err) {
     failures += 1;
     // 抖一下就报错太吵：连着两次拉不到才说（应用可能正好在重启）

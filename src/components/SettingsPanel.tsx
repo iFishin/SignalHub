@@ -2908,6 +2908,25 @@ export function SettingsPanel({ snapshot }: Props) {
               {settings.web_panel && settings.lan_access && (
                 <p className="hint">{m.webPanelLanWarning}</p>
               )}
+
+              {/* 面板审批（A4）。**挂在面板下面**：没有面板就没有地方点。
+                  单独一个开关而不是跟着面板一起开 —— 它把命令原文送到浏览器
+                  里去了，那是一个该被单独问一次的代价。 */}
+              {settings.web_panel && (
+                <>
+                  <div className="row">
+                    <span>{m.webApprove}</span>
+                    <Switch
+                      on={settings.web_approve}
+                      onChange={(on) => patch({ web_approve: on })}
+                    />
+                  </div>
+                  <p className="hint">{m.webApproveHint}</p>
+                  {settings.web_approve && !settings.approve_tools && (
+                    <p className="hint">{m.webApproveNeedsTools}</p>
+                  )}
+                </>
+              )}
             </div>
 
             {/* ---- 通知转发入口 ----

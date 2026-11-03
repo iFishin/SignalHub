@@ -259,10 +259,25 @@ async fn require_auth(
     request: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    // 浏览器发起的请求一定带 Origin，直接拒绝。这挡住的是「你正在浏览的某个
-    // 网页偷偷 POST 到你本地端口」——本地 HTTP 服务最现实的攻击面。
-    if request.headers().contains_key(header::ORIGIN) {
-        return Err(ApiError::unauthorized("拒绝携带 Origin 的请求"));
+    // 浏览器发起的请求**一定**带 `Origin`，而那条头是浏览器自己写的、页面改不了。
+    // 于是它正好用来区分两件事：
+    //
+    // - **跨源** → 拒绝。这挡住的是「你正在浏览的某个网页偷偷 POST 到你本地端口」，
+    //   本地 HTTP 服务最现实的攻击面。
+    // - **同源** → 放行。那是我们自己的只读面板 / 手机审批页 —— 它带着 token 来，
+    //   本来就是我们请来的客人。以前这里是一律拒绝，代价是手机审批连按钮都点不动
+    //   （浏览器同源 POST 也带 `Origin`，见 `docs/plan-approval.md` A4 的前置）。
+    //
+    // 放开同源**不等于**放开鉴权：token 那一关照旧，下面就是。
+    if let Some(origin) = request.headers().get(header::ORIGIN) {
+        let host = request
+            .headers()
+            .get(header::HOST)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        if !same_origin(origin.to_str().unwrap_or_default(), host) {
+            return Err(ApiError::unauthorized("拒绝跨源请求"));
+        }
     }
 
     let presented = request
@@ -275,6 +290,34 @@ async fn require_auth(
         Some(token) if token_matches(token, &ctx.token) => Ok(next.run(request).await),
         _ => Err(ApiError::unauthorized("缺少或错误的 Bearer token")),
     }
+}
+
+/// `Origin` 和 `Host` 是不是同一个站。
+///
+/// 只比**主机 + 端口**，不比协议：这一关回答的是「请求从哪个站来」，而一个
+/// 跨站页面没有任何办法把自己的 `Origin` 写成我们的 `Host`。协议那一段不参与
+/// 比较，是因为本地服务永远是 http，而把「https 也算不同站」写进来只会让将来
+/// 反代 / 隧道的场景莫名其妙地失效。
+///
+/// 三种必须挡住的东西：
+/// - `Origin: null`（沙箱 iframe、`file://`）—— 没有 `://`，直接假。
+/// - 端口对不上（`http://127.0.0.1:9999` 打 `127.0.0.1:8080`）。
+/// - 主机名对不上（`http://evil.example`）。
+fn same_origin(origin: &str, host: &str) -> bool {
+    let Some((scheme, authority)) = origin.split_once("://") else {
+        return false;
+    };
+    if !matches!(scheme, "http" | "https") || host.is_empty() {
+        return false;
+    }
+    let authority = authority.trim_end_matches('/');
+    if authority.eq_ignore_ascii_case(host) {
+        return true;
+    }
+    // 默认端口：`Origin` 会省略它，而 `Host` 不会（或者反过来）。
+    let default_port = if scheme == "https" { "443" } else { "80" };
+    authority.eq_ignore_ascii_case(&format!("{host}:{default_port}"))
+        || format!("{authority}:{default_port}").eq_ignore_ascii_case(host)
 }
 
 /// 定长比较，不短路。长度不同直接返回 false——长度不是秘密。
@@ -1136,7 +1179,7 @@ mod tests {
 
         // 整条响应都要看：**Content-Type 不对的话浏览器会把这页当纯文本显示**
         // （也就是把源码摊给用户看），所以它和正文一样是这条用例的一部分。
-        let raw = call_raw(server.port, "GET", "/", None, false, None).await;
+        let raw = call_raw(server.port, "GET", "/", None, None, None).await;
         assert!(raw.starts_with("HTTP/1.1 200"), "{}", &raw[..60.min(raw.len())]);
         assert!(raw.to_lowercase().contains("content-type: text/html"), "要声明成 HTML");
         let body = raw.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default();
@@ -1285,24 +1328,31 @@ mod tests {
 
     /// 手写一个 HTTP/1.1 请求，就为了几个测试引入一个 HTTP 客户端依赖不划算。
     /// 返回**整条响应**（含响应头）—— 需要看 `Content-Type` 时用它。
+    ///
+    /// `origin` 传的是**那条头的原文**：`Some("http://evil.example")` 是跨源，
+    /// `Some(&format!("http://127.0.0.1:{port}"))` 是同源（手机审批页就是这种），
+    /// `None` 是「不是浏览器」（hook 客户端、curl）。
     async fn call_raw(
         port: u16,
         method: &str,
         path: &str,
         token: Option<&str>,
-        origin: bool,
+        origin: Option<&str>,
         body: Option<&str>,
     ) -> String {
         let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
             .await
             .unwrap();
 
-        let mut request = format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n");
+        // `Host` 带端口 —— 浏览器就是这么发的，而同源判断要拿它跟 `Origin` 比。
+        let mut request = format!(
+            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n"
+        );
         if let Some(token) = token {
             request.push_str(&format!("Authorization: Bearer {token}\r\n"));
         }
-        if origin {
-            request.push_str("Origin: http://evil.example\r\n");
+        if let Some(origin) = origin {
+            request.push_str(&format!("Origin: {origin}\r\n"));
         }
         if let Some(body) = body {
             request.push_str("Content-Type: application/json\r\n");
@@ -1334,12 +1384,27 @@ mod tests {
     }
 
     /// [`call_raw`] 的常用视图：状态码 + 正文。
+    ///
+    /// `origin` 还是个布尔：`true` 就是那个**跨源**的经典攻击形状
+    /// （`http://evil.example`）。要测同源得用 [`call_from`]。
     async fn call(
         server: &TestServer,
         method: &str,
         path: &str,
         token: Option<&str>,
         origin: bool,
+        body: Option<&str>,
+    ) -> (u16, String) {
+        call_from(server, method, path, token, origin.then_some("http://evil.example"), body).await
+    }
+
+    /// 带**具体** `Origin` 的那一版 —— 同源 / 跨源都能造。
+    async fn call_from(
+        server: &TestServer,
+        method: &str,
+        path: &str,
+        token: Option<&str>,
+        origin: Option<&str>,
         body: Option<&str>,
     ) -> (u16, String) {
         split_response(&call_raw(server.port, method, path, token, origin, body).await)
@@ -1354,7 +1419,7 @@ mod tests {
         token: Option<&str>,
         body: Option<&str>,
     ) -> (u16, String) {
-        split_response(&call_raw(port, method, path, token, false, body).await)
+        split_response(&call_raw(port, method, path, token, None, body).await)
     }
 
     async fn post_state(server: &TestServer, body: &str) -> (u16, String) {
@@ -1367,6 +1432,64 @@ mod tests {
         assert!(!token_matches("abc", "abd"));
         assert!(!token_matches("abc", "abcd"));
         assert!(!token_matches("", "abc"));
+    }
+
+    /// 同源判断：这一关的输入是两条**别人能随便写**的头，所以它必须只认
+    /// 「主机 + 端口逐字相等」，任何含糊都当跨源。
+    #[test]
+    fn same_origin_only_matches_the_exact_host_and_port() {
+        // 同源
+        assert!(same_origin("http://127.0.0.1:8080", "127.0.0.1:8080"));
+        assert!(same_origin("http://localhost:8080", "localhost:8080"));
+        assert!(same_origin("http://[::1]:8080", "[::1]:8080"));
+
+        // 端口对不上 —— 隔壁进程不能借我们的 Origin
+        assert!(!same_origin("http://127.0.0.1:9999", "127.0.0.1:8080"));
+        // 主机名对不上
+        assert!(!same_origin("http://evil.example", "127.0.0.1:8080"));
+        // 沙箱 iframe / file:// —— 没有 scheme，一律假
+        assert!(!same_origin("null", "127.0.0.1:8080"));
+        assert!(!same_origin("", "127.0.0.1:8080"));
+        // 认不出的 scheme（`chrome-extension://`、`file://`）
+        assert!(!same_origin("file://127.0.0.1:8080", "127.0.0.1:8080"));
+    }
+
+    /// 默认端口那一格：`Origin` 会省略它，`Host` 不会（或者反过来）。
+    #[test]
+    fn same_origin_understands_the_default_port() {
+        assert!(same_origin("http://127.0.0.1", "127.0.0.1:80"));
+        assert!(same_origin("http://127.0.0.1:80", "127.0.0.1"));
+        assert!(same_origin("https://127.0.0.1", "127.0.0.1:443"));
+        // 但 80 不是 443
+        assert!(!same_origin("https://127.0.0.1", "127.0.0.1:80"));
+    }
+
+    /// 同源**放行**、跨源**拒绝** —— 这条和 token 那道关是两件事。
+    ///
+    /// 手机审批（A4）就卡在这里：浏览器同源 POST 也带 `Origin`，一律拒绝的话
+    /// 面板上的按钮点不动。
+    #[tokio::test]
+    async fn a_same_origin_post_is_allowed_but_a_cross_origin_one_is_not() {
+        let server = start().await;
+        let body = json!({ "state": "working", "session": "same-origin-probe" }).to_string();
+        let ours = format!("http://127.0.0.1:{}", server.port);
+
+        // 同源 + token → 过（这就是面板 / 手机上那个按钮的形状）
+        let (status, _) = call_from(&server, "POST", "/v1/state", Some(&server.token), Some(&ours), Some(&body)).await;
+        assert_eq!(status, 200, "同源带 token 的 POST 要能过");
+
+        // 同源但**没有** token → 401。放开同源不等于放开鉴权。
+        let (status, _) = call_from(&server, "POST", "/v1/state", None, Some(&ours), Some(&body)).await;
+        assert_eq!(status, 401, "同源也要 token");
+
+        // 跨源 + token → 401。网页借你的浏览器打本地端口，这条路封死。
+        let (status, _) = call_from(&server, "POST", "/v1/state", Some(&server.token), Some("http://evil.example"), Some(&body)).await;
+        assert_eq!(status, 401, "跨源必须拒");
+
+        // 同源但端口差一个 → 也算跨源
+        let neighbour = format!("http://127.0.0.1:{}", server.port + 1);
+        let (status, _) = call_from(&server, "POST", "/v1/state", Some(&server.token), Some(&neighbour), Some(&body)).await;
+        assert_eq!(status, 401, "隔壁端口的 Origin 必须拒");
     }
 
     #[tokio::test]

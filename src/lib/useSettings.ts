@@ -340,6 +340,14 @@ export interface Settings {
   /** 只读 Web 面板（`GET /`）：手机 / 平板上打开一个链接就能看灯。**默认关。** */
   web_panel: boolean;
   /**
+   * 在 Web 面板上审批（`docs/plan-approval.md` A4）。**默认关。**
+   *
+   * `approve_tools` 关着时它什么都不做。单独一个开关的理由：面板本来连审批详情
+   * 都不拉，打开它就是**明确同意把命令原文 / 文件路径送到那个页面上**。
+   * 它不是安全边界 —— 拿到 token 的人本来就能直接 curl。
+   */
+  web_approve: boolean;
+  /**
    * 其他机器 —— **多机中枢**。默认空数组 = 一条请求都不发。
    *
    * 我们是**拉**的一方（见 `Machine`）：轮询器把对端的会话按命名空间喂进本机同一个
@@ -395,6 +403,7 @@ export const DEFAULTS: Settings = {
   group_by: "none",
   lan_access: false,
   web_panel: false,
+  web_approve: false,
   machines: [],
   machine_poll_ms: 2000,
 };
