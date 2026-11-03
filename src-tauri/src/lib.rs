@@ -358,11 +358,11 @@ pub(crate) fn persist_settings(
 ) -> Result<Settings, String> {
     let settings = settings.clamped();
 
-    // 切「灯的数量」是**唯一**会同步建 / 关最多 `lamps::MAX_LAMPS` 个 webview 的
-    // 操作，它出过「整机卡住」的报告（issue #4 那次是抱着 lamps 锁建窗）。而从
-    // Dock 启动的 .app 没有 stderr，「卡住了」这件事事后完全查不到 —— 于是切换
-    // 前后各记一行到 `hooks.log`：**有头无尾就是卡在中间**，当时有几盏灯也一并
-    // 记下来。只在布局真的变了时才写，别的设置改动不会往里灌东西。
+    // 切「灯的数量」是**唯一**会建 / 关最多 `lamps::MAX_LAMPS` 个 webview 的操作，
+    // 它出过两次「整机卡住」的报告（issue #4 是抱着 lamps 锁建窗；Windows 上那次
+    // 是嵌套消息泵，见 [`lamp_worker`]）。而从 Dock 启动的 .app 没有 stderr，
+    // 「卡住了」这件事事后完全查不到 —— 于是切换前后各记一行到 `hooks.log`：
+    // **有头无尾就是卡在中间**。只在布局真的变了时才写，别的设置改动不会往里灌。
     let switching = {
         let previous = current_settings(app);
         if previous.lamp_layout == settings.lamp_layout {
@@ -391,16 +391,14 @@ pub(crate) fn persist_settings(
     }
     apply_settings(app, &settings, &snapshot);
     if let Some((before, started)) = switching {
+        // 只记**同步这一半**的耗时：建窗已经挪到后台线程了（见 [`lamp_worker`]），
+        // 它自己的耗时由 `run_lamp_plan` 另记一行。两行合起来才是完整的一次切换。
         config::append_hook_log(&format!(
-            "{} [lamp] 布局切换完成 {:?} → {:?}（{} ms，现有灯窗 {}）\n",
+            "{} [lamp] 布局切换完成 {:?} → {:?}（{} ms）\n",
             config::utc_hms(),
             before,
             settings.lamp_layout,
             started.elapsed().as_millis(),
-            app.webview_windows()
-                .keys()
-                .filter(|label| label.starts_with(lamps::LABEL_PREFIX))
-                .count(),
         ));
     }
     let _ = app.emit(SETTINGS_EVENT, &settings);
@@ -1836,17 +1834,78 @@ fn lamp_specs(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapshot) 
 /// `WebviewWindowBuilder::build()`，从非主线程发起时会阻塞等主事件循环；而主线程上
 /// 的 `set_peek` / `set_settings` 也要调进这里抢同一把锁 —— 抱着锁建窗，两边就是
 /// 互等（issue #4）。所以固定三步：锁内 `plan` → 锁外动窗口 → 锁内 `commit`。
+///
+/// **建 / 关还要再离开调用方的栈**（见 [`lamp_worker`]）：在 Windows 上就地建窗会
+/// 整机冻住，而在 macOS 上完全看不出来。
 fn sync_lamps(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapshot) {
-    use lamps::LampHost;
-
     let specs = lamp_specs(app, settings, snapshot);
     let handle = app.state::<SharedLamps>();
 
-    let plan = {
+    // 只有改尺寸就够时**就地做**：那是热路径（折叠态悬停临时展开），晚一帧就能
+    // 看见窗口跟不上鼠标。
+    let resize_only = {
         let mut lamps = handle.lock().expect("lamps poisoned");
-        lamps.plan(&specs)
+        let plan = lamps.plan(&specs);
+        if plan.open.is_empty() && plan.close.is_empty() {
+            Some(plan.resize)
+        } else {
+            // **在锁里投递**：这样队列顺序就是计划算出来的顺序。`send` 是不阻塞的
+            // （无界通道），所以抱着锁投递没问题。乱序的代价见 [`lamp_worker`]。
+            let _ = lamp_worker().send((app.clone(), plan));
+            None
+        }
     };
 
+    if let Some(resize) = resize_only {
+        use lamps::LampHost;
+
+        let host = lamps::TauriHost(app);
+        for (label, size) in &resize {
+            host.resize(label, *size);
+        }
+    }
+}
+
+/// 建 / 关灯窗交给一条专门的线程，**按计划算出来的顺序**执行。
+///
+/// 为什么不能就地建窗：`WebviewWindowBuilder::build()` 在 Windows 上会走
+/// `webview2_com::wait_with_pump` —— 那是一个**嵌套的 Windows 消息泵**。而 Windows
+/// 上的 IPC（`set_settings` 就是从那儿来的）本身跑在 WebView2 的消息回调里，于是我们
+/// 在它的回调内部又泵起一层消息循环去等它自己：回调不返回，它就不返回；它不返回，
+/// 回调就不返回。**点一下「每组分灯」就整机冻住，而且和几盏灯无关 —— 建第一盏时
+/// 就已经卡死了。**（用户报的就是这个：Windows、只能强制退出、一个组多个组都一样。）
+///
+/// macOS 上恰好不会：那里的 IPC 不在主线程，`build()` 走的是「投递给事件循环 +
+/// 阻塞等回执」，事件循环是空闲的，所以这条 bug 只在 Windows 上现形。
+///
+/// 关窗（`destroy`）和改尺寸（`set_size`）都是直接投递、不等回执的，本来安全；
+/// 但**关也必须排在同一条队列里**：乐观记账让「切过去」和「切回来」两份计划可以紧挨
+/// 着算出来，乱序执行会留下一个谁也不认的孤儿灯窗（关的时候窗还没建出来，
+/// 建完就没人记得它了）。
+fn lamp_worker() -> &'static std::sync::mpsc::Sender<(tauri::AppHandle, lamps::Plan)> {
+    use std::sync::{mpsc, OnceLock};
+
+    static QUEUE: OnceLock<mpsc::Sender<(tauri::AppHandle, lamps::Plan)>> = OnceLock::new();
+
+    QUEUE.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<(tauri::AppHandle, lamps::Plan)>();
+        std::thread::spawn(move || {
+            // 通道一直活到进程结束（`QUEUE` 是静态的），所以这里不会提前退出
+            for (app, plan) in rx {
+                run_lamp_plan(&app, &plan);
+            }
+        });
+        tx
+    })
+}
+
+/// 真正动窗口的那一段：关 → 改尺寸 → 建 → 记账。
+///
+/// 跑在 [`lamp_worker`] 的线程上，**不是** IPC / 事件循环那条线程。
+fn run_lamp_plan(app: &tauri::AppHandle, plan: &lamps::Plan) {
+    use lamps::LampHost;
+
+    let started = std::time::Instant::now();
     let host = lamps::TauriHost(app);
     let closed: Vec<(String, Option<(i32, i32)>)> = plan
         .close
@@ -1864,13 +1923,27 @@ fn sync_lamps(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapshot) 
         .collect();
 
     // 记账 + 取快照都在这一小段里；落盘放到锁外。
+    let state = app.state::<SharedLamps>();
     let (dirty, positions) = {
-        let mut lamps = handle.lock().expect("lamps poisoned");
+        let mut lamps = state.lock().expect("lamps poisoned");
         let dirty = lamps.commit(&closed, &failed);
         (dirty, lamps.positions_snapshot())
     };
     if dirty {
         lamps::save_positions(&positions);
+    }
+
+    // 只在**真建了窗**的时候记一行：这是唯一会创建 webview 的操作，也是最慢、
+    // 最出过事的一步（Windows 上它曾经把整机冻住，见 [`lamp_worker`]）。关灯窗
+    // 和改尺寸不值得各记一行 —— 这个文件同时装着 hook 事件，不能变成流水账。
+    if !plan.open.is_empty() {
+        config::append_hook_log(&format!(
+            "{} [lamp] 建窗完成：成功 {} 盏 / 共 {} 盏（{} ms）\n",
+            config::utc_hms(),
+            plan.open.len() - failed.len(),
+            plan.open.len(),
+            started.elapsed().as_millis(),
+        ));
     }
 }
 
