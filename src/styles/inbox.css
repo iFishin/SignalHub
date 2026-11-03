@@ -290,6 +290,9 @@ html[data-window="inbox"] body {
 }
 
 .inbox-btn {
+  /* 按住确认那条进度条绝对定位在里面（见下） */
+  position: relative;
+  overflow: hidden;
   padding: 3px 9px;
   border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 6px;
@@ -302,6 +305,62 @@ html[data-window="inbox"] body {
 
 .inbox-btn:hover {
   background: rgba(255, 255, 255, 0.12);
+}
+
+/* 按住确认的进度条（A3）：和灯上用的是同一个组件，所以类名一样 */
+.inbox-btn .hold-fill {
+  position: absolute;
+  inset: 0;
+  width: calc(var(--hold, 0) * 100%);
+  background: currentColor;
+  opacity: 0.22;
+  pointer-events: none;
+}
+
+.inbox-btn .hold-label {
+  position: relative;
+}
+
+/* 那个小三角不抢宽度 */
+.inbox-btn-reason {
+  padding-left: 6px;
+  padding-right: 6px;
+}
+
+/* 危险命令的红横幅（A3）。**只强调，不改可用性** —— 「看不全」才是不能放行。 */
+.inbox-danger {
+  margin: 6px 0 2px;
+  padding-left: 8px;
+  border-left: 2px solid #e24b4a;
+  color: #ff9a9a;
+  font-size: 11px;
+}
+
+/* 拒绝理由（A2）：一排小按钮 + 一个自定义输入 */
+.inbox-reasons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.inbox-reason-custom {
+  display: flex;
+  flex: 1 1 100%;
+  gap: 6px;
+}
+
+.inbox-reason-custom input {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.25);
+  color: #e6e6ea;
+  font: inherit;
+  font-size: 11px;
 }
 
 .inbox-btn:disabled {

@@ -28,3 +28,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# WorkBuddy 的项目记忆（本机工作记录，不进仓库）
+.workbuddy-ai/

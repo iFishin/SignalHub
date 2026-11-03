@@ -519,14 +519,19 @@ async fn approve_request(
     let (detail, truncated) = crate::hookmap::approval_detail(&tool, input);
     let target = crate::hookmap::tool_target(input)
         .unwrap_or_else(|| crate::hookmap::clip(&tool, crate::hookmap::TOOL_NAME_MAX));
+    // 危险分类只用来**强调**（红横幅 + 按住确认），不改变能不能放行 —— 那是
+    // `truncated` 的事。两者分开，误报的代价才只是「多按一下」。
+    let danger = crate::hookmap::danger(&tool, input);
     let id = new_approval_id();
     let pending = crate::approvals::Pending::new(
         id.clone(),
         session.clone(),
+        agent.clone(),
         tool,
         target,
         detail,
         truncated,
+        danger,
     );
 
     // 灯上先变黄 —— 走的是和上报完全相同的那条路（凭证、兜底分组、推送都跟着来）。
@@ -580,11 +585,11 @@ async fn approve_request(
     }
     let outcome = match decision {
         Some(crate::approvals::Decision::Allow) => "approve: 允许",
-        Some(crate::approvals::Decision::Deny) => "approve: 拒绝",
+        Some(crate::approvals::Decision::Deny(_)) => "approve: 拒绝",
         None => "approve: 没人点，交回 Claude Code 自己问",
     };
     log_http_hook(&agent, &event, &session, outcome);
-    Json(crate::approvals::response(decision))
+    Json(crate::approvals::response(decision.as_ref()))
 }
 
 /// 现在有几条在等。灯上那个气泡读它（IPC 走同一个函数）。
@@ -600,12 +605,16 @@ async fn approval_list(State(ctx): State<Ctx>) -> Json<Value> {
 async fn approval_decide(
     State(ctx): State<Ctx>,
     Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Json<Value> {
     let payload = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
     let decision = match payload["decision"].as_str() {
         Some("allow") => crate::approvals::Decision::Allow,
-        Some("deny") => crate::approvals::Decision::Deny,
+        Some("deny") => crate::approvals::Decision::Deny(crate::approvals::DenyReason::parse(
+            payload["reason"].as_str(),
+            payload["custom"].as_str().map(str::to_string),
+        )),
         other => {
             return Json(json!({
                 "ok": false,
@@ -613,7 +622,8 @@ async fn approval_decide(
             }));
         }
     };
-    match ctx.approvals.decide(&id, decision) {
+    let source = decision_source(&headers);
+    match ctx.approvals.decide(&id, decision, source) {
         crate::approvals::Decided::Done => Json(json!({ "ok": true })),
         crate::approvals::Decided::NotFound => {
             Json(json!({ "ok": false, "error": "没有这一条（超时了，或者被同一个会话的新请求顶掉了）" }))
@@ -622,6 +632,18 @@ async fn approval_decide(
             "ok": false,
             "error": "这条的内容在灯上看不全，只能拒绝 —— 要放行请回终端里看",
         })),
+    }
+}
+
+/// 这一下是从哪儿点的。`web` 只认面板自己带的那条头 —— 它和 `api` 的权限完全一样，
+/// 分出来只是为了让历史能回答「我当时是在手机上点的吗」。
+fn decision_source(headers: &axum::http::HeaderMap) -> &'static str {
+    match headers
+        .get("x-signalhub-source")
+        .and_then(|value| value.to_str().ok())
+    {
+        Some("web") => "web",
+        _ => "api",
     }
 }
 

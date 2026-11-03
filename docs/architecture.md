@@ -1085,6 +1085,7 @@ SignalHub/
       ├─ rules.rs                B4 预设规则：授权卡住 60 秒补推、忙时静音、会议变蓝（不做表达式引擎）
       ├─ shortcuts.rs            全局快捷键：五个组合 + 抢到了没有（设置 →「系统」页读它）
       ├─ approvals.rs            从灯上审批（C3）：登记表 + 决定 + 回给 Claude Code 的那段 JSON
+      ├─ approval_log.rs         审批审计（A1）：每日一个 jsonl、30 天轮转、0o600 ← 落盘在锁外
       ├─ panel.rs                只读 Web 面板（`GET /`）：模板 + 一次注入 ← 只有 server 用它
       ├─ panel.html              上面那份模板（编译期 `include_str!` 进二进制）
       ├─ menu.rs                 灯上右键的原生菜单：隐藏 / 静音该组、清除该组、切形态、开设置

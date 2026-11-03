@@ -31,10 +31,93 @@ use std::time::{Duration, Instant};
 pub const WAIT: Duration = Duration::from_secs(45);
 
 /// 用户点了什么。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Deny` 带理由（`docs/plan-approval.md` A2）：拒绝那句话会进模型上下文，
+/// 一句「换个更安全的做法」比一句「问用户」能让它下一步走对地方。
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
     Allow,
-    Deny,
+    Deny(DenyReason),
+}
+
+/// 拒绝时给模型的那句话。
+///
+/// 界面显示中文，发给模型的**一律英文**：它进的是模型的上下文，不是界面文案
+/// （和 C3 里那句固定的 deny message 同一个理由）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DenyReason {
+    Default,
+    Unsafe,
+    Safer,
+    Explain,
+    /// 用户自己写的一句话。空串退回 [`DenyReason::Default`] —— 不给模型发空消息。
+    Custom(String),
+}
+
+/// 默认那句（也是没有理由时的兜底）。
+const DENY_DEFAULT: &str =
+    "Denied from SignalHub (the desk lamp). Do not retry this call; ask the user what to do instead.";
+
+/// 自定义理由的上限。它会被塞进模型上下文，太长没意义。
+pub const CUSTOM_MAX: usize = 200;
+
+impl DenyReason {
+    /// 界面传过来的键 → 理由。认不出来的键一律当默认：**拒绝不能因为参数写错而失效**。
+    pub fn parse(key: Option<&str>, custom: Option<String>) -> Self {
+        match key {
+            Some("unsafe") => Self::Unsafe,
+            Some("safer") => Self::Safer,
+            Some("explain") => Self::Explain,
+            Some("custom") => Self::Custom(
+                custom
+                    .unwrap_or_default()
+                    .trim()
+                    .chars()
+                    .take(CUSTOM_MAX)
+                    .collect(),
+            ),
+            _ => Self::Default,
+        }
+    }
+
+    /// 写进历史的那一格。
+    pub fn key(&self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Unsafe => "unsafe",
+            Self::Safer => "safer",
+            Self::Explain => "explain",
+            Self::Custom(_) => "custom",
+        }
+    }
+
+    pub fn message(&self) -> String {
+        match self {
+            Self::Default => DENY_DEFAULT.to_string(),
+            Self::Unsafe => "Denied from SignalHub: the user considers this call unsafe. Do not retry it or attempt an equivalent; ask the user for a different approach.".to_string(),
+            Self::Safer => "Denied from SignalHub: the user wants a safer alternative. Propose a less destructive approach before retrying.".to_string(),
+            Self::Explain => "Denied from SignalHub: explain what this call does and why it is needed before trying again.".to_string(),
+            Self::Custom(text) if !text.trim().is_empty() => text.clone(),
+            Self::Custom(_) => DENY_DEFAULT.to_string(),
+        }
+    }
+}
+
+impl Decision {
+    /// 写进历史的那一格。
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::Deny(_) => "deny",
+        }
+    }
+
+    fn reason_key(&self) -> &'static str {
+        match self {
+            Self::Allow => "",
+            Self::Deny(reason) => reason.key(),
+        }
+    }
 }
 
 /// 一条等着的审批（内部形态，`created` 是 `Instant` 所以不直接序列化）。
@@ -42,6 +125,8 @@ pub enum Decision {
 pub struct Pending {
     pub id: String,
     pub session: String,
+    /// 哪一家的请求（`claude-code` / `csc` …）。只进历史，界面不显示。
+    pub agent: String,
     pub tool: String,
     /// 牌上那行字：`hookmap::tool_target` 的短词。
     pub target: String,
@@ -49,18 +134,32 @@ pub struct Pending {
     pub detail: String,
     /// 详情被截断过 —— **不给「允许」**（见 `allowable`）。
     pub truncated: bool,
+    /// 危险分类（`hookmap::danger` 的键）。只用来强调，**不影响能不能放行**。
+    pub danger: Option<&'static str>,
     created: Instant,
 }
 
 impl Pending {
-    pub fn new(id: String, session: String, tool: String, target: String, detail: String, truncated: bool) -> Self {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        id: String,
+        session: String,
+        agent: String,
+        tool: String,
+        target: String,
+        detail: String,
+        truncated: bool,
+        danger: Option<&'static str>,
+    ) -> Self {
         Self {
             id,
             session,
+            agent,
             tool,
             target,
             detail,
             truncated,
+            danger,
             created: Instant::now(),
         }
     }
@@ -79,6 +178,7 @@ impl Pending {
             target: self.target.clone(),
             detail: self.detail.clone(),
             truncated: self.truncated,
+            danger: self.danger.map(str::to_string),
             allowable: self.allowable(),
             age_ms: now.saturating_duration_since(self.created).as_millis() as u64,
         }
@@ -94,6 +194,10 @@ pub struct PendingView {
     pub target: String,
     pub detail: String,
     pub truncated: bool,
+    /// 危险分类的键（`delete` / `force-push` …）。`None` = 没认出来。
+    /// **它只决定画不画红横幅、要不要按住**，不改变 `allowable` ——
+    /// 「危险」和「看不全」是两件事：前者是提醒，后者才是禁止。
+    pub danger: Option<String>,
     /// 详情看全了才为 `true`（前端据此决定要不要画「允许」那个按钮）。
     pub allowable: bool,
     pub age_ms: u64,
@@ -122,7 +226,6 @@ pub type SharedApprovals = Arc<Registry>;
 
 /// 登记表。**一个会话同时最多一条**：同一个会话里又来了一个要批准的调用，说明前一个
 /// 已经不作数了（对方在等前一个的时候不会发起下一个，所以这只可能是重试或者乱序）。
-#[derive(Default)]
 pub struct Registry {
     entries: Mutex<HashMap<String, Entry>>,
     /// 变了就喊一声（灯上那个气泡据此刷新）。
@@ -130,9 +233,44 @@ pub struct Registry {
     /// **服务器那边不持有 `AppHandle`**（见 `server::spawn` 的注释：它要能脱离 app
     /// 单测），所以这件事由 `lib.rs` 在构造时挂进来 —— 和 `Notifier` 同一个套路。
     on_change: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// 审批历史写到哪里。`None` = 只在内存里 —— **单测用它，不碰真实的 `~/.signalhub`**。
+    log: Option<std::path::PathBuf>,
+}
+
+impl Default for Registry {
+    fn default() -> Self {
+        Self::new(None)
+    }
 }
 
 impl Registry {
+    pub fn new(log: Option<std::path::PathBuf>) -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+            on_change: Mutex::new(None),
+            log,
+        }
+    }
+
+    /// 记一条历史。**写盘失败不影响审批本身** —— 日志是「事后能查」，不是
+    /// 「点得动」的前提，所以这里的错误直接吞掉。
+    fn record(&self, pending: &Pending, decision: &str, reason: &str, source: &str, waited: Duration) {
+        let Some(dir) = &self.log else { return };
+        let record = crate::approval_log::Record::new(
+            now_ms(),
+            pending.session.clone(),
+            pending.agent.clone(),
+            pending.tool.clone(),
+            pending.target.clone(),
+            pending.detail.clone(),
+            pending.truncated,
+            decision,
+            reason.to_string(),
+            source,
+            waited.as_millis() as u64,
+        );
+        let _ = crate::approval_log::append_in(dir, &record);
+    }
     /// 挂一个「变了」的回调（只有一处调用点，见 `lib.rs`）。
     pub fn on_change(&self, f: Arc<dyn Fn() + Send + Sync>) {
         *self.on_change.lock().expect("approvals poisoned") = Some(f);
@@ -161,8 +299,10 @@ impl Registry {
 
     /// 用户点了（或者接口被调了）。**对不上时什么也不做**：那条可能刚好超时了，
     /// 或者被同一个会话的新请求顶掉了。
-    pub fn decide(&self, id: &str, decision: Decision) -> Decided {
-        let outcome = {
+    ///
+    /// `source` 只进历史：`lamp`（灯上点的）/ `api`（脚本）/ `web`（手机面板）。
+    pub fn decide(&self, id: &str, decision: Decision, source: &str) -> Decided {
+        let (outcome, logged) = {
             let mut entries = self.entries.lock().expect("approvals poisoned");
             let Some(session) = entries
                 .iter()
@@ -180,10 +320,18 @@ impl Registry {
             let Some(entry) = entries.remove(&session) else {
                 return Decided::NotFound;
             };
+            let waited = entry.pending.created.elapsed();
+            // `decision` 马上就要被送走，这两格得先取出来
+            let kind = decision.kind();
+            let reason = decision.reason_key();
             // 收不到就说明对面已经走了（超时），那也没什么可做的
             let _ = entry.tx.send(decision);
-            Decided::Done
+            (Decided::Done, Some((entry.pending, kind, reason, waited)))
         };
+        // 写盘放在锁外：历史那一步有 I/O，不该占着登记表的锁
+        if let Some((pending, kind, reason, waited)) = logged {
+            self.record(&pending, kind, reason, source, waited);
+        }
         self.changed();
         outcome
     }
@@ -194,9 +342,10 @@ impl Registry {
             .entries
             .lock()
             .expect("approvals poisoned")
-            .remove(session)
-            .is_some();
-        if dropped {
+            .remove(session);
+        if let Some(entry) = dropped {
+            let waited = entry.pending.created.elapsed();
+            self.record(&entry.pending, "expired", "", "system", waited);
             self.changed();
         }
     }
@@ -216,22 +365,38 @@ impl Registry {
 
     pub fn list(&self) -> Vec<PendingView> {
         let now = Instant::now();
-        let mut entries = self.entries.lock().expect("approvals poisoned");
-        // **顺手把过期的扫掉**：正常超时由 handler 自己收（见 `expire`），但那条路
-        // 有一种走不到的情况 —— 请求方在等待中途断开（`curl -m`、Claude Code 被杀），
-        // handler 那个 future 直接被丢掉，`expire` 永远不执行。那种条目留在表里的
-        // 表现是**灯上永远挂着一条没人等的审批**，而点它什么也不会发生。
-        //
-        // 判据是 `age > WAIT`：超过这个岁数的条目，等它的那一头一定已经按超时走了
-        // （哪怕只是早了几微秒 —— 那时它收到的也是「没有决定」，和这里丢掉的结果一样）。
-        //
-        // **不喊 `changed()`**：这里是读路径，而前端正因为读了它才走到这儿 ——
-        // 喊一声就是「刷新 → 发现过期 → 再喊 → 再刷新」。前端这一轮拿到的列表已经
-        // 是对的，不需要第二次。
-        entries.retain(|_, entry| now.duration_since(entry.pending.created) <= WAIT);
-        let mut views: Vec<PendingView> = entries.values().map(|entry| entry.pending.view(now)).collect();
-        // 等了最久的那条排最前 —— 气泡里第一条就是最该先看的那条
-        views.sort_by_key(|view| std::cmp::Reverse(view.age_ms));
+        let (views, expired) = {
+            let mut entries = self.entries.lock().expect("approvals poisoned");
+            // **顺手把过期的扫掉**：正常超时由 handler 自己收（见 `expire`），但那条路
+            // 有一种走不到的情况 —— 请求方在等待中途断开（`curl -m`、Claude Code 被杀），
+            // handler 那个 future 直接被丢掉，`expire` 永远不执行。那种条目留在表里的
+            // 表现是**灯上永远挂着一条没人等的审批**，而点它什么也不会发生。
+            //
+            // 判据是 `age > WAIT`：超过这个岁数的条目，等它的那一头一定已经按超时走了
+            // （哪怕只是早了几微秒 —— 那时它收到的也是「没有决定」，和这里丢掉的结果一样）。
+            //
+            // **不喊 `changed()`**：这里是读路径，而前端正因为读了它才走到这儿 ——
+            // 喊一声就是「刷新 → 发现过期 → 再喊 → 再刷新」。前端这一轮拿到的列表已经
+            // 是对的，不需要第二次。
+            let mut expired: Vec<Pending> = Vec::new();
+            entries.retain(|_, entry| {
+                let stale = now.duration_since(entry.pending.created) > WAIT;
+                if stale {
+                    expired.push(entry.pending.clone());
+                }
+                !stale
+            });
+            let mut views: Vec<PendingView> =
+                entries.values().map(|entry| entry.pending.view(now)).collect();
+            // 等了最久的那条排最前 —— 气泡里第一条就是最该先看的那条
+            views.sort_by_key(|view| std::cmp::Reverse(view.age_ms));
+            (views, expired)
+        };
+        // 扫出来的那些也要留痕（锁外）：它们就是「灯上挂过、没人等到结果」的那部分
+        for pending in expired {
+            let waited = pending.created.elapsed();
+            self.record(&pending, "expired", "", "system", waited);
+        }
         views
     }
 
@@ -250,12 +415,22 @@ impl Registry {
             else {
                 return;
             };
-            entries.remove(&session).is_some()
+            entries.remove(&session)
         };
-        if dropped {
+        if let Some(entry) = dropped {
+            let waited = entry.pending.created.elapsed();
+            self.record(&entry.pending, "expired", "", "system", waited);
             self.changed();
         }
     }
+}
+
+/// 现在（Unix 毫秒）。历史用它做时间戳 —— `Instant` 不能跨进程比较，也不能落盘。
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// 回给 Claude Code 的那段 JSON。
@@ -266,7 +441,7 @@ impl Registry {
 ///
 /// `PermissionRequest` 只有 `allow` / `deny` 两种行为，**没有 `ask`** —— 「回到自己问」
 /// 只能靠不给决定来表达。
-pub fn response(decision: Option<Decision>) -> Value {
+pub fn response(decision: Option<&Decision>) -> Value {
     match decision {
         Some(Decision::Allow) => json!({
             "hookSpecificOutput": {
@@ -274,14 +449,14 @@ pub fn response(decision: Option<Decision>) -> Value {
                 "decision": { "behavior": "allow" },
             }
         }),
-        Some(Decision::Deny) => json!({
+        Some(Decision::Deny(reason)) => json!({
             "hookSpecificOutput": {
                 "hookEventName": "PermissionRequest",
                 "decision": {
                     "behavior": "deny",
                     // 这条是**给模型看的**（官方文档：deny 的 message 会交给 Claude），
                     // 所以用英文 —— 它进的是模型的上下文，不是界面文案。
-                    "message": "Denied from SignalHub (the desk lamp). Do not retry this call; ask the user what to do instead.",
+                    "message": reason.message(),
                 },
             }
         }),
@@ -319,10 +494,12 @@ mod tests {
         Pending::new(
             id.to_string(),
             session.to_string(),
+            "claude-code".to_string(),
             "Bash".to_string(),
             "rm".to_string(),
             "rm -rf build".to_string(),
             false,
+            None,
         )
     }
 
@@ -333,12 +510,12 @@ mod tests {
         let mut rx = registry.open(pending("a1", "s1"));
         assert_eq!(registry.list().len(), 1);
 
-        assert_eq!(registry.decide("a1", Decision::Allow), Decided::Done);
+        assert_eq!(registry.decide("a1", Decision::Allow, "lamp"), Decided::Done);
         assert_eq!(rx.try_recv(), Ok(Decision::Allow));
         assert!(registry.list().is_empty());
 
         // 同一个 id 再点一次：已经没有那一条了
-        assert_eq!(registry.decide("a1", Decision::Allow), Decided::NotFound);
+        assert_eq!(registry.decide("a1", Decision::Allow, "lamp"), Decided::NotFound);
     }
 
     /// 同一个会话里新来的那条把旧的顶掉 —— 旧的收到「没有决定」，不残留。
@@ -366,8 +543,11 @@ mod tests {
         let mut other = registry.open(pending("a2", "s2"));
         registry.forget_session("s1");
         assert!(registry.list().len() == 1);
-        assert_eq!(registry.decide("a2", Decision::Deny), Decided::Done);
-        assert_eq!(other.try_recv(), Ok(Decision::Deny));
+        assert_eq!(
+            registry.decide("a2", Decision::Deny(DenyReason::Default), "lamp"),
+            Decided::Done
+        );
+        assert_eq!(other.try_recv(), Ok(Decision::Deny(DenyReason::Default)));
     }
 
     /// **看不全就不给放行。** 这是这个功能唯一一条关于「允不允许允许」的规则。
@@ -435,22 +615,28 @@ mod tests {
         long.truncated = true;
         let mut rx = registry.open(long);
 
-        assert_eq!(registry.decide("a1", Decision::Allow), Decided::NotAllowable);
+        assert_eq!(
+            registry.decide("a1", Decision::Allow, "lamp"),
+            Decided::NotAllowable
+        );
         assert!(rx.try_recv().is_err(), "没送出去，对方还在等");
         // 拒绝照样可以，而且那一条跟着消失
-        assert_eq!(registry.decide("a1", Decision::Deny), Decided::Done);
-        assert_eq!(rx.try_recv(), Ok(Decision::Deny));
+        assert_eq!(
+            registry.decide("a1", Decision::Deny(DenyReason::Default), "lamp"),
+            Decided::Done
+        );
+        assert_eq!(rx.try_recv(), Ok(Decision::Deny(DenyReason::Default)));
     }
 
     /// 回给 Claude Code 的字段名和取值 —— 写错一个的表现是「审批永远不生效」，
     /// 而那看起来就像「灯上的按钮坏了」。
     #[test]
     fn the_response_matches_the_documented_shape() {
-        let allow = response(Some(Decision::Allow));
+        let allow = response(Some(&Decision::Allow));
         assert_eq!(allow["hookSpecificOutput"]["hookEventName"], "PermissionRequest");
         assert_eq!(allow["hookSpecificOutput"]["decision"]["behavior"], "allow");
 
-        let deny = response(Some(Decision::Deny));
+        let deny = response(Some(&Decision::Deny(DenyReason::Default)));
         assert_eq!(deny["hookSpecificOutput"]["hookEventName"], "PermissionRequest");
         assert_eq!(deny["hookSpecificOutput"]["decision"]["behavior"], "deny");
         assert!(
@@ -474,5 +660,73 @@ mod tests {
         let views = registry.list();
         assert_eq!(views[0].id, "a1");
         assert_eq!(views[1].id, "a2");
+    }
+
+    /// 三个预设各自对应一句不同的话 —— 拒绝理由的全部价值就在这里：
+    /// 模型读到「换个更安全的做法」和读到「问用户」会走出完全不同的下一步。
+    #[test]
+    fn each_deny_reason_says_something_different() {
+        let default = DenyReason::Default.message();
+        for reason in [DenyReason::Unsafe, DenyReason::Safer, DenyReason::Explain] {
+            assert_ne!(reason.message(), default, "{} 该有自己的话", reason.key());
+        }
+        assert!(DenyReason::Safer.message().contains("safer"));
+        assert!(DenyReason::Explain.message().contains("explain"));
+    }
+
+    /// 界面传键，认不出来的一律当默认 —— **拒绝不能因为参数写错而失效**。
+    #[test]
+    fn unknown_reason_keys_fall_back_to_the_default() {
+        assert_eq!(DenyReason::parse(Some("unsafe"), None), DenyReason::Unsafe);
+        assert_eq!(DenyReason::parse(Some("safer"), None), DenyReason::Safer);
+        assert_eq!(DenyReason::parse(Some("explain"), None), DenyReason::Explain);
+        assert_eq!(DenyReason::parse(Some("胡说"), None), DenyReason::Default);
+        assert_eq!(DenyReason::parse(None, None), DenyReason::Default);
+    }
+
+    /// 自定义理由：截到上限；空串退回默认（不给模型发一条空消息）。
+    #[test]
+    fn a_custom_reason_is_clipped_and_never_empty() {
+        let long = "x".repeat(CUSTOM_MAX + 50);
+        let reason = DenyReason::parse(Some("custom"), Some(long));
+        assert_eq!(reason.message().chars().count(), CUSTOM_MAX);
+
+        let blank = DenyReason::parse(Some("custom"), Some("   ".to_string()));
+        assert_eq!(blank.message(), DenyReason::Default.message());
+    }
+
+    /// 危险分类只影响界面强调，**不影响能不能放行** —— 两者是两件事。
+    #[test]
+    fn danger_does_not_change_allowability() {
+        let mut dangerous = pending("a1", "s1");
+        dangerous.danger = Some("delete");
+        assert!(dangerous.allowable());
+        assert_eq!(
+            dangerous.view(Instant::now()).danger.as_deref(),
+            Some("delete")
+        );
+
+        dangerous.truncated = true;
+        assert!(!dangerous.allowable(), "看不全仍然不能放行");
+    }
+
+    /// 历史写盘只在 `log` 有值时才发生：`Registry::default()`（单测、以及
+    /// 没打开审批的场景）不该在用户家里乱写文件。
+    #[test]
+    fn history_is_only_written_when_a_directory_is_configured() {
+        let dir = std::env::temp_dir().join(format!("shub-approvals-registry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let registry = Registry::new(Some(dir.clone()));
+        let _rx = registry.open(pending("a1", "s1"));
+        assert_eq!(registry.decide("a1", Decision::Allow, "lamp"), Decided::Done);
+
+        let records = crate::approval_log::recent_in(&dir, 10);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].decision, "allow");
+        assert_eq!(records[0].source, "lamp");
+        assert_eq!(records[0].agent, "claude-code");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

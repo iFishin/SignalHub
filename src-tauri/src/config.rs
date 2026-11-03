@@ -1826,14 +1826,19 @@ fn write_private(path: &Path, contents: &str) -> io::Result<()> {
     atomic_write(path, contents, Some(0o600))
 }
 
+/// 收窄一个文件的权限。**只在 unix 上有意义**（Windows 的 ACL 不走这条路，
+/// 那里靠的是 `%USERPROFILE%` 本身的可见性）。
+///
+/// `pub(crate)`：审批历史（`approval_log.rs`）也要用 —— 它落盘的是命令原文，
+/// 和 token 是同一档东西。
 #[cfg(unix)]
-fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
+pub(crate) fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(path, fs::Permissions::from_mode(mode))
 }
 
 #[cfg(not(unix))]
-fn set_mode(_path: &Path, _mode: u32) -> io::Result<()> {
+pub(crate) fn set_mode(_path: &Path, _mode: u32) -> io::Result<()> {
     Ok(())
 }
 

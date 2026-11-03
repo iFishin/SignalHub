@@ -209,6 +209,9 @@ body,
 .approval-btn {
   flex: 1;
   box-sizing: border-box;
+  /* 按住确认的那条进度条绝对定位在里面（见下） */
+  position: relative;
+  overflow: hidden;
   padding: calc(var(--size) * 0.2) 0;
   border: 1px solid var(--sign-line);
   border-radius: calc(var(--size) * 0.24);
@@ -237,6 +240,69 @@ body,
 .approval-btn:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* 危险命令的红横幅（`docs/plan-approval.md` A3）。**只强调，不改可用性** ——
+   「看不全」才是不能放行，「危险」只是多按一下。两者分开，误报的代价才只是
+   一次多余的按住。 */
+.approval-danger {
+  color: #ff9a9a;
+  font-size: calc(var(--size) * 0.38);
+  line-height: 1.2;
+  padding-left: calc(var(--size) * 0.18);
+  border-left: 2px solid #e24b4a;
+}
+
+/* 按住确认的进度条：宽度由 `--hold`（0..1）驱动 —— 不重排、不 state */
+.approval-btn .hold-fill {
+  position: absolute;
+  inset: 0;
+  width: calc(var(--hold, 0) * 100%);
+  background: currentColor;
+  opacity: 0.22;
+  pointer-events: none;
+}
+
+.approval-btn .hold-label {
+  position: relative;
+}
+
+/* 选拒绝理由时占住详情那一块。**横向换行**而不是竖排四行：气泡就这么高 */
+.approval-reasons {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: calc(var(--size) * 0.14);
+  overflow: auto;
+}
+
+.approval-reason {
+  box-sizing: border-box;
+  padding: calc(var(--size) * 0.1) calc(var(--size) * 0.2);
+  border: 1px solid var(--sign-line);
+  border-radius: calc(var(--size) * 0.2);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--sign-fg);
+  font: inherit;
+  font-size: calc(var(--size) * 0.38);
+  cursor: pointer;
+}
+
+.approval-reason:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.approval-reason-cancel {
+  color: var(--sign-muted);
+}
+
+/* 那个小三角不抢宽度 */
+.approval-btn-reason {
+  flex: 0 0 auto;
+  padding-left: calc(var(--size) * 0.3);
+  padding-right: calc(var(--size) * 0.3);
 }
 
 /* ---- 一块牌 -------------------------------------------------------------- */

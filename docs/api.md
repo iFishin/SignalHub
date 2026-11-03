@@ -87,8 +87,8 @@ Authorization: Bearer <token>
 | GET | `/v1/sessions` | 会话列表 | 需要 |
 | POST | `/v1/monitor` | 全局暂停 / 恢复 | 需要 |
 | POST | `/v1/approve/{agent}` | 从灯上审批的落点（Claude Code 的 `PermissionRequest`，见 §4.17） | 需要 |
-| GET | `/v1/approvals` | 当前挂着的待审批列表 | 需要 |
-| POST | `/v1/approvals/{id}` | 点「允许 / 拒绝」（`{"decision":"allow"\|"deny"}`） | 需要 |
+| GET | `/v1/approvals` | 当前挂着的待审批列表（含 `danger` 分类） | 需要 |
+| POST | `/v1/approvals/{id}` | 点「允许 / 拒绝」，拒绝可带理由（`{"decision":"deny","reason":"safer"}`） | 需要 |
 
 > **`403` 的两种来源**：局域网访问打开时，`/v1/hooks/{agent}` 与两个审批端点都会返回它（前者是「给全网开的门」，后者是「审批只能在能确认是本机的时候做」）；另外所有需要鉴权的端点对**带 `Origin` 头**的请求也回 403 —— 那条规则挡的是浏览器里的网页。
 
@@ -1182,13 +1182,40 @@ Claude Code 每次要问「这个工具调用可以吗」时，`PermissionReques
 
 灯上两个接口（都要 token）：
 
-- `GET /v1/approvals` → `{"approvals":[{"id","session","tool","target","detail","truncated","allowable","age_ms"}]}`
+- `GET /v1/approvals` → `{"approvals":[{"id","session","agent","tool","target","detail","truncated","danger","allowable","age_ms"}]}`
   （按等待时长排，最久的最前；超过 45 秒的条目在读取时就被扫掉了）；
-- `POST /v1/approvals/{id}`，body `{"decision":"allow"}` 或 `{"decision":"deny"}`。
+  `danger` 是危险分类的**稳定键**（`delete` / `force-push` / `rewrite` / `sql` /
+  `pipe-shell` / `disk` / `privilege` / `permissions`），认不出来就是 `null`。
+  它**只影响强调方式**（红横幅 + 按住确认），和 `allowable` 是两件事 ——
+  危险不等于不给放行，看不全才是不给放行。
+- `POST /v1/approvals/{id}`，body：
+
+  ```json
+  { "decision": "allow" }
+  { "decision": "deny" }
+  { "decision": "deny", "reason": "safer" }
+  { "decision": "deny", "reason": "custom", "custom": "这条先别动，我来" }
+  ```
+
+  `reason` 可取 `unsafe` / `safer` / `explain` / `custom`，**省略或认不出来一律按默认那句**
+  （拒绝不能因为参数写错而失效）。`custom` 截到 200 字符，全空白时同样退回默认。
+
   成功回 `{"ok":true}`；`allow` 只在该条 `allowable: true` 时被接受 —— 详情被截断的
   命令只能拒绝，或者回终端自己看，这时回 `{"ok":false,"error":"…只能拒绝…"}`。
 
+  可选的 `x-signalhub-source` 请求头记录**是谁点的**：`web`（浏览器面板）或
+  `lamp`（灯窗自己，走的是 Tauri 命令不是这条接口）。不带这个头记成 `api`。
+
+拒绝的理由会变成 `hookSpecificOutput.decision.message` 进模型上下文 ——
+**那句是英文**（模型读英文），界面上的中文只是同一个键的另一面。
+
 命令全文只出现在这条本地接口和灯窗里；上报、通知、出站钩子带的都是那个短词。
+
+历史（`get_approval_history`，Tauri 命令，不是 HTTP）读的是
+`~/.signalhub/approvals/YYYY-MM-DD.jsonl`：一条一次审批，`decision` 为
+`allow` / `deny` / `expired`，`source` 为 `lamp` / `api` / `web` / `system`
+（`system` = 超时 / 被顶掉 / 会话结束，没有经过任何界面）。保留 30 天，
+文件 `0o600`、目录 `0o700`。
 
 ---
 

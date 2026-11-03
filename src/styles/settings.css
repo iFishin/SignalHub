@@ -986,6 +986,68 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   flex-basis: 0;
 }
 
+/* ---- 审批记录（docs/plan-approval.md A1） --------------------------------- */
+
+.approval-log {
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+}
+
+.approval-log-row {
+  display: grid;
+  /* 时间 / 结果 / 工具 / 目标（可伸缩）/ 来源 */
+  grid-template-columns: 84px 52px 64px minmax(0, 1fr) 44px;
+  gap: 8px;
+  align-items: baseline;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.approval-log-row:last-child {
+  border-bottom: 0;
+}
+
+.approval-log-time,
+.approval-log-source {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+
+.approval-log-source {
+  text-align: right;
+}
+
+.approval-log-decision {
+  font-weight: 500;
+}
+
+.approval-log-row[data-decision="allow"] .approval-log-decision {
+  color: var(--accent);
+}
+
+.approval-log-row[data-decision="deny"] .approval-log-decision {
+  color: var(--danger);
+}
+
+.approval-log-row[data-decision="expired"] .approval-log-decision {
+  color: var(--muted);
+}
+
+.approval-log-tool {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+.approval-log-target {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* 已隐藏的组：把会话列表压暗，一眼看出它在灯上不占位置。
    组名那一行**不**压暗 —— 它是这块牌的身份，压暗了就分不清是哪一组。 */
 .group[data-hidden="true"] .sessions {

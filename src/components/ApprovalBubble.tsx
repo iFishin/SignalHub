@@ -1,7 +1,9 @@
-import { useMemo } from "react";
-import type { Approval } from "../lib/useApprovals";
+import { useMemo, useState } from "react";
+import type { Approval, DenyReason } from "../lib/useApprovals";
 import { useMessages } from "../lib/i18n";
 import { useNow } from "../lib/useNow";
+import { dangerLabel, reasonLabel } from "../lib/approvalLabels";
+import { HoldButton } from "./HoldButton";
 
 /**
  * 灯上一叠「等着你点」的气泡（从灯上审批，见 `approvals.rs`）。
@@ -13,13 +15,23 @@ import { useNow } from "../lib/useNow";
  *   下一条自己冒出来。
  * - **「允许」在看不全的时候不画**。长命令只能拒绝、或者回终端自己看：在灯上
  *   放行一条自己没看全的命令，正是这个功能最不该做的事。
+ * - **危险命令要按住**（`docs/plan-approval.md` A3）。横幅只强调，不改可用性 ——
+ *   「危险」和「看不全」是两件事。
  * - 命令全文**只在这里出现**。状态上报用的是那个短词，通知和出站钩子都不带它。
  */
 export const MAX_APPROVAL_BUBBLES = 3;
 
+/** 灯上只给三个预设：自定义要打字，那是收件箱（更大的窗口）该干的事。 */
+const PRESET_REASONS: DenyReason[] = ["unsafe", "safer", "explain"];
+
 interface Props {
   approvals: Approval[];
-  onDecide: (id: string, decision: "allow" | "deny") => void;
+  onDecide: (
+    id: string,
+    decision: "allow" | "deny",
+    reason?: DenyReason,
+    custom?: string,
+  ) => void;
 }
 
 export function ApprovalBubble({ approvals, onDecide }: Props) {
@@ -33,55 +45,113 @@ export function ApprovalBubble({ approvals, onDecide }: Props) {
     () => new Map(approvals.map((approval) => [approval.id, Date.now() - approval.age_ms])),
     [approvals],
   );
+  // 哪一条正在选拒绝理由。**只可能有一条**：气泡本身就是「最该先看的那条」的队列。
+  const [reasonFor, setReasonFor] = useState<string | null>(null);
 
   if (approvals.length === 0) return null;
 
   const shown = approvals.slice(0, MAX_APPROVAL_BUBBLES);
   return (
     <div className="approvals">
-      {shown.map((approval) => (
-        <div className="approval" key={approval.id}>
-          <div className="approval-head">
-            <span className="approval-tool">{approval.tool}</span>
-            <span className="approval-session" title={approval.session}>
-              {approval.session}
-            </span>
-            <span>
-              {m.approvalWaiting(
-                Math.round(Math.max(0, now - (startedAt.get(approval.id) ?? now)) / 1000),
-              )}
-            </span>
-          </div>
-          {/* 命令全文 / 文件路径 / 输入 JSON。`pre-wrap` + 滚动（高度是固定的，
-              见 lamp.css —— 不能让它把窗口撑开）。 */}
-          <div className="approval-detail">
-            {approval.detail}
-          </div>
-          {!approval.allowable && <div className="approval-warn">{m.approvalTooLong}</div>}
-          <div className="approval-buttons">
-            {/* 「看不全」时这个按钮**不画**：规则在 Rust 里挡着，这里只是不给它
-                一个点了没反应的地方。 */}
-            {approval.allowable && (
+      {shown.map((approval) => {
+        const danger = dangerLabel(m, approval.danger);
+        const picking = reasonFor === approval.id;
+        return (
+          <div className="approval" key={approval.id} data-danger={danger ? "1" : undefined}>
+            <div className="approval-head">
+              <span className="approval-tool">{approval.tool}</span>
+              <span className="approval-session" title={approval.session}>
+                {approval.session}
+              </span>
+              <span>
+                {m.approvalWaiting(
+                  Math.round(Math.max(0, now - (startedAt.get(approval.id) ?? now)) / 1000),
+                )}
+              </span>
+            </div>
+
+            {/* 危险横幅：只说「这条会干什么」，不替用户拒绝 */}
+            {danger && <div className="approval-danger">{danger}</div>}
+
+            {picking ? (
+              /* 选理由时，详情区换成这一排 —— 气泡高度是固定的，只能占这块地方 */
+              <div className="approval-reasons">
+                {PRESET_REASONS.map((reason) => (
+                  <button
+                    key={reason}
+                    type="button"
+                    className="approval-reason"
+                    onClick={() => {
+                      setReasonFor(null);
+                      onDecide(approval.id, "deny", reason);
+                    }}
+                  >
+                    {reasonLabel(m, reason)}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  className="approval-reason approval-reason-cancel"
+                  onClick={() => setReasonFor(null)}
+                >
+                  {m.approvalDeny}
+                </button>
+              </div>
+            ) : (
+              /* 命令全文 / 文件路径 / 输入 JSON。`pre-wrap` + 滚动（高度是固定的，
+                  见 lamp.css —— 不能让它把窗口撑开）。 */
+              <div className="approval-detail">{approval.detail}</div>
+            )}
+
+            {!approval.allowable && <div className="approval-warn">{m.approvalTooLong}</div>}
+            <div className="approval-buttons">
+              {/* 「看不全」时这个按钮**不画**：规则在 Rust 里挡着，这里只是不给它
+                  一个点了没反应的地方。 */}
+              {approval.allowable &&
+                (danger ? (
+                  <HoldButton
+                    className="approval-btn"
+                    data-decision="allow"
+                    data-state="working"
+                    title={m.approvalHold}
+                    ariaLabel={`${m.approvalAllow} · ${m.approvalHold}`}
+                    onConfirm={() => onDecide(approval.id, "allow")}
+                  >
+                    {m.approvalAllow}
+                  </HoldButton>
+                ) : (
+                  <button
+                    type="button"
+                    className="approval-btn"
+                    data-decision="allow"
+                    data-state="working"
+                    onClick={() => onDecide(approval.id, "allow")}
+                  >
+                    {m.approvalAllow}
+                  </button>
+                ))}
               <button
                 type="button"
                 className="approval-btn"
-                data-decision="allow"
-                data-state="working"
-                onClick={() => onDecide(approval.id, "allow")}
+                onClick={() => onDecide(approval.id, "deny")}
               >
-                {m.approvalAllow}
+                {m.approvalDeny}
               </button>
-            )}
-            <button
-              type="button"
-              className="approval-btn"
-              onClick={() => onDecide(approval.id, "deny")}
-            >
-              {m.approvalDeny}
-            </button>
+              {/* 展开理由。它不占一条按钮的位置 —— 是一个窄窄的下拉指示 */}
+              <button
+                type="button"
+                className="approval-btn approval-btn-reason"
+                title={m.approvalReason}
+                aria-label={m.approvalReason}
+                aria-expanded={picking}
+                onClick={() => setReasonFor(picking ? null : approval.id)}
+              >
+                ▾
+              </button>
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
       {approvals.length > shown.length && (
         <div className="approval-warn">
           {m.approvalMore(approvals.length - shown.length)}

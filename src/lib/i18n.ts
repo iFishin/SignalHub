@@ -312,6 +312,35 @@ export interface Messages {
   approvalMore: (n: number) => string;
   /** `{}` 已经等了多少秒 */
   approvalWaiting: (secs: number) => string;
+  /**
+   * 危险命令横幅（`docs/plan-approval.md` A3）。键和 `hookmap::danger` 一一对应 ——
+   * 那边只给稳定的键，翻成人话是这一层的事。
+   */
+  approvalDanger: {
+    delete: string;
+    "force-push": string;
+    rewrite: string;
+    sql: string;
+    "pipe-shell": string;
+    disk: string;
+    privilege: string;
+    permissions: string;
+  };
+  /** 按住确认那句提示（危险命令的「允许」要按住 0.8 秒）。 */
+  approvalHold: string;
+  /** 展开拒绝理由的小按钮 */
+  approvalReason: string;
+  approvalReasonUnsafe: string;
+  approvalReasonSafer: string;
+  approvalReasonExplain: string;
+  approvalReasonCustom: string;
+  approvalReasonCustomPlaceholder: string;
+  /** 历史页的「审批记录」那一节（A1） */
+  approvalLogTitle: string;
+  approvalLogHint: string;
+  approvalLogEmpty: string;
+  approvalLogDecision: (decision: string) => string;
+  approvalLogSource: (source: string) => string;
   agentModeCommand: string;
   /** 「其他工具」那一节 —— 它们没有能写 hook 的配置文件 */
   cliAgentsTitle: string;
@@ -850,6 +879,34 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     approvalTooLong: "这条在灯上看不全，只能在终端里批准（或者在这里拒绝）",
     approvalMore: (n) => `还有 ${n} 条等着`,
     approvalWaiting: (secs) => (secs < 5 ? "刚来" : `等了 ${secs}s`),
+    approvalDanger: {
+      delete: "这条会删文件",
+      "force-push": "这条会改写远端历史",
+      rewrite: "这条会丢掉本地改动",
+      sql: "这条会删表 / 删库",
+      "pipe-shell": "这条会下载并直接执行脚本",
+      disk: "这条会直接写磁盘",
+      privilege: "这条会提权",
+      permissions: "这条会把权限放开",
+    },
+    approvalHold: "按住 0.8 秒确认",
+    approvalReason: "给个理由",
+    approvalReasonUnsafe: "太危险",
+    approvalReasonSafer: "换个更安全的做法",
+    approvalReasonExplain: "先解释再试",
+    approvalReasonCustom: "自定义",
+    approvalReasonCustomPlaceholder: "想让智能体怎么做？",
+    approvalLogTitle: "审批记录",
+    approvalLogHint:
+      "最近 100 条：什么时候、从哪儿、放行或拒绝了什么。详情只留前 200 个字符。",
+    approvalLogEmpty: "还没有审批记录",
+    approvalLogDecision: (decision) =>
+      ({ allow: "允许", deny: "拒绝", expired: "超时" } as Record<string, string>)[
+        decision
+      ] ?? decision,
+    approvalLogSource: (source) =>
+      ({ lamp: "灯上", web: "手机", api: "接口" } as Record<string, string>)[source] ??
+      source,
     agentModeCommand: "接入方式 命令",
     cliAgentsTitle: "其他工具",
     cliAgentsHint:
@@ -1393,6 +1450,35 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     approvalTooLong: "Too long to show here — approve it in the terminal (or deny it here)",
     approvalMore: (n) => `${n} more waiting`,
     approvalWaiting: (secs) => (secs < 5 ? "just now" : `waiting ${secs}s`),
+    approvalDanger: {
+      delete: "This deletes files",
+      "force-push": "This rewrites remote history",
+      rewrite: "This discards local changes",
+      sql: "This drops tables / databases",
+      "pipe-shell": "This downloads and runs a script",
+      disk: "This writes to a disk directly",
+      privilege: "This escalates privileges",
+      permissions: "This opens up permissions",
+    },
+    approvalHold: "Hold 0.8s to confirm",
+    approvalReason: "Add a reason",
+    approvalReasonUnsafe: "Too dangerous",
+    approvalReasonSafer: "Do it more safely",
+    approvalReasonExplain: "Explain first",
+    approvalReasonCustom: "Custom",
+    approvalReasonCustomPlaceholder: "What should the agent do instead?",
+    approvalLogTitle: "Approval log",
+    approvalLogHint:
+      "Last 100: what was allowed or denied, when, and from where. Details are clipped to 200 characters.",
+    approvalLogEmpty: "No approvals yet",
+    approvalLogDecision: (decision) =>
+      ({ allow: "allowed", deny: "denied", expired: "timed out" } as Record<
+        string,
+        string
+      >)[decision] ?? decision,
+    approvalLogSource: (source) =>
+      ({ lamp: "lamp", web: "phone", api: "API" } as Record<string, string>)[source] ??
+      source,
     agentModeCommand: "Mode: command",
     cliAgentsTitle: "Other tools",
     cliAgentsHint:

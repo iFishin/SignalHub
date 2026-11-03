@@ -20,12 +20,20 @@ export interface Approval {
   /** `detail` 被截断过。 */
   truncated: boolean;
   /**
+   * 危险分类的键（`delete` / `force-push` / `sql` …），没认出来是 `null`。
+   * **只影响强调**（红横幅 + 按住确认），不影响 `allowable` —— 两者是两件事。
+   */
+  danger?: string | null;
+  /**
    * 能不能在灯上放行。**看不全就不给放行**（长命令只能拒绝、或者回终端自己看）——
    * 这条规则在 Rust 的登记表里挡着，这里只是照它画不画那个按钮。
    */
   allowable: boolean;
   age_ms: number;
 }
+
+/** 拒绝理由的预设键（`docs/plan-approval.md` A2）。 */
+export type DenyReason = "unsafe" | "safer" | "explain" | "custom";
 
 /** 事件名必须和 Rust 的 `APPROVALS_EVENT` 一致。 */
 const APPROVALS_EVENT = "signalhub://approvals";
@@ -42,7 +50,12 @@ const APPROVALS_EVENT = "signalhub://approvals";
  */
 export function useApprovals(): {
   approvals: Approval[];
-  decide: (id: string, decision: "allow" | "deny") => void;
+  decide: (
+    id: string,
+    decision: "allow" | "deny",
+    reason?: DenyReason,
+    custom?: string,
+  ) => void;
 } {
   const [approvals, setApprovals] = useState<Approval[]>([]);
 
@@ -65,8 +78,14 @@ export function useApprovals(): {
   }, [refresh]);
 
   const decide = useCallback(
-    (id: string, decision: "allow" | "deny") => {
-      invoke("decide_approval", { id, decision })
+    (id: string, decision: "allow" | "deny", reason?: DenyReason, custom?: string) => {
+      invoke("decide_approval", {
+        id,
+        decision,
+        // Rust 那边是 `Option<String>`：给 `null` 比给 `undefined` 稳
+        reason: reason ?? null,
+        custom: custom ?? null,
+      })
         // 失败**不改本地列表**：超时那条 Rust 会推一次变化，界面跟着就没了；
         // 而「看不全不能放行」那种拒绝是立刻返回的，列表本来就该还在。
         .catch((err) => console.error("decide_approval 失败", err));

@@ -27,6 +27,7 @@ import {
 } from "../lib/useToggles";
 import { useStats } from "../lib/useStats";
 import { useHistory, type DayRow } from "../lib/useHistory";
+import { useApprovalLog, type ApprovalRecord } from "../lib/useApprovalLog";
 import { useTimeline, type TimelineSegment } from "../lib/useTimeline";
 import { useOutboundLog, lastAttemptFor, type Attempt } from "../lib/useOutboundLog";
 import { useNow } from "../lib/useNow";
@@ -707,6 +708,52 @@ function HistoryList({ days, m }: { days: DayRow[]; m: Messages }) {
   );
 }
 
+/**
+ * 审批记录（`docs/plan-approval.md` A1）。
+ *
+ * 一行一条：时间 / 结果 / 工具 / 目标 / 从哪儿点的。**不显示详情全文** ——
+ * 盘上留的就是截断过的那份，而且这一页是「扫一眼」用的，不是审案卷。
+ */
+function ApprovalLogList({
+  records,
+  m,
+}: {
+  records: ApprovalRecord[];
+  m: Messages;
+}) {
+  return (
+    <div className="approval-log">
+      {records.map((record, index) => (
+        <div
+          className="approval-log-row"
+          key={`${record.ts_ms}-${index}`}
+          data-decision={record.decision}
+        >
+          <span className="approval-log-time">{formatWhen(record.ts_ms)}</span>
+          <span className="approval-log-decision">
+            {m.approvalLogDecision(record.decision)}
+          </span>
+          <span className="approval-log-tool">{record.tool}</span>
+          <span className="approval-log-target" title={record.detail}>
+            {record.target || record.detail || "—"}
+          </span>
+          <span className="approval-log-source">{m.approvalLogSource(record.source)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** `MM-DD HH:MM`。历史里跨天是常事，所以日期不能省。 */
+function formatWhen(tsMs: number): string {
+  return new Date(tsMs).toLocaleString(undefined, {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 /** `2026-10-12` → `10-12`。年份在「最近几天」这种列表里是纯噪音。 */
 function shortDay(day: string): string {
   return day.length === 10 ? day.slice(5) : day;
@@ -1092,6 +1139,10 @@ export function SettingsPanel({ snapshot }: Props) {
   const update = useUpdate();
   const groups = tabGroups(m);
   const [tab, setTab] = useState<Tab>("status");
+  // 审批历史（`docs/plan-approval.md` A1）：只在「历史」页打开时读盘
+  const { records: approvalLog, refresh: refreshApprovalLog } = useApprovalLog(
+    tab === "history",
+  );
   // 逐状态那张表默认收起（十行表和上面九行不是一个量级）。它记的是**用户**的
   // 展开意图，所以放在 state 里；切走再切回来会保留（组件没卸载）。
   const [perStateOpen, setPerStateOpen] = useState(false);
@@ -1731,20 +1782,42 @@ export function SettingsPanel({ snapshot }: Props) {
     switch (tab) {
       case "history":
         return (
-          <div className="section">
-            <div className="row">
-              <span>{m.historyTitle}</span>
-              <button type="button" className="btn btn-tiny" onClick={refreshHistory}>
-                {m.diagRefresh}
-              </button>
+          <>
+            <div className="section">
+              <div className="row">
+                <span>{m.historyTitle}</span>
+                <button type="button" className="btn btn-tiny" onClick={refreshHistory}>
+                  {m.diagRefresh}
+                </button>
+              </div>
+              <p className="hint">{m.historyHint}</p>
+              {historyDays.length === 0 ? (
+                <p className="empty">{m.historyEmpty}</p>
+              ) : (
+                <HistoryList days={historyDays} m={m} />
+              )}
             </div>
-            <p className="hint">{m.historyHint}</p>
-            {historyDays.length === 0 ? (
-              <p className="empty">{m.historyEmpty}</p>
-            ) : (
-              <HistoryList days={historyDays} m={m} />
-            )}
-          </div>
+
+            {/* 审批记录（A1）：和时长统计同页 —— 都是「过去发生了什么」 */}
+            <div className="section">
+              <div className="row">
+                <span>{m.approvalLogTitle}</span>
+                <button
+                  type="button"
+                  className="btn btn-tiny"
+                  onClick={refreshApprovalLog}
+                >
+                  {m.diagRefresh}
+                </button>
+              </div>
+              <p className="hint">{m.approvalLogHint}</p>
+              {approvalLog.length === 0 ? (
+                <p className="empty">{m.approvalLogEmpty}</p>
+              ) : (
+                <ApprovalLogList records={approvalLog} m={m} />
+              )}
+            </div>
+          </>
         );
 
       case "status":

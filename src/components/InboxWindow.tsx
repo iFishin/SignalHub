@@ -5,14 +5,21 @@ import { useLang, useMessages } from "../lib/i18n";
 import { useNow } from "../lib/useNow";
 import { useSettings } from "../lib/useSettings";
 import { signalLabel } from "../lib/signals";
-import type { Approval } from "../lib/useApprovals";
+import type { Approval, DenyReason } from "../lib/useApprovals";
 import type { Snapshot } from "../lib/types";
 import { buildInbox, formatAge, type InboxRow } from "../lib/inboxRows";
+import { dangerLabel, reasonLabel } from "../lib/approvalLabels";
+import { HoldButton } from "./HoldButton";
 
 interface Props {
   snapshot: Snapshot;
   approvals: Approval[];
-  decide: (id: string, decision: "allow" | "deny") => void;
+  decide: (
+    id: string,
+    decision: "allow" | "deny",
+    reason?: DenyReason,
+    custom?: string,
+  ) => void;
 }
 
 /**
@@ -59,6 +66,11 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
     () => new Map(all.map((row, index) => [row.key, index])),
     [all],
   );
+
+  // 哪一行正在选拒绝理由，以及「自定义」那一格的字。**只可能有一行**：
+  // 同时给两条挑理由没有意义，而收件箱本来就是一条一条处理的。
+  const [reasonFor, setReasonFor] = useState<string | null>(null);
+  const [customReason, setCustomReason] = useState("");
 
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   // 选中的那一行消失（审批被处理、会话过期）时自动接住第一行；否则键盘焦点会
@@ -126,13 +138,16 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
   );
 
   const decideRow = useCallback(
-    (row: InboxRow, decision: "allow" | "deny") => {
+    (row: InboxRow, decision: "allow" | "deny", reason?: DenyReason, custom?: string) => {
       if (!row.approval) return;
       if (decision === "allow" && !row.approval.allowable) {
         say(m.inbox.allowBlocked);
         return;
       }
-      decide(row.approval.id, decision);
+      decide(row.approval.id, decision, reason, custom);
+      // 决定之后理由那一格收起来（无论成功还是超时，那一行都不该还挂着菜单）
+      setReasonFor(null);
+      setCustomReason("");
       // 真正的结果由 Rust 推回来（那一行消失 / 还留着）；这里只给一个即时反馈。
       say(decision === "allow" ? m.inbox.allowed : m.inbox.denied);
     },
@@ -231,6 +246,8 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
     const isSelected = row.key === selectedKey;
     const muted = row.group !== "" && settings.muted_groups.includes(row.group);
     const approval = row.approval;
+    const danger = dangerLabel(m, approval?.danger);
+    const picking = approval ? reasonFor === approval.id : false;
     return (
       <div
         key={row.key}
@@ -259,35 +276,94 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
           </div>
           {row.message && <div className="inbox-message">{row.message}</div>}
           {approval && (
-            <div className="inbox-approval">
+            <div className="inbox-approval" data-danger={danger ? "1" : undefined}>
               <div className="inbox-approval-head">
                 {approval.tool}
                 {approval.target && <span className="inbox-target"> · {approval.target}</span>}
               </div>
+              {/* 危险横幅：只说「这条会干什么」，不替用户拒绝 */}
+              {danger && <div className="inbox-danger">{danger}</div>}
               <pre className="inbox-detail">{approval.detail}</pre>
               {approval.truncated && <div className="inbox-warn">{m.inbox.truncated}</div>}
               {!approval.allowable && !approval.truncated && (
                 <div className="inbox-warn">{m.inbox.allowBlocked}</div>
+              )}
+              {/* 拒绝理由（A2）：三个预设 + 自定义。灯上的气泡只给预设 ——
+                  这里窗口更大，能放下一个输入框。 */}
+              {picking && (
+                <div className="inbox-reasons">
+                  {(["unsafe", "safer", "explain"] as DenyReason[]).map((reason) => (
+                    <button
+                      key={reason}
+                      type="button"
+                      className="inbox-btn inbox-btn-reason"
+                      onMouseDown={stop}
+                      onDoubleClick={stop}
+                      onClick={(event) => {
+                        stop(event);
+                        decideRow(row, "deny", reason);
+                      }}
+                    >
+                      {reasonLabel(m, reason)}
+                    </button>
+                  ))}
+                  <form
+                    className="inbox-reason-custom"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      const text = customReason.trim();
+                      if (text) decideRow(row, "deny", "custom", text);
+                    }}
+                  >
+                    <input
+                      value={customReason}
+                      onChange={(event) => setCustomReason(event.target.value)}
+                      onMouseDown={stop}
+                      placeholder={m.approvalReasonCustomPlaceholder}
+                      maxLength={200}
+                      aria-label={m.approvalReasonCustom}
+                    />
+                    <button
+                      type="submit"
+                      className="inbox-btn"
+                      disabled={!customReason.trim()}
+                    >
+                      {m.approvalReasonCustom}
+                    </button>
+                  </form>
+                </div>
               )}
             </div>
           )}
           <div className="inbox-actions">
             {approval && (
               <>
-                <button
-                  type="button"
-                  className="inbox-btn inbox-btn-allow"
-                  disabled={!approval.allowable}
-                  title={approval.allowable ? m.inbox.approvalHint : m.inbox.allowBlocked}
-                  onMouseDown={stop}
-                  onDoubleClick={stop}
-                  onClick={(event) => {
-                    stop(event);
-                    decideRow(row, "allow");
-                  }}
-                >
-                  {m.inbox.allow}
-                </button>
+                {/* 危险命令的「允许」要按住 0.8 秒（A3）；其余仍是一键 */}
+                {danger && approval.allowable ? (
+                  <HoldButton
+                    className="inbox-btn inbox-btn-allow"
+                    title={m.approvalHold}
+                    ariaLabel={`${m.inbox.allow} · ${m.approvalHold}`}
+                    onConfirm={() => decideRow(row, "allow")}
+                  >
+                    {m.inbox.allow}
+                  </HoldButton>
+                ) : (
+                  <button
+                    type="button"
+                    className="inbox-btn inbox-btn-allow"
+                    disabled={!approval.allowable}
+                    title={approval.allowable ? m.inbox.approvalHint : m.inbox.allowBlocked}
+                    onMouseDown={stop}
+                    onDoubleClick={stop}
+                    onClick={(event) => {
+                      stop(event);
+                      decideRow(row, "allow");
+                    }}
+                  >
+                    {m.inbox.allow}
+                  </button>
+                )}
                 <button
                   type="button"
                   className="inbox-btn"
@@ -299,6 +375,23 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
                   }}
                 >
                   {m.inbox.deny}
+                </button>
+                {/* 展开拒绝理由（A2） */}
+                <button
+                  type="button"
+                  className="inbox-btn inbox-btn-reason"
+                  title={m.approvalReason}
+                  aria-label={m.approvalReason}
+                  aria-expanded={picking}
+                  onMouseDown={stop}
+                  onDoubleClick={stop}
+                  onClick={(event) => {
+                    stop(event);
+                    setReasonFor(picking ? null : approval.id);
+                    setCustomReason("");
+                  }}
+                >
+                  ▾
                 </button>
               </>
             )}

@@ -1,4 +1,5 @@
 mod alerts;
+mod approval_log;
 mod approvals;
 mod collect;
 mod devices;
@@ -821,24 +822,42 @@ fn get_approvals(
 ///
 /// **「看不全不给放行」在登记表里挡着**（`Registry::decide`），所以这个命令只是把
 /// 失败翻译成一句人话；界面上那个按钮本来也不会画出来。
+///
+/// `reason` / `custom` 只在拒绝时有意义（`docs/plan-approval.md` A2）：
+/// `reason` 是预设键（`unsafe` / `safer` / `explain` / `custom`），`custom` 是
+/// 用户自己写的那句话。认不出来的键一律当默认 —— 拒绝不能因为参数写错而失效。
 #[tauri::command]
 fn decide_approval(
     registry: tauri::State<'_, approvals::SharedApprovals>,
     id: String,
     decision: String,
+    reason: Option<String>,
+    custom: Option<String>,
 ) -> Result<(), String> {
     let decision = match decision.as_str() {
         "allow" => approvals::Decision::Allow,
-        "deny" => approvals::Decision::Deny,
+        "deny" => approvals::Decision::Deny(approvals::DenyReason::parse(
+            reason.as_deref(),
+            custom,
+        )),
         other => return Err(format!("decision 只能是 allow 或 deny，收到 {other:?}")),
     };
-    match registry.decide(&id, decision) {
+    match registry.decide(&id, decision, "lamp") {
         approvals::Decided::Done => Ok(()),
         approvals::Decided::NotFound => Err("没有这一条了（多半是刚超时）".to_string()),
         approvals::Decided::NotAllowable => {
             Err("这条在灯上看不全，只能拒绝 —— 要放行请回终端里看".to_string())
         }
     }
+}
+
+/// 最近的审批记录（设置 → 历史页读它，见 `docs/plan-approval.md` A1）。
+///
+/// 直接读盘而不是从内存里取：那份文件才是「跨重启」的那一份，而读它是低频动作
+/// （只在打开那一页时）。读不出来就当空 —— 历史坏了不该挡住别的。
+#[tauri::command]
+fn get_approval_history(limit: Option<usize>) -> Vec<approval_log::Record> {
+    approval_log::recent(limit.unwrap_or(100).min(500))
 }
 
 /// 清掉某一组的全部会话（灯上那块牌右上角的 `×`）。
@@ -2448,8 +2467,11 @@ pub fn run() {
         .manage(shortcuts::SharedShortcuts::default())
         // 专注倒计时的代号（取消上一个线程用，见 manual.rs）
         .manage(manual::SharedManual::default())
-        // 等用户点的那些审批（灯上的气泡读它，见 approvals.rs）
-        .manage(approvals::SharedApprovals::default())
+        // 等用户点的那些审批（灯上的气泡读它，见 approvals.rs）。
+        // 历史落到 `~/.signalhub/approvals/`；拿不到目录就只在内存里 —— 功能不受影响。
+        .manage(std::sync::Arc::new(approvals::Registry::new(
+            approval_log::dir().ok(),
+        )))
         // 多机中枢的健康状态（轮询线程写，「多机」页读，见 remote.rs）
         .manage(remote::registry())
         .invoke_handler(tauri::generate_handler![
@@ -2482,6 +2504,7 @@ pub fn run() {
             get_outbound_log,
             get_shortcuts,
             get_approvals,
+            get_approval_history,
             decide_approval,
             get_notify_permission,
             request_notify_permission,
@@ -2539,6 +2562,13 @@ pub fn run() {
                 window.set_visible_on_all_workspaces(true)?;
                 window.show()?;
             }
+
+            // 审批历史超过保留期的文件删掉。启动时做一次就够 —— 它不是实时要求。
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_millis() as u64)
+                .unwrap_or(0);
+            approval_log::prune(now_ms);
 
             // token 建不出来说明 ~/.signalhub 不可写。这是无法降级的配置问题，
             // 让启动直接失败并打出来，好过一个「能启动但上报接口静默不工作」的 app。
