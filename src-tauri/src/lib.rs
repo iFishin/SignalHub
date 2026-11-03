@@ -358,6 +358,20 @@ pub(crate) fn persist_settings(
 ) -> Result<Settings, String> {
     let settings = settings.clamped();
 
+    // 切「灯的数量」是**唯一**会同步建 / 关最多 `lamps::MAX_LAMPS` 个 webview 的
+    // 操作，它出过「整机卡住」的报告（issue #4 那次是抱着 lamps 锁建窗）。而从
+    // Dock 启动的 .app 没有 stderr，「卡住了」这件事事后完全查不到 —— 于是切换
+    // 前后各记一行到 `hooks.log`：**有头无尾就是卡在中间**，当时有几盏灯也一并
+    // 记下来。只在布局真的变了时才写，别的设置改动不会往里灌东西。
+    let switching = {
+        let previous = current_settings(app);
+        if previous.lamp_layout == settings.lamp_layout {
+            None
+        } else {
+            Some((previous.lamp_layout, std::time::Instant::now()))
+        }
+    };
+
     // 先落盘再改内存和界面：保存失败时不该出现「界面变了但重启就没了」
     config::save_settings(&settings).map_err(|err| format!("保存设置失败: {err}"))?;
     // 换一个新的 `Arc` 而不是就地改：读取方（状态热路径）只克隆那个 `Arc`，
@@ -366,7 +380,29 @@ pub(crate) fn persist_settings(
     *app.state::<SharedSettings>().lock().expect("settings poisoned") = Arc::new(settings.clone());
 
     let snapshot = current_snapshot(app);
+    if let Some((before, _)) = switching {
+        config::append_hook_log(&format!(
+            "{} [lamp] 开始切换布局 {:?} → {:?}（可见组 {}）\n",
+            config::utc_hms(),
+            before,
+            settings.lamp_layout,
+            visible_group_count(&settings, &snapshot),
+        ));
+    }
     apply_settings(app, &settings, &snapshot);
+    if let Some((before, started)) = switching {
+        config::append_hook_log(&format!(
+            "{} [lamp] 布局切换完成 {:?} → {:?}（{} ms，现有灯窗 {}）\n",
+            config::utc_hms(),
+            before,
+            settings.lamp_layout,
+            started.elapsed().as_millis(),
+            app.webview_windows()
+                .keys()
+                .filter(|label| label.starts_with(lamps::LABEL_PREFIX))
+                .count(),
+        ));
+    }
     let _ = app.emit(SETTINGS_EVENT, &settings);
     Ok(settings)
 }
