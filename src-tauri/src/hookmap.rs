@@ -146,7 +146,7 @@ const _: () = assert!(IN_TOOL_TTL_MS >= 15 * 60 * 1000 && IN_TOOL_TTL_MS <= 60 *
 pub fn in_tool_ttl_ms(agent: &str, payload: &Value) -> Option<u64> {
     let event = event_name(payload)?;
     let started = match agent {
-        "claude-code" | "csc" | "codex" | "goose" => event == "PreToolUse",
+        "claude-code" | "csc" | "codex" | "goose" | "workbuddy" => event == "PreToolUse",
         // Gemini 用 BeforeTool / AfterTool
         "gemini" => event == "BeforeTool",
         // Cursor 是 camelCase；`beforeShellExecution` 同样意味着一段长命令开始了
@@ -168,6 +168,9 @@ pub fn map_event(agent: &str, payload: &Value) -> Option<Action> {
         "claude-code" => map_claude(event, payload),
         // CSC 的载荷与事件名和 Claude Code 完全同构（issue #22），共用一份映射
         "csc" => map_claude(event, payload),
+        // WorkBuddy 同理：官方 hooks 文档里的事件名与 stdin 字段和 Claude Code 一致，
+        // 所以直接复用 —— 单独抄一份只会多一处会漂移的真值。
+        "workbuddy" => map_claude(event, payload),
         "codex" => map_codex(event),
         "cursor" => map_cursor(event, payload),
         "gemini" => map_gemini(event),

@@ -1911,9 +1911,12 @@ mod tests {
 
         let mut store = ctx.store.lock().unwrap();
         assert_eq!(store.snapshot().aggregate, Signal::Working);
-        // 半分多钟后还活着（还剩一分钟），两分钟后就该转 stale 了
-        assert!(!store.expire(Instant::now() + Duration::from_secs(20)));
-        assert!(store.expire(Instant::now() + Duration::from_secs(90)));
+        // 这条记录是 4 分钟前写的，所以它的剩余寿命 = 默认 TTL - 4 分钟。
+        // 从默认值推而不是写死 90 秒：`working` 的默认从 300 秒放宽到 600 秒后，
+        // 90 秒早就不够了（那正是这条测试当初失败的原因）。
+        let remaining = Signal::Working.default_ttl() - Duration::from_secs(4 * 60);
+        assert!(!store.expire(Instant::now() + remaining - Duration::from_secs(5)));
+        assert!(store.expire(Instant::now() + remaining + Duration::from_secs(5)));
     }
 
     /// 坏行跳过，好行照补 —— 文件会被手改、被截断、被交错写花。

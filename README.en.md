@@ -4,7 +4,7 @@
 
 A cross-platform floating status light for your desktop. A stack of always-on-top, draggable transparent signs that show the current state with colour and rhythm; click one to open the inbox, double-click to collapse the whole thing into a single plain light.
 
-Built for AI coding agents first: **Claude Code, Codex, Cursor, Gemini CLI, Goose, opencode, Pi and Hermes all connect in one click** (the first five get hooks written into their own config files; the last three get a plugin file). But it is **not tied to them** — any program that can send one HTTP request can report its state.
+Built for AI coding agents first: **Claude Code, Codex, Cursor, Gemini CLI, Goose, WorkBuddy, opencode, Pi and Hermes all connect in one click** (most get hooks written into their own config files; opencode, Pi and Hermes get a plugin file). But it is **not tied to them** — any program that can send one HTTP request can report its state.
 
 > The design docs in [`docs/`](docs/) are written in Chinese. They are maintainer documentation: they record *why* each decision was made and which bugs were actually hit. This README and the app UI are available in English.
 
@@ -15,7 +15,7 @@ Built for AI coding agents first: **Claude Code, Codex, Cursor, Gemini CLI, Goos
 | `idle` | green, steady | Idle, nothing to do |
 | `thinking` | green, fast blink | Reasoning |
 | `working` | green, slow blink | Running a tool / task |
-| `done` | green, steady + a pulse | Finished (the session disappears after 30s) |
+| `done` | green, steady + a pulse | Finished (disappears after 3 min by default; configurable) |
 | `attention` | amber, blinking | Wants your attention |
 | `permission` | red, smooth blink | Waiting for approval |
 | `error` | red, hard strobe | Error / blocked |
@@ -73,7 +73,7 @@ Three channels that do not rely on colour:
 
 **Approve from the lamp** (Settings → Connect → Approve from the lamp, **off by default**): once on, every time Claude Code wants to ask you to approve a tool call, that confirmation box moves onto the lamp — a bubble appears, you click Allow or Deny, or you ignore it (after 45 seconds the question goes back to the terminal). **This is the only feature that changes how the agent behaves**, so it only acts at the moment the agent was going to ask anyway (`PermissionRequest`) and does not intercept other tool calls; it **never says "allow" on your behalf** (timeout, superseded, switch off, LAN access on — all of them say nothing and the question returns to the terminal); and **if it cannot be shown in full it cannot be allowed** — a command over 240 characters counts as truncated, and that one can only be denied or approved back in the terminal (a command you cannot read in full should not be one click away from running). The full command appears only in this local window; what gets reported is still the short phrase ("run npm"), and neither notifications nor outbound hooks carry it. The endpoint requires a token (the entry written into `~/.claude/settings.json` carries it), and uninstalling removes that token-bearing entry too. From the command line: `signalhub install hooks claude-code --approve` (then turn on the switch on the Connect page — that is the real gate).
 
-**Every state has a silence timeout** (`working` / `attention` / `error` 300s, `thinking` / `permission` / `idle` 600s, `done` 30s; all configurable). What happens after it depends on whether that reporter **knows the agent's process**:
+**Every state has a silence timeout** (`working` 600s, `attention` / `error` 300s, `thinking` / `permission` / `idle` 600s, `done` 180s; all configurable under Behavior → Silence timeouts or Look → Per-state overrides). What happens after it depends on whether that reporter **knows the agent's process**:
 
 - **It does** (Claude Code's command hooks, the opencode / Pi / Hermes plugins, `signalhub run`; Claude Code's optional HTTP hook mode carries no PID): if the process is still alive the session turns **idle** (the window is open, there just were no events to report); if the process is gone the session is removed immediately, without waiting for the timeout. **"Needs permission / attention / error" are not re-judged this way** — a live process does not prove the request was answered, so they still go stale.
 - **It does not** (HTTP reporters, hand-written commands, the other hooks): the session turns `stale` (grey, steady) and is deleted 30 minutes later.
@@ -158,7 +158,7 @@ Full API reference: [docs/api.md](docs/api.md).
 ## Wiring up an agent
 
 ```bash
-signalhub install hooks claude-code      # also: codex / cursor / gemini / goose / opencode / pi / hermes
+signalhub install hooks claude-code      # also: csc / codex / cursor / gemini / goose / workbuddy / opencode / pi / hermes
 signalhub install hooks claude-code --dry-run   # see what it would change first
 ```
 

@@ -4,7 +4,7 @@
 
 跨平台的桌面悬浮状态指示器。一组始终置顶、可拖拽的透明状态牌，用颜色和明暗节奏表示当前状态；左键点一下打开「收件箱」，双击折叠成一颗单纯的灯。
 
-优先适配 AI 智能体：**Claude Code / Codex / Cursor / Gemini CLI / Goose / opencode / Pi / Hermes 都能一键接入**（前五家把 hook 写进它们自己的配置文件，后三家装的是插件文件）。但**不绑定智能体**——任何程序只要能发一个 HTTP 请求就能上报状态。
+优先适配 AI 智能体：**Claude Code / Codex / Cursor / Gemini CLI / Goose / WorkBuddy / opencode / Pi / Hermes 都能一键接入**（大部分把 hook 写进它们自己的配置文件，opencode / Pi / Hermes 装的是插件文件）。但**不绑定智能体**——任何程序只要能发一个 HTTP 请求就能上报状态。
 
 ## 状态
 
@@ -13,7 +13,7 @@
 | `idle` | 绿、常亮 | 空闲 |
 | `thinking` | 绿、快闪 | 正在推理 |
 | `working` | 绿、慢闪 | 正在执行 |
-| `done` | 绿、常亮 + 闪一下 | 完成（30s 后该会话消失） |
+| `done` | 绿、常亮 + 闪一下 | 完成（默认 3 分钟后消失，可调） |
 | `attention` | 黄、闪 | 需要关注 |
 | `permission` | 红、平滑闪 | 需要授权 |
 | `error` | 红、频闪 | 出错 / 阻塞 |
@@ -79,12 +79,12 @@ signalhub error --session b --group ci
 - **拒绝能说清理由**：拒绝旁边一个小箭头，展开「太危险」「换更安全的做法」「先解释再试」，收件箱里还能自己写一句（截 200 字）。理由会作为 `hookSpecificOutput.decision.message` 进模型上下文 —— **那句话是英文**（模型读英文），界面上的中文只是同一个键的另一面。不带理由的拒绝和以前逐字节一样；认不出来的理由键一律退回默认那句，**拒绝不会因为参数写错而失效**。
 - **批过什么查得到**：设置 →「历史」页在今日统计下面多一段「审批记录」——时间、允许 / 拒绝 / 超时、工具、目标、是谁点的（灯窗 / 接口 / 网页）。同时落到 `~/.signalhub/approvals/YYYY-MM-DD.jsonl`（保留 30 天，`0600`），离开一会儿回来能补上，出事能回溯「谁放行的 `rm -rf`」。盘上那份的详情只留 200 字符 —— 屏幕要「现在看全」，硬盘要「以后大概知道」，`API_KEY=…` 不该永久躺在磁盘上。
 
-**每个状态都有静默超时**（`working` / `attention` / `error` 300 秒，`thinking` / `permission` / `idle` 600 秒，`done` 30 秒；都能改）。超时之后怎么显示，取决于这一路上报**知不知道智能体的进程号**：
+**每个状态都有静默超时**（`working` 600 秒、`attention` / `error` 300 秒，`thinking` / `permission` / `idle` 600 秒，`done` 180 秒；都能在「行为 → 静默超时」或「外观 → 逐个状态覆盖」里改）。超时之后怎么显示，取决于这一路上报**知不知道智能体的进程号**：
 
 - **知道**（Claude Code 的命令式 hook、opencode / Pi / Hermes 的插件、`signalhub run`；Claude Code 如果选了 HTTP 接入就不带进程号）：进程还活着 → **保持最后的状态**（一次 20 分钟的构建、十分钟的推理期间一个事件都没有，灯仍然是「执行中」/「思考中」；一轮什么时候结束由智能体自己的结束事件决定）；进程真没了 → 立刻清掉，不用等超时。**「需要授权 / 注意 / 出错」这三档不这么改判** —— 进程活着不能说明那件事已经过去了，它们照旧转沉默。
 - **不知道**（HTTP 上报、手写命令、其余几家 hook）：照旧转入 `stale`（灰、常亮），再过 30 分钟才真正删除。**但一次工具调用开始时会自动给 30 分钟** —— 见下。
 
-**长任务不该被当成「沉默」**（issue #23）：没有进程号的那一路上，`working` 默认只活 300 秒，而一次 `npm run build` / 跑测试轻易超过 5 分钟，这期间智能体**一个 hook 事件都不会发**（`PostToolUse` 要等工具结束才来）。所以 `PreToolUse` 那一帧会自带 30 分钟停留时长：只要工具还在跑，灯就不会灰。工具**结束**的那一帧不延长（之后马上会有下一个事件，用默认值更诚实 —— 真挂了 5 分钟就灰，而不是半小时）。
+**长任务不该被当成「沉默」**（issue #23）：没有进程号的那一路上，`working` 默认只活 10 分钟，而一次 `npm run build` / 跑测试轻易超过 5 分钟，这期间智能体**一个 hook 事件都不会发**（`PostToolUse` 要等工具结束才来）。所以 `PreToolUse` 那一帧会自带 30 分钟停留时长：只要工具还在跑，灯就不会灰。工具**结束**的那一帧不延长（之后马上会有下一个事件，用默认值更诚实 —— 真挂了 10 分钟就灰，而不是半小时）。
 
 这样「智能体崩溃了/不说话了」和「智能体空闲待命」是两种不同的显示——不会出现「智能体早就没了，灯还在闪」的情况。**老版本装过的 hook 要回「接入」页重装一次**才会带上进程号；没重装的照旧按沉默处理（但同样吃上面那条 30 分钟）。
 
@@ -173,7 +173,7 @@ signalhub watch --until done --timeout 10m        # CI 里等某个状态
 ## 接入智能体
 
 ```bash
-signalhub install hooks claude-code      # 也支持 csc / codex / cursor / gemini / goose / opencode / pi / hermes
+signalhub install hooks claude-code      # 也支持 csc / codex / cursor / gemini / goose / workbuddy / opencode / pi / hermes
 signalhub install hooks claude-code --dry-run   # 先看看会改什么
 ```
 

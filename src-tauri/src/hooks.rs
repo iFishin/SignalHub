@@ -32,6 +32,20 @@ pub enum Agent {
     Opencode,
     Pi,
     Hermes,
+    /// WorkBuddy（腾讯的 AI 工作台，基于 CodeBuddy）。
+    ///
+    /// **和 Claude Code 完全同构**：官方 hooks 文档里的事件名（`SessionStart` /
+    /// `UserPromptSubmit` / `PreToolUse` / `PostToolUse` / `PostToolUseFailure` /
+    /// `PermissionRequest` / `Notification` / `Stop` / `SessionEnd` …）、stdin 的
+    /// JSON 字段（`session_id` / `cwd` / `tool_name` / `prompt` / `hook_event_name`）
+    /// 以及 `{ matcher, hooks: [{ type, command }] }` 的嵌套形状都一致，所以除
+    /// 配置路径和上报名之外全部复用 Claude Code 那一套。
+    ///
+    /// 配置落在桌面版自己的数据目录（`~/.workbuddy-ai/settings.json`）——
+    /// 该文件里已经有 `enabledPlugins` / `pluginConfigs`，确认是它的设置文件；
+    /// 官方文档也写明「插件 hooks 会与用户和项目 hooks 合并」，即 settings.json
+    /// 的 `hooks` 键是合法来源。
+    WorkBuddy,
 }
 
 impl Agent {
@@ -42,6 +56,8 @@ impl Agent {
             "claude-code" | "claude" | "claudecode" => Agent::ClaudeCode,
             // CoStrict CLI：命令叫 `csc`，包名 @costrict/csc，两种写法都收
             "csc" | "costrict" | "costrict-cli" | "co-strict" => Agent::Csc,
+            // WorkBuddy：连字符、下划线、以及不带分隔的写法都收
+            "workbuddy" | "work-buddy" | "work_buddy" => Agent::WorkBuddy,
             "codex" | "codex-cli" => Agent::Codex,
             "cursor" => Agent::Cursor,
             "gemini" | "gemini-cli" => Agent::Gemini,
@@ -72,6 +88,7 @@ impl Agent {
             Agent::Opencode => "opencode",
             Agent::Pi => "Pi",
             Agent::Hermes => "Hermes",
+            Agent::WorkBuddy => "WorkBuddy",
         }
     }
 
@@ -101,13 +118,17 @@ impl Agent {
             // Hermes 的插件是**一个目录**（里面有清单和代码），整个都是我们建的 ——
             // 所以这里的路径是目录，卸载时整删（同 Goose）。
             Agent::Hermes => ".hermes/plugins/signalhub",
+            // WorkBuddy 桌面版的数据目录就是 `~/.workbuddy-ai/`（里面已有
+            // settings.json、plugins/、sessions/ 等）。hooks 写进 settings.json
+            // 的 `hooks` 键 —— 与 Claude Code 完全同一套合并语义。
+            Agent::WorkBuddy => ".workbuddy-ai/settings.json",
         }
     }
 }
 
 /// 全部智能体，按加入顺序。`parse` 的报错信息和 CLI 的 help 都用它，
 /// 免得新增一个之后忘改其中一处、报错里少列一个。
-pub const ALL_NAMES: [&str; 9] = [
+pub const ALL_NAMES: [&str; 10] = [
     "claude-code",
     "csc",
     "codex",
@@ -117,6 +138,7 @@ pub const ALL_NAMES: [&str; 9] = [
     "opencode",
     "pi",
     "hermes",
+    "workbuddy",
 ];
 
 impl Agent {
@@ -134,7 +156,7 @@ impl Agent {
         match self {
             Agent::Opencode | Agent::Pi | Agent::Hermes => InstallKind::PluginFile,
             Agent::ClaudeCode | Agent::Csc | Agent::Codex | Agent::Cursor | Agent::Gemini
-            | Agent::Goose => InstallKind::JsonHooks,
+            | Agent::Goose | Agent::WorkBuddy => InstallKind::JsonHooks,
         }
     }
 
@@ -154,6 +176,7 @@ impl Agent {
             Agent::Opencode => ".config/opencode",
             Agent::Pi => ".pi/agent",
             Agent::Hermes => ".hermes",
+            Agent::WorkBuddy => ".workbuddy-ai",
         }
     }
 
@@ -170,6 +193,9 @@ impl Agent {
             Agent::Opencode => &["opencode"],
             Agent::Pi => &["pi"],
             Agent::Hermes => &["hermes"],
+            // 桌面版没有常驻 CLI（数据目录痕迹才是可靠的检测依据）；这里保留
+            // 命令名，只是万一将来有 CLI 时能一并被认出来。
+            Agent::WorkBuddy => &["workbuddy"],
         }
     }
 }
@@ -460,7 +486,10 @@ fn events(agent: Agent) -> &'static [(&'static str, Option<&'static str>)] {
         // CSC 与 Claude Code 的事件表**逐条一致**（issue #22：分支同构，含
         // SessionStart 的 matcher）。共用一份而不是抄两遍 —— 抄本漂移的代价是
         // 静默少装一个事件。
-        Agent::ClaudeCode | Agent::Csc => &[
+        // WorkBuddy 的 hooks 与 Claude Code **逐条同构**（官方 hooks 文档里的事件名、
+        // matcher 取值、stdin 字段都一致），所以共用同一张表 —— 和 CSC 一个理由：
+        // 抄一份的代价是静默少装一个事件。
+        Agent::ClaudeCode | Agent::Csc | Agent::WorkBuddy => &[
             ("SessionStart", Some("startup|resume")),
             ("UserPromptSubmit", None),
             ("PreToolUse", None),
@@ -698,6 +727,7 @@ fn agent_name_for_cli(agent: Agent) -> &'static str {
         Agent::Opencode => "opencode",
         Agent::Pi => "pi",
         Agent::Hermes => "hermes",
+        Agent::WorkBuddy => "workbuddy",
     }
 }
 
@@ -732,7 +762,9 @@ pub fn cli_name(agent: Agent) -> &'static str {
 /// 得不全而被认成别的意思。`None` = 插件式接入，没有能跑的命令。
 pub fn probe_payload(agent: Agent) -> Option<String> {
     let event = match agent {
-        Agent::ClaudeCode | Agent::Csc | Agent::Codex | Agent::Goose => "UserPromptSubmit",
+        Agent::ClaudeCode | Agent::Csc | Agent::Codex | Agent::Goose | Agent::WorkBuddy => {
+            "UserPromptSubmit"
+        }
         // Cursor 用 camelCase
         Agent::Cursor => "beforeSubmitPrompt",
         // Gemini 也是 PascalCase，但「开始一轮」叫 BeforeAgent
@@ -2008,7 +2040,7 @@ impl HookSpec {
             HookSpec::Command(command) => match agent {
                 // `async: true` 是 Claude Code / Codex 的扩展字段，也让 hook 在后台
                 // 跑、不阻塞智能体。注意异步 hook 不受 timeout 约束（docs/api.md §4.4）。
-                Agent::ClaudeCode | Agent::Csc | Agent::Codex => {
+                Agent::ClaudeCode | Agent::Csc | Agent::Codex | Agent::WorkBuddy => {
                     json!({ "type": "command", "command": command, "async": true })
                 }
                 // Gemini / Goose 会**同步等待** hook（两家都没有 async 开关），所以给
@@ -2070,7 +2102,8 @@ fn handler_group(agent: Agent, spec: &HookSpec, matcher: Option<&str>) -> Value 
         }
         // Cursor 的 groups 形态不同：没有 `hooks` 数组，命令直接摆在组里
         Agent::Cursor => spec.body(agent),
-        Agent::ClaudeCode | Agent::Csc | Agent::Codex | Agent::Gemini | Agent::Goose => {
+        Agent::ClaudeCode | Agent::Csc | Agent::Codex | Agent::Gemini | Agent::Goose
+        | Agent::WorkBuddy => {
             let mut group = Map::new();
             if let Some(matcher) = matcher {
                 group.insert("matcher".into(), json!(matcher));
@@ -2366,6 +2399,29 @@ mod tests {
         // 条目形状一致（async: true：不阻塞智能体）
         let spec = HookSpec::Command("signalhub hook csc".to_string());
         assert_eq!(spec.body(Agent::Csc), spec.body(Agent::ClaudeCode));
+    }
+
+    /// WorkBuddy：官方 hooks 文档里的事件名、matcher 和 stdin 字段与 Claude Code
+    /// 逐条同构，所以它也是「换个家目录的 Claude Code」。
+    ///
+    /// 这条同时钉住**配置路径**：`~/.workbuddy-ai/` 是桌面版的数据目录（里面有
+    /// `enabledPlugins` / `pluginConfigs`），`settings.json` 的 `hooks` 键与插件
+    /// hooks 合并生效。
+    #[test]
+    fn workbuddy_is_a_claude_code_clone_with_its_own_home() {
+        assert_eq!(Agent::parse("workbuddy").unwrap(), Agent::WorkBuddy);
+        assert_eq!(Agent::parse("Work-Buddy").unwrap(), Agent::WorkBuddy);
+        assert_eq!(Agent::parse("work_buddy").unwrap(), Agent::WorkBuddy);
+        assert_eq!(
+            Agent::WorkBuddy.config_relative_path(),
+            ".workbuddy-ai/settings.json"
+        );
+        assert_eq!(Agent::WorkBuddy.marker_dir(), ".workbuddy-ai");
+        // 事件表逐条一致
+        assert_eq!(events(Agent::WorkBuddy), events(Agent::ClaudeCode));
+        // 条目形状一致（async: true：不阻塞智能体）
+        let spec = HookSpec::Command("signalhub hook workbuddy".to_string());
+        assert_eq!(spec.body(Agent::WorkBuddy), spec.body(Agent::ClaudeCode));
     }
 
     /// 「装过没有」的判据是**配置里有没有我们的 handler**，不是「配置文件在不在」

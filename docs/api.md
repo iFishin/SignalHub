@@ -17,7 +17,7 @@
 | `idle` | 绿、常亮 | 空闲，无任务 |
 | `thinking` | 绿、快闪 | 正在推理 |
 | `working` | 绿、慢闪 | 正在执行工具/任务 |
-| `done` | 绿、常亮 + 亮脉冲 | 任务完成（30s 后该会话消失） |
+| `done` | 绿、常亮 + 亮脉冲 | 任务完成（默认 180 秒后该会话消失，可调） |
 | `attention` | 黄、闪 | 需要关注 |
 | `permission` | 红、闪 | 需要授权/确认 |
 | `error` | 红、快闪 | 出错/阻塞 |
@@ -31,7 +31,7 @@
 > **`off` 例外：它可以用。** 上报 `off` / `pause` / `paused` / `disabled` 等价于
 > **清掉这个会话**（见 §3.4）—— 那是「我这边停了」的表达，和暂停全局监控是两回事。
 
-**每个状态都有静默超时**，超时后会话转入 `stale`（「沉默」，仍然显示）而不是消失。所以「上报完就不管」是安全的：`thinking` 600 秒、`working` 300 秒、`idle` 600 秒、`permission` 600 秒、`attention`/`error` 300 秒、`done` 30 秒（到期直接消失）。转入 `stale` 后再保留 30 分钟才真正删除。
+**每个状态都有静默超时**，超时后会话转入 `stale`（「沉默」，仍然显示）而不是消失。所以「上报完就不管」是安全的：`thinking` 600 秒、`working` 600 秒、`idle` 600 秒、`permission` 600 秒、`attention`/`error` 300 秒、`done` 180 秒（到期直接消失）。转入 `stale` 后再保留 30 分钟才真正删除。这些默认值都能在「行为 → 静默超时」或「外观 → 逐个状态覆盖」里改（见 §2 的 `ttl_ms`）。
 
 **思考 / 执行的窗口给得很宽是故意的**：钩子是按**事件**触发的，而模型思考、或跑一段没有工具调用的长回复时一个事件都不触发 —— 窗口给短了，灯会在智能体正在干活的时候说「没有智能体上报」。长任务仍然建议显式传 `ttl_ms`（比如一条要跑一小时的任务就传 `3600000`），把「多久算沉默」这件事交给自己决定。
 
@@ -152,7 +152,7 @@ Authorization: Bearer <token>
 
 - `hook` 报的是 `agent`（这条命令就是给我们装进各家配置里的那条用的）；
 - `run` 报的是 `custom`（包装器是用户自己的东西）；
-- 手写的 `signalhub working` 按 `--agent` 推：是我们那 9 家的名字就算 `agent`，否则算 `custom`。
+- 手写的 `signalhub working` 按 `--agent` 推：是我们那 10 家的名字就算 `agent`，否则算 `custom`。
 
 **它只管一件事**：接入页把「收到过上报、但不在智能体清单里」的那些分成两组显示，好让「系统采集器」和「我自己的脚本」不至于混在一起。灯的聚合、分组、TTL、通知全都与它无关 —— 所以填错、不填，灯的行为一模一样。
 
@@ -524,10 +524,13 @@ signalhub watch --json > states.jsonl             # 每次变化一行 JSON，�
 |---|---|---|
 | Claude Code | `~/.claude/settings.json` | 嵌套 `{ matcher?, hooks: [ { type, command, async } ] }` |
 | CSC (CoStrict CLI) | `~/.costrict/settings.json` | 同上（Claude Code 的分支，hook 机制同构；`csc` / `costrict` 两个名字都认） |
+| WorkBuddy | `~/.workbuddy-ai/settings.json` | 同上（腾讯 AI 工作台，官方 hooks 的事件名、matcher、stdin 字段与 Claude Code 逐条同构；`workbuddy` / `work-buddy` 都认） |
 | Codex | `~/.codex/hooks.json` | 同上 |
 | Cursor | `~/.cursor/hooks.json` | 扁平 `{ command, timeout }`，且顶层必须有 `version: 1` |
 
 Codex 也可以用 `config.toml` 写 hook，但这里刻意选独立的 `hooks.json`：改 TOML 要保留格式和注释，而 JSON 可以整份解析后重写，安全得多。
+
+**WorkBuddy 为什么能直接复用 Claude Code 那一套。** 官方 hooks 文档里的事件名（`SessionStart` / `UserPromptSubmit` / `PreToolUse` / `PostToolUse` / `PostToolUseFailure` / `PermissionRequest` / `PermissionDenied` / `Notification` / `Stop` / `StopFailure` / `PreCompact` / `PostCompact` / `TeammateIdle` / `SessionEnd`）、`matcher` 取值、以及 stdin 上的 JSON 字段（`session_id` / `cwd` / `tool_name` / `prompt` / `hook_event_name`）**与 Claude Code 完全一致**，所以 `events()` 与 `map_event` 都共用同一份实现，只换配置路径和上报名。配置落在桌面版的数据目录 `~/.workbuddy-ai/settings.json`（该文件里已有 `enabledPlugins` / `pluginConfigs`，确认是它的设置文件）；官方文档也写明「插件 hooks 会与用户和项目 hooks 合并」，即 `settings.json` 的 `hooks` 键是合法来源。**若某个 WorkBuddy 版本只从插件加载 hooks、忽略 `settings.json` 的 `hooks` 键，这里就要改成插件式接入**（写一份 `hooks/hooks.json` 到插件目录），映射表不用动。
 
 **六条安全边界**（都有对应单测）：
 
@@ -1149,7 +1152,7 @@ signalhub install hooks claude-code --http   # 需要 app 正在运行（要读�
 | 延迟 | 每次事件一个进程 | 一次本地 HTTP |
 | 「正在做什么」那一行 | CLI 生成 | 应用生成（同一组词，见 `lang.rs`） |
 | 局域网访问开着时 | 照常工作 | **端点关闭（403）** |
-| 适配范围 | 9 家 | 只有 Claude Code |
+| 适配范围 | 10 家 | 只有 Claude Code |
 
 两种模式写进**同一个**配置，所以「换一种」是原地改写整条 handler（不会留下
 `url` 和 `command` 并存的怪条目），`uninstall` 也两种都认。

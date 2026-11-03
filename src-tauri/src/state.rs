@@ -156,7 +156,10 @@ impl Signal {
             Signal::Off | Signal::Offline => Duration::from_secs(600),
             Signal::Stale => STALE_GRACE,
             Signal::Idle => Duration::from_secs(600),
-            Signal::Done => Duration::from_secs(30),
+            // **30 秒太短了。** 用户离开座位回来，牌已经变成「没有智能体在上报」，
+            // 于是「刚才那个任务完成了吗」这个问题反而答不上来。3 分钟足够看一眼，
+            // 又不至于让一块绿牌赖着不走；想更久可以在「行为 → 静默超时」里调。
+            Signal::Done => Duration::from_secs(180),
             // 「推理中」和「执行中」的静默期要**给得很宽**。
             //
             // 钩子挂在**事件**上（`UserPromptSubmit` → thinking、`PreToolUse` →
@@ -168,8 +171,13 @@ impl Signal {
             // 放宽的代价是「崩溃的智能体」晚一点才被发现。但那时它是转成 `stale`
             // （「沉默」）而不是消失，用户仍然看得到它 —— 这比「活着的智能体看着
             // 像死了」轻得多。
+            // **`working` 从 300 秒放宽到 600 秒。** 5 分钟对一次长构建 / 一轮长
+            // 分析太短：`PreToolUse` 的 30 分钟只盖得住「工具正在跑」，而工具结束
+            // 之后那段长思考没有事件，5 分钟一到灯就报「沉默」—— 用户看到的是
+            // 「它明明还在干活」。10 分钟能盖住绝大多数单轮工作，又把「真崩了」
+            // 的发现延迟控制在可接受范围。
             Signal::Thinking => Duration::from_secs(600),
-            Signal::Working => Duration::from_secs(300),
+            Signal::Working => Duration::from_secs(600),
             Signal::Attention => Duration::from_secs(300),
             Signal::Permission => Duration::from_secs(600),
             Signal::Error => Duration::from_secs(300),
@@ -1295,11 +1303,14 @@ mod tests {
     fn done_expires_away_without_becoming_stale() {
         let (mut s, t) = (Store::default(), Instant::now());
         rep(&mut s, t, "a", Signal::Done);
+        // 从内置默认推，别写死秒数 —— 默认值会随产品调优变（`done` 就从 30s
+        // 放宽到过 180s），写死的话每次调默认都要来改一遍测试。
+        let ttl = Signal::Done.default_ttl();
 
-        assert!(!s.expire(t + Duration::from_secs(29)));
+        assert!(!s.expire(t + ttl - Duration::from_secs(1)));
         assert_eq!(s.aggregate(), Signal::Done);
 
-        assert!(s.expire(t + Duration::from_secs(31)));
+        assert!(s.expire(t + ttl + Duration::from_secs(1)));
         assert!(sessions(&s.snapshot()).is_empty(), "不该留下 stale 会话");
         assert_eq!(s.aggregate(), Signal::Offline);
     }
@@ -1730,7 +1741,9 @@ mod tests {
     fn a_live_idle_session_outranks_a_stale_one() {
         let (mut s, t) = (Store::default(), Instant::now());
         rep(&mut s, t, "silent", Signal::Working);
-        rep(&mut s, t, "alive", Signal::Idle);
+        // idle 晚 10 秒才开始：`working` 和 `idle` 的内置 TTL 现在都是 600 秒，
+        // 同时开始的话会在同一刻一起过期，测不出「活着的那一路优先」。
+        rep(&mut s, t + Duration::from_secs(10), "alive", Signal::Idle);
 
         s.expire(t + Signal::Working.default_ttl());
 

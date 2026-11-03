@@ -2887,8 +2887,16 @@ mod tests {
     fn ttl_defaults_cover_every_state_and_fit_the_range() {
         let defaults = state_ttl_defaults();
         assert_eq!(defaults.len(), Signal::ALL_NAMES.len(), "每个状态都要有一档");
-        assert_eq!(defaults["working"], 300_000);
-        assert_eq!(defaults["done"], 30_000);
+        // 从 `default_ttl()` 推，不写死毫秒数 —— 这两个默认值正是会被产品调优
+        // 改来改去的东西（`done` 30s → 180s、`working` 300s → 600s）。
+        assert_eq!(
+            defaults["working"],
+            Signal::Working.default_ttl().as_millis() as u64
+        );
+        assert_eq!(
+            defaults["done"],
+            Signal::Done.default_ttl().as_millis() as u64
+        );
         for (name, ms) in &defaults {
             assert!(
                 (u64::from(MIN_STATE_TTL_MS)..=u64::from(MAX_STATE_TTL_MS)).contains(ms),

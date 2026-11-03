@@ -173,7 +173,7 @@ export function useHookLog(limit = 40) {
 /**
  * 把「收到过上报的信号源」分成界面上的两组。
  *
- * 上面那张表是**我们认识的智能体**（`detect_agents` 的 8 行，每行带接入按钮），
+ * 上面那张表是**我们认识的智能体**（`detect_agents` 的 10 行，每行带接入按钮），
  * 所以这里只处理剩下的：
  *
  *   - **系统** = 上报方自己声明了 `source: "system"`（将来的内置采集器，以及用户
@@ -182,7 +182,7 @@ export function useHookLog(limit = 40) {
  *     一键接入的智能体）。
  *
  * **「是不是智能体」由调用方判定**（`knownIds`）：那份清单在 `agents` 里，这一层
- * 不该再抄一份 8 个名字 —— 抄了就会在加第 9 家时漏掉一处。
+ * 不该再抄一份名字清单 —— 抄了就会在加新一家时漏掉一处。
  */
 export function groupReceipts(
   receipts: Receipt[],

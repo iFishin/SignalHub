@@ -807,6 +807,39 @@ const TTL_STATES: readonly SignalState[] = [
   "error",
 ];
 
+/**
+ * 「静默超时」小节里只放这三项。
+ *
+ * 它们是用户最先抱怨的三件事：完成后很快消失（`done`）、长任务被误判成沉默
+ * （`working` / `thinking`）。完整表仍在「外观 → 逐个状态覆盖」—— 这里放多了
+ * 会把「行为」页变成第二张十行表，反而更难找。
+ */
+const TTL_SHORTCUT_STATES = ["done", "working", "thinking"] as const;
+
+/**
+ * 把「某个状态的一条覆盖」合并进 `settings.styles`，返回给 `patch` 的补丁。
+ *
+ * 抽出来是因为它现在有**两个入口**：完整的十行表（「外观 → 逐个状态覆盖」）和
+ * 这个三行的快捷小节（「行为 → 静默超时」）。两处必须用同一套「空条目即删除」
+ * 的判据，否则摘要会和表对不上（见 `stateOverridden` 的说明）。
+ */
+function stylePatch(
+  settings: Settings,
+  state: string,
+  next: Partial<StateStyle>,
+): Partial<Settings> {
+  const merged = { ...(settings.styles[state] ?? {}), ...next };
+  const styles = { ...settings.styles };
+  const empty =
+    merged.color == null &&
+    merged.shape == null &&
+    merged.blink_ms == null &&
+    merged.ttl_ms == null;
+  if (empty) delete styles[state];
+  else styles[state] = merged;
+  return { styles };
+}
+
 function PerStateStyles({
   settings,
   patch,
@@ -827,19 +860,11 @@ function PerStateStyles({
 }) {
   const resolved = resolveColors(settings);
 
+  // 判据在 `stylePatch` 里，和「行为 → 静默超时」那个快捷小节共用一份 ——
+  // 否则会出现「摘要说 3 个状态设过、表里却只有 2 行是彩色的」这种对不上
+  // 的现象（见 `lampStyle.ts` 的说明）。
   const setStyle = (state: string, next: Partial<StateStyle>) => {
-    const merged = { ...(settings.styles[state] ?? {}), ...next };
-    const styles = { ...settings.styles };
-    // 判据和读侧的 `stateOverridden` 必须一致，否则会出现「摘要说 3 个状态设过、
-    // 表里却只有 2 行是彩色的」这种对不上的现象（见 `lampStyle.ts` 的说明）。
-    const empty =
-      merged.color == null &&
-      merged.shape == null &&
-      merged.blink_ms == null &&
-      merged.ttl_ms == null;
-    if (empty) delete styles[state];
-    else styles[state] = merged;
-    patch({ styles });
+    patch(stylePatch(settings, state, next));
   };
 
   const resetStyle = (state: string) => {
@@ -1943,6 +1968,67 @@ export function SettingsPanel({ snapshot }: Props) {
       case "behavior":
         return (
           <>
+            {/* 静默超时：用户最先抱怨的两件事 —— 完成后很快消失、长任务被误判
+                成沉默 —— 都在这里。完整表在「外观 → 逐个状态覆盖」，这里只放
+                最常用的三项，免得这一页也变成第二张十行表。 */}
+            <div className="section-title">{m.silenceTimeouts}</div>
+            <p className="hint">{m.silenceTimeoutsHint}</p>
+            {TTL_SHORTCUT_STATES.map((state) => {
+              const style = settings.styles[state] ?? {};
+              const ttl = style.ttl_ms == null ? "" : String(style.ttl_ms);
+              const extra =
+                ttl !== "" && !TTL_CHOICES_MS.includes(Number(ttl)) ? ttl : null;
+              const builtin = ttlDefaults[state];
+              const followLabel =
+                builtin == null
+                  ? m.follow
+                  : `${m.follow} ${formatDuration(builtin / 1000)}`;
+              const label =
+                state === "done"
+                  ? m.ttlDone
+                  : state === "working"
+                    ? m.ttlWorking
+                    : m.ttlThinking;
+              return (
+                <Row
+                  key={state}
+                  label={label}
+                  onReset={
+                    style.ttl_ms == null
+                      ? undefined
+                      : () => patch(stylePatch(settings, state, { ttl_ms: null }))
+                  }
+                >
+                  <select
+                    className="select"
+                    value={ttl}
+                    onChange={(event) =>
+                      patch(
+                        stylePatch(settings, state, {
+                          ttl_ms:
+                            event.target.value === ""
+                              ? null
+                              : Number(event.target.value),
+                        }),
+                      )
+                    }
+                  >
+                    <option value="">{followLabel}</option>
+                    {TTL_CHOICES_MS.map((ms) => (
+                      <option key={ms} value={String(ms)}>
+                        {formatDuration(ms / 1000)}
+                      </option>
+                    ))}
+                    {extra && (
+                      <option value={extra}>{formatDuration(Number(extra) / 1000)}</option>
+                    )}
+                  </select>
+                </Row>
+              );
+            })}
+            <p className="hint">{m.silenceTimeoutsMore}</p>
+
+            <div className="section-title">{m.behaviorWindowTitle}</div>
             <Row label={m.quietMode} onReset={resetFor(settings, "quiet", patch)}>
               <Switch on={settings.quiet} onChange={(on) => patch({ quiet: on })} />
             </Row>

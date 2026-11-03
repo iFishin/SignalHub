@@ -164,6 +164,13 @@ export interface Messages {
   /** 逐状态表里「这个状态静默多久算过期」那一列 */
   stayDuration: string;
   stayDurationHint: string;
+  silenceTimeouts: string;
+  silenceTimeoutsHint: string;
+  silenceTimeoutsMore: string;
+  ttlDone: string;
+  ttlWorking: string;
+  ttlThinking: string;
+  behaviorWindowTitle: string;
   resetToGlobal: string;
   styleHint: string;
   perStateStyle: string;
@@ -768,6 +775,15 @@ export const MESSAGES: Record<Lang, Messages> = {
     stayDuration: "停留时长",
     stayDurationHint:
       "这个状态静默多久算过期。没有「永不过期」—— 不会自己熄灭的灯等于一条永远不撤的告警。改动只在下一次上报时生效，不会追溯已经亮着的牌。",
+    silenceTimeouts: "静默超时",
+    silenceTimeoutsHint:
+      "智能体不出声之后，这块牌还会在灯上待多久。调大它，「还在干活」就不容易被误判成「沉默」；代价是真正崩掉的智能体晚一点被发现。改动只在下一次上报时生效。",
+    silenceTimeoutsMore:
+      "其余状态（空闲 / 需要关注 / 需要授权 / 出错）在「外观 → 逐个状态覆盖」里单独调。",
+    ttlDone: "任务完成后保持",
+    ttlWorking: "干活时的静默容忍",
+    ttlThinking: "思考时的静默容忍",
+    behaviorWindowTitle: "窗口与交互",
     resetToGlobal: "恢复成跟随全局",
     styleHint:
       "「跟随」= 形状和节奏用「外观」页选的那两项，停留时长用内置默认（跟在每一项里）。停留时长指的是「智能体不出声之后，这块牌还在灯上待多久」—— 它只在「下一次上报」时生效，不会追溯已经亮着的牌。",
@@ -1349,6 +1365,15 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     stayDuration: "Expiry",
     stayDurationHint:
       "How long this state survives silence. There is no “never expire” — a light that never goes out is an alert nobody can withdraw. A change applies from the next report; it is not retroactive.",
+    silenceTimeouts: "Silence timeouts",
+    silenceTimeoutsHint:
+      "How long a sign stays on the lamp after the agent goes quiet. Raise it and a long task is less likely to be mistaken for silence; the cost is that a genuinely crashed agent is noticed later. Changes apply from the next report.",
+    silenceTimeoutsMore:
+      "The other states (idle / attention / permission / error) are set individually under Look → Per-state overrides.",
+    ttlDone: "Keep after finishing",
+    ttlWorking: "Silence while working",
+    ttlThinking: "Silence while thinking",
+    behaviorWindowTitle: "Window & interaction",
     resetToGlobal: "Reset to follow global",
     styleHint:
       '"Follow" means shape and blink speed come from the Look tab, and the expiry is the built-in default (shown on each row). Expiry is how long a card stays on the lamp after its agent goes quiet — it takes effect on the *next* report, not retroactively.',
