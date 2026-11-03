@@ -239,6 +239,9 @@ function tabGroups(m: Messages): { title: string; entries: { id: Tab; label: str
         { id: "behavior", label: m.tabBehavior },
         // 「分组」原先挂在「外观」的末尾，是那一页唯一**会随会话数变长**的一节 ——
         // 而「灯长什么样」是固定的九行。搬走之后两边都回到各自的量级。
+        //
+        // 页名就叫「分组」，所以「怎么分组」「摆成几盏灯」这两项也归这一页（它们
+        // 原先挂在「接入」页，用户找不到 —— 导航里明明有一页叫分组）。
         { id: "groups", label: m.tabGroups },
       ],
     },
@@ -2162,7 +2165,64 @@ export function SettingsPanel({ snapshot }: Props) {
       case "groups":
         return (
           <>
+            {/* ---- 怎么分组、怎么摆 ----
+                这两项原先挂在「接入」页，理由是「它管的是上报进来之后怎么解读」。
+                但**用户找不到它们**：左侧导航明明有一页就叫「分组」，而这两项一个
+                决定「有哪些组」、一个决定「这些组摆成几盏灯」，正是这一页的主题；
+                「接入」页该回答的是「别人怎么报给我」（端点、token、局域网、智能体）。
+
+                两项都用 `seg` 而不是开关：从「按目录」到「按会话」不是「开 / 关」，
+                「一盏灯 / 每组分灯」也不是「开 / 关多灯」，而是换一种摆法 —— 开关
+                表达不了「换一种」。
+
+                放在这一页**最上面**：下面那串组会随会话数变长，沉底就等于被埋掉。 */}
             <div className="section section-flush">
+              <div className="row">
+                <span>{m.groupBy}</span>
+                <div className="seg">
+                  {(["none", "cwd", "session"] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      data-active={settings.group_by === mode}
+                      onClick={() => patch({ group_by: mode })}
+                    >
+                      {mode === "none"
+                        ? m.groupByNone
+                        : mode === "cwd"
+                          ? m.groupByCwd
+                          : m.groupBySession}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <p className="hint">{m.groupByHint}</p>
+
+              {/* 和上面那一行挨着，但不是同一件事：上面定「有哪些组」，这一行定
+                  「这些组摆成几盏灯」。两句提示里都各写了半句，免得被读成重复项。 */}
+              <div className="row">
+                <span>{m.lampLayout}</span>
+                <div className="seg">
+                  <button
+                    type="button"
+                    data-active={settings.lamp_layout === "single"}
+                    onClick={() => patch({ lamp_layout: "single" })}
+                  >
+                    {m.layoutSingle}
+                  </button>
+                  <button
+                    type="button"
+                    data-active={settings.lamp_layout === "per-group"}
+                    onClick={() => patch({ lamp_layout: "per-group" })}
+                  >
+                    {m.layoutPerGroup}
+                  </button>
+                </div>
+              </div>
+              <p className="hint">{m.layoutHint}</p>
+            </div>
+
+            <div className="section">
               <div className="section-title">{m.groupDisplayTitle}</div>
               {knownGroups.length === 0 ? (
                 <p className="muted-text">{m.groupDisplayEmpty}</p>
@@ -2778,69 +2838,10 @@ export function SettingsPanel({ snapshot }: Props) {
               <p className="hint">{m.tryItHint}</p>
             </div>
 
-            {/* ---- 分组 ----
-                放在「接入」页而不是「外观」：它管的是**上报进来之后怎么解读**，
-                和「谁在往这儿报」是同一件事的两半。外观页管的是已经分好组之后
-                怎么称呼、怎么排。
-
-                三个取值用 `seg` 而不是开关：从「按目录」到「按会话」不是「开/
-                关」，而开关表达不了「换一种分法」。 */}
-            <div className="section">
-              <div className="row">
-                <span>{m.groupBy}</span>
-                <div className="seg">
-                  {(["none", "cwd", "session"] as const).map((mode) => (
-                    <button
-                      key={mode}
-                      type="button"
-                      data-active={settings.group_by === mode}
-                      onClick={() => patch({ group_by: mode })}
-                    >
-                      {mode === "none"
-                        ? m.groupByNone
-                        : mode === "cwd"
-                          ? m.groupByCwd
-                          : m.groupBySession}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <p className="hint">{m.groupByHint}</p>
-            </div>
-
-            {/* ---- 灯的数量 ----
-                紧挨着「分组」：分组定了「有哪些组」，这一项定的就是「这些组摆成
-                一盏灯还是一组一盏灯」，是同一个决定的下半句。
-
-                两项用 `seg` 而不是开关：不是「开/关多灯」，而是「换一种摆法」。
-                「每组分灯」在组数超过 `MAX_LAMPS` 时会**自动回落**成一盏灯
-                （每盏灯都是一个真 webview，Linux 上尤其贵），提示里写明。 */}
-            <div className="section">
-              <div className="row">
-                <span>{m.lampLayout}</span>
-                <div className="seg">
-                  <button
-                    type="button"
-                    data-active={settings.lamp_layout === "single"}
-                    onClick={() => patch({ lamp_layout: "single" })}
-                  >
-                    {m.layoutSingle}
-                  </button>
-                  <button
-                    type="button"
-                    data-active={settings.lamp_layout === "per-group"}
-                    onClick={() => patch({ lamp_layout: "per-group" })}
-                  >
-                    {m.layoutPerGroup}
-                  </button>
-                </div>
-              </div>
-              <p className="hint">{m.layoutHint}</p>
-            </div>
-
             {/* ---- 局域网访问 ----
-                和「分组」同页、紧挨着它：两者都是「上报进来这一侧」的事 ——
-                一个管怎么解读，一个管从哪能报进来。
+                留在「接入」页：它回答的正是这一页的问题 —— 「从哪能报进来」。
+                （「怎么分组 / 摆成几盏灯」原先也挂在这一页，现在搬去了「分组」页：
+                那两项管的是上报进来之后怎么解读和怎么摆，和这一页不是一件事。）
 
                 独立一节而不再缩进一层：这是一个**改变安全模型**的开关，混在
                 别的行里会被划过去。说明分成两段也是这个原因 —— 代价那一段得
