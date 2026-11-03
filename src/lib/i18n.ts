@@ -587,6 +587,21 @@ export interface Messages {
     remoteJump: (machine: string) => string;
     approvalHint: string;
     closeHint: string;
+
+    /**
+     * 「你离开的这段时间」摘要（plan-round5 下一步第 1 项）。
+     *
+     * 只给计数，不给列表 —— 列表就是收件箱本身，再列一遍等于把同一份内容画两次。
+     * 时长复用 `formatAge` 的紧凑写法（`23m`），和行尾的「等了 3m」是同一套单位。
+     */
+    awayFor: (ago: string) => string;
+    awayDone: (count: number) => string;
+    awayFailed: (count: number) => string;
+    awayNeed: (count: number) => string;
+    awayRunning: (count: number) => string;
+    /** 离开期间什么都没发生。 */
+    awayQuiet: string;
+    awayDismiss: string;
   };
 }
 
@@ -1165,6 +1180,13 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       remoteJump: (machine) => `这是 ${machine} 上的会话，跳转只对本机有效`,
       approvalHint: "这是智能体主动请求的授权；允许只对被问到的这一次生效。",
       closeHint: "关闭收件箱（Esc）",
+      awayFor: (ago) => `你离开的 ${ago} 里`,
+      awayDone: (count) => `${count} 个完成`,
+      awayFailed: (count) => `${count} 个失败`,
+      awayNeed: (count) => `${count} 个在等你`,
+      awayRunning: (count) => `${count} 个还在跑`,
+      awayQuiet: "没有新动静",
+      awayDismiss: "知道了",
     },
   },
 
@@ -1748,6 +1770,13 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
       remoteJump: (machine) => `This session is on ${machine} — jumping only works for local sessions`,
       approvalHint: "This is a permission the agent asked for; allowing applies only to this request.",
       closeHint: "Close the inbox (Esc)",
+      awayFor: (ago) => `While you were away for ${ago}`,
+      awayDone: (count) => `${count} finished`,
+      awayFailed: (count) => `${count} failed`,
+      awayNeed: (count) => `${count} waiting on you`,
+      awayRunning: (count) => `${count} still running`,
+      awayQuiet: "Nothing new",
+      awayDismiss: "Got it",
     },
   },
 };

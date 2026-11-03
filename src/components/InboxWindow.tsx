@@ -8,6 +8,11 @@ import { signalLabel } from "../lib/signals";
 import type { Approval, DenyReason } from "../lib/useApprovals";
 import type { Snapshot } from "../lib/types";
 import { buildInbox, formatAge, type InboxRow } from "../lib/inboxRows";
+import {
+  buildAwaySummary,
+  isQuiet,
+  type AwaySummary,
+} from "../lib/awaySummary";
 import { dangerLabel, reasonLabel } from "../lib/approvalLabels";
 import { HoldButton } from "./HoldButton";
 
@@ -33,6 +38,34 @@ interface JumpResult {
 
 /** 提示条停留时长。够读完一句话，又不至于挡着下一行。 */
 const TOAST_MS = 3200;
+
+/**
+ * 「上次看过收件箱」的时刻。
+ *
+ * 存 localStorage 而不是设置文件：它是**运行时的观察记录**，不是用户偏好 ——
+ * 进「配置导出」里没有意义，换台机器也不该跟着走。两个窗口同源，所以读写的
+ * 是同一份。
+ */
+const LAST_SEEN_KEY = "signalhub.inbox.lastSeen";
+
+function readLastSeen(): number | null {
+  try {
+    const raw = window.localStorage.getItem(LAST_SEEN_KEY);
+    const value = raw === null ? Number.NaN : Number(raw);
+    return Number.isFinite(value) ? value : null;
+  } catch {
+    // 存储被禁用（某些隐私策略）时不该把收件箱弄挂 —— 没有基准就不出摘要。
+    return null;
+  }
+}
+
+function writeLastSeen(ms: number) {
+  try {
+    window.localStorage.setItem(LAST_SEEN_KEY, String(ms));
+  } catch {
+    /* 同上：记不住就不记，摘要自己会退化成「没有基准」 */
+  }
+}
 
 function stop(event: React.MouseEvent) {
   event.stopPropagation();
@@ -66,6 +99,40 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
     () => new Map(all.map((row, index) => [row.key, index])),
     [all],
   );
+
+  // ---- 「你离开的这段时间」----
+  //
+  // 只在**打开收件箱**时算一次：摘要说的是「离开期间发生了什么」，不是「现在
+  // 怎么样」—— 后者就是下面那份列表。基准是上次打开的时刻。
+  const [away, setAway] = useState<AwaySummary | null>(null);
+  const awaySettled = useRef(false);
+  useEffect(() => {
+    if (awaySettled.current) return;
+    // 快照是异步来的：第一帧模型是空的，这时算出来必然是「什么都没发生」。
+    // 等真的有了行再算。收件箱本来就空就一直不算 —— 那种情况也没有摘要可给。
+    if (all.length === 0) return;
+    awaySettled.current = true;
+    setAway(buildAwaySummary(model, Date.now(), readLastSeen()));
+  }, [all.length, model]);
+
+  // 打开就记「看过」，关掉再记一次。少了卸载那一次的话，收件箱开着一小时后
+  // 关掉，下次打开会把这一小时也算成「你不在」。
+  useEffect(() => {
+    writeLastSeen(Date.now());
+    return () => writeLastSeen(Date.now());
+  }, []);
+
+  const awayParts = useMemo(() => {
+    if (!away) return [];
+    if (isQuiet(away)) return [m.inbox.awayQuiet];
+    const parts: string[] = [];
+    // 顺序 = 该处理的顺序：等你 > 失败 > 完成 > 在跑。
+    if (away.need > 0) parts.push(m.inbox.awayNeed(away.need));
+    if (away.failed > 0) parts.push(m.inbox.awayFailed(away.failed));
+    if (away.done > 0) parts.push(m.inbox.awayDone(away.done));
+    if (away.running > 0) parts.push(m.inbox.awayRunning(away.running));
+    return parts;
+  }, [away, m.inbox]);
 
   // 哪一行正在选拒绝理由，以及「自定义」那一格的字。**只可能有一行**：
   // 同时给两条挑理由没有意义，而收件箱本来就是一条一条处理的。
@@ -488,6 +555,35 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
           ×
         </button>
       </header>
+
+      {/* 「你离开的这段时间」：一句话、可关掉。放在列表**上方**而不是塞进某一段
+          —— 它说的不是某一条会话，而是「这段时间整体」，混进分段会被当成其中一类。 */}
+      {away && awayParts.length > 0 && (
+        <div className="inbox-away" role="status">
+          <span className="inbox-away-when">
+            {m.inbox.awayFor(formatAge(away.awayMs))}
+          </span>
+          <span
+            className="inbox-away-parts"
+            title={
+              away.need > 0 && away.longestWaitMs > 0
+                ? m.inbox.waiting(formatAge(away.longestWaitMs))
+                : undefined
+            }
+          >
+            {awayParts.join(" · ")}
+          </span>
+          <button
+            type="button"
+            className="inbox-icon"
+            title={m.inbox.awayDismiss}
+            aria-label={m.inbox.awayDismiss}
+            onClick={() => setAway(null)}
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       <div className="inbox-scroll">
         {all.length === 0 ? (

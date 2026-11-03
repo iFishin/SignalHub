@@ -48,8 +48,11 @@
 
 ## 下一步（按价值排序）
 
-1. **While you were away**：离开 >10 分钟回来给结构化摘要（完成 / 失败 / 等审批 / git diff
-   摘要 / 等了多久）；数据已在 history / timeline / stats 里。
+1. ~~**While you were away**~~ —— **第一版已落地**（见 [architecture §3.25.1](./architecture.md)）：
+   离开 >10 分钟再打开收件箱，顶部一句话给出「完成 / 失败 / 在等 / 在跑」的计数。
+   判据是每条会话当前状态的起点晚于「上次看过」，所以不需要事件流水。
+   **还没做的**：离开期间出现过又消失的会话看不到（要一份事件流水才行）、
+   `git diff` 摘要、以及「等了多久」只作为那一条的悬停提示。
 2. **Away approvals**：把只读 Web 面板升级成带 token 的 PWA，配合 outbound 的手机推送，
    能看命令并允许 / 拒绝。
 3. ~~**团队 / 多机 hub**~~ —— **已落地，见 [plan-multi-machine.md](./plan-multi-machine.md)**（v0.4.2）。一台机器当 hub，把别的机器的看板拉过来合并进同一盏灯；对端不用升级，只要开「允许局域网访问」并把 token 抄过来。

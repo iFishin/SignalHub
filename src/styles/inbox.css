@@ -105,6 +105,40 @@ html[data-window="inbox"] body {
 
 /* ---- 列表 --------------------------------------------------------------- */
 
+/*
+ * 「你离开的这段时间」。一条、一行、可关掉。
+ *
+ * 用左边一道竖线而不是整块底色：它是一个**注脚**，不是一条待处理项 —— 底色会
+ * 让它看起来像「需要你」那一段的第一行。
+ */
+.inbox-away {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 2px 10px 4px;
+  padding: 6px 8px 6px 10px;
+  border-left: 2px solid rgba(255, 255, 255, 0.18);
+  color: #b7b7bf;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.inbox-away-when {
+  color: #ececef;
+  white-space: nowrap;
+}
+
+.inbox-away-parts {
+  flex: 1;
+  min-width: 0;
+}
+
+.inbox-away .inbox-icon {
+  height: 18px;
+  padding: 0 4px;
+  align-self: center;
+}
+
 .inbox-scroll {
   flex: 1;
   min-height: 0;
