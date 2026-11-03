@@ -1188,6 +1188,12 @@ Claude Code 每次要问「这个工具调用可以吗」时，`PermissionReques
   `pipe-shell` / `disk` / `privilege` / `permissions`），认不出来就是 `null`。
   它**只影响强调方式**（红横幅 + 按住确认），和 `allowable` 是两件事 ——
   危险不等于不给放行，看不全才是不给放行。
+
+  `detail` 可能是**多行**（`hookmap::approval_detail`）：`Bash` 第二行是
+  `@ <cwd>`，`Write` / `Edit` 的路径后面跟 `(+行数)` / `(+N -M)` 和三行预览
+  （`+` / `-` 前缀，装不下时末尾 `… +497`）。这些**都是记号，没有可翻译的文案** ——
+  界面要显示什么自己决定。预览和工作目录是**装饰**：它们装不下只是不显示，
+  不会让 `allowable` 变成 `false`（那条只由核心内容是否被截断决定）。
 - `POST /v1/approvals/{id}`，body：
 
   ```json

@@ -325,8 +325,20 @@ pub fn cwd_of(payload: &Value) -> Option<String> {
 /// 范围。终端里的确认框本来也把这些打给用户看，所以本地面板里看得见不算越界。
 pub const DETAIL_MAX: usize = 240;
 
-pub fn approval_detail(tool: &str, input: &Value) -> (String, bool) {
-    let raw = match tool_verb(tool) {
+/// 预览最多几行。气泡那块地方是固定高度、靠滚动的（`lamp.css`），三行是
+/// 「看得出一件事」和「不用滚」之间的分界。
+const PREVIEW_LINES: usize = 3;
+
+/// 预览里每一行最多多少字符。行是给人扫的，不是给人读的 —— 一行 200 字的
+/// `new_string` 会把另外两行的机会全占掉。
+const PREVIEW_LINE_MAX: usize = 64;
+
+/// 工作目录最多显示多少字符（`Bash` 那一行装饰）。
+const CWD_MAX: usize = 80;
+
+pub fn approval_detail(tool: &str, input: &Value, cwd: Option<&str>) -> (String, bool) {
+    let verb = tool_verb(tool);
+    let raw = match verb {
         // 命令：整条打出来 —— `API_KEY=xxx curl …` 里要决定的就是这一整行
         Some(Verb::Exec) => ["command", "cmd"]
             .iter()
@@ -349,9 +361,119 @@ pub fn approval_detail(tool: &str, input: &Value) -> (String, bool) {
     let text = raw.unwrap_or_else(|| input.to_string());
     let text = text.trim();
     let clipped = clip(text, DETAIL_MAX);
+    // **能不能放行只看这一句**：核心内容（命令 / 路径 / 查询词）被截断才算
+    // 「看不全」。下面那些预览和工作目录是**装饰** —— 它们装不下就不加，
+    // 但绝不把一条本来能放行的调用变成只能拒绝。
+    //
+    // 这条界限是刻意的：今天一个 `Edit` 只显示路径就能放行，如果预览装不下就
+    // 变成「只能拒绝」，等于把这个功能最常用的那件事关掉了。预览的价值是
+    // 「少跑一趟终端」，不是「把终端搬过来」。
     let truncated = clipped != text;
-    (clipped, truncated)
+    let mut out = clipped;
+
+    if !truncated {
+        match verb {
+            Some(Verb::Exec) => decorate_with_cwd(&mut out, cwd),
+            Some(Verb::Edit) => decorate_with_preview(&mut out, tool, input),
+            _ => {}
+        }
+    }
+
+    (out, truncated)
 }
+
+/// 命令后面补一行工作目录：相对路径（`rm -rf build`）到底落在哪里，只有它说得清。
+///
+/// 前缀用 `@` 而不是一句话：这个函数**不产出任何给人读的文案**（文案要翻译，
+/// 而它在 Rust 这一侧）。`@` 和预览里的 `+` / `-` 是同一类东西 —— 记号，不是词。
+fn decorate_with_cwd(out: &mut String, cwd: Option<&str>) {
+    let Some(cwd) = cwd.map(str::trim).filter(|cwd| !cwd.is_empty()) else {
+        return;
+    };
+    let line = format!("\n@ {}", clip(cwd, CWD_MAX));
+    if out.chars().count() + line.chars().count() <= DETAIL_MAX {
+        out.push_str(&line);
+    }
+}
+
+/// 编辑类工具：把「到底要写进去什么」摊开几行。
+///
+/// 没有它的时候，`Write` 在灯上只有一行路径 —— 而「写这个文件」要决定的恰恰是
+/// 写什么。行数（`+12 -3`）先给个规模，预览再给个内容。
+///
+/// 内容装不下时**一定**留一个 `… +N`：让用户知道底下还有，而不是以为自己看全了。
+fn decorate_with_preview(out: &mut String, tool: &str, input: &Value) {
+    let whole = is_whole_file_write(tool);
+    let (added, removed) = if whole {
+        (written_text(input, &["content", "file_text"]), None)
+    } else {
+        (
+            written_text(input, &["new_string", "new_str", "content"]),
+            written_text(input, &["old_string", "old_str"]),
+        )
+    };
+    let Some(added) = added else { return };
+
+    let added_lines: Vec<&str> = added.lines().filter(|line| !line.trim().is_empty()).collect();
+    let removed_lines: Vec<&str> = removed
+        .map(|text| text.lines().filter(|line| !line.trim().is_empty()).collect())
+        .unwrap_or_default();
+
+    // 规模写在路径那一行后面：`(+120)` 是整份重写，`(+3 -1)` 是改了三行删了一行。
+    let counts = match removed_lines.len() {
+        0 => format!(" (+{})", added_lines.len()),
+        removed => format!(" (+{} -{removed})", added_lines.len()),
+    };
+    if out.chars().count() + counts.chars().count() <= DETAIL_MAX {
+        out.push_str(&counts);
+    }
+
+    // 删的在前、加的在后 —— 和任何一份 diff 的读法一致。
+    let mut lines: Vec<(char, &str)> = Vec::new();
+    for line in removed_lines.iter().take(PREVIEW_LINES) {
+        lines.push(('-', line));
+    }
+    for line in added_lines.iter().take(PREVIEW_LINES.saturating_sub(lines.len())) {
+        lines.push(('+', line));
+    }
+    let total = added_lines.len() + removed_lines.len();
+
+    let mut shown = 0usize;
+    for (sign, line) in &lines {
+        let body = clip(line.trim(), PREVIEW_LINE_MAX);
+        let row = format!("\n{sign} {body}");
+        if out.chars().count() + row.chars().count() > DETAIL_MAX {
+            break;
+        }
+        out.push_str(&row);
+        shown += 1;
+    }
+
+    // 「底下还有」必须说出来。装不下就退一步用最短的形式（`…`）。
+    if shown < total {
+        for marker in [format!("\n… +{}", total - shown), "\n…".to_string()] {
+            if out.chars().count() + marker.chars().count() <= DETAIL_MAX {
+                out.push_str(&marker);
+                break;
+            }
+        }
+    }
+}
+
+/// `Write` 这一类是整份覆盖，`Edit` 是改一段 —— 两者的 payload 字段不一样。
+fn is_whole_file_write(tool: &str) -> bool {
+    matches!(
+        tool.to_ascii_lowercase().replace(['-', ' '], "_").as_str(),
+        "write" | "write_file" | "create_file" | "writefile"
+    )
+}
+
+fn written_text<'a>(input: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter()
+        .find_map(|key| input[*key].as_str())
+        .filter(|text| !text.trim().is_empty())
+}
+
 
 /// 一条命令「危险」到需要在灯上多按一会儿的分类。
 ///
@@ -536,8 +658,18 @@ mod approval_detail_tests {
     fn a_command_is_shown_whole() {
         let input = json!({ "command": "rm -rf node_modules", "description": "清理" });
         assert_eq!(
-            approval_detail("Bash", &input),
+            approval_detail("Bash", &input, None),
             ("rm -rf node_modules".to_string(), false)
+        );
+    }
+
+    /// 相对路径落在哪里，只有工作目录说得清。它跟在命令后面一行。
+    #[test]
+    fn a_command_carries_its_working_directory() {
+        let input = json!({ "command": "rm -rf build" });
+        assert_eq!(
+            approval_detail("Bash", &input, Some("/proj/app")),
+            ("rm -rf build\n@ /proj/app".to_string(), false)
         );
     }
 
@@ -545,18 +677,100 @@ mod approval_detail_tests {
     #[test]
     fn a_long_command_is_flagged_as_truncated() {
         let long = "echo ".to_string() + &"x".repeat(DETAIL_MAX * 2);
-        let (shown, truncated) = approval_detail("Bash", &json!({ "command": long }));
+        let (shown, truncated) = approval_detail("Bash", &json!({ "command": long }), None);
         assert!(truncated);
         assert!(shown.chars().count() <= DETAIL_MAX + 1, "{shown}");
     }
 
+    /// 截断的命令**不补**工作目录：预算已经用完了，多一行只会让人以为还能看。
     #[test]
-    fn file_tools_show_the_path_not_the_contents() {
-        let input = json!({ "file_path": "/proj/src/main.rs", "content": "x".repeat(9999) });
+    fn a_truncated_command_gets_no_decoration() {
+        let long = "echo ".to_string() + &"x".repeat(DETAIL_MAX * 2);
+        let (shown, _) = approval_detail("Bash", &json!({ "command": long }), Some("/proj"));
+        assert!(!shown.contains("@ /proj"), "{shown}");
+    }
+
+    /// 装饰**不能**把一条本来能放行的调用变成只能拒绝。
+    ///
+    /// 这是这一节最重要的一条：`truncated` 只看核心内容（命令 / 路径 / 查询词）。
+    /// 反过来的话，一条长工作目录就能让 `ls` 变成「只能拒绝」。
+    #[test]
+    fn a_decoration_never_causes_truncation() {
+        let command = "e".repeat(DETAIL_MAX - 20);
+        let cwd = "/".to_string() + &"d".repeat(DETAIL_MAX * 2);
+        let (shown, truncated) = approval_detail("Bash", &json!({ "command": command }), Some(&cwd));
+        assert!(!truncated, "工作目录装不下不该算截断：{shown}");
+        assert!(!shown.contains("@ "), "装不下的工作目录不该硬塞：{shown}");
+    }
+
+    #[test]
+    fn file_tools_show_the_path() {
+        let input = json!({ "file_path": "/proj/src/main.rs" });
         assert_eq!(
-            approval_detail("Write", &input),
+            approval_detail("Read", &input, None),
             ("/proj/src/main.rs".to_string(), false)
         );
+    }
+
+    /// `Write` 只给路径等于什么都没说 —— 要决定的恰恰是「写什么」。
+    #[test]
+    fn a_write_shows_a_preview_of_what_lands_on_disk() {
+        let input = json!({
+            "file_path": "/proj/new.ts",
+            "content": "line one\nline two\nline three\n"
+        });
+        assert_eq!(
+            approval_detail("Write", &input, None),
+            (
+                "/proj/new.ts (+3)\n+ line one\n+ line two\n+ line three".to_string(),
+                false
+            )
+        );
+    }
+
+    /// 改一段：删的在前、加的在后，和任何一份 diff 的读法一致。
+    #[test]
+    fn an_edit_shows_both_sides_of_the_change() {
+        let input = json!({
+            "file_path": "/proj/src/main.rs",
+            "old_string": "const a = 1;",
+            "new_string": "const a = 2;"
+        });
+        assert_eq!(
+            approval_detail("Edit", &input, None),
+            (
+                "/proj/src/main.rs (+1 -1)\n- const a = 1;\n+ const a = 2;".to_string(),
+                false
+            )
+        );
+    }
+
+    /// 几百行的时候只摊三行，但**必须**说出底下还有多少 ——
+    /// 否则用户会以为自己看全了。
+    #[test]
+    fn a_huge_file_says_there_is_more() {
+        let content = (0..500)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let input = json!({ "file_path": "/proj/big.ts", "content": content });
+        let (shown, truncated) = approval_detail("Write", &input, None);
+        assert!(!truncated, "预览不全不等于看不全（核心是路径）：{shown}");
+        assert!(shown.starts_with("/proj/big.ts (+500)\n+ line 0\n+ line 1\n+ line 2"), "{shown}");
+        assert!(shown.ends_with("… +497"), "{shown}");
+    }
+
+    /// 一行超长的改动：单行会被裁，但路径还在，仍然可放行。
+    #[test]
+    fn a_single_long_line_is_clipped_to_one_row() {
+        let input = json!({
+            "file_path": "/proj/a.ts",
+            "content": "z".repeat(DETAIL_MAX * 2)
+        });
+        let (shown, truncated) = approval_detail("Write", &input, None);
+        assert!(!truncated);
+        assert!(shown.contains("+ zzz"), "{shown}");
+        assert!(shown.chars().count() <= DETAIL_MAX, "{shown}");
     }
 
     /// 认不出来的工具：输入小就给整个 JSON（因此**可以**放行），大就截断（不能）。
@@ -564,10 +778,10 @@ mod approval_detail_tests {
     fn an_unknown_tool_falls_back_to_the_raw_input() {
         let small = json!({ "memory": "hello" });
         assert_eq!(
-            approval_detail("mcp__memory__create", &small),
+            approval_detail("mcp__memory__create", &small, None),
             (small.to_string(), false)
         );
         let big = json!({ "blob": "y".repeat(DETAIL_MAX * 3) });
-        assert!(approval_detail("mcp__memory__create", &big).1);
+        assert!(approval_detail("mcp__memory__create", &big, None).1);
     }
 }

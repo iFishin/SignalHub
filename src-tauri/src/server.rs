@@ -516,7 +516,9 @@ async fn approve_request(
 
     let tool = payload["tool_name"].as_str().unwrap_or("").trim().to_string();
     let input = &payload["tool_input"];
-    let (detail, truncated) = crate::hookmap::approval_detail(&tool, input);
+    // 只算一次：详情那一行要它（`Bash` 的工作目录），上报也要它。
+    let cwd = crate::hookmap::cwd_of(&payload);
+    let (detail, truncated) = crate::hookmap::approval_detail(&tool, input, cwd.as_deref());
     let target = crate::hookmap::tool_target(input)
         .unwrap_or_else(|| crate::hookmap::clip(&tool, crate::hookmap::TOOL_NAME_MAX));
     // 危险分类只用来**强调**（红横幅 + 按住确认），不改变能不能放行 —— 那是
@@ -544,7 +546,7 @@ async fn approve_request(
             group: None,
             agent: Some(agent.clone()),
             source: Some("agent".to_string()),
-            cwd: crate::hookmap::cwd_of(&payload),
+            cwd,
             message: hook_message(&ctx, &payload),
             ttl_ms: None,
             pid: None,
