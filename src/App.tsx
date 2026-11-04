@@ -107,6 +107,9 @@ export default function App() {
       // 「有没有事要我做」）。多灯模式下主灯仍然是那一盏 —— 它退成全局灯。
       approvals={myGroup === null ? approvals : undefined}
       onDecide={myGroup === null ? decide : undefined}
+      // 「刚完成」只在**主灯**上说：这份记忆是全局的（谁最后完成的算谁），
+      // 组灯拿它去报「刚完成」就成了替别的组宣布消息。
+      lastDoneMs={myGroup === null ? snapshot.last_done_ms : 0}
     />
   );
 }

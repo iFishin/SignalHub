@@ -34,7 +34,14 @@ function group(name: string, sessions: SessionView[], label?: string): GroupView
 }
 
 function snapshot(groups: GroupView[]): Snapshot {
-  return { aggregate: groups[0]?.aggregate ?? "offline", paused: false, since_ms: 0, message: null, groups };
+  return {
+    aggregate: groups[0]?.aggregate ?? "offline",
+    paused: false,
+    since_ms: 0,
+    message: null,
+    last_done_ms: 0,
+    groups,
+  };
 }
 
 function approval(sessionId: string, age = 5_000): Approval {

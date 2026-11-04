@@ -1056,6 +1056,7 @@ mod tests {
             paused: false,
             since_ms: 1_700_000_000_000,
             message: Some("整体出错".into()),
+            last_done_ms: 0,
             groups: vec![
                 group_view("ci", Signal::Error, Some("测试挂了")),
                 group_view("deploy", Signal::Idle, Some("坐等")),
@@ -1101,6 +1102,7 @@ mod tests {
             paused: false,
             since_ms: 1_700_000_000_000,
             message: None,
+            last_done_ms: 0,
             groups: vec![group_view("build-1", Signal::Error, None)],
         };
         let mut settings = Settings::default();
@@ -1170,6 +1172,7 @@ mod tests {
             paused: false,
             since_ms: now_ms() - 60_000,
             message: Some("等你批准".into()),
+            last_done_ms: 0,
             groups: Vec::new(),
         };
         let log = OutboundLog::default();
@@ -1685,6 +1688,7 @@ mod tests {
             paused: false,
             since_ms: now_ms() - 120_000,
             message: Some("等你批准".into()),
+            last_done_ms: 0,
             groups: Vec::new(),
         };
         let subject = Subject {
@@ -1883,6 +1887,7 @@ mod tests {
             paused: false,
             since_ms: since,
             message: Some("等你批准".into()),
+            last_done_ms: 0,
             groups: vec![crate::state::GroupView {
                 name: "ci".into(),
                 default_label: None,

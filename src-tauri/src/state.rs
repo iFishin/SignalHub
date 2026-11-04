@@ -430,6 +430,12 @@ pub struct Snapshot {
     pub paused: bool,
     pub since_ms: u64,
     pub message: Option<String>,
+    /// 最近一次「完成」的墙钟时刻（epoch 毫秒），从没完成过是 0。
+    ///
+    /// 只在**一个会话都没有**的时候有用：那一刻灯要说「没有智能体在上报」，
+    /// 而这句话对「三分钟前刚干完活」的人是错的。前端据此改说「刚完成 · N 分钟前」。
+    /// 它和 `aggregate` 无关 —— 有会话时前端不看它。
+    pub last_done_ms: u64,
     /// 每组的聚合结果，按组名排序（顺序稳定，牌不会跳）
     pub groups: Vec<GroupView>,
 }
@@ -474,6 +480,17 @@ pub struct Store {
     /// 直到会话被删掉。有了基线，`expire` 拿「现在」和「上次推出去的那一帧」比，
     /// 跨档才被发现。
     last_pushed: Option<Visible>,
+    /// 最近一次上报「完成」的墙钟时刻。
+    ///
+    /// **它比任何一条会话都活得久，这是它存在的全部理由。** `done` 到期时
+    /// `expire` 是把会话整个删掉（不是转 `stale`），会话一没，灯上就只剩一句
+    /// 「没有智能体在上报」—— 「刚才那个任务完成了吗」反而答不上来。这份记忆
+    /// 不参与聚合、不参与过期、不影响 `Visible` 的比对，只用来给**空状态**补
+    /// 一句话（前端在 `JUST_FINISHED_MS` 之内显示「刚完成 · N 分钟前」）。
+    ///
+    /// 用墙钟而不是 `Instant`：它要跨进程序列化给前端，`Instant` 没有绝对零点。
+    /// 进程重启后归零 —— 那是对的，重启之后「刚才」已经无从谈起。
+    last_done: Option<SystemTime>,
 }
 
 impl Store {
@@ -538,6 +555,11 @@ impl Store {
         // 在 insert 之前算好：`prev` 是 `self.sessions` 的不可变借用，而下面那次
         // insert 要可变借用，两者不能重叠。
         let state = req.state;
+        // 记一笔「什么时候完成的」。放在这里而不是 `expire` 里：完成的**那一刻**
+        // 才是最准的，而且这一帧本来就要推给前端，不必额外再找时机。
+        if state == Signal::Done {
+            self.last_done = Some(SystemTime::now());
+        }
         // **消息在入口处截断**，不指望上报方自觉：`/v1/state` 的 body 可以到 2 MB，
         // 而这条会上灯、进通知、进 200 条的历史流 —— 一个把文件内容当 message
         // 发的脚本就能把内存撑到几百 MB（issue #16）。
@@ -878,6 +900,7 @@ impl Store {
             paused: self.paused,
             since_ms: self.since.map(epoch_ms).unwrap_or(0),
             message: self.winner().and_then(|s| s.message.clone()),
+            last_done_ms: self.last_done.map(epoch_ms).unwrap_or(0),
             groups,
         }
     }
@@ -1313,6 +1336,34 @@ mod tests {
         assert!(s.expire(t + ttl + Duration::from_secs(1)));
         assert!(sessions(&s.snapshot()).is_empty(), "不该留下 stale 会话");
         assert_eq!(s.aggregate(), Signal::Offline);
+    }
+
+    /// 牌走掉之后，「刚才那个任务完成了吗」还得答得上来。
+    ///
+    /// `done` 到期是被**整个删掉**（不是转 `stale`），所以灯上只剩「没有智能体
+    /// 在上报」。空状态靠 `last_done_ms` 补一句「刚完成 · N 分钟前」—— 它比会话
+    /// 活得久，这正是它存在的理由。
+    #[test]
+    fn the_last_finish_outlives_the_session_that_reported_it() {
+        let (mut s, t) = (Store::default(), Instant::now());
+        assert_eq!(s.snapshot_at(t).last_done_ms, 0, "没完成过就该是 0");
+
+        // `thinking` / `working` 不算「完成」，不该把这份记忆点亮
+        rep(&mut s, t, "a", Signal::Working);
+        assert_eq!(s.snapshot_at(t).last_done_ms, 0);
+
+        rep(&mut s, t, "a", Signal::Done);
+        let finished = s.snapshot_at(t).last_done_ms;
+        assert!(finished > 0, "完成那一刻要记下来");
+
+        // 牌到期 → 会话被删干净
+        s.expire(t + Signal::Done.default_ttl() + Duration::from_secs(1));
+        assert!(sessions(&s.snapshot_at(t)).is_empty());
+        assert_eq!(
+            s.snapshot_at(t).last_done_ms,
+            finished,
+            "会话没了，这份记忆不能跟着没"
+        );
     }
 
     #[test]

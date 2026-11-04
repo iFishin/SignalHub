@@ -169,6 +169,7 @@ signalhub working --source system --agent backup-watch --group backup
   "paused": false,
   "since_ms": 1697030400000,
   "message": "需要批准: rm -rf build",
+  "last_done_ms": 1697030100000,
   "groups": [
     {
       "name": "work",
@@ -193,6 +194,8 @@ signalhub working --source system --agent backup-watch --group backup
 ```
 
 顶层的 `aggregate` 是**所有组里最高的那个**——钩子、托盘都用它，与分组无关。系统通知另算：它看的是**排除掉静音组之后**的同一个东西（见 architecture.md §3.17），所以静音一组不会让托盘变色、也不会让钩子不触发。`message` 来自决定它的那个会话。
+
+`last_done_ms` 是**最近一次「完成」的时刻**（epoch 毫秒），从没完成过是 `0`。它比任何一条会话都活得久：`done` 到期时是把会话整个删掉（不是转 `stale`），所以一个会话都没有之后，只有它还知道「刚干完活」。灯用它把空状态那句「没有智能体在上报」换成「刚完成 · N 分钟前」（十分钟之内，`JUST_FINISHED_MS`），有会话时**不看它**。进程重启后归零 —— 重启之后「刚才」已经无从谈起。
 
 **`groups` 由服务端按优先级排好（最紧急在最前，平局按组名）。客户端不要再排** —— 灯球的窗口高度取决于「哪几块牌可见」，两边必须算出同一批。
 

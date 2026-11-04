@@ -1766,6 +1766,9 @@ mod tests {
         assert_eq!(parsed["paused"], false);
         assert_eq!(parsed["message"], "需要授权");
         assert!(parsed["since_ms"].is_number());
+        // 「最近一次完成」的时刻。这一帧里它还是 0（只上报过 permission），但字段
+        // 必须在 —— 灯用它把空状态那句「没有智能体在上报」换成「刚完成 · N 分钟前」。
+        assert_eq!(parsed["last_done_ms"], 0);
 
         // 会话挂在组下面 —— 灯球上每组一块牌
         let group = &parsed["groups"][0];

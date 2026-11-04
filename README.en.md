@@ -80,6 +80,8 @@ Three channels that do not rely on colour:
 
 That way "the agent crashed / stopped talking" and "the agent is idle and waiting" look different, and you never get a lamp that keeps blinking for an agent that is long gone. **Hooks installed by an older version must be re-installed from the Connect page** to pick this up; until then they keep the old silence behaviour.
 
+**The lamp does not immediately snap to "No agents reporting" when work finishes.** A `done` sign is deleted outright on expiry (it does not go `stale`), so at that moment the lamp would have nothing left to say but "No agents reporting" — exactly when you are asking yourself whether that last task actually finished. The lamp remembers the last completion: for ten minutes the empty state reads "**Just finished · 2 min ago**", and only after that does it fall back to "No agents reporting". That memory is display-only; it changes no state decision.
+
 ## Installing
 
 Grab a build from [Releases](https://github.com/iFishin/SignalHub/releases):

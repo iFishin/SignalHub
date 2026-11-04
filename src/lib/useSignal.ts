@@ -13,6 +13,7 @@ const INITIAL: Snapshot = {
   paused: false,
   since_ms: 0,
   message: null,
+  last_done_ms: 0,
   groups: [],
 };
 

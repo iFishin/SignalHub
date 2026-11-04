@@ -3129,6 +3129,7 @@ mod tests {
             paused: false,
             since_ms: 0,
             message: None,
+            last_done_ms: 0,
             groups,
         }
     }

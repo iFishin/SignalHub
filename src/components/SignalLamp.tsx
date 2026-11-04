@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { inTauri } from "../lib/env";
-import { signalLabel } from "../lib/signals";
+import { signalLabel, justFinishedLabel } from "../lib/signals";
 import { useLang, useMessages, type Messages, type Lang } from "../lib/i18n";
 import { lampVars, resolveShapes, signTextNeedsContrast, isQuietDimmed } from "../lib/lampStyle";
 import { transitions, type AggregateMap } from "../lib/lampTransitions";
@@ -45,6 +45,14 @@ interface Props {
    */
   approvals?: Approval[];
   onDecide?: (id: string, decision: "allow" | "deny") => void;
+  /**
+   * 最近一次「完成」的墙钟时刻（epoch 毫秒），0 = 没见过。
+   *
+   * 只在**一组都没有**的时候用：那一刻占位牌说的是「没有智能体在上报」，而刚干完
+   * 活的人想看的恰恰是「刚完成」。`done` 的牌到期是被整个删掉的，会话没了之后
+   * 这份记忆是唯一还知道「刚完成」的东西（见 `lib/signals.ts`）。
+   */
+  lastDoneMs: number;
 }
 
 /**
@@ -70,11 +78,13 @@ function tooltip(
   groups: GroupView[],
   meta: Record<string, GroupMeta>,
   extra: string[],
+  /** 一组都没有时那句话说这句 —— 「刚完成 · N 分钟前」顶替「没有智能体在上报」 */
+  emptyLabel: string,
 ): string {
   const hint = m.lampHint;
 
   // 没有组时 tooltip 只剩一句状态。Hints 仍然拼上 —— 空灯球正需要「右键能进设置」。
-  if (groups.length === 0) return [signalLabel(lang, aggregate), hint, ...extra].join("\n");
+  if (groups.length === 0) return [emptyLabel, hint, ...extra].join("\n");
 
   if (groups.length === 1 && extra.length === 0) {
     const only = groups[0];
@@ -245,7 +255,15 @@ function openLampMenu(event: React.MouseEvent) {
   invoke("open_lamp_menu").catch(console.error);
 }
 
-export function SignalLamp({ aggregate, groups, settings, paused, approvals, onDecide }: Props) {
+export function SignalLamp({
+  aggregate,
+  groups,
+  settings,
+  paused,
+  approvals,
+  onDecide,
+  lastDoneMs,
+}: Props) {
   // 待审批的条数：Rust 的 `approval_area` 按**同一个数**给窗口留高度（见 lamp.css
   // 的 `--bubble-h`）。数错了就是气泡被裁掉一半 —— 而那两个按钮是唯一的出路。
   const pending = approvals?.length ?? 0;
@@ -362,7 +380,21 @@ export function SignalLamp({ aggregate, groups, settings, paused, approvals, onD
 
   // 「已持续」是算出来的，所以得有东西让它随时间重绘 —— 否则它永远停在状态刚变化
   // 那一刻，也就是 0s。折叠形态和关掉这一格的牌上没有这个数字，不起定时器。
-  const now = useNow(show.age && expanded);
+  //
+  // 「刚完成 · N 分钟前」同理：它也在数分钟，**而且不依赖「已持续」开没开**。
+  // 只按 `show.age` 决定起不起钟的话，把「已持续」关掉的用户会看到那句话冻在
+  // 打开面板那一刻的分钟数上。它只在一组都没有时才需要 —— 有会话时那句话不出现。
+  const now = useNow(expanded && (show.age || (groups.length === 0 && lastDoneMs > 0)));
+
+  /**
+   * 一组都没有时，占位牌上那一句话。
+   *
+   * `off`（暂停）不会走到这里 —— 那时聚合是 `off` 而不是 `offline`，而暂停有它
+   * 自己更该说的话（「已暂停监控」）。
+   */
+  const emptyLabel =
+    (aggregate === "offline" && justFinishedLabel(lang, lastDoneMs, now)) ||
+    signalLabel(lang, aggregate);
 
   const toggleCollapsed = () => {
     if (!inTauri) return;
@@ -478,7 +510,7 @@ export function SignalLamp({ aggregate, groups, settings, paused, approvals, onD
       title={tooltip(m, lang, aggregate, groups, settings.group_meta, [
         paused ? m.lampPaused : "",
         toggles.pass_through ? m.lampPassThrough : "",
-      ].filter((line) => line !== ""))}
+      ].filter((line) => line !== ""), emptyLabel)}
       // 折叠态被指着时临时展开（见上），移开 / 超时收回
       onMouseEnter={() => {
         if (collapsed) setPeek(true);
@@ -577,7 +609,11 @@ export function SignalLamp({ aggregate, groups, settings, paused, approvals, onD
                   )
                 )}
                 {show.state && (
-                  <span className="sign-state">{signalLabel(lang, group.aggregate)}</span>
+                  /* 占位牌（`name` 为空，见上面 `rows` 的构造）说 `emptyLabel`：
+                     一组都没有时它可能是「刚完成 · N 分钟前」。 */
+                  <span className="sign-state">
+                    {group.name === "" ? emptyLabel : signalLabel(lang, group.aggregate)}
+                  </span>
                 )}
               </div>
               {show.message && group.message && (

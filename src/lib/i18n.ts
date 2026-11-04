@@ -495,6 +495,13 @@ export interface Messages {
 
   // 灯球 tooltip
   lampHint: string;
+  /**
+   * 空状态：「刚完成 · N 分钟前」。
+   *
+   * `minutes` 是向下取整的分钟数，0 表示不到一分钟（说「刚刚」）。这句话顶替的是
+   * `signal.offline` 那句「没有智能体在上报」—— 见 `lib/signals.ts`。
+   */
+  justFinished: (minutes: number) => string;
   groupsCount: (n: number) => string;
   /** 截断标记的 tooltip：「+3」指的是哪几组 */
   moreGroups: (n: number) => string;
@@ -1107,6 +1114,8 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     quit: "退出 SignalHub",
 
     lampHint: "左键打开收件箱 · 双击折叠 / 展开 · 右键单组菜单",
+    justFinished: (minutes) =>
+      minutes < 1 ? "刚完成 · 刚刚" : `刚完成 · ${minutes} 分钟前`,
     groupsCount: (n) => `（${n} 组）`,
     moreGroups: (n) => `还有 ${n} 组`,
     expandNow: "已展开",
@@ -1701,6 +1710,8 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     quit: "Quit SignalHub",
 
     lampHint: "Click to open the inbox · double-click to collapse / expand · right-click for a group menu",
+    justFinished: (minutes) =>
+      minutes < 1 ? "Just finished · moments ago" : `Just finished · ${minutes} min ago`,
     groupsCount: (n) => ` (${plural(n, "group", "groups")})`,
     moreGroups: (n) => `+${n} more`,
     expandNow: "Expanded",

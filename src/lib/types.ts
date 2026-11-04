@@ -95,5 +95,13 @@ export interface Snapshot {
   paused: boolean;
   since_ms: number;
   message: string | null;
+  /**
+   * 最近一次「完成」的墙钟时刻（epoch 毫秒），从没完成过是 0。
+   *
+   * 只在**一个会话都没有**的时候有用：那一刻灯要说「没有智能体在上报」，而这句话
+   * 对「三分钟前刚干完活」的人是错的。`done` 的牌到期是被整个删掉的，会话一没，
+   * 这份记忆就是唯一还记得「刚完成」的东西（见 `signals.ts` 的 `justFinishedLabel`）。
+   */
+  last_done_ms: number;
   groups: GroupView[];
 }
