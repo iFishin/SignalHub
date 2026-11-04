@@ -101,6 +101,10 @@ pub struct CliText {
     pub approve_needs_token: &'static str,
     /// `install hooks --approve` 装完之后：真正的闸门在应用里
     pub approve_needs_switch: &'static str,
+    /// `install hooks <自定义预设> --http/--approve`：那两条它走不了
+    pub custom_command_only: &'static str,
+    /// `diagnose <自定义预设>`：诊断没有为它单独出一档
+    pub diagnose_no_custom: &'static str,
     pub install_config: &'static str,
     pub install_backup: &'static str,
     /// `{}` 个数
@@ -211,6 +215,8 @@ pub const ZH: CliText = CliText {
 
     approve_needs_token: "读不到 token（{err}）—— 应用还没跑起来。审批那条 hook 要带 token，没有它写进去的配置会被拒。",
     approve_needs_switch: "  还要在 SignalHub 的「接入」页打开「从灯上审批」那个开关 —— 它是默认关的，而且是真正的闸门：关着的时候端点什么都不说，每次还是回终端里问你。",
+    custom_command_only: "自定义预设（~/.signalhub/agents.json 里的那一条）只支持命令式接入：--http / --approve 要建立在「这一家的文档写清了它能回什么」之上，而你自己加的那一条没人验证过。去掉这个选项再来一次。",
+    diagnose_no_custom: "{} 是自定义预设，diagnose 还没有为它单独出一档 —— 它按内置那家的路径去查，拿它来查自定义的会显示错误的配置路径。配置路径、命令、最近一次上报这三样在「接入」页那一行上就是全的。",
 
     install_config: "  配置  {}",
     install_backup: "  备份  {}",
@@ -372,6 +378,8 @@ pub const EN: CliText = CliText {
 
     approve_needs_token: "Cannot read the token ({err}) — the app is not running. The approval hook carries a token, and without one the entry we write would be rejected.",
     approve_needs_switch: "  Also turn on \"Approve from the lamp\" on the Connect page in SignalHub — it is off by default and it is the real gate: while it is off the endpoint says nothing, and every question still goes to the terminal.",
+    custom_command_only: "A custom preset (an entry in ~/.signalhub/agents.json) only supports command-style hooks: --http and --approve rely on that agent's documented response format, and nobody has verified the one you added. Drop the flag and run it again.",
+    diagnose_no_custom: "{} is a custom preset, and diagnose has no section for it yet — it looks everything up under the built-in agent's paths, so running it for a custom preset would show the wrong config path. The config path, the command and the last report are all on that row in the Connect page.",
 
     install_config: "  config   {}",
     install_backup: "  backup   {}",
@@ -611,6 +619,8 @@ mod tests {
             ("install_command", t.install_command),
             ("unknown_source", t.unknown_source),
             ("http_needs_port", t.http_needs_port),
+            ("custom_command_only", t.custom_command_only),
+            ("diagnose_no_custom", t.diagnose_no_custom),
             ("install_config", t.install_config),
             ("install_backup", t.install_backup),
             ("install_added", t.install_added),

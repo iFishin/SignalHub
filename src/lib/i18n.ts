@@ -238,6 +238,16 @@ export interface Messages {
   agentInstalled: string;
   agentDetected: string;
   agentMissing: string;
+  /** 名字旁边那枚「自定义」：这条来自 `~/.signalhub/agents.json`，不在我们的清单里 */
+  agentCustom: string;
+  /** 自定义预设那一节的标题 */
+  customAgentsTitle: string;
+  /** 自定义预设的说明。参数是能当 `family` 用的那几个名字（`claude-code / codex / …`） */
+  customAgentsHint: (families: string) => string;
+  /** 这个功能**做不到**什么 —— 能力边界，写在说明下面另起一段 */
+  customAgentsLimit: string;
+  /** 「打开配置文件」按钮（文件不存在时先建一份带说明的空文件） */
+  customAgentsOpen: string;
   /** 「已接入」但配置里那条命令现在跑不起来了 —— 静默失效，最该被看见的一种 */
   agentCommandBroken: string;
   /**
@@ -864,6 +874,13 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     agentInstalled: "已接入",
     agentDetected: "检测到，未接入",
     agentMissing: "未检测到",
+    agentCustom: "自定义",
+    customAgentsTitle: "自定义智能体",
+    customAgentsHint: (families) =>
+      `清单里没有的那一家不用等我们适配：在配置文件里写一条，说明它和哪一家同构（${families}）以及配置写在哪，它就会出现在上面那张表里，接入 / 卸载和别的完全一样。改完保存、切回这个窗口就会重新读一遍。`,
+    customAgentsLimit:
+      "只覆盖「格式同构、路径不同」这一类 —— 事件名是另一套的，仍然得等我们加一家。",
+    customAgentsOpen: "打开配置文件",
     agentCommandBroken:
       "接入是装上了，但配置里那条命令现在跑不起来 —— 智能体不会报错，灯也不会亮。多半是应用被挪走或删掉了，重新点一次「接入」就会改写成当前路径：",
     agentUpdateAvailable:
@@ -1458,6 +1475,13 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     agentInstalled: "Installed",
     agentDetected: "Detected, not installed",
     agentMissing: "Not detected",
+    agentCustom: "Custom",
+    customAgentsTitle: "Custom agents",
+    customAgentsHint: (families) =>
+      `An agent that is not on the list does not have to wait for us: add an entry to the config file saying which family it mirrors (${families}) and where its config lives, and it shows up in the list above — install and uninstall work exactly the same way. Save the file and come back to this window; it is re-read on focus.`,
+    customAgentsLimit:
+      "This only covers agents that are format-compatible with a different path. If the event names differ, we still have to add one.",
+    customAgentsOpen: "Open the config file",
     agentCommandBroken:
       "Installed, but the command in the config no longer runs — the agent will not complain and the lamp will not light. Usually the app was moved or deleted; clicking Install again rewrites it to the current path:",
     agentUpdateAvailable:

@@ -185,6 +185,8 @@ signalhub install hooks claude-code --dry-run   # 先看看会改什么
 
 装完重启智能体即可生效。之后提问 → 绿快闪、调工具 → 绿慢闪、需要授权 → 红闪、答完亮一下再回常亮。各家的差异（哪家没有「需要授权」事件、哪家的字段名不一样）见 [docs/api.md §4](docs/api.md)。
 
+**清单里没有的那一家，不用等我们发版。** 长尾里的冷门智能体大多是 Claude Code 的同构克隆 —— 事件名、字段、条目形状全一样，只是配置路径和名字不同。这种写进 `~/.signalhub/agents.json` 就行：声明它和哪一家同构（`family`）、配置写在哪（`config`）、叫什么（`id` / `name`），它就和内置那十家一样出现在「接入」页，接入 / 卸载 / 状态探测全部照常，CLI 也认（`signalhub install hooks my-agent`）。格式真不一样的（事件名是另一套）仍然得加代码 —— 那种情况可以先用 `signalhub run` 顶上。字段表和例子见 [docs/api.md §4.18](docs/api.md)。
+
 建议先把 CLI 放进 PATH，这样写进配置的是可移植的裸名字而不是绝对路径：
 
 ```bash

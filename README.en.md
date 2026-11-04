@@ -170,6 +170,8 @@ It writes hooks into the agent's config file (`~/.claude/settings.json` for Clau
 
 Restart the agent afterwards. Then: prompt → fast green, tool call → slow green, permission → red, answer → a pulse and back to steady. Per-agent differences (which ones have no "needs permission" event, whose payload field names differ) are in [docs/api.md §4](docs/api.md).
 
+**An agent that is not on the list does not have to wait for a release.** Most of the long tail are Claude Code clones — same event names, same fields, same entry shape, only the config path and the name differ. For those, write an entry in `~/.signalhub/agents.json`: say which family it mirrors (`family`), where its config lives (`config`) and what it is called (`id` / `name`). It then shows up in the Connect page next to the ten built-ins, and install / uninstall / detection all work the same way — the CLI accepts it too (`signalhub install hooks my-agent`). If the event names genuinely differ, that still needs code; `signalhub run` is the stopgap there. Field table and example: [docs/api.md §4.18](docs/api.md).
+
 Put the CLI on your PATH first, so what gets written into the config is the portable bare name rather than an absolute path:
 
 ```bash

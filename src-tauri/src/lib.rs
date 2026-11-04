@@ -1,3 +1,4 @@
+mod agents;
 mod alerts;
 mod approval_log;
 mod approvals;
@@ -968,9 +969,12 @@ fn request_notify_permission(app: tauri::AppHandle) -> &'static str {
 #[derive(serde::Serialize)]
 struct AgentStatus {
     /// CLI 里用的名字（`claude-code`）
-    id: &'static str,
+    ///
+    /// `String` 而不是 `&'static str`：自定义预设（`~/.signalhub/agents.json`）
+    /// 的名字是运行期读进来的。
+    id: String,
     /// 显示名（`Claude Code`）
-    name: &'static str,
+    name: String,
     /// 这台机器上有没有它
     detected: bool,
     /// 我们有没有给它装过 hook
@@ -1002,6 +1006,11 @@ struct AgentStatus {
     /// 两种模式写进同一个配置，界面必须说得出「你在跑哪条路」—— 否则用户看到
     /// 「已接入」却不知道自己改不改 PATH 有没有关系。
     http: Option<bool>,
+    /// 这条是用户在 `~/.signalhub/agents.json` 里自己写的。
+    ///
+    /// 界面据此加一枚「自定义」标记，并**不给它 HTTP / 审批那两个按钮** ——
+    /// 那两条建立在「这一家的文档写清了它能回什么」之上，自定义的那一家没人验证过。
+    custom: bool,
 }
 
 /// 扫一遍机器上有哪些智能体、我们接入了哪些。
@@ -1012,35 +1021,45 @@ struct AgentStatus {
 /// 也不要因为判错而把路堵死。
 #[tauri::command]
 fn detect_agents() -> Vec<AgentStatus> {
-    hooks::ALL_NAMES
+    let builtin = hooks::ALL_NAMES
         .iter()
-        .filter_map(|id| hooks::Agent::parse(id).ok().map(|agent| (*id, agent)))
-        .map(|(id, agent)| {
-            // `installed_command` 要读一次配置文件，所以只算一次
-            let command = hooks::installed_command(agent);
-            let command_ok = command.as_deref().is_some_and(hooks::command_resolves);
-            // **HTTP 式没有命令可解析**，所以 `command_ok` 在那种情况下无意义 ——
-            // 界面按 `http` 那个字段改口（见 `SettingsPanel` 的 `agentTryHint`）。
-            let http = hooks::installed_http(agent);
-            let installed = hooks::is_installed(agent);
-            // 装的是不是**旧版本**写的（判据和 `diagnose` 共用一份，见
-            // `hooks::installed_is_stale`）。
-            let stale = hooks::installed_is_stale(agent);
-            AgentStatus {
-                id,
-                name: agent.name(),
-                detected: hooks::detect(agent),
-                installed,
-                config: hooks::config_path(agent)
-                    .map(|path| path.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-                command,
-                command_ok,
-                stale,
-                http,
-            }
-        })
-        .collect()
+        .filter_map(|id| hooks::Preset::parse(id).ok());
+    // 自定义预设排在后面：它们多半是长尾里的一家，不该把常见的那几家挤下去。
+    // **一条写错不影响别的** —— `agents::load` 是部分成功的（见那个模块的说明）。
+    let custom = agents::load()
+        .agents
+        .into_iter()
+        .map(hooks::Preset::Custom);
+
+    builtin.chain(custom).map(|preset| status_of(&preset)).collect()
+}
+
+fn status_of(preset: &hooks::Preset) -> AgentStatus {
+    // `installed_command` 要读一次配置文件，所以只算一次
+    let command = hooks::preset_installed_command(preset);
+    let command_ok = command.as_deref().is_some_and(hooks::command_resolves);
+    // **HTTP 式没有命令可解析**，所以 `command_ok` 在那种情况下无意义 ——
+    // 界面按 `http` 那个字段改口（见 `SettingsPanel` 的 `agentTryHint`）。
+    let http = hooks::preset_installed_http(preset);
+    let installed = hooks::preset_installed(preset);
+    // 装的是不是**旧版本**写的（判据和 `diagnose` 共用一份，见
+    // `hooks::installed_is_stale`）。
+    let stale = hooks::preset_installed_is_stale(preset);
+    AgentStatus {
+        id: preset.id().to_string(),
+        name: preset.name().to_string(),
+        detected: hooks::preset_detect(preset),
+        installed,
+        config: preset
+            .config_path()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        command,
+        command_ok,
+        stale,
+        http,
+        custom: preset.is_custom(),
+    }
 }
 
 /// 最近的 hook 调用记录，**最新的在后**。
@@ -1136,11 +1155,12 @@ impl From<hooks::Report> for HookChange {
 
 /// 给一个智能体装 hook。
 ///
-/// 与 CLI 的 `install hooks <agent>` **走同一段逻辑**（`hooks::install`）——
-/// 界面和命令行两条入口共用实现，行为不会分叉。
+/// 与 CLI 的 `install hooks <agent>` **走同一段逻辑**（`hooks::install_preset`）——
+/// 界面和命令行两条入口共用实现，行为不会分叉。`agent` 既可以是内置的名字，
+/// 也可以是 `~/.signalhub/agents.json` 里自己加的那一条。
 #[tauri::command]
 fn install_agent_hooks(agent: String) -> Result<HookChange, String> {
-    hooks::install(hooks::Agent::parse(&agent)?, false).map(HookChange::from)
+    hooks::install_preset(&hooks::Preset::parse(&agent)?, false).map(HookChange::from)
 }
 
 /// 用 **HTTP 方式**接入（目前只有 Claude Code 支持）。
@@ -1265,7 +1285,52 @@ fn set_tool_approval(
 
 #[tauri::command]
 fn uninstall_agent_hooks(agent: String) -> Result<HookChange, String> {
-    hooks::uninstall(hooks::Agent::parse(&agent)?, false).map(HookChange::from)
+    hooks::uninstall_preset(&hooks::Preset::parse(&agent)?, false).map(HookChange::from)
+}
+
+/// 自定义预设那本「账」：文件在哪、读不读得懂、现在有几条。
+///
+/// 单独一条命令而不是塞进 `detect_agents` 的返回里：那个返回值是**一排智能体**，
+/// 往里加一个「元信息」字段会让它变成一个既装列表又装错误的杂货袋，而界面里
+/// 这两样东西的位置也完全不同（列表在中间，文件入口在下面）。
+#[derive(serde::Serialize)]
+struct CustomAgentsInfo {
+    /// `~/.signalhub/agents.json` 的绝对路径
+    path: String,
+    /// 读不懂的地方，每条一句话。空 = 没问题。
+    ///
+    /// **必须报出来**：配置文件最坏的失败方式是被静默忽略 —— 用户改了文件、
+    /// 点了接入、什么都没发生，也没有任何提示。
+    problems: Vec<String>,
+    /// 能当 `family` 用的几个名字（给界面填提示，别让用户去猜）
+    families: Vec<String>,
+}
+
+#[tauri::command]
+fn custom_agents_info() -> CustomAgentsInfo {
+    let loaded = agents::load();
+    CustomAgentsInfo {
+        path: agents::file_path()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        problems: loaded.problems,
+        families: agents::families()
+            .into_iter()
+            .map(|agent| hooks::cli_name(agent).to_string())
+            .collect(),
+    }
+}
+
+/// 打开 `~/.signalhub/agents.json`，**没有就建一份带说明的空文件**。
+///
+/// 建文件是这一步的重点：让用户先对着一个空目录想「格式是什么」，等于把文档
+/// 翻出来这件事也交给他。文件里带一条 `_example`（加载器不看它），照着抄就行。
+#[tauri::command]
+fn open_custom_agents() -> Result<String, String> {
+    let path = agents::ensure_file()?;
+    let text = path.to_string_lossy().into_owned();
+    open::open(&text).map_err(|err| format!("打不开 {}：{err}", path.display()))?;
+    Ok(text)
 }
 
 /// HTTP 式接入的探测上限。对面就是我们自己、走的是回环，3 秒绰绰有余 ——
@@ -2618,6 +2683,8 @@ pub fn run() {
             get_notify_permission,
             request_notify_permission,
             detect_agents,
+            custom_agents_info,
+            open_custom_agents,
             agent_receipts,
             get_hook_log,
             update::get_update_state,

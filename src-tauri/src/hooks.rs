@@ -241,14 +241,17 @@ fn plugin_format_line() -> String {
 /// 判错的代价很小：检测只决定界面上「检测到」那一行怎么显示，装的时候照装不误。
 /// 所以宁可宽松（配置目录在就算），也不要因为路径记错而把一个装了的智能体报成没装。
 pub fn detect(agent: Agent) -> bool {
-    let dir_exists = crate::config::home_dir()
-        .map(|home| home.join(agent.marker_dir()).is_dir())
-        .unwrap_or(false);
-    dir_exists
-        || agent
-            .command_names()
-            .iter()
-            .any(|name| on_path(name).is_some())
+    let marker = crate::config::home_dir().map(|home| home.join(agent.marker_dir()));
+    detect_at(marker.as_deref(), agent.command_names())
+}
+
+/// [`detect`] 的路径版：给它痕迹目录和命令名，它说有没有。
+///
+/// 自定义预设没有 `Agent` 可变，走这条 —— 两处共用一份判据，「宁可宽松」那条
+/// 取舍才不会在一边成立、另一边不成立。
+pub fn detect_at(marker: Option<&Path>, commands: &[&str]) -> bool {
+    marker.is_some_and(Path::is_dir)
+        || commands.iter().any(|name| on_path(name).is_some())
 }
 
 /// 我们给它装过 hook 没有。
@@ -633,11 +636,7 @@ const CLI_BINARY: &str = if cfg!(windows) {
 /// 不认 `hook` 参数，而单实例插件会把它变成「把已经开着的窗口叫到前面」—— 不报
 /// 状态，也不报错。
 pub fn resolve_hook_command(agent: Agent) -> String {
-    let base = format!(
-        "{} hook {}",
-        quote_program(&cli_program()),
-        agent_name_for_cli(agent)
-    );
+    let base = hook_command(agent_name_for_cli(agent));
 
     // **只给实测过的一家带进程号。**
     //
@@ -658,8 +657,16 @@ pub fn resolve_hook_command(agent: Agent) -> String {
     base
 }
 
-/// 我们自己的 CLI 该怎么调，**未加引号**。
+/// 一条 hook 命令的骨架：`<我们的 CLI> hook <上报名>`。
 ///
+/// 抽出来是因为它现在有两个调用者：内置的那几家（[`resolve_hook_command`]，可能
+/// 带进程号前缀）和自定义预设（[`Preset`]，永远不带）。**两条路必须是同一条命令**，
+/// 否则 `installed_is_stale` 会把刚装好的自定义接入判成「旧版本」。
+fn hook_command(id: &str) -> String {
+    format!("{} hook {}", quote_program(&cli_program()), id)
+}
+
+/// 我们自己的 CLI 该怎么调，**未加引号**。
 /// 插件式生成的源码用它（`spawn(program, args)` 直接给 argv，不经过 shell，所以
 /// 绝不能带引号 —— 带了就是「找不到名为 `"…"` 的程序」）。写进**配置里的命令行**
 /// 那份要过 [`quote_program`]。
@@ -1520,6 +1527,160 @@ pub fn uninstall(agent: Agent, dry_run: bool) -> Result<Report, String> {
             .map_err(|err| format!("删除插件目录 {} 失败: {err}", dir.display()))?;
     }
     Ok(report)
+}
+
+// ---- 自定义预设（`~/.signalhub/agents.json`）-------------------------------
+
+/// 一个「接入目标」：内置的一家，或者用户在 `agents.json` 里写的一条。
+///
+/// **为什么合成一个类型**：两者在机制上是一回事 —— 都是「往某份 JSON 的 `hooks`
+/// 键里插条目」。差别只有路径、显示名和上报 id，而这三样正是配置能表达的。
+/// 分成两套实现的话，「只动 `hooks` 这一个键」「解析失败就中止，绝不覆盖」这些
+/// 底线会被抄两遍，迟早有一边漂移。
+#[derive(Debug, Clone)]
+pub enum Preset {
+    Builtin(Agent),
+    Custom(crate::agents::CustomAgent),
+}
+
+impl Preset {
+    /// 按 id 找：**先内置，再 `agents.json`**。
+    ///
+    /// 顺序不能反：内置的名字是保留字（`agents.rs` 在加载时就拒绝了重名），
+    /// 所以两者不会同时命中 —— 但先查内置可以省掉一次文件读取。
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        let id = crate::agents::normalize_id(raw);
+        if let Ok(agent) = Agent::parse(&id) {
+            return Ok(Preset::Builtin(agent));
+        }
+        match crate::agents::find(&id) {
+            Some(custom) => Ok(Preset::Custom(custom)),
+            None => Err(format!(
+                "不认识的智能体 {id:?}；内置的有 {}，\
+                 也可以用 ~/.signalhub/agents.json 自己加一条（见 docs/api.md §4.18）",
+                ALL_NAMES.join(" / ")
+            )),
+        }
+    }
+
+    /// 格式家族 —— 事件表、条目形状、映射规则都从它来。
+    pub fn family(&self) -> Agent {
+        match self {
+            Preset::Builtin(agent) => *agent,
+            Preset::Custom(custom) => custom.family,
+        }
+    }
+
+    /// 上报用的名字（CLI 的 `--agent` 值、`/v1/state` 里的 `agent`）。
+    pub fn id(&self) -> &str {
+        match self {
+            Preset::Builtin(agent) => agent_name_for_cli(*agent),
+            Preset::Custom(custom) => &custom.id,
+        }
+    }
+
+    /// 界面上显示的名字。
+    pub fn name(&self) -> &str {
+        match self {
+            Preset::Builtin(agent) => agent.name(),
+            Preset::Custom(custom) => &custom.name,
+        }
+    }
+
+    pub fn is_custom(&self) -> bool {
+        matches!(self, Preset::Custom(_))
+    }
+
+    pub fn config_path(&self) -> Result<PathBuf, String> {
+        match self {
+            Preset::Builtin(agent) => config_path(*agent),
+            Preset::Custom(custom) => custom.config_path(),
+        }
+    }
+}
+
+/// 装一个预设。自定义的只支持**命令式**：HTTP 式与「从灯上审批」都建立在
+/// 「这一家的文档写清了它能回什么」之上，而自定义的那一家没人验证过。
+pub fn install_preset(preset: &Preset, dry_run: bool) -> Result<Report, String> {
+    match preset {
+        Preset::Builtin(agent) => install(*agent, dry_run),
+        Preset::Custom(custom) => {
+            let path = custom.config_path()?;
+            // 不带进程号前缀：`$PPID` 只实测过 Claude Code 那一家（见
+            // `resolve_hook_command`）。自定义的那一家没人测过，把短命 shell 的
+            // 进程号当成智能体，会让会话在第一次工具调用之后就被探活收掉 ——
+            // 比「沉默」糟得多。
+            install_at(
+                custom.family,
+                &HookSpec::Command(hook_command(&custom.id)),
+                None,
+                &path,
+                dry_run,
+            )
+        }
+    }
+}
+
+pub fn uninstall_preset(preset: &Preset, dry_run: bool) -> Result<Report, String> {
+    match preset {
+        Preset::Builtin(agent) => uninstall(*agent, dry_run),
+        Preset::Custom(custom) => uninstall_at(&custom.config_path()?, dry_run),
+    }
+}
+
+pub fn preset_installed(preset: &Preset) -> bool {
+    match preset {
+        Preset::Builtin(agent) => is_installed(*agent),
+        Preset::Custom(custom) => custom
+            .config_path()
+            .ok()
+            .and_then(|path| fs::read_to_string(path).ok())
+            .is_some_and(|text| config_has_our_hooks(&text)),
+    }
+}
+
+pub fn preset_installed_command(preset: &Preset) -> Option<String> {
+    match preset {
+        Preset::Builtin(agent) => installed_command(*agent),
+        Preset::Custom(custom) => custom
+            .config_path()
+            .ok()
+            .and_then(|path| fs::read_to_string(path).ok())
+            .and_then(|text| installed_command_in(&text)),
+    }
+}
+
+/// 自定义预设没有 HTTP 式，所以永远是 `None`（「没装」的语义由调用方按
+/// `preset_installed` 判）。
+pub fn preset_installed_http(preset: &Preset) -> Option<bool> {
+    match preset {
+        Preset::Builtin(agent) => installed_http(*agent),
+        Preset::Custom(_) => None,
+    }
+}
+
+pub fn preset_installed_is_stale(preset: &Preset) -> bool {
+    match preset {
+        Preset::Builtin(agent) => installed_is_stale(*agent),
+        Preset::Custom(custom) => {
+            if !preset_installed(preset) {
+                return false;
+            }
+            preset_installed_command(preset)
+                .is_some_and(|cmd| command_stale(&cmd, &hook_command(&custom.id)))
+        }
+    }
+}
+
+pub fn preset_detect(preset: &Preset) -> bool {
+    match preset {
+        Preset::Builtin(agent) => detect(*agent),
+        Preset::Custom(custom) => {
+            let marker = custom.marker_path();
+            let commands: Vec<&str> = custom.command.as_deref().into_iter().collect();
+            detect_at(marker.as_deref(), &commands)
+        }
+    }
 }
 
 /// 插件式安装：把我们自己的那份源码写进对方自动加载的目录。
@@ -3535,5 +3696,75 @@ mod tests {
             let err = install_http(agent, 41320, true).unwrap_err();
             assert!(err.contains("Claude Code"), "{agent:?}: {err}");
         }
+    }
+
+    /// 自定义预设：**机制全用家族的，上报 id 用自己的**。
+    ///
+    /// 这条钉住的是「同构」这个词的具体含义 —— 事件表、条目形状、写哪个键都来自
+    /// `family`，只有 `hook` 后面那个名字是用户给的。任何一处走岔了，
+    /// 「装上了却永远不亮」就会发生在自定义预设上。
+    #[test]
+    fn a_custom_preset_installs_like_its_family_but_reports_its_own_name() {
+        let dir = TempDir::new();
+        let path = dir.file("settings.json");
+        let command = hook_command("my-agent");
+        assert!(command.ends_with("hook my-agent"), "{command}");
+
+        let report = install_at(
+            Agent::ClaudeCode,
+            &HookSpec::Command(command.clone()),
+            None,
+            &path,
+            false,
+        )
+        .unwrap();
+        // 事件表来自家族 —— 自定义预设没有自己的事件表，那正是「同构」的意思
+        assert_eq!(report.added.len(), events(Agent::ClaudeCode).len());
+
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("hook my-agent"), "{text}");
+        // 装完必须认得出是我们写的，而且不能判成「旧版本」—— 否则界面会一直
+        // 提示「重新接入」，而重装一遍也不会消失
+        assert!(config_has_our_hooks(&text));
+        let installed = installed_command_in(&text).unwrap();
+        assert!(!command_stale(&installed, &command));
+        // 换一个 id 就是另一条命令：两个自定义预设互相当成「旧版本」会很难查
+        assert!(command_stale(&installed, &hook_command("another-agent")));
+    }
+
+    #[test]
+    fn a_custom_preset_uninstalls_from_its_own_file() {
+        let dir = TempDir::new();
+        let path = dir.file("settings.json");
+        install_at(
+            Agent::ClaudeCode,
+            &HookSpec::Command(hook_command("my-agent")),
+            None,
+            &path,
+            false,
+        )
+        .unwrap();
+
+        let report = uninstall_at(&path, false).unwrap();
+        assert!(report.removed_handlers > 0);
+        // 幂等：再来一次不报错、也不假装删掉了什么
+        assert_eq!(uninstall_at(&path, false).unwrap().removed_handlers, 0);
+    }
+
+    #[test]
+    fn preset_parse_prefers_builtins_and_says_where_to_add_your_own() {
+        assert!(matches!(
+            Preset::parse("claude-code"),
+            Ok(Preset::Builtin(Agent::ClaudeCode))
+        ));
+        // 别名也走内置，不会被当成「自定义的一条」
+        assert!(matches!(
+            Preset::parse("claude"),
+            Ok(Preset::Builtin(Agent::ClaudeCode))
+        ));
+
+        let err = Preset::parse("definitely-not-an-agent").unwrap_err();
+        // 报错要指出**还有一条路**：这个功能的意义就是让用户自己加一条
+        assert!(err.contains("agents.json"), "{err}");
     }
 }

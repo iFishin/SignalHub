@@ -46,6 +46,34 @@ export interface AgentStatus {
    * `command_ok` 无意义。
    */
   http: boolean | null;
+  /**
+   * 这条是用户在 `~/.signalhub/agents.json` 里自己写的。
+   *
+   * 界面据此加一枚「自定义」标记 —— 它同时说明了两件事：这一条不在我们维护的
+   * 清单里，而且它只支持命令式接入（HTTP 式与「从灯上审批」都建立在「这一家的
+   * 文档写清了它能回什么」之上，自定义的那一家没人验证过）。
+   */
+  custom: boolean;
+}
+
+/**
+ * 自定义预设那本「账」：文件在哪、读不读得懂、现在有几条。
+ *
+ * **和 `detect_agents` 分开取**：那个返回值是「一排智能体」，往里塞元信息会让它
+ * 变成一个既装列表又装错误的杂货袋；而界面上这两样东西的位置也完全不同。
+ */
+export interface CustomAgentsInfo {
+  /** `~/.signalhub/agents.json` 的绝对路径 */
+  path: string;
+  /**
+   * 读不懂的地方，每条一句话。空 = 没问题。
+   *
+   * **必须摆到界面上**：配置文件最坏的失败方式是被静默忽略 —— 用户改了文件、
+   * 点了接入、什么都没发生，也没有任何提示。
+   */
+  problems: string[];
+  /** 能当 `family` 用的几个名字（给提示用，别让用户去猜） */
+  families: string[];
 }
 
 /** 与 Rust 侧 receipts.rs 的 ReceiptView 对应。 */
@@ -142,6 +170,33 @@ export function useAgents() {
   useVisibleRefresh(refresh);
 
   return { agents, refresh };
+}
+
+/**
+ * 自定义预设那本账（`~/.signalhub/agents.json`）。
+ *
+ * 刷新时机和 `useAgents` 一致：**窗口重新获得焦点时补拉一次**。这正是这个功能
+ * 最常用的动作 —— 打开文件、改完保存、切回设置窗 —— 所以不需要另加一个刷新按钮。
+ */
+export function useCustomAgents() {
+  const [info, setInfo] = useState<CustomAgentsInfo | null>(null);
+
+  const refresh = useCallback(() => {
+    if (!inTauri) return;
+    invoke<CustomAgentsInfo>("custom_agents_info")
+      .then(setInfo)
+      .catch((err) => console.error("custom_agents_info 失败", err));
+  }, []);
+
+  useEffect(refresh, [refresh]);
+  useVisibleRefresh(refresh);
+
+  return { info, refresh };
+}
+
+/** 打开（必要时先创建）`~/.signalhub/agents.json`。返回它的路径。 */
+export function openCustomAgents(): Promise<string> {
+  return invoke<string>("open_custom_agents");
 }
 
 /**

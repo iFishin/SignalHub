@@ -33,7 +33,9 @@ import { useOutboundLog, lastAttemptFor, type Attempt } from "../lib/useOutbound
 import { useNow } from "../lib/useNow";
 import {
   groupReceipts,
+  openCustomAgents,
   useAgents,
+  useCustomAgents,
   useHookLog,
   useReceipts,
   type AgentStatus,
@@ -1151,6 +1153,9 @@ export function SettingsPanel({ snapshot }: Props) {
   const [outboundNonce, setOutboundNonce] = useState(0);
   const outboundLog = useOutboundLog(snapshot.aggregate, outboundNonce);
   const { agents, refresh: refreshAgents } = useAgents();
+  // 自定义预设那本账：文件在哪、读不读得懂。和上面那份清单分开取（理由见
+  // `useAgents.ts` 的 `CustomAgentsInfo`）。
+  const { info: custom, refresh: refreshCustom } = useCustomAgents();
   // 「它到底有没有在报」——接入页以前回答不了的那个问题。和时间有关，所以跟着
   // 上面那个会走的钟（`useNow`）一起算。
   const { receipts, refresh: refreshReceipts } = useReceipts();
@@ -2613,6 +2618,9 @@ export function SettingsPanel({ snapshot }: Props) {
                     <div className="agent-info">
                       <div className="agent-line">
                         <span className="agent-name">{agent.name}</span>
+                        {/* 「自定义」这枚说的是「不在我们维护的清单里」—— 它同时
+                            解释了为什么下面没有 HTTP / 审批那两个按钮。 */}
+                        {agent.custom && <span className="tag">{m.agentCustom}</span>}
                         <span className="badge" data-on={agent.installed}>
                           {status}
                         </span>
@@ -2762,6 +2770,45 @@ export function SettingsPanel({ snapshot }: Props) {
                   </div>
                 );
               })}
+            </div>
+
+            {/* ---- 自定义智能体 ----
+                 `Agent` 是一张编译期写死的表，而「冷门智能体」的长尾极长 —— 但它们
+                里的大多数是 Claude Code 的同构克隆，差异只有配置路径和名字。那种
+                情况不该等我们发一版：写进配置文件就出现在上面那张表里。
+
+                **这一节必须自己说清能力边界**：格式真不一样的还是得加代码。否则
+                用户会以为「写个配置就能接任何东西」，然后在事件名对不上的地方
+                卡住，而且不知道卡在哪儿。 */}
+            <div className="section">
+              <div className="section-title">{m.customAgentsTitle}</div>
+              <p className="hint">{m.customAgentsHint((custom?.families ?? []).join(" / "))}</p>
+              <p className="hint">{m.customAgentsLimit}</p>
+              {custom?.path && <span className="agent-config mono">{custom.path}</span>}
+              {/* 读不懂的地方**必须摆出来**：配置文件最坏的失败方式是被静默忽略 ——
+                  用户改了文件、点了接入、什么都没发生，也没有任何提示。 */}
+              {(custom?.problems ?? []).map((problem) => (
+                <span className="agent-broken" key={problem}>
+                  {problem}
+                </span>
+              ))}
+              <div className="agent-buttons">
+                <button
+                  type="button"
+                  className="btn btn-tiny"
+                  onClick={() => {
+                    openCustomAgents()
+                      // 建完 / 打开之后补拉一次：文件可能是这一步才创建的
+                      .then(() => {
+                        refreshCustom();
+                        refreshAgents();
+                      })
+                      .catch((err) => console.error("open_custom_agents 失败", err));
+                  }}
+                >
+                  {m.customAgentsOpen}
+                </button>
+              </div>
             </div>
 
             {/* ---- 系统信号源 ----

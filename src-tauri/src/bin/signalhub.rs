@@ -33,6 +33,13 @@ mod config;
 #[path = "../hooks.rs"]
 mod hooks;
 
+// 用户自定义的智能体预设（`~/.signalhub/agents.json`）。CLI 也要读它：
+// `signalhub hook <自定义 id>` 得知道用哪一家的映射表，`install hooks <自定义 id>`
+// 也得能装 —— 否则「一键接入」只在图形界面里成立，终端里的人做不到同一件事。
+#[allow(dead_code)]
+#[path = "../agents.rs"]
+mod agents;
+
 #[allow(dead_code)]
 #[path = "../state.rs"]
 mod state;
@@ -900,15 +907,38 @@ fn required_agent<'a>(rest: &'a [String], what: &str) -> Result<&'a str, Failure
 /// 位置参数可选：`signalhub diagnose opencode` 只看那一个。
 fn run_diagnose(agent: Option<&str>) -> Result<(), Failure> {
     let filter = match agent {
-        Some(name) => Some(hooks::Agent::parse(name).map_err(Failure::other)?),
+        Some(name) => {
+            // **自定义预设没有单独一档**，而且是刻意的：诊断里每一行都按内置那家
+            // 的路径去查，拿它来查自定义的会把 `.claude/settings.json` 摆出来 ——
+            // 那比报错更容易误导。所以明确拒绝，并指到真正有那些信息的地方。
+            let preset = hooks::Preset::parse(name).map_err(Failure::other)?;
+            if preset.is_custom() {
+                return Err(Failure::other(fill(
+                    t().diagnose_no_custom,
+                    &[preset.name()],
+                )));
+            }
+            Some(preset.family())
+        }
         None => None,
     };
     print!("{}", diagnose::text(&receipts::Receipts::load(), filter));
     Ok(())
 }
 
-fn install_hooks(agent: &str, flags: &Flags) -> Result<(), Failure> {
-    let agent = hooks::Agent::parse(agent).map_err(Failure::other)?;
+fn install_hooks(raw: &str, flags: &Flags) -> Result<(), Failure> {
+    // 内置的和 `~/.signalhub/agents.json` 里自己加的都认 —— 界面上能一键接入的，
+    // 终端里也得能，否则「一键」只在图形界面里成立。
+    let preset = hooks::Preset::parse(raw).map_err(Failure::other)?;
+    let agent = preset.family();
+
+    // 自定义预设只走命令式：`--http` / `--approve` 都建立在「这一家的文档写清了
+    // 它能回什么」之上，而用户自己加的那一条没人验证过。宁可在这里拒绝，也不要
+    // 写一条「装上了却永远不亮」的 hook。
+    if preset.is_custom() && (flags.approve || flags.http) {
+        return Err(Failure::other(t().custom_command_only.to_string()));
+    }
+
     let report = if flags.approve {
         // 端口和 token 都取**此刻**的真实值：写进用户配置文件的东西不能来自一份
         // 可能过期的快照（token 是每台机器一份的秘密，从文件里读，不从参数收）
@@ -925,7 +955,7 @@ fn install_hooks(agent: &str, flags: &Flags) -> Result<(), Failure> {
         })?;
         hooks::install_http(agent, port, flags.dry_run).map_err(Failure::other)?
     } else {
-        hooks::install(agent, flags.dry_run).map_err(Failure::other)?
+        hooks::install_preset(&preset, flags.dry_run).map_err(Failure::other)?
     };
 
     println!(
@@ -933,7 +963,7 @@ fn install_hooks(agent: &str, flags: &Flags) -> Result<(), Failure> {
         fill(
             t().install_title,
             &[
-                agent.name(),
+                preset.name(),
                 if report.dry_run { t().dry_run_suffix } else { t().installed },
             ]
         )
@@ -969,7 +999,7 @@ fn install_hooks(agent: &str, flags: &Flags) -> Result<(), Failure> {
     } else if report.dry_run {
         println!("{}", t().dry_run_footer);
     } else {
-        println!("{}", fill(t().install_restart, &[agent.name()]));
+        println!("{}", fill(t().install_restart, &[preset.name()]));
     }
 
     // 没在 PATH 里就只能写绝对路径，此时二进制一挪动 hook 就失效——这种失效
@@ -983,16 +1013,16 @@ fn install_hooks(agent: &str, flags: &Flags) -> Result<(), Failure> {
     Ok(())
 }
 
-fn uninstall_hooks(agent: &str, flags: &Flags) -> Result<(), Failure> {
-    let agent = hooks::Agent::parse(agent).map_err(Failure::other)?;
-    let report = hooks::uninstall(agent, flags.dry_run).map_err(Failure::other)?;
+fn uninstall_hooks(raw: &str, flags: &Flags) -> Result<(), Failure> {
+    let preset = hooks::Preset::parse(raw).map_err(Failure::other)?;
+    let report = hooks::uninstall_preset(&preset, flags.dry_run).map_err(Failure::other)?;
 
     println!(
         "{}",
         fill(
             t().install_title,
             &[
-                agent.name(),
+                preset.name(),
                 if report.dry_run { t().dry_run_suffix } else { t().uninstalled },
             ]
         )
@@ -1027,11 +1057,16 @@ fn uninstall_hooks(agent: &str, flags: &Flags) -> Result<(), Failure> {
 /// 注意服务端是**每次上报整体替换** message 的（`state.rs` 里那句「message 是
 /// 事件细节，每次替换」），所以 PreToolUse 和 PostToolUse 都得带 —— 只带一个的话
 /// 牌上那行会在两步之间闪一下空。
+/// `agent` 是**上报用的名字**，`family` 是**格式家族**的名字
+/// （`claude-code` / `gemini` …）。两者在自定义预设上不是同一个东西：`my-agent`
+/// 报出去叫 `my-agent`，但「这一帧算不算工具开始」要按它克隆的那一家判
+/// （见 `in_tool_ttl_ms`）。
 fn hook_body(
     text: &CliText,
     state: &str,
     session: &str,
     agent: &str,
+    family: &str,
     payload: &Value,
     flags: &Flags,
     pid: Option<u32>,
@@ -1059,7 +1094,7 @@ fn hook_body(
         // 有进程号的会话**不走这条**：探活在 TTL 到期时续期、进程没了就立刻收，
         // 那比任何猜测都准，也不需要把「崩了」的绿牌多留半小时。
         None => {
-            if let Some(ms) = in_tool_ttl_ms(agent, payload) {
+            if let Some(ms) = in_tool_ttl_ms(family, payload) {
                 body["ttl_ms"] = json!(ms);
             }
         }
@@ -1108,6 +1143,16 @@ fn verb_text(text: &CliText, verb: Verb) -> &'static str {
 
 /// hook 路径上**不允许**出现任何 `println!`。见文件头的约束 1。
 fn hook(agent: &str, flags: &Flags) -> Result<(), Failure> {
+    // **自定义预设在这里合流。** 映射表按**家族**走（`my-agent` 是 Claude Code
+    // 的同构克隆，就用 `claude-code` 那张表），而上报里的 `agent` 字段仍然是
+    // 用户给的名字 —— 灯上要显示的是他那个智能体，不是「claude-code」。
+    //
+    // 认不出来就退回原样：内置的那几家本来就在表里，而一个既不是内置、也不在
+    // `agents.json` 里的名字会一路走到 `map_event` 的 `_ => None`，日志里留一行
+    // 「ignored」—— 比在这里静默失败好查。
+    let family = agents::family_of(agent);
+    let map_key = family.map(hooks::cli_name).unwrap_or(agent);
+
     // **约束 1 的唯一例外，而且是有理由的。** Gemini 明确要求 hook 的 stdout 是
     // 纯 JSON（"must not print any plain text to stdout other than the final
     // JSON"），而 exit 0 时它会把 stdout 当 JSON 解析；空 stdout 算不算合法 JSON
@@ -1118,7 +1163,7 @@ fn hook(agent: &str, flags: &Flags) -> Result<(), Failure> {
     // return 的路径）。stdout 是进程结束后才被读的，先打后打都一样。
     //
     // 其余几家都明确接受空 stdout，所以不加。
-    if agent == "gemini" {
+    if map_key == "gemini" {
         println!("{{}}");
     }
 
@@ -1138,7 +1183,7 @@ fn hook(agent: &str, flags: &Flags) -> Result<(), Failure> {
     let event = event_name(&payload).unwrap_or("?").to_string();
     let session = session_id(&payload).unwrap_or_else(|| agent.to_string());
 
-    let Some(action) = map_event(agent, &payload) else {
+    let Some(action) = map_event(map_key, &payload) else {
         // 明确忽略的事件：一次 HTTP 都不发，但日志里要留痕 ——
         // 「某个事件其实一直在触发、只是被我们忽略了」正是需要能看见的信息
         log_hook(agent, &event, &session, "ignored");
@@ -1158,6 +1203,7 @@ fn hook(agent: &str, flags: &Flags) -> Result<(), Failure> {
             state,
             &session,
             agent,
+            map_key,
             &payload,
             flags,
             env_pid(),
@@ -1943,6 +1989,7 @@ mod tests {
             "working",
             "s-1",
             "claude-code",
+            "claude-code",
             &payload,
             &flags,
             Some(4242),
@@ -1958,7 +2005,7 @@ mod tests {
 
         // 没有工具名的事件：这个键**根本不出现**，而不是发个空串
         let plain = json!({"hook_event_name": "Stop", "session_id": "s-1"});
-        let body = hook_body(&cli_text::ZH, "done", "s-1", "claude-code", &plain, &flags, None);
+        let body = hook_body(&cli_text::ZH, "done", "s-1", "claude-code", "claude-code", &plain, &flags, None);
         assert!(body.get("message").is_none(), "{body}");
     }
 
@@ -1974,7 +2021,7 @@ mod tests {
         });
         let flags = Flags::default();
 
-        let body = hook_body(&cli_text::ZH, "working", "s-1", "codex", &payload, &flags, None);
+        let body = hook_body(&cli_text::ZH, "working", "s-1", "codex", "codex", &payload, &flags, None);
         assert_eq!(
             body["ttl_ms"],
             json!(hookmap::IN_TOOL_TTL_MS),
@@ -1991,6 +2038,7 @@ mod tests {
             "working",
             "s-1",
             "codex",
+            "codex",
             &payload,
             &flags,
             Some(4242),
@@ -1999,7 +2047,7 @@ mod tests {
 
         // 不是「工具开始」的事件：也不带
         let stop = json!({"hook_event_name": "Stop", "session_id": "s-1"});
-        let body = hook_body(&cli_text::ZH, "done", "s-1", "codex", &stop, &flags, None);
+        let body = hook_body(&cli_text::ZH, "done", "s-1", "codex", "codex", &stop, &flags, None);
         assert!(body.get("ttl_ms").is_none(), "{body}");
     }
 

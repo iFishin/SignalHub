@@ -619,6 +619,19 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   color: var(--fg);
 }
 
+/* ---- 静态小标记（不是按钮）----
+   和 `.badge` 的差别只有两点：虚线边框（点不动的东西不该看起来像能点的），
+   以及不换行（它是名字旁边的注解，被折成两行就没有注解的样子了）。 */
+.tag {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px dashed var(--line);
+  border-radius: 3px;
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
 /* ---- 勿扰时段：开关 + 起止小时挤在一行 ---- */
 
 .hours {
