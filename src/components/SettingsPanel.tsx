@@ -2774,6 +2774,9 @@ export function SettingsPanel({ snapshot }: Props) {
             <div className="section">
               <div className="section-title">{m.agentsTitle}</div>
               <p className="hint">{m.agentsHint}</p>
+              {/* 审批开关只在 Claude Code 那张卡片里出现，别家（尤其 WorkBuddy）
+                  的用户翻遍这一页也找不到。把适用范围写在页首，省得以为功能坏了。 */}
+              <p className="hint">{m.approveScopeHint}</p>
               {sortedAgents.map((agent) => {
                 const busy = busyAgent === agent.id;
                 const change = agentChanges[agent.id];

@@ -356,6 +356,8 @@ export interface Messages {
   /** 从灯上审批：那个开关 */
   approveTools: string;
   approveToolsHint: string;
+  /** 接入页顶部的适用范围说明：开关只在 Claude Code 那一行出现，别家的人得看得到 */
+  approveScopeHint: string;
   /** 待审批气泡里的按钮 / 说明 */
   approvalAllow: string;
   approvalDeny: string;
@@ -1021,6 +1023,8 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     approveTools: "从灯上审批",
     approveToolsHint:
       "Claude Code 每次要问你批准某个工具调用时，把那个确认框搬到灯上：灯上弹一条气泡，点「允许」或「拒绝」。这是唯一会改变智能体行为的开关 —— 开着的时候它会**等你**（最多 45 秒），没人点就交回终端里的确认框。命令全文只出现在本机这个窗口里，状态上报仍然只有那个短词。",
+    approveScopeHint:
+      "「从灯上审批」目前只支持 Claude Code，而且要用 HTTP 方式接入 —— 所以那个开关只出现在它的卡片里。其他智能体（含 WorkBuddy）需要授权时，灯照样变红、通知照样发，但确认框仍在智能体自己的界面里，请回到那边点允许 / 拒绝。",
     approvalAllow: "允许",
     approvalDeny: "拒绝",
     approvalTooLong: "这条在灯上看不全，只能在终端里批准（或者在这里拒绝）",
@@ -1674,6 +1678,8 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     approveTools: "Approve from the lamp",
     approveToolsHint:
       "When Claude Code wants to ask you to approve a tool call, the confirmation box moves onto the lamp: a bubble appears, and you click Allow or Deny. This is the only switch that changes how the agent behaves — while it is on, the agent **waits for you** (up to 45 seconds); if nobody answers, the question goes back to the terminal. The full command appears only in this local window; what gets reported is still just the short phrase.",
+    approveScopeHint:
+      "Approve from the lamp currently supports Claude Code only, and only with the HTTP install mode — that is why the switch appears on that card alone. For other agents, including WorkBuddy, a permission request still turns the lamp red and still fires a notification, but the confirmation stays in the agent's own window; go there to allow or deny.",
     approvalAllow: "Allow",
     approvalDeny: "Deny",
     approvalTooLong: "Too long to show here — approve it in the terminal (or deny it here)",

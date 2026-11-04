@@ -535,6 +535,14 @@ Codex 也可以用 `config.toml` 写 hook，但这里刻意选独立的 `hooks.j
 
 **WorkBuddy 为什么能直接复用 Claude Code 那一套。** 官方 hooks 文档里的事件名（`SessionStart` / `UserPromptSubmit` / `PreToolUse` / `PostToolUse` / `PostToolUseFailure` / `PermissionRequest` / `PermissionDenied` / `Notification` / `Stop` / `StopFailure` / `PreCompact` / `PostCompact` / `TeammateIdle` / `SessionEnd`）、`matcher` 取值、以及 stdin 上的 JSON 字段（`session_id` / `cwd` / `tool_name` / `prompt` / `hook_event_name`）**与 Claude Code 完全一致**，所以 `events()` 与 `map_event` 都共用同一份实现，只换配置路径和上报名。配置落在桌面版的数据目录 `~/.workbuddy-ai/settings.json`（该文件里已有 `enabledPlugins` / `pluginConfigs`，确认是它的设置文件）；官方文档也写明「插件 hooks 会与用户和项目 hooks 合并」，即 `settings.json` 的 `hooks` 键是合法来源。**若某个 WorkBuddy 版本只从插件加载 hooks、忽略 `settings.json` 的 `hooks` 键，这里就要改成插件式接入**（写一份 `hooks/hooks.json` 到插件目录），映射表不用动。
 
+**这份复用只到「状态映射」为止，不含「从灯上审批」（见 §4.17）。** 装进配置文件的
+`PermissionRequest` 是普通命令式 hook（`signalhub hook workbuddy`），只报一个
+`permission` 状态，不会等用户点、也不会回决定；桌面版实测也从未触发过这个事件。
+真要接，得先确认两件事：桌面版何时（或是否）发 `PermissionRequest`，以及它的 HTTP
+hook 认不认 `hookSpecificOutput.decision`。官方文档目前只写明 `PreToolUse` 的
+`permissionDecision`（命令式 hook 的 stdout）用于允许 / 拒绝，跟我们这条 HTTP 路径
+不是一回事。在这两件事有答案之前不做，避免多一个「拨了没反应」的开关。
+
 **六条安全边界**（都有对应单测）：
 
 1. **只动 `hooks` 一个键。** 同一个文件里的 `env`、`theme`、别的工具的 hook 一律原样保留。
@@ -1164,6 +1172,23 @@ signalhub install hooks claude-code --http   # 需要 app 正在运行（要读�
 
 Claude Code 每次要问「这个工具调用可以吗」时，`PermissionRequest` hook 打到这个
 端点，请求**挂在这里等**（最长 45 秒），直到有人在灯上点了允许 / 拒绝。
+
+**适用范围只有 Claude Code + HTTP 式接入**，四处各自把门：
+
+| 位置 | 限制 |
+|---|---|
+| `hooks::install_approve` | `agent != Agent::ClaudeCode` 直接返回「目前只支持 Claude Code」 |
+| `hooks::approve_url` | 落点写死 `/v1/approve/claude-code` |
+| `server::approve_request` | `agent != "claude-code"`（或事件不是 `PermissionRequest`、`approve_tools` 关着）回 `{}` |
+| 接入页 `SettingsPanel` | 开关只在 `agent.id === "claude-code" && agent.http` 时渲染 |
+
+理由不是「漏了白名单」：**只有 Claude Code 的文档写清了 HTTP hook 可以回一个决定**。
+其余几家（Codex / CSC / WorkBuddy…）虽然 `PermissionRequest` 事件在映射表里与
+Claude Code 同构（`map_claude` 共用），但那只让灯能变红，不等于确认框能搬过来。
+尤其桌面版 WorkBuddy：本机 `hooks.log` 里从未出现过 `PermissionRequest`，红色来自
+`Notification` 的 `notification_type: "permission_prompt"`；官方 hooks 参考也只把
+`PermissionRequest` 列在事件家族枚举里，没有 HTTP hook 返回决策的格式说明。
+所以这些智能体保持「灯变红 + 按提醒设置发通知」，确认仍在它们自己的界面里完成。
 
 它和上报端点的差别是安全模型，不是实现细节：
 
