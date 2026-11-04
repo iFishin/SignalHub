@@ -5,13 +5,15 @@
 export const inTauri =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
-export type WindowKind = "light" | "settings" | "inbox";
+export type WindowKind = "light" | "settings" | "inbox" | "demo";
 
-/** 灯球、设置窗、收件箱共用一个 Vite 应用，靠 tauri.conf.json 里的查询参数分流。 */
+/** 灯球、设置窗、收件箱、独立演示页共用一个 Vite 应用，靠查询参数分流。
+ *  `demo` 不是 Tauri 里注册的窗口，是给浏览器 / README 动图准备的纯前端页面。 */
 export function windowKind(): WindowKind {
   const kind = new URLSearchParams(window.location.search).get("window");
   if (kind === "settings") return "settings";
   if (kind === "inbox") return "inbox";
+  if (kind === "demo") return "demo";
   return "light";
 }
 

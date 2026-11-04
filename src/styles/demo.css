@@ -1,0 +1,177 @@
+/*
+ * 演示页（设置 →「演示」与 ?window=demo 共用）。
+ *
+ * 和灯牌那套 HUD 不同：这一页是**普通页面**，跟着 theme.css 的深浅走；中间那块
+ * 「桌面」刻意保持深色，因为灯牌在任何桌面下都是深色半透明牌，放在浅底上看不出
+ * 层次。整页没有渐变、没有阴影 —— 和项目其余部分同一套朴素语言。
+ */
+
+.demo {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 4px 0 8px;
+}
+
+/* ---- 舞台 ------------------------------------------------------------------ */
+
+.demo-stage {
+  position: relative;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  height: 300px;
+  border: 1px solid #33333a;
+  border-radius: 10px;
+  background: #1b1b20;
+  overflow: hidden;
+}
+
+/* .lamp-root 是 width/height:100%，所以这里给它一个有边界的画框。
+   尺寸只管「够放三块牌」，牌自己按 --size 排，不会溢出。 */
+.demo-lamp {
+  width: 320px;
+  height: 250px;
+}
+
+.demo[data-compact] .demo-stage {
+  height: 210px;
+}
+
+.demo[data-compact] .demo-lamp {
+  width: 230px;
+  height: 180px;
+}
+
+.demo-badge {
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  color: #8a8a93;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+}
+
+/* ---- 当前这一步说什么 ------------------------------------------------------ */
+
+.demo-caption {
+  flex: none;
+  min-height: 74px;
+}
+
+.demo-caption-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.demo-step-no {
+  flex: none;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.demo-caption h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.demo-caption p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* ---- 进度与控制 ------------------------------------------------------------ */
+
+.demo-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.demo-progress {
+  display: flex;
+  gap: 4px;
+}
+
+.demo-progress-seg {
+  flex: 1;
+  height: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  background: var(--line);
+  cursor: pointer;
+}
+
+.demo-progress-seg[data-done="true"] {
+  background: var(--muted);
+}
+
+.demo-progress-seg[data-active="true"] {
+  background: var(--accent);
+}
+
+.demo-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* ---- 独立演示页 ------------------------------------------------------------ */
+
+.demo-window {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-height: 100vh;
+  padding: 22px 24px 32px;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 13px;
+}
+
+.demo-window-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.demo-window-title {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.demo-window-title strong {
+  font-size: 15px;
+}
+
+.demo-window-title span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .demo-progress-seg {
+    transition: none;
+  }
+}

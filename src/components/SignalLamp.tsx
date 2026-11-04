@@ -53,6 +53,39 @@ interface Props {
    * 这份记忆是唯一还知道「刚完成」的东西（见 `lib/signals.ts`）。
    */
   lastDoneMs: number;
+  /**
+   * 演示 / 预览模式：**只画，不动真东西**。
+   *
+   * 演示窗口和设置里的「演示」页复用这同一个组件，为的是画面永远和真灯一致。
+   * 但拖拽、单击开收件箱、右键菜单、就地改名、清组这些交互全都得关掉 ——
+   * 它们是「操作这个应用」，不是「看这个应用长什么样」。默认 false，真灯一行不改。
+   */
+  preview?: boolean;
+}
+
+/** 首次启动引导只记一次。存 localStorage 而不是设置里：它纯粹是「这个窗口有没有
+ *  打扰过你」，不该进配置导出、也不该跨机器同步。 */
+const FIRST_RUN_KEY = "signalhub.firstRunGuideDone";
+/** 灯窗 → 设置窗的一次性暗号：设置窗打开时看到它就直接翻到「演示」页。 */
+export const OPEN_DEMO_KEY = "signalhub.openDemo";
+
+function useFirstRunGuide(visible: boolean) {
+  const [dismissed, setDismissed] = useState(() => {
+    try {
+      return localStorage.getItem(FIRST_RUN_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const dismiss = () => {
+    setDismissed(true);
+    try {
+      localStorage.setItem(FIRST_RUN_KEY, "1");
+    } catch {
+      // 隐私模式下记不住就算了，这次会话里 setDismissed 仍然生效
+    }
+  };
+  return { show: visible && !dismissed, dismiss };
 }
 
 /**
@@ -263,6 +296,7 @@ export function SignalLamp({
   approvals,
   onDecide,
   lastDoneMs,
+  preview = false,
 }: Props) {
   // 待审批的条数：Rust 的 `approval_area` 按**同一个数**给窗口留高度（见 lamp.css
   // 的 `--bubble-h`）。数错了就是气泡被裁掉一半 —— 而那两个按钮是唯一的出路。
@@ -276,10 +310,13 @@ export function SignalLamp({
   const lang = useLang();
   // 穿透也能从托盘和全局快捷键改，所以订阅而不是读一次 —— 灯上那枚角标必须跟着变。
   const toggles = useToggles();
+  // 演示里不继承本机的「点击穿透」：那枚 ⇥ 是这台机器的真实状态，不该出现在
+  // 一段和产品无关的剧本里。hook 仍然无条件调用（React 规则），只是读的时候盖掉。
+  const passThrough = preview ? false : toggles.pass_through;
   // 安静模式把没事的牌压暗（lamp.css 的 `[data-quiet][data-aggregate=…]`）时，压暗后
   // 的透明度（≈15）已经低于换字线 —— 和用户把滑杆压到一半以下是同一条路：浅字 +
   // 深描边（见 `signTextNeedsContrast` / `isQuietDimmed`）。
-  const quietDimmed = isQuietDimmed(quiet, aggregate, toggles.pass_through);
+  const quietDimmed = isQuietDimmed(quiet, aggregate, passThrough);
 
   // 形状是逐状态的（一个窗口里多块牌可以不一样），所以先整份算出来，再按每块牌
   // 的状态取。颜色和动画走 lampVars 的 CSS 变量，shape走元素属性 —— 形状不是
@@ -297,11 +334,12 @@ export function SignalLamp({
     if (!collapsed) setPeek(false);
   }, [collapsed]);
 
-  // 把「谁在被 hover」推给 Rust —— 它按这个把那个窗口算成展开态
+  // 把「谁在被 hover」推给 Rust —— 它按这个把那个窗口算成展开态。
+  // 演示里绝对不能推：它会去改**真灯窗**的尺寸。
   useEffect(() => {
-    if (!inTauri) return;
+    if (!inTauri || preview) return;
     invoke("set_peek", { peek }).catch(console.error);
-  }, [peek]);
+  }, [peek, preview]);
 
   // 3s 到点自动收回。effect 挂在 `peek` 上：一直 hover 着也只数一次
   useEffect(() => {
@@ -369,12 +407,12 @@ export function SignalLamp({
   );
 
   // 穿透优先于暂停：那个状态下窗口点不动、拖不动，用户得先知道自己在里面。
-  const flag = paused || toggles.pass_through;
-  const flagTitle = toggles.pass_through
+  const flag = !preview && (paused || passThrough);
+  const flagTitle = passThrough
     ? [m.lampPassThrough, toggles.pass_through_shortcut]
         .filter((line) => line !== "")
         .join("\n")
-    : paused
+    : !preview && paused
       ? m.lampPaused
       : "";
 
@@ -396,18 +434,41 @@ export function SignalLamp({
     (aggregate === "offline" && justFinishedLabel(lang, lastDoneMs, now)) ||
     signalLabel(lang, aggregate);
 
+  // 第一次打开、一组都没有时，占位牌自己就是引导入口。真有组上来（或用户点掉）
+  // 就自动收起 —— 引导不该赖在已经用起来的灯上。折叠成一颗点时没有牌面可放字，
+  // 也就不显示（等用户展开再给）。
+  const guide = useFirstRunGuide(
+    !preview && !paused && expanded && groups.length === 0,
+  );
+
+  const openDemo = () => {
+    guide.dismiss();
+    try {
+      localStorage.setItem(OPEN_DEMO_KEY, "1");
+    } catch {
+      // 记不住也没关系：设置窗左栏有独立的「演示」页签
+    }
+    if (inTauri) {
+      invoke("open_settings").catch(console.error);
+    } else {
+      // 浏览器里没有设置窗，直接去独立演示页 —— 也是录 README 动图走的那条路
+      window.location.href = "?window=demo";
+    }
+  };
+
   const toggleCollapsed = () => {
-    if (!inTauri) return;
+    if (!inTauri || preview) return;
     // 窗口尺寸由 Rust 算（它才知道可见牌的高度和设置），前端只负责「点了一下」。
     // 形态存在设置里，所以下次启动还是用户上次选的那个。
     invoke("toggle_collapsed").catch(console.error);
   };
 
   const openInbox = () => {
-    if (!inTauri) return;
+    if (!inTauri || preview) return;
     invoke("toggle_inbox").catch(console.error);
   };
 
+  // hook 无条件调用（React 规则），预览时只是不把那组事件挂到根节点上。
   const drag = useDragOrClick(openInbox, toggleCollapsed);
 
   // 就地改名：被点开的那一组（原始组名）+ 输入框里的草稿 + 打开那一刻填进去的值。
@@ -448,7 +509,7 @@ export function SignalLamp({
   };
 
   const clearGroup = (group: string) => {
-    if (!inTauri) return;
+    if (!inTauri || preview) return;
     // 和右键菜单「清除该组的状态」走同一个命令（Rust 侧同一个函数），两条入口
     // 不会分叉。**不做二次确认**：这是低频、幂等的操作，智能体下次上报就回来了，
     // 而它本来就是「状态卡住了，赶紧清掉」这条路上的动作。
@@ -483,6 +544,16 @@ export function SignalLamp({
           },
         ];
 
+  /** 预览里右键只吃掉原生菜单，不弹真灯那张（它会改这台机器的状态）。 */
+  const handleGroupMenu = (event: React.MouseEvent, group: string) => {
+    if (preview) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    openGroupMenu(event, group);
+  };
+
   return (
     <div
       className="lamp-root"
@@ -496,30 +567,34 @@ export function SignalLamp({
         } as React.CSSProperties
       }
       data-aggregate={aggregate}
-      data-quiet={quiet && !toggles.pass_through}
+      data-quiet={quiet && !passThrough && !guide.show}
       /* 牌面淡过一半就把牌里的字换成「浅字 + 深描边」，深浅桌面都读得出来
          （阈值见 `lampStyle.ts`，颜色和描边在 `lamp.css`）。挂属性而不是推内联变量：
          和旁边这几个 `data-*` 开关同一套做法，那组颜色也就仍然只有 CSS 一个出处。 */
       data-sign-translucent={signTextNeedsContrast(sign_opacity, quietDimmed) || undefined}
-      data-paused={paused || undefined}
+      data-paused={(!preview && paused) || undefined}
       // 有气泡时窗口要高出一块（Rust 算的），CSS 按同一个数把内容区收上去
       data-approvals={pending || undefined}
-      data-pass-through={toggles.pass_through || undefined}
+      data-pass-through={passThrough || undefined}
       data-collapsed={!expanded}
       data-flash={flash || undefined}
-      title={tooltip(m, lang, aggregate, groups, settings.group_meta, [
-        paused ? m.lampPaused : "",
-        toggles.pass_through ? m.lampPassThrough : "",
-      ].filter((line) => line !== ""), emptyLabel)}
+      title={
+        preview
+          ? undefined
+          : tooltip(m, lang, aggregate, groups, settings.group_meta, [
+              paused ? m.lampPaused : "",
+              passThrough ? m.lampPassThrough : "",
+            ].filter((line) => line !== ""), emptyLabel)
+      }
       // 折叠态被指着时临时展开（见上），移开 / 超时收回
       onMouseEnter={() => {
         if (collapsed) setPeek(true);
       }}
       onMouseLeave={() => setPeek(false)}
       // 空白处（牌之间、留白）也要吃掉右键，否则会冒出 webview 自己的菜单；
-      // 顺手弹的是灯自己那张（进设置 / 暂停 / 折叠 / 退出）
-      onContextMenu={openLampMenu}
-      {...drag}
+      // 顺手弹的是灯自己那张（进设置 / 暂停 / 折叠 / 退出）。预览里只吃掉菜单。
+      onContextMenu={preview ? (event) => event.preventDefault() : openLampMenu}
+      {...(preview ? {} : drag)}
     >
       {rows.map((group, index) => {
         // B4 预设 3：会议中那一组画成蓝色。`--state` 是圆点 / 圆环颜色的唯一入口，
@@ -538,7 +613,7 @@ export function SignalLamp({
             data-state={group.aggregate}
             data-shape={shapes[group.aggregate]}
             style={dotStyle}
-            onContextMenu={(event) => openGroupMenu(event, group.name)}
+            onContextMenu={(event) => handleGroupMenu(event, group.name)}
           />
         ) : (
           <div
@@ -548,7 +623,7 @@ export function SignalLamp({
             // 刚换了状态就闪一下（`pulses` 是这一帧跃迁的组名）。折叠态的点不带
             // 这个 —— 点的状态动画本身就会重放，重复闪反而糊。
             data-pulse={pulses.includes(group.name) || undefined}
-            onContextMenu={(event) => openGroupMenu(event, group.name)}
+            onContextMenu={(event) => handleGroupMenu(event, group.name)}
           >
             <span
               className="dot"
@@ -608,12 +683,34 @@ export function SignalLamp({
                     </span>
                   )
                 )}
-                {show.state && (
-                  /* 占位牌（`name` 为空，见上面 `rows` 的构造）说 `emptyLabel`：
-                     一组都没有时它可能是「刚完成 · N 分钟前」。 */
-                  <span className="sign-state">
-                    {group.name === "" ? emptyLabel : signalLabel(lang, group.aggregate)}
-                  </span>
+                {guide.show && group.name === "" ? (
+                  /* 第一次用：占位牌自己变成入口。**仍然只占一行**（按钮是
+                     flex:none 的小 chip），牌高和 Rust 算出来的一行牌完全一致，
+                     不会被 overflow:hidden 裁掉。 */
+                  <>
+                    <span className="sign-state">{m.lampFirstRun}</span>
+                    <button
+                      type="button"
+                      className="sign-guide"
+                      title={m.lampFirstRunDemoHint}
+                      onMouseDown={stopMouse}
+                      onMouseUp={stopMouse}
+                      onClick={(event) => {
+                        stopMouse(event);
+                        openDemo();
+                      }}
+                    >
+                      {m.lampFirstRunDemo}
+                    </button>
+                  </>
+                ) : (
+                  show.state && (
+                    /* 占位牌（`name` 为空，见上面 `rows` 的构造）说 `emptyLabel`：
+                       一组都没有时它可能是「刚完成 · N 分钟前」。 */
+                    <span className="sign-state">
+                      {group.name === "" ? emptyLabel : signalLabel(lang, group.aggregate)}
+                    </span>
+                  )
                 )}
               </div>
               {show.message && group.message && (
@@ -624,7 +721,7 @@ export function SignalLamp({
             {/* 「状态卡住了」的解药：上报方崩了、或者用户直接关掉了那个智能体会话，
                 灯会一直停在最后一个状态上，等 TTL 到期要好几分钟。
                 占位那块（name 为空）不对应任何真实的组，不挂这枚。 */}
-            {group.name !== "" && (
+            {!preview && group.name !== "" && (
               <span className="sign-actions">
                 {/* 名字被用户关掉时没有可改的东西 —— 不渲染这枚，也不为了改名把
                     用户关掉的字段强行画出来。 */}
@@ -660,6 +757,26 @@ export function SignalLamp({
                 </button>
               </span>
             )}
+            {/* 首次引导的「不再提示」。占位牌平时没有动作区，这里只借同一套
+                绝对定位的样式挂一枚 ×，不占布局、不改牌高。 */}
+            {!preview && guide.show && group.name === "" && (
+              <span className="sign-actions sign-actions-guide">
+                <button
+                  type="button"
+                  className="sign-action"
+                  title={m.lampFirstRunDismiss}
+                  aria-label={m.lampFirstRunDismiss}
+                  onMouseDown={stopMouse}
+                  onMouseUp={stopMouse}
+                  onClick={(event) => {
+                    stopMouse(event);
+                    guide.dismiss();
+                  }}
+                >
+                  ×
+                </button>
+              </span>
+            )}
             {flag && index === rows.length - 1 && (
               <span
                 className="sign-flag"
@@ -668,7 +785,7 @@ export function SignalLamp({
                 data-state={aggregate}
                 title={flagTitle}
               >
-                {toggles.pass_through ? "⇥" : "⏸"}
+                {passThrough ? "⇥" : "⏸"}
               </span>
             )}
             {hidden.length > 0 && index === rows.length - 1 && (
@@ -689,7 +806,7 @@ export function SignalLamp({
           因此要按「点数 + 角标数」算宽 —— 少留一个点位那枚角标就被裁掉了。 */}
       {!expanded && flag && (
         <span className="lamp-dot-flag" data-state={aggregate} title={flagTitle}>
-          {toggles.pass_through ? "⇥" : "⏸"}
+          {passThrough ? "⇥" : "⏸"}
         </span>
       )}
       {/* 展开态那条同样的提示挂在最后一块牌上；折叠态看不到牌面，**不留这一枚

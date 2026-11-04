@@ -356,9 +356,45 @@ body,
   pointer-events: none;
 }
 
-.sign:hover .sign-actions {
+.sign:hover .sign-actions,
+.sign:focus-within .sign-actions {
   opacity: 1;
   pointer-events: auto;
+}
+
+/* 首次启动引导那枚 × 要常驻 —— 引导本身就是「请你点一下」，藏到 hover 才出现
+   等于把唯一的退出路径藏起来。占位牌不渲染别的动作，所以不会和 ✎ 抢位置。 */
+.sign-actions-guide {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* 占位牌里的「看演示」小 chip。**绝不能把牌撑高**：牌高由 Rust 算好，
+   这里只做一行内的小按钮，不换行、不用会改变行高的 padding。 */
+.sign-guide {
+  flex: none;
+  box-sizing: border-box;
+  padding: 0 4px;
+  border: 1px solid var(--sign-line);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--sign-fg);
+  font: inherit;
+  font-size: calc(var(--size) * 0.42);
+  line-height: 1.15;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.sign-guide:hover {
+  border-color: var(--sign-fg);
+}
+
+/* 键盘焦点：牌上的 ✎ / ×、审批气泡的按钮、就地改名的输入框，Tab 到哪一个
+   都得看得见。灯牌恒为深色 HUD，所以焦点环用亮白，不借主题变量。 */
+.lamp-root :is(button, a, input, [role="button"], [tabindex]):focus-visible {
+  outline: 2px solid #f2f2f5;
+  outline-offset: 2px;
 }
 
 .sign-action {

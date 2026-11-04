@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { inTauri } from "./env";
 import { useSettings, type HttpPreset, type Settings } from "./useSettings";
 import type { SignalState } from "./types";
+import type { DemoGroupId } from "./demo";
 
 export type Lang = "zh" | "en";
 
@@ -54,6 +55,39 @@ export interface Messages {
   tabHooks: string;
   tabGuide: string;
   tabSystem: string;
+  tabDemo: string;
+
+  // 左栏搜索与本页小节目录
+  /** 搜索框的占位符 */
+  railSearch: string;
+  /** 一个页签都没匹配上 */
+  railSearchEmpty: string;
+  /** 长页顶部那条「本页」小节导航的标题（给屏幕阅读器用） */
+  pageNav: string;
+
+  // 首次启动引导（占位牌上那一枚）
+  lampFirstRun: string;
+  lampFirstRunDemo: string;
+  lampFirstRunDemoHint: string;
+  lampFirstRunDismiss: string;
+
+  // 演示
+  demoTitle: string;
+  demoIntro: string;
+  demoBackToSettings: string;
+  demoNotReal: string;
+  demoGroup: Record<DemoGroupId, string>;
+  /** 每一步的标题 + 说明。键是 demo.ts 里的 DemoStep.id。 */
+  demoStep: Record<string, { title: string; body: string }>;
+  demoStepCount: (index: number, total: number) => string;
+  demoPrev: string;
+  demoNext: string;
+  demoPlay: string;
+  demoPause: string;
+  demoReplay: string;
+  /** 状态页「第一次用？」那块上的 CTA */
+  demoCta: string;
+  demoCtaHint: string;
 
   // 指南（引导手册）
   guideEntry: string;
@@ -682,6 +716,59 @@ export const MESSAGES: Record<Lang, Messages> = {
     tabHooks: "转发",
     tabGuide: "指南",
     tabSystem: "系统",
+    tabDemo: "演示",
+
+    railSearch: "找设置…",
+    railSearchEmpty: "没有匹配的页签",
+    pageNav: "本页小节",
+    lampFirstRun: "第一次用？",
+    lampFirstRunDemo: "看演示",
+    lampFirstRunDemoHint: "不接智能体，先看这盏灯怎么亮（约 25 秒）",
+    lampFirstRunDismiss: "不再提示",
+
+    demoTitle: "30 秒看懂 SignalHub",
+    demoIntro: "一段循环播放的演示，不用接任何智能体。",
+    demoBackToSettings: "返回设置",
+    demoNotReal: "演示画面 · 不会改动任何真实状态",
+    demoGroup: { build: "构建", api: "接口", review: "审阅" },
+    demoStep: {
+      idle: {
+        title: "接上之后，灯是安静的",
+        body: "常亮绿灯 = 空闲待命。安静模式下这一块会淡下去，不抢注意力；有事才显形。",
+      },
+      thinking: {
+        title: "你问了一句",
+        body: "开始推理 → 绿灯快闪。不用切到终端，余光就知道它动起来了。",
+      },
+      working: {
+        title: "几个智能体同时干活",
+        body: "一组一块牌，最紧急的排最前。牌上写着是哪一组、在做什么、已经多久了。",
+      },
+      permission: {
+        title: "有一组在等你批准",
+        body: "需要授权 = 红色、圆角方、平滑闪。红 > 黄 > 绿：旁边两颗绿灯不会把它顶掉。",
+      },
+      approved: {
+        title: "点允许，红灯自己消失",
+        body: "那一组恢复工作，全局聚合自然回到绿色 —— 不用手动清状态。",
+      },
+      done: {
+        title: "干完了，亮一下",
+        body: "完成是一闪而过的绿灯；默认 3 分钟后这块牌被移除，时长可以在设置里改。",
+      },
+      empty: {
+        title: "牌走了，灯还记得",
+        body: "空状态说的是「刚完成 · 1 分钟前」，而不是「没有智能体在上报」—— 这正是你最想确认的那一刻。",
+      },
+    },
+    demoStepCount: (index, total) => `${index} / ${total}`,
+    demoPrev: "上一步",
+    demoNext: "下一步",
+    demoPlay: "播放",
+    demoPause: "暂停",
+    demoReplay: "重播",
+    demoCta: "看 30 秒演示",
+    demoCtaHint: "还没接智能体？先看一遍这盏灯会怎么亮，不用配任何东西。",
 
     guideEntry: "第一次用？",
     guideWhatTitle: "这是什么",
@@ -1278,6 +1365,59 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     tabHooks: "Forwarding",
     tabGuide: "Guide",
     tabSystem: "System",
+    tabDemo: "Demo",
+
+    railSearch: "Find a setting…",
+    railSearchEmpty: "No matching page",
+    pageNav: "On this page",
+    lampFirstRun: "New here?",
+    lampFirstRunDemo: "See a demo",
+    lampFirstRunDemoHint: "See the lamp in action without connecting any agent (~25s)",
+    lampFirstRunDismiss: "Don't show again",
+
+    demoTitle: "SignalHub in 30 seconds",
+    demoIntro: "A looping walkthrough — no agent needed.",
+    demoBackToSettings: "Back to settings",
+    demoNotReal: "Demo only · no real state is changed",
+    demoGroup: { build: "Build", api: "API", review: "Review" },
+    demoStep: {
+      idle: {
+        title: "Once connected, the lamp is quiet",
+        body: "A steady green light means idle. Quiet mode dims it so it stays out of your way until something happens.",
+      },
+      thinking: {
+        title: "You ask a question",
+        body: "Thinking → fast green blink. You know it started without switching to the terminal.",
+      },
+      working: {
+        title: "Several agents working at once",
+        body: "One card per group, most urgent first. Each card shows the group, what it is doing, and for how long.",
+      },
+      permission: {
+        title: "One group is waiting on you",
+        body: "Needs permission = red, rounded square, smooth blink. Red outranks amber and green: two working cards cannot push it down.",
+      },
+      approved: {
+        title: "Allow it, and the red clears itself",
+        body: "That group goes back to work and the aggregate returns to green — nothing to clear by hand.",
+      },
+      done: {
+        title: "Done: one flash",
+        body: "Completion is a brief green flash; the card is removed after 3 minutes by default, and that timeout is configurable.",
+      },
+      empty: {
+        title: "The card is gone, the lamp remembers",
+        body: "The empty state says “Just finished · 1 min ago” instead of “No agents reporting” — exactly when you want to know.",
+      },
+    },
+    demoStepCount: (index, total) => `${index} / ${total}`,
+    demoPrev: "Prev",
+    demoNext: "Next",
+    demoPlay: "Play",
+    demoPause: "Pause",
+    demoReplay: "Replay",
+    demoCta: "Watch a 30-second demo",
+    demoCtaHint: "No agent connected yet? See how the lamp behaves first — nothing to configure.",
 
     guideEntry: "New here?",
     guideWhatTitle: "What this is",

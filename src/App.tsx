@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { SignalLamp } from "./components/SignalLamp";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { InboxWindow } from "./components/InboxWindow";
+import { DemoWindow } from "./components/DemoWindow";
 import { useSignal } from "./lib/useSignal";
 import { useSettings } from "./lib/useSettings";
 import { usePalettePush } from "./lib/palettes";
@@ -68,6 +69,10 @@ export default function App() {
   // 等着你点的审批（从灯上审批）。**两个窗口都会订阅**，但只有灯窗会画 ——
   // 设置窗读它是为了那个开关旁边能说「现在有一条在等」。
   const { approvals, decide } = useApprovals();
+
+  if (windowKind() === "demo") {
+    return <DemoWindow />;
+  }
 
   if (windowKind() === "settings") {
     return <SettingsPanel snapshot={snapshot} />;

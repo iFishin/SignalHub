@@ -3,6 +3,7 @@ import {
   useContext,
   useEffect,
   useId,
+  useRef,
   useState,
   type ChangeEvent,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -11,6 +12,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { inTauri } from "../lib/env";
 import { signalLabel } from "../lib/signals";
+import { DemoStage } from "./DemoStage";
+import { OPEN_DEMO_KEY } from "./SignalLamp";
 import { labelOf } from "../lib/lampSort";
 import { signTextNeedsContrast, stateOverridden, lampVars, resolveShapes } from "../lib/lampStyle";
 import {
@@ -218,7 +221,28 @@ type Tab =
   | "connect"
   | "machines"
   | "guide"
+  | "demo"
   | "system";
+
+/**
+ * 页签搜索用的关键词。**不是界面文案**，所以两种语言混着放：搜「勿扰」「token」
+ * 「dnd」都要能落到同一页。按页签列，而不是做全文索引 —— 11 页的规模下，
+ * 一张手写的别名表比一个会漏掉动态内容的索引更可靠，也不会把人送进某一段。
+ */
+const TAB_ALIASES: Record<Tab, string[]> = {
+  status: ["状态", "现在", "时间线", "status", "now", "timeline"],
+  history: ["历史", "近 7 天", "统计", "history", "stats", "week"],
+  look: ["外观", "颜色", "形状", "大小", "透明度", "预设", "look", "color", "size", "preset"],
+  behavior: ["行为", "静默超时", "超时", "安静模式", "点击穿透", "behavior", "ttl", "timeout"],
+  groups: ["分组", "置顶", "多灯", "每组分灯", "group", "pin", "lamp count"],
+  alert: ["提醒", "通知", "勿扰", "提示音", "声音", "alert", "notify", "dnd", "sound"],
+  hooks: ["转发", "出站", "webhook", "slack", "ntfy", "wled", "物理灯", "hooks", "forward"],
+  connect: ["接入", "智能体", "hook", "token", "局域网", "web 面板", "审批", "connect", "agent", "panel"],
+  machines: ["多机", "远程", "hub", "machine", "remote"],
+  guide: ["指南", "手册", "怎么接", "guide", "help", "faq"],
+  demo: ["演示", "预览", "看看", "demo", "preview", "tour"],
+  system: ["系统", "语言", "开机自启", "导入", "导出", "更新", "快捷键", "system", "language", "update", "shortcut"],
+};
 
 function tabGroups(m: Messages): { title: string; entries: { id: Tab; label: string }[] }[] {
   return [
@@ -262,9 +286,84 @@ function tabGroups(m: Messages): { title: string; entries: { id: Tab; label: str
         // 同一件事的两个方向，放在一起才找得到。
         { id: "machines", label: m.tabMachines },
         { id: "guide", label: m.tabGuide },
+        // 演示放在这一组的最后：它是「还没接上、先看看」的那一条路，和指南同层。
+        { id: "demo", label: m.tabDemo },
       ],
     },
   ];
+}
+
+interface SectionLink {
+  /** 在 .page 里第几个 .section —— 点击时按这个下标滚，不靠文本反查。 */
+  index: number;
+  text: string;
+}
+
+/**
+ * 长页顶部的「本页小节」目录。
+ *
+ * 目录**从渲染出来的 DOM 里读**（`.section > .section-title`），而不是给 11 个
+ * case 各手写一份清单 —— 清单会和页面一起腐化，DOM 不会。异步填进来的内容由
+ * MutationObserver 补扫；扫完先比一次签名，内容没变就不 setState，免得自己
+ * 改自己的 DOM 触发观察器、再触发一次渲染，绕成循环。
+ *
+ * 少于 3 节不显示：短页加一条目录比没有目录更吵。
+ */
+function PageSectionsNav({
+  containerRef,
+  label,
+}: {
+  containerRef: React.RefObject<HTMLDivElement | null>;
+  label: string;
+}) {
+  const [links, setLinks] = useState<SectionLink[]>([]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    let signature = "";
+
+    const scan = () => {
+      const sections = Array.from(container.querySelectorAll<HTMLElement>(".section"));
+      const next: SectionLink[] = [];
+      sections.forEach((section, index) => {
+        const text = section.querySelector<HTMLElement>(".section-title")?.textContent?.trim();
+        if (text) next.push({ index, text });
+      });
+      const sig = next.map((link) => `${link.index}:${link.text}`).join("|");
+      if (sig === signature) return;
+      signature = sig;
+      setLinks(next);
+    };
+
+    scan();
+    const observer = new MutationObserver(scan);
+    observer.observe(container, { childList: true, subtree: true, characterData: true });
+    return () => observer.disconnect();
+  }, [containerRef]);
+
+  if (links.length < 3) return null;
+
+  return (
+    <nav className="page-nav" aria-label={label}>
+      {links.map((link) => (
+        <button
+          key={`${link.index}:${link.text}`}
+          type="button"
+          className="page-nav-chip"
+          onClick={() => {
+            const sections = containerRef.current?.querySelectorAll<HTMLElement>(".section");
+            const target = sections?.[link.index];
+            if (!target) return;
+            const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+            target.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
+          }}
+        >
+          {link.text}
+        </button>
+      ))}
+    </nav>
+  );
 }
 
 interface Endpoint {
@@ -1171,7 +1270,71 @@ export function SettingsPanel({ snapshot }: Props) {
   const ttlDefaults = useStateTtls();
   const update = useUpdate();
   const groups = tabGroups(m);
-  const [tab, setTab] = useState<Tab>("status");
+  const pageRef = useRef<HTMLDivElement>(null);
+  const [query, setQuery] = useState("");
+  // 记住上次翻到哪一页。11 个页签里找东西，重开设置又被送回「状态」最烦人。
+  // 存页签 id 而不是下标 —— 以后插一页也不会把人送错地方；认不出来就退回默认。
+  // 灯窗上的「看演示」会留一个一次性暗号，优先级高于「上次那页」。
+  const [tab, setTab] = useState<Tab>(() => {
+    try {
+      if (localStorage.getItem(OPEN_DEMO_KEY) === "1") return "demo";
+      const saved = localStorage.getItem("signalhub.settings.tab");
+      const ids: Tab[] = [
+        ...groups.flatMap((group) => group.entries.map((entry) => entry.id)),
+        "system",
+      ];
+      return ids.includes(saved as Tab) ? (saved as Tab) : "status";
+    } catch {
+      // 隐私模式 / 禁用本地存储：退回默认页，不影响其它功能
+      return "status";
+    }
+  });
+  // 暗号只用一次：读完就删，别让以后每次打开设置都跳去演示页。
+  useEffect(() => {
+    try {
+      localStorage.removeItem(OPEN_DEMO_KEY);
+    } catch {
+      // 删不掉不影响使用，只是下次可能再跳一次
+    }
+  }, []);
+  useEffect(() => {
+    try {
+      localStorage.setItem("signalhub.settings.tab", tab);
+    } catch {
+      // 写不进去就当没记住，不弹错
+    }
+  }, [tab]);
+
+  // 页签搜索：标签 + 一张中英别名表。不做全文索引（11 页的规模不值得，
+  // 而且动态内容会漏）；搜到的是「去哪一页」，不是「页面里哪一行」。
+  const matches = (id: Tab, label: string) => {
+    const q = query.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      label.toLowerCase().includes(q) ||
+      TAB_ALIASES[id].some((alias) => alias.toLowerCase().includes(q))
+    );
+  };
+  const visibleGroups = groups
+    .map((group) => ({
+      ...group,
+      entries: group.entries.filter((entry) => matches(entry.id, entry.label)),
+    }))
+    .filter((group) => group.entries.length > 0);
+  const showSystem = matches("system", m.tabSystem);
+  const noMatches = query.trim() !== "" && visibleGroups.length === 0 && !showSystem;
+  const onSearchKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Escape") {
+      setQuery("");
+      return;
+    }
+    if (event.key !== "Enter") return;
+    const first = visibleGroups[0]?.entries[0]?.id ?? (showSystem ? "system" : null);
+    if (first) {
+      setTab(first);
+      setQuery("");
+    }
+  };
   // 审批历史（`docs/plan-approval.md` A1）：只在「历史」页打开时读盘
   const { records: approvalLog, refresh: refreshApprovalLog } = useApprovalLog(
     tab === "history",
@@ -1870,6 +2033,13 @@ export function SettingsPanel({ snapshot }: Props) {
                   <span>{m.guideEntry}</span>
                   <button type="button" className="btn" onClick={() => setTab("guide")}>
                     {m.tabGuide}
+                  </button>
+                </div>
+                {/* 还没接上任何东西的时候，「先看一遍」比「先读一遍」门槛低。 */}
+                <div className="row">
+                  <span className="muted-text">{m.demoCtaHint}</span>
+                  <button type="button" className="btn" onClick={() => setTab("demo")}>
+                    {m.demoCta}
                   </button>
                 </div>
               </div>
@@ -3273,6 +3443,14 @@ export function SettingsPanel({ snapshot }: Props) {
         );
       }
 
+      case "demo":
+        return (
+          <div className="demo-tab">
+            <p className="hint">{m.demoIntro}</p>
+            <DemoStage compact />
+          </div>
+        );
+
       case "guide": {
         // 端点表跟着接口速查一起搬过来了 —— 它就长在这四节里
         const endpoints: [string, string, string][] = [
@@ -4130,7 +4308,19 @@ export function SettingsPanel({ snapshot }: Props) {
       <div className="settings-body">
         <nav className="rail">
           <div className="rail-nav">
-            {groups.map((group) => (
+            {/* 11 个页签里找东西，靠肉眼扫太慢。搜索只过滤左栏，回车跳第一个
+                匹配项，Esc 清空 —— 不抢焦点、不改右栏内容。 */}
+            <input
+              className="rail-search"
+              type="search"
+              value={query}
+              placeholder={m.railSearch}
+              aria-label={m.railSearch}
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={onSearchKeyDown}
+            />
+            {noMatches && <p className="rail-empty">{m.railSearchEmpty}</p>}
+            {visibleGroups.map((group) => (
               <div className="rail-group" key={group.title}>
                 {/* 分组标题只是标题，不是按钮 —— 点它什么都不该发生（点一下
                     「灯」而跳到某一页会让人以为漏了一层）。 */}
@@ -4152,17 +4342,19 @@ export function SettingsPanel({ snapshot }: Props) {
 
             {/* 系统沉在最下面：它不属于上面任何一组，塞进去就得为它编一个它并不
                 属于的标题。 */}
-            <div className="rail-bottom">
-              <button
-                type="button"
-                className="rail-item"
-                data-active={tab === "system"}
-                aria-current={tab === "system" ? "page" : undefined}
-                onClick={() => setTab("system")}
-              >
-                {m.tabSystem}
-              </button>
-            </div>
+            {showSystem && (
+              <div className="rail-bottom">
+                <button
+                  type="button"
+                  className="rail-item"
+                  data-active={tab === "system"}
+                  aria-current={tab === "system" ? "page" : undefined}
+                  onClick={() => setTab("system")}
+                >
+                  {m.tabSystem}
+                </button>
+              </div>
+            )}
           </div>
 
           {/* 全局入口压在最下面：它不是一个页签，是一个开关 —— 放在这一组里
@@ -4175,7 +4367,12 @@ export function SettingsPanel({ snapshot }: Props) {
           </div>
         </nav>
 
-        <div className="page">{page()}</div>
+        {/* key 让切页时重挂内容：滚动回到顶部，顺带重播 page-in 入场。
+            表单都是受控的（值来自 settings / draft），重挂不会丢输入。 */}
+        <div className="page" key={tab} ref={pageRef}>
+          <PageSectionsNav containerRef={pageRef} label={m.pageNav} />
+          {page()}
+        </div>
       </div>
 
       {error && <p className="error">{error}</p>}

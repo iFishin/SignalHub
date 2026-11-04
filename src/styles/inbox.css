@@ -22,6 +22,12 @@ html[data-window="inbox"] body {
   user-select: none;
 }
 
+/* 深色 HUD 上焦点环得用亮色，不能借用设置面板那套（那边是浅底 + 蓝 accent）。 */
+.inbox-window :is(button, a, input, select, textarea, [role="button"], [tabindex]):focus-visible {
+  outline: 2px solid #f2f2f5;
+  outline-offset: 2px;
+}
+
 .inbox-window {
   box-sizing: border-box;
   height: 100vh;
@@ -165,14 +171,15 @@ html[data-window="inbox"] body {
   gap: 6px;
   margin: 0;
   padding: 6px 6px 4px;
-  color: #8a8a93;
-  font-size: 10.5px;
+  /* 10.5px + 深灰在深色底上对比不足，抬一档字号和一档灰度。 */
+  color: #9b9ba3;
+  font-size: 11.5px;
   font-weight: 600;
   letter-spacing: 0.03em;
 }
 
 .inbox-section-count {
-  color: #6d6d75;
+  color: #9b9ba3;
   font-weight: 500;
 }
 
@@ -437,8 +444,8 @@ html[data-window="inbox"] body {
   min-height: 30px;
   padding: 7px 12px;
   border-top: 1px solid rgba(255, 255, 255, 0.09);
-  color: #7c7c85;
-  font-size: 10px;
+  color: #9b9ba3;
+  font-size: 11px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
