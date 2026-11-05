@@ -801,18 +801,23 @@ body,
 .lamp-root[data-lively] .dot::before {
   content: "";
   position: absolute;
-  /* 外扩 38%：牌内左边距 ≈0.36×size、灯珠径 0.55×size，外扩 ≈4.6px 仍落在牌里；
-     折叠态窗口留白 10px，size 22 时外扩 8.4px 也不出窗。再大会被 .sign 的
-     overflow:hidden 切成半圈，或超出透明窗口被裁。 */
-  inset: -38%;
+  /* 外扩 50%：牌内灯珠径 0.55×size，外扩 ≈6px 仍落在牌的 padding 区里；
+     折叠态窗口留白 10px，size 22 时外扩 11px 不出窗。
+     用 radial-gradient 而不是 mask 圆环：从中心向外自然衰减，
+     像光在空气中散射，而不是一个有明确边界的「光环」。 */
+  inset: -50%;
   border-radius: 50%;
-  background: var(--state);
-  /* 把实心圆挖成「中心透明 → 中段柔亮 → 外缘渐隐」的一圈，免得给灯珠中心
-     再叠一层同色。mask 与 ring 形状用的是同一套能力；老 WebKitGTK 不支持时
-     只是退化成一层很淡的方形色斑，由 opacity 压着，不会挡字。 */
-  -webkit-mask: radial-gradient(circle, transparent 30%, #000 46%, transparent 74%);
-  mask: radial-gradient(circle, transparent 30%, #000 46%, transparent 74%);
-  opacity: 0.42;
+  /* 径向渐变：中心透明（不叠在灯珠上）→ 中段柔亮 → 外缘渐隐。
+     不用 background + mask 的组合了——折叠态大灯珠上那条 mask 会切出
+     一个很粗的亮环，读起来像「光圈」而不是「柔光」。
+     radial-gradient 天然就是「中心亮、向外衰减」，更自然。 */
+  background: radial-gradient(
+    circle,
+    transparent 32%,
+    var(--state) 48%,
+    transparent 72%
+  );
+  opacity: 0.38;
   pointer-events: none;
   /* 逐状态挂在灯珠 style 上（不是根上）：一个窗口里多块牌节奏可以不同。
      常亮状态解析成 `none`，那时就是一圈稳定的柔光。 */
@@ -825,11 +830,23 @@ body,
   display: none;
 }
 
-/* 折叠态没有牌面，那一排点就是全部，柔光可以稍亮一档。
-   keyframes 读变量而不是写死，展开 / 折叠共用同一条曲线。 */
+/* 折叠态：灯珠占满 size（没有牌面遮挡），柔光直接暴露在透明窗口里。
+   不能照搬展开态的参数——展开态牌面会吃掉外溢的光，折叠态不会。
+   两个调整：
+   1) 外扩收窄（-50% → -30%）：光晕更贴着灯珠，不散成一摊；
+   2) 渐变更柔（中心透明区扩大、亮带变窄、外缘更快衰减）：
+      读起来像「灯珠在发光」而不是「灯珠外面套了个圈」。 */
 .lamp-root[data-lively] .lamp-dot::before {
-  --halo-max: 0.72;
-  --halo-min: 0.2;
+  inset: -30%;
+  background: radial-gradient(
+    circle,
+    transparent 38%,
+    var(--state) 52%,
+    transparent 68%
+  );
+  /* 折叠态没有牌面背景对比，柔光需要稍亮一档才看得见 */
+  --halo-max: 0.68;
+  --halo-min: 0.18;
 }
 
 @keyframes halo-breathe {
@@ -868,20 +885,24 @@ body,
   }
 }
 
-/* 牌面：一道极细的顶部内高光把「一块深色牌」变成「一片有厚度的玻璃」，
-   再叠一层从上往下淡出的白（3.5%，只在亮桌面才隐约看得见）。
-   都不改盒模型，也不碰 --sign-bg 的 alpha —— 低透明度那套浅字 + 描边照旧。 */
+/* 牌面：一道从顶部往下淡出的极淡白（2%，只在亮桌面才隐约看得见），
+   加一条非常柔的内高光（inset 0 0.5px 0 rgba(255,255,255,0.06)）。
+   原来 0.1 的 inset 高光太亮 —— 在深色牌上就是一条刺眼的白线。
+   玻璃感应该是「若有若无」的，不是「能看见一条边」的。
+   不改盒模型，也不碰 --sign-bg 的 alpha —— 低透明度那套浅字 + 描边照旧。 */
 .lamp-root[data-lively] .sign {
-  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 58%);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
-  transition: border-color 200ms ease, box-shadow 200ms ease;
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 50%);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.06);
+  transition: box-shadow 240ms ease;
 }
 
+/* 悬停不用 border-color 跳变（0.14 → 0.3 太生硬），只微微加深内高光。
+   牌面边框始终保持原有的 --sign-line，不因 hover 而变亮 ——
+   「悬停提亮」应该像手指碰了一下玻璃，不是开了一盏灯。 */
 .lamp-root[data-lively] .sign:hover {
-  border-color: rgba(255, 255, 255, 0.3);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.18),
-    0 0 0 1px rgba(255, 255, 255, 0.05);
+    inset 0 0.5px 0 rgba(255, 255, 255, 0.1),
+    inset 0 0 12px rgba(255, 255, 255, 0.03);
 }
 
 /* 无障碍：系统开了「减少动态效果」时，闪烁一律降级为常亮，由颜色承载语义。
