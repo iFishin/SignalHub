@@ -792,6 +792,21 @@ export interface Messages {
   /** 「+N」截断后，tooltip 里列出被收起来的组之前的引导 */
   moreGroupsLead: string;
 
+  /**
+   * 圆环菜单（长按灯触发）里那几项。
+   *
+   * 单独一组而不是复用托盘的 `pauseMonitoring` / `quit`：托盘那几句是**菜单项**
+   * 的语气（「暂停监控」），而圆环里是**图标下的短标签**，位置只有 60px 宽，
+   * 长了就折行。两处措辞该各自为政，不该为了少几个字符串硬凑成一份。
+   */
+  lampMenuInbox: string;
+  lampMenuSettings: string;
+  lampMenuPause: string;
+  lampMenuResume: string;
+  lampMenuQuit: string;
+  /** 圆环菜单打开时，中心那颗灯珠的悬停说明（「点空白处关闭」） */
+  lampMenuCloseHint: string;
+
   // 外观预设
   presetLight: string;
   presetLightHint: string;
@@ -1479,7 +1494,7 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
 
     quit: "退出 SignalHub",
 
-    lampHint: "左键打开收件箱 · 双击折叠 / 展开 · 右键单组菜单",
+    lampHint: "左键折叠 / 展开 · 长按呼出圆环菜单 · 右键单组菜单",
     justFinished: (minutes) =>
       minutes < 1 ? "刚完成 · 刚刚" : `刚完成 · ${minutes} 分钟前`,
     groupsCount: (n) => `（${n} 组）`,
@@ -1492,6 +1507,13 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     clearSessionHint: "清掉这个会话（智能体下次上报会回来）",
     lampPassThrough: "点击穿透",
     moreGroupsLead: "被收起来的组：",
+
+    lampMenuInbox: "收件箱",
+    lampMenuSettings: "设置",
+    lampMenuPause: "暂停",
+    lampMenuResume: "继续",
+    lampMenuQuit: "退出",
+    lampMenuCloseHint: "点空白处或按 Esc 关闭",
 
     presetLight: "单灯",
     presetLightHint: "折叠成一颗灯，只有颜色，最不打扰",
@@ -2169,7 +2191,7 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
 
     quit: "Quit SignalHub",
 
-    lampHint: "Click to open the inbox · double-click to collapse / expand · right-click for a group menu",
+    lampHint: "Click to collapse / expand · long-press for the radial menu · right-click for a group menu",
     justFinished: (minutes) =>
       minutes < 1 ? "Just finished · moments ago" : `Just finished · ${minutes} min ago`,
     groupsCount: (n) => ` (${plural(n, "group", "groups")})`,
@@ -2182,6 +2204,13 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     clearSessionHint: "Clear this session (the agent will report again next time)",
     lampPassThrough: "Click-through",
     moreGroupsLead: "Hidden groups: ",
+
+    lampMenuInbox: "Inbox",
+    lampMenuSettings: "Settings",
+    lampMenuPause: "Pause",
+    lampMenuResume: "Resume",
+    lampMenuQuit: "Quit",
+    lampMenuCloseHint: "Click empty space or press Esc to close",
 
     presetLight: "Single light",
     presetLightHint: "Folds to one light, colour only, least intrusive",

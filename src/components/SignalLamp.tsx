@@ -12,6 +12,7 @@ import { nameChanged, withGroupName } from "../lib/groupMeta";
 import { useNow } from "../lib/useNow";
 import { useToggles } from "../lib/useToggles";
 import { ApprovalBubble, MAX_APPROVAL_BUBBLES } from "./ApprovalBubble";
+import { LampMenu } from "./LampMenu";
 import type { Approval } from "../lib/useApprovals";
 import { updateSettings, type GroupMeta, type Settings } from "../lib/useSettings";
 import type { GroupView, SignalState } from "../lib/types";
@@ -19,10 +20,16 @@ import { meetingTint } from "../lib/rules";
 
 /** 与 Rust 侧 `config::MAX_SIGNS` 一致。超出的牌服务端已经截断。 */
 const MAX_SIGNS = 4;
-/** 超过这个位移就算拖窗口，否则算点击。 */
+/** 超过这个位移就算拖窗口，否则算点击 / 长按。 */
 const DRAG_THRESHOLD_PX = 4;
-/** 两次点击在这个窗口内算双击。单次要等这么久才执行 —— 否则分不出双击。 */
-const DOUBLE_CLICK_MS = 280;
+/**
+ * 按住多久算长按（呼出圆环菜单）。
+ *
+ * 480ms：比 macOS 的长按（约 500ms）略早一点，手指压下去到「觉得它该出来了」
+ * 之间不用等太久；又明显长于一次有意的点击，不会误触。**这个值也是单击能
+ * 「立刻响应」的前提** —— 见 `useDragOrClick` 里那段说明。
+ */
+const LONG_PRESS_MS = 480;
 /** 跃迁脉冲的时长（ms）。必须和 lamp.css 里 `pulse-in` 的一致。 */
 const PULSE_MS = 420;
 /** 折叠态悬停临时展开的时长（ms）。到点或鼠标移开就收回折叠态。 */
@@ -174,46 +181,64 @@ function progressStyle(group: GroupView): React.CSSProperties | undefined {
 }
 
 /**
- * 同一个元素上既要能拖窗口、又要能响应点击。
+ * 同一个元素上既要能拖窗口、又要能响应单击和长按。
  *
  * 不能用 `data-tauri-drag-region`：它让系统在 mousedown 时接管鼠标，之后的
- * click 事件就不可靠了 —— 于是「点一下打开收件箱」会时灵时不灵。改成自己判断：
- * 按下后位移超过阈值才算拖拽（此时才把拖拽交给系统），否则算点击。
+ * click 事件就不可靠了 —— 于是「点一下折叠」会时灵时不灵。改成自己判断：
+ * 按下后位移超过阈值才算拖拽（此时才把拖拽交给系统），否则算点击或长按。
  *
- * 单击和双击走同一条路径：单击等一个双击窗口再执行，双击取消那个计时器 ——
- * 这样「打开收件箱」和「折叠 / 展开」不会同时发生。
+ * **三种手势互斥，判据只有一条时间线**：
+ *   - 按住不动满 `LONG_PRESS_MS` → 长按（圆环菜单），之后松开**不再**算点击；
+ *   - 期间移动超过阈值 → 拖拽，长按作废、松开也不算点击；
+ *   - 没超时也没移动就松开 → 单击。
+ *
+ * **单击是立刻执行的，没有等待窗口。** 这一版之前是「单击等 280ms 看是不是
+ * 双击」，因为那时单击开收件箱、双击折叠，两者不能同时发生。现在折叠挪到了
+ * 单击、双击取消（单击已经是折叠，双击等于折叠两次，纯属噪音），那 280ms
+ * 就没有存在的理由了 —— 去掉它，点一下灯牌立刻就有反应。
  *
  * 只认主键，所以右键原地就能弹菜单，不会顺带被当成一次点击。
  */
 /** 牌尾那几枚小动作必须**吃掉鼠标事件**。
  *
  *  `useDragOrClick` 挂在 `.lamp-root` 上：事件冒上去，按下会开始记拖拽原点、松开
- *  会被当成「点了一下灯」→ 打开收件箱。所以 mousedown / mouseup / click 三个都要拦。
+ *  会被当成「点了一下灯」→ 折叠。所以 mousedown / mouseup / click 三个都要拦。
  */
 function stopMouse(event: React.MouseEvent) {
   event.stopPropagation();
 }
 
-function useDragOrClick(onClick: () => void, onDoubleClick: () => void) {
+function useDragOrClick(onClick: () => void, onLongPress: () => void) {
   const origin = useRef<{ x: number; y: number } | null>(null);
   const dragging = useRef(false);
-  // 单击要等一个双击窗口才能执行。**不能「先执行单击、双击再撤销」** —— 打开收件箱
-  // 不是能撤销的动作（会闪一下窗口）。280ms 的延迟在鼠标操作里几乎察觉不到。
-  const single = useRef<number | null>(null);
-  const lastClick = useRef(0);
+  /** 这一轮按下已经变成长按了 —— 松开时不能再算一次单击。 */
+  const longPressed = useRef(false);
+  const timer = useRef<number | null>(null);
 
-  useEffect(
-    () => () => {
-      if (single.current !== null) window.clearTimeout(single.current);
-    },
-    [],
-  );
+  const clearTimer = () => {
+    if (timer.current !== null) {
+      window.clearTimeout(timer.current);
+      timer.current = null;
+    }
+  };
+
+  useEffect(() => () => clearTimer(), []);
 
   return {
     onMouseDown: (event: React.MouseEvent) => {
       if (event.button !== 0) return; // 只认主键
       origin.current = { x: event.clientX, y: event.clientY };
       dragging.current = false;
+      longPressed.current = false;
+      clearTimer();
+      timer.current = window.setTimeout(() => {
+        timer.current = null;
+        longPressed.current = true;
+        // 长按成立后就把原点清掉：菜单一开窗口会变大，鼠标相对位置跟着变，
+        // 这时还留着原点的话，接下来任何一点移动都会被判成「拖窗口」。
+        origin.current = null;
+        onLongPress();
+      }, LONG_PRESS_MS);
     },
     onMouseMove: (event: React.MouseEvent) => {
       if (!origin.current || dragging.current) return;
@@ -223,41 +248,20 @@ function useDragOrClick(onClick: () => void, onDoubleClick: () => void) {
       );
       if (moved < DRAG_THRESHOLD_PX) return;
       dragging.current = true;
-      // 拖拽优先：上一次单击还在等双击窗口的话，取消它 —— 否则拖到一半会突然
-      // 弹出收件箱。
-      if (single.current !== null) {
-        window.clearTimeout(single.current);
-        single.current = null;
-      }
-      lastClick.current = 0;
+      // 开始拖了，长按作废 —— 否则拖到一半圆环会弹出来
+      clearTimer();
       if (inTauri) {
         getCurrentWindow().startDragging().catch(console.error);
       }
     },
     onMouseUp: () => {
-      const wasClick = origin.current !== null && !dragging.current;
+      clearTimer();
+      const wasClick = origin.current !== null && !dragging.current && !longPressed.current;
       origin.current = null;
       dragging.current = false;
+      longPressed.current = false;
       if (!wasClick) return;
-
-      const now = performance.now();
-      if (now - lastClick.current < DOUBLE_CLICK_MS) {
-        lastClick.current = 0;
-        if (single.current !== null) {
-          window.clearTimeout(single.current);
-          single.current = null;
-        }
-        onDoubleClick();
-        return;
-      }
-
-      lastClick.current = now;
-      if (single.current !== null) window.clearTimeout(single.current);
-      single.current = window.setTimeout(() => {
-        single.current = null;
-        lastClick.current = 0;
-        onClick();
-      }, DOUBLE_CLICK_MS);
+      onClick();
     },
   };
 }
@@ -478,8 +482,46 @@ export function SignalLamp({
     invoke("toggle_inbox").catch(console.error);
   };
 
+  const openSettings = () => {
+    if (!inTauri || preview) return;
+    invoke("open_settings").catch(console.error);
+  };
+
+  /** 暂停 / 恢复监控。走 `set_paused` 而不是 `toggle_monitor`：后者是给托盘和
+   *  右键菜单用的「我不知道现在什么状态」，而这里 `paused` 就在手边。 */
+  const togglePause = () => {
+    if (!inTauri || preview) return;
+    invoke("set_paused", { paused: !paused }).catch(console.error);
+  };
+
+  const quitApp = () => {
+    if (!inTauri || preview) return;
+    invoke("quit").catch(console.error);
+  };
+
+  // 圆环菜单开着没有。它**不是设置**（不落盘），关掉就缩回原尺寸。
+  //
+  // 菜单开着时窗口是正方形（Rust 的 `config::menu_window_size`），前端这一帧
+  // 只画圆环 + 中心那颗灯珠 —— 牌、气泡、角标全都不画，所以下面所有渲染分支
+  // 都走不到。
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  // 告诉 Rust 菜单开了 / 关了。它据此把窗口算成正方形或者缩回去。
+  // 演示里绝对不能推：它会去改**真灯窗**的尺寸（同 `set_peek`）。
+  useEffect(() => {
+    if (!inTauri || preview) return;
+    invoke("set_lamp_menu", { open: menuOpen }).catch(console.error);
+  }, [menuOpen, preview]);
+
+  // 折叠态 hover 临时展开和圆环菜单是两件互斥的事：菜单一开就把 peek 收掉，
+  // 否则关掉菜单时窗口会先按「展开态」算一次，白闪一下。
+  useEffect(() => {
+    if (menuOpen) setPeek(false);
+  }, [menuOpen]);
+
   // hook 无条件调用（React 规则），预览时只是不把那组事件挂到根节点上。
-  const drag = useDragOrClick(openInbox, toggleCollapsed);
+  // **单击 = 折叠 / 展开，长按 = 圆环菜单**（见 `useDragOrClick`）。
+  const drag = useDragOrClick(toggleCollapsed, () => setMenuOpen(true));
 
   // 就地改名：被点开的那一组（原始组名）+ 输入框里的草稿 + 打开那一刻填进去的值。
   //
@@ -563,6 +605,43 @@ export function SignalLamp({
     }
     openGroupMenu(event, group);
   };
+
+  // 圆环菜单形态：窗口已经被 Rust 换成正方形，这一帧**只画圆环**。
+  // 牌 / 气泡 / 角标一概不画 —— 它们的几何是给另一个尺寸的窗口算的。
+  if (menuOpen) {
+    return (
+      <div
+        className="lamp-root lamp-root-menu"
+        // `--size` 也得带过来：中心那颗灯珠是按 `--size` 算直径的，
+        // 不带的话用户把灯调大之后，菜单里的灯珠还停在默认大小。
+        style={{ "--size": `${size}px`, ...lampVars(settings) } as React.CSSProperties}
+        data-aggregate={aggregate}
+        data-lively={lively || undefined}
+        // 菜单形态没有「某一块牌」可右键，但 webview 自己的右键菜单（dev 下是
+        // 「重新加载」那种）绝不能冒出来 —— 这个窗口里它一直是关掉的。
+        onContextMenu={(event) => event.preventDefault()}
+      >
+        <LampMenu
+          aggregate={aggregate}
+          onClose={() => setMenuOpen(false)}
+          items={[
+            // 顺时针从上开始：上 / 右 / 下 / 左。
+            // 收件箱放最上面 —— 它原来是左键单击的主动作，改到折叠之后
+            // 得给它一个一眼能找到的位置。
+            { id: "inbox", icon: "▤", label: m.lampMenuInbox, onSelect: openInbox },
+            { id: "settings", icon: "⚙", label: m.lampMenuSettings, onSelect: openSettings },
+            {
+              id: "pause",
+              icon: paused ? "▶" : "‖",
+              label: paused ? m.lampMenuResume : m.lampMenuPause,
+              onSelect: togglePause,
+            },
+            { id: "quit", icon: "✕", label: m.lampMenuQuit, onSelect: quitApp, danger: true },
+          ]}
+        />
+      </div>
+    );
+  }
 
   return (
     <div

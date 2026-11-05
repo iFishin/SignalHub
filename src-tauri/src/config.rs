@@ -123,6 +123,30 @@ pub fn collapsed_window_size(size: u16, dots: usize, badges: usize) -> (u16, u16
     (dots * size + (dots - 1) * gap + LAMP_MARGIN, size + LAMP_MARGIN)
 }
 
+/// 圆环菜单的窗口边长（逻辑像素，正方形）。
+///
+/// **为什么不跟 `size` 派生**：牌和点跟着 `size` 缩放是对的（它们画的是内容），
+/// 但菜单项是**可点击目标** —— 缩小到 16px 的灯上给一颗 8px 的按钮等于点不中。
+/// 所以这里是一组固定的绝对尺寸，用户调灯的「大小」不会影响它。
+///
+/// 数值的来由：圆环半径 66 + 菜单项半径 17 + 留白 15 = 98，取整成 196 的边长。
+/// 半径 66 是四项均分 90° 时相邻项之间还留得出 2×66×sin(45°) ≈ 93px 的空档
+/// （项直径才 34px），不会挤在一起；六项时降到 2×66×sin(30°) = 66px，仍然够。
+pub const MENU_WINDOW: u16 = 196;
+
+/// 圆环菜单的半径（逻辑像素）。CSS 的 `--menu-radius` 必须与它一致 ——
+/// 那是两处真值，和牌那套几何同一个道理。
+pub const MENU_RADIUS: u16 = 66;
+
+/// 圆环菜单打开时窗口该多大：正方形，**不看当前形态**。
+///
+/// 菜单一打开，灯牌就让位给圆环（前端只画圆环 + 中心那颗灯珠），所以窗口
+/// 不必是「牌尺寸」和「圆环尺寸」的并集 —— 直接换成正方形，圆环居中。
+/// 这样做的好处是展开态 / 折叠态共用一套几何，没有第三种情况要维护。
+pub fn menu_window_size() -> (u16, u16) {
+    (MENU_WINDOW, MENU_WINDOW)
+}
+
 /// `~/.signalhub`
 ///
 /// 这里不用 Tauri 的 `PathResolver`：CLI 是独立二进制、不链接 Tauri，
@@ -3216,5 +3240,44 @@ mod tests {
         let (ew, eh) = settings.window_size(&[sign_height(settings.size, false, 1.0)]);
         assert!(cw < ew, "折叠态更窄: {cw} vs {ew}");
         assert!(ch < eh, "折叠态更矮: {ch} vs {eh}");
+    }
+
+    // ---- 圆环菜单的窗口 -------------------------------------------------------
+
+    /// 菜单窗口是**正方形**，且边长就是 `MENU_WINDOW`。
+    ///
+    /// 为什么必须是正方形：圆环按角度均分摆项，宽高不等就会摆成椭圆，
+    /// 相邻项的距离一会儿大一会儿小 —— 看起来像没对齐。
+    #[test]
+    fn the_menu_window_is_a_square() {
+        let (w, h) = menu_window_size();
+        assert_eq!(w, h, "圆环菜单必须正方形: {w}x{h}");
+        assert_eq!(w, MENU_WINDOW);
+    }
+
+    /// 圆环装得下：半径 + 一项的半个高度 + 一点留白，不能超过窗口半边长。
+    ///
+    /// 项宽 56、高约 40（见 lamp.css 的 `.lamp-menu-item`），所以外沿是
+    /// `MENU_RADIUS + 20`。超了的话最外侧那几个项会被窗口裁掉一半 ——
+    /// 而裁掉的按钮就是点不到的按钮。
+    #[test]
+    fn the_ring_fits_inside_the_window() {
+        let half = MENU_WINDOW / 2;
+        // 20 = 菜单项半高（40/2）；再留 4px 给描边和悬停时的视觉余量
+        assert!(
+            MENU_RADIUS + 20 + 4 <= half,
+            "圆环外沿 {} 超出半窗 {half}",
+            MENU_RADIUS + 20 + 4
+        );
+    }
+
+    /// 菜单窗口**不跟 `size` 走**：菜单项是可点击目标，缩到 16px 的灯上
+    /// 给一颗 8px 的按钮等于点不中。这条钉住「无论用户把灯调多大调多小，
+    /// 菜单都是同一个尺寸」。
+    #[test]
+    fn the_menu_window_ignores_the_lamp_size() {
+        assert_eq!(menu_window_size(), (MENU_WINDOW, MENU_WINDOW));
+        // 它是个无参函数 —— 这个断言本身就是契约：将来有人想给它加个 size 参数，
+        // 得先想清楚上面那条。
     }
 }

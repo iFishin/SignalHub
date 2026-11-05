@@ -905,6 +905,161 @@ body,
     inset 0 0 12px rgba(255, 255, 255, 0.03);
 }
 
+/* ---- 圆环菜单（长按灯呼出）-------------------------------------------- */
+
+/*
+ * 形态：一圈等距的菜单项 + 中心那颗灯珠。
+ *
+ * 窗口这时候是**正方形**（Rust 的 `config::menu_window_size`），所以这里的
+ * 一切都按「窗口 = 196×196、中心 = 98,98」来摆。半径 `--menu-radius` 与
+ * `config::MENU_RADIUS` 是两处真值 —— 和牌那套几何同一个道理，改一处必须同步。
+ *
+ * 为什么圆环而不是下拉：右键那张原生菜单（menu.rs）是「这一组的操作」，项多、
+ * 要分父子；圆环管的是**灯本身的动作**，只有四件、彼此平级。四项均分 90°，
+ * 相邻项中心距 2×66×sin(45°) ≈ 93px，而项本身才 56px 宽 —— 不会挤。
+ */
+
+/* 菜单形态的根：去掉灯牌那套 padding / flex / 抓取光标。
+   灯牌是「一叠居中的牌」，菜单是「铺满窗口的一张画布」，布局模型不一样。
+   仍然居中，但用的是**固定尺寸的菜单**（见 `.lamp-menu`）—— 窗口就是
+   `MENU_WINDOW` 那么大，两者本来相等，钉死尺寸只是让它在窗口被别的东西
+   改大 / 改小时也不会散开。 */
+.lamp-root-menu {
+  --menu-window: 196px;
+  --menu-radius: 66px;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  gap: 0;
+  cursor: default;
+}
+
+.lamp-menu {
+  position: relative;
+  /* 和 `config::MENU_WINDOW` 是两处真值（见上）。用固定值而不是 100%：
+     窗口尺寸由 Rust 给，但这里不该依赖它 —— 一旦对不上（比如调试时视口
+     被改成别的比例），100% 会让圆环拉成椭圆，而固定值只是居中显示。 */
+  width: var(--menu-window);
+  height: var(--menu-window);
+}
+
+/* 点空白处关闭。铺满整窗，所以圆环之间的空隙也点得中。
+   底下一层极淡的径向暗色：透明窗口上画一圈若有若无的暗，让圆环「浮」起来 ——
+   没有它的话，浅色桌面上那几块深色小牌会显得零散。中心到 72% 就淡到全透明，
+   所以不会在窗口边界留一圈硬边。 */
+.lamp-menu-scrim {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at center,
+    rgba(0, 0, 0, 0.2) 0%,
+    rgba(0, 0, 0, 0.12) 50%,
+    transparent 80%
+  );
+  cursor: default;
+}
+
+/* 中心那颗灯珠。**用 `inset: 0; margin: auto` 居中，不靠 transform** ——
+   motion 的弹簧动画走的是元素自己的 transform，两边都用就会互相覆盖
+   （scale 会把 translate 顶掉，灯珠跑到左上角去）。 */
+.lamp-menu-core {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--sign-line);
+  border-radius: 50%;
+  /* 比菜单项略透一档：中心是「背景里的那盏灯」，不该和可点的项抢注意力。
+     再加一道极细的内高光，让它读起来是个球面而不是一个圆片。 */
+  background: rgba(28, 28, 32, 0.88);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.08);
+  cursor: pointer;
+}
+
+.lamp-menu-core:hover {
+  border-color: rgba(255, 255, 255, 0.3);
+  background: rgba(40, 40, 46, 0.92);
+}
+
+/* 中心那颗就是灯珠本身（`.dot` 那一套颜色 / 描边 / 节奏都继承过来）。
+   菜单里不需要它的闪烁 —— 圆环已经够动了，再加一层会显得躁。 */
+.lamp-menu-dot {
+  animation: none !important;
+  --dot: calc(var(--size) * 0.8);
+}
+
+/* 每一项的定位壳。位置在单位圆上（`--menu-x` / `--menu-y` 是 cos / sin），
+   乘半径得到偏移 —— 半径只有 `--menu-radius` 一个出处。 */
+.lamp-menu-slot {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  /* 先把自己对到圆心，再沿角度推出去 */
+  transform: translate(-50%, -50%)
+    translate(
+      calc(var(--menu-x, 0) * var(--menu-radius)),
+      calc(var(--menu-y, 0) * var(--menu-radius))
+    );
+}
+
+.lamp-menu-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  box-sizing: border-box;
+  width: 56px;
+  padding: 5px 0 4px;
+  border: 1px solid var(--sign-line);
+  border-radius: 11px;
+  background: rgba(28, 28, 32, 0.94);
+  color: var(--sign-fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  cursor: pointer;
+  /* 悬停只换配色，不动尺寸 —— 常驻窗口那条红线（见文件头） */
+  transition: border-color 160ms ease, background-color 160ms ease;
+}
+
+.lamp-menu-item:hover {
+  border-color: rgba(255, 255, 255, 0.34);
+  background: rgba(46, 46, 52, 0.96);
+}
+
+/* 退出是不可逆的，悬停给个警示色 —— 不改变它有多好点，只是让人停一下 */
+.lamp-menu-item[data-danger]:hover {
+  border-color: #e24b4a;
+  color: #ff9a9a;
+}
+
+.lamp-menu-icon {
+  font-size: 15px;
+  line-height: 1.1;
+  /* 图标用字符而不是 SVG：这个窗口不加载图标库。不同字体下基线会差一点，
+     钉死行高让它稳定。 */
+}
+
+.lamp-menu-label {
+  font-size: 9.5px;
+  line-height: 1.2;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  color: var(--sign-muted);
+}
+
+.lamp-menu-item:hover .lamp-menu-label {
+  color: var(--sign-fg);
+}
+
 /* 无障碍：系统开了「减少动态效果」时，闪烁一律降级为常亮，由颜色承载语义。
    这里必须赢过按状态写的那条 `animation: var(--anim-x, ...)`。用 !important：
    作者样式表里的 !important 会盖过普通声明（连内联 style 也盖），而且动画变量

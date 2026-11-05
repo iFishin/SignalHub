@@ -72,6 +72,16 @@ struct UiFlags {
     /// 一动不动。一次只可能有一盏（鼠标只有一个），所以是 `Option` 不是集合。
     /// 它**不是设置**，所以不落盘 —— 退出重开仍是用户选的折叠态。
     peek: Option<String>,
+    /// 圆环菜单正开着的那盏灯的 label。
+    ///
+    /// 和 `peek` 同一套思路（记 label、不落盘、一次只可能有一盏），但用途不同：
+    /// `peek` 让窗口按**展开态**算，这个让窗口换成**正方形**（见
+    /// `config::menu_window_size`）—— 圆环画在灯牌外面，窗口不放大就会被
+    /// `overflow: hidden` 裁掉，和右键菜单当初必须用原生菜单是同一个原因。
+    ///
+    /// 菜单一关就清空，窗口自然缩回内容尺寸。**不落盘**：菜单是瞬态界面，
+    /// 重启后当然不该还开着。
+    menu: Option<String>,
 }
 
 type SharedUi = Mutex<UiFlags>;
@@ -759,6 +769,39 @@ fn set_peek(
         }
     }
     // 尺寸跟着「实际折叠与否」变，所以要重算一遍所有窗口的布局。
+    let settings = current_settings(&app);
+    let snapshot = current_snapshot(&app);
+    sync_layout(&app, &settings, &snapshot);
+    Ok(())
+}
+
+/// 打开 / 关闭某一盏灯上的圆环菜单。
+///
+/// 打开时窗口换成正方形（`config::menu_window_size`）—— 圆环画在灯牌外面，
+/// 窗口不放大就会被 `overflow: hidden` 裁掉。关掉后自动缩回内容尺寸。
+///
+/// **为什么不用原生菜单**（`menu.rs` 那套）：圆环的形状、动效和「中心那颗灯珠」
+/// 原生菜单都做不出来。原生菜单仍然留着（右键），两条入口各管一件事 ——
+/// 右键是「这一组的操作」（改名 / 静音 / 隐藏 / 手动状态），长按圆环是
+/// 「灯本身的动作」（收件箱 / 设置 / 暂停 / 退出）。
+///
+/// `window` 由 Tauri 注入，所以多灯下只有被长按的那一盏会变形，别的灯一动不动。
+#[tauri::command]
+fn set_lamp_menu(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    open: bool,
+) -> Result<(), String> {
+    {
+        let ui_state = app.state::<SharedUi>();
+        let mut ui = ui_state.lock().expect("ui poisoned");
+        if open {
+            ui.menu = Some(window.label().to_string());
+        } else if ui.menu.as_deref() == Some(window.label()) {
+            // 只清自己那一条（同 `set_peek`）：另一盏灯的菜单不该被这个窗口关掉
+            ui.menu = None;
+        }
+    }
     let settings = current_settings(&app);
     let snapshot = current_snapshot(&app);
     sync_layout(&app, &settings, &snapshot);
@@ -1887,8 +1930,17 @@ fn lamp_specs(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapshot) 
     visible_group_names(settings, snapshot)
         .into_iter()
         .map(|name| {
+            let label = lamps::label_for(&name);
+            // 这一盏的圆环菜单开着时，窗口换成正方形（和主灯同一条规则）。
+            // **不按折叠 / 展开算** —— 菜单形态是第三种，和那两种都无关。
+            if lamp_menu_open(app, &label) {
+                return lamps::LampSpec {
+                    group: name,
+                    size: config::menu_window_size(),
+                };
+            }
             // 折叠 / 展开按**这个灯窗**自己被 hover 与否算（多灯下各算各的）
-            let collapsed = effective_collapsed(app, settings, &lamps::label_for(&name));
+            let collapsed = effective_collapsed(app, settings, &label);
             let has_message = !collapsed
                 && settings.show.message
                 && snapshot
@@ -2116,6 +2168,10 @@ fn apply_window_size(app: &tauri::AppHandle, settings: &Settings, snapshot: &Sna
         return;
     };
 
+    // 圆环菜单开着时窗口换成正方形 —— 这一条必须**先判**：下面那套「牌 / 点」
+    // 的几何对菜单形态没有意义，而菜单一关就该回到它。
+    let menu_open = lamp_menu_open(app, "main");
+
     // 展开态是一叠牌，折叠态是一排点 —— 两套几何，见 config.rs。
     // 多灯模式下主灯只看全局（各组交给各自的灯），所以这里拿的是「主灯该画的组」。
     let groups = main_window_groups(settings, snapshot);
@@ -2124,28 +2180,33 @@ fn apply_window_size(app: &tauri::AppHandle, settings: &Settings, snapshot: &Sna
     let collapsed = effective_collapsed(app, settings, "main");
     // 待审批的气泡挂在牌子下面（见 `approval_area`）：有多条就多占一份高度。
     let (bubble_w, bubble_h) = approval_area(app);
-    let (width, height) = if collapsed {
-        // 折叠态里没有牌面，全局状态角标和「还有几组」的 `+N` 都得自己占一个点位。
-        // 少算一枚，那枚角标就落在窗口外面 —— 而折叠态最不该出的就是这种错：
-        // 看不见的东西，人不会想到去查。
-        //
-        // **点数和角标都按未截断的可见组数算**：`groups` 已经被 `MAX_SIGNS` 截过，
-        // 拿它的长度喂 `more_badge` 会恒得 0 —— 5 组以上时那枚 `+N` 就被裁掉了
-        // （issue #7）。`collapsed_window_size` 内部会把点数夹到 `MAX_DOTS`。
-        // 多灯模式下主灯只剩一颗全局灯，没有「多出来几组」可言。
-        let visible = if per_group_active(settings, snapshot) {
-            0
-        } else {
-            visible_group_names(settings, snapshot).len()
-        };
-        let badges = ui_flag_count(app) + config::more_badge(visible);
-        config::collapsed_window_size(settings.size, visible, badges)
+    let (width, height) = if menu_open {
+        // 菜单形态：正方形，圆环居中。牌和气泡都不画（前端也只画圆环 + 中心那颗
+        // 灯珠），所以**不叠** approval_area —— 叠上去圆环就不在窗口中心了。
+        config::menu_window_size()
     } else {
-        settings.window_size(&sign_heights(settings, &groups))
-    };
+        let (width, height) = if collapsed {
+            // 折叠态里没有牌面，全局状态角标和「还有几组」的 `+N` 都得自己占一个点位。
+            // 少算一枚，那枚角标就落在窗口外面 —— 而折叠态最不该出的就是这种错：
+            // 看不见的东西，人不会想到去查。
+            //
+            // **点数和角标都按未截断的可见组数算**：`groups` 已经被 `MAX_SIGNS` 截过，
+            // 拿它的长度喂 `more_badge` 会恒得 0 —— 5 组以上时那枚 `+N` 就被裁掉了
+            // （issue #7）。`collapsed_window_size` 内部会把点数夹到 `MAX_DOTS`。
+            // 多灯模式下主灯只剩一颗全局灯，没有「多出来几组」可言。
+            let visible = if per_group_active(settings, snapshot) {
+                0
+            } else {
+                visible_group_names(settings, snapshot).len()
+            };
+            let badges = ui_flag_count(app) + config::more_badge(visible);
+            config::collapsed_window_size(settings.size, visible, badges)
+        } else {
+            settings.window_size(&sign_heights(settings, &groups))
+        };
 
-    let width = width.max(bubble_w);
-    let height = height + bubble_h;
+        (width.max(bubble_w), height + bubble_h)
+    };
 
     // 和上次设下去的尺寸一样就收工。**这是热路径**：拿缓存比，不问窗口。
     let (previous, scale) = {
@@ -2160,8 +2221,99 @@ fn apply_window_size(app: &tauri::AppHandle, settings: &Settings, snapshot: &Sna
     };
 
     let _ = window.set_size(LogicalSize::new(width, height));
-    // 尺寸变了才可能越界，所以放在这个分支里
-    keep_on_screen(&window, width, height, previous, scale);
+    // 尺寸变了才可能越界，所以放在这个分支里。
+    //
+    // **`was_menu` 这一半不能省**：菜单关掉那一帧 `menu_open` 已经是 false 了，
+    // 只按它判断的话，关闭会走 `keep_on_screen` 的「贴边往里长」—— 而打开走的是
+    // 居中扩展，两者不对称，灯就会往左上偏一截（196→174 差 22 宽，一半是 11px；
+    // 高度差 141，一半是 70px）。一次偏这么多，用户一眼就看得出来。
+    // 判据用「上一次设下去的尺寸是不是菜单尺寸」，而不是再加一个状态位。
+    let was_menu = previous == Some(config::menu_window_size());
+    if menu_open || was_menu {
+        // 菜单是**以窗口中心为基准**扩大的：灯原地展开成一个圆环，而不是从左上角
+        // 长出去（那样圆环会整体偏向右下，看着像灯跳了一下）。
+        // 不能走 `keep_on_screen` —— 它的 `grow_away_from_edges` 会按「贴边就往里
+        // 长」再挪一次，和这里的居中偏移叠起来，圆环就歪了。
+        center_grow(&window, previous, (width, height), scale);
+    } else {
+        keep_on_screen(&window, width, height, previous, scale);
+    }
+}
+
+/// 某一盏灯上的圆环菜单是不是开着（同 `effective_collapsed` 那套 label 判据）。
+fn lamp_menu_open(app: &tauri::AppHandle, label: &str) -> bool {
+    app.state::<SharedUi>()
+        .lock()
+        .expect("ui poisoned")
+        .menu
+        .as_deref()
+        == Some(label)
+}
+
+/// 尺寸变化时让窗口**中心不动**：左上角让出两个方向差值的一半。
+///
+/// 只在圆环菜单打开 / 关闭时用。为什么要居中而不是像 `grow_away_from_edges`
+/// 那样贴边往里长：菜单的圆心是窗口中心，中心一动圆环就跟着跳。居中扩展让
+/// 灯看起来是「原地展开」的，关掉时又原路缩回去。
+///
+/// `previous` 是变化前的逻辑尺寸（`None` = 还没设过，不挪）。最后一步仍然夹回
+/// 工作区：灯贴着屏幕右下角时，居中扩展会有一部分长到屏外，而圆环被切掉的那半边
+/// 就等于点不到的按钮。
+fn center_grow(
+    window: &tauri::WebviewWindow,
+    previous: Option<(u16, u16)>,
+    size: (u16, u16),
+    scale: f64,
+) {
+    let Some(previous) = previous else {
+        return;
+    };
+    let Ok(position) = window.outer_position() else {
+        return;
+    };
+    let to_physical = |(w, h): (u16, u16)| {
+        (
+            (w as f64 * scale).round() as i32,
+            (h as f64 * scale).round() as i32,
+        )
+    };
+    let old = to_physical(previous);
+    let new = to_physical(size);
+    let target = centered_offset((position.x, position.y), old, new);
+
+    let (x, y) = match screen_bounds(window) {
+        Some(bounds) => clamp_to_area(target, new, bounds),
+        None => target,
+    };
+    if (x, y) != (position.x, position.y) {
+        let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+    }
+}
+
+/// 让窗口中心不动的那个左上角：新位置 = 旧位置 −（新尺寸 − 旧尺寸）/ 2。
+///
+/// 差值可能不是偶数（缩放比不是整数时），整除截断会让中心差半个物理像素 ——
+/// 肉眼不可见，且每次都朝同一个方向，不会累积漂移。
+///
+/// 抽成纯函数是为了能单测：菜单一开一关是一次往返，这里算错一点点，
+/// 灯就会在屏幕上来回蹭 —— 而那种「用久了灯自己跑偏」的 bug 最难查。
+fn centered_offset(position: (i32, i32), previous: (i32, i32), size: (i32, i32)) -> (i32, i32) {
+    (
+        position.0 - (size.0 - previous.0) / 2,
+        position.1 - (size.1 - previous.1) / 2,
+    )
+}
+
+/// 这个窗口现在盖在哪块屏的工作区上；拿不到就退回「离它最近的那块」。
+///
+/// 从 `keep_on_screen` 里提出来：圆环菜单的居中扩展也要夹回同一块屏，
+/// 两处判据必须一致（否则会出现「主灯夹在 A 屏、菜单夹在 B 屏」）。
+fn screen_bounds(window: &tauri::WebviewWindow) -> Option<Bounds> {
+    if let Ok(Some(monitor)) = window.current_monitor() {
+        return Some(work_bounds(&monitor));
+    }
+    let position = window.outer_position().ok()?;
+    nearest_screen(window.app_handle(), (position.x, position.y)).map(|(bounds, _)| bounds)
 }
 
 /// 尺寸变了之后，把窗口推回屏幕内。
@@ -2716,6 +2868,7 @@ pub fn run() {
             try_agent,
             diagnose,
             toggle_collapsed,
+            set_lamp_menu,
             clear_group_state,
             clear_session,
             test_hooks,
@@ -2874,8 +3027,9 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        clamp_to_area, combined_bytes, distance_to_bounds, grow_away_from_edges, nearest_index,
-        snap_to_edges, state_ttl_defaults, validate_settings, visible_groups, TEST_REPORT_TTL_MS,
+        centered_offset, clamp_to_area, combined_bytes, distance_to_bounds, grow_away_from_edges,
+        nearest_index, snap_to_edges, state_ttl_defaults, validate_settings, visible_groups,
+        TEST_REPORT_TTL_MS,
     };
     use crate::config::{GroupMeta, Settings, StateStyle, MAX_STATE_TTL_MS, MIN_STATE_TTL_MS};
     use crate::state::{state_ttl, GroupView, Report, Signal, Snapshot, Store};
@@ -3072,6 +3226,41 @@ mod tests {
         let area = ((-1920, -200), (0, 880));
         assert_eq!(clamp_to_area((-1900, 700), WINDOW, area), (-1900, 700), "区内不动");
         assert_eq!(clamp_to_area((-2000, 900), WINDOW, area), (-1920, 720), "越界拉回");
+    }
+
+    // ---- 圆环菜单的居中扩展 ---------------------------------------------------
+
+    /// 变大时中心不动：左上角让出两个方向差值的一半。
+    ///
+    /// 例：174×55 的灯长到 196×196，宽差 22 → x 减 11，高差 141 → y 减 70
+    /// （整除截断）。中心仍然是原来那个点，所以圆环看起来是「原地展开」的。
+    #[test]
+    fn growing_keeps_the_center_still() {
+        assert_eq!(
+            centered_offset((100, 200), (174, 55), (196, 196)),
+            (100 - 11, 200 - 70)
+        );
+    }
+
+    /// **一开一关必须回到原点** —— 这是「灯会不会用久了慢慢跑偏」的判据。
+    ///
+    /// 菜单是高频操作（每次长按都开一次），只要往返差一个像素，用几百次之后
+    /// 灯就从屏幕角落挪走了。所以这条测试盯的是「对称性」，不只是「方向对」。
+    #[test]
+    fn closing_the_menu_returns_to_the_same_place() {
+        let start = (640, 480);
+        let small = (174, 55);
+        let big = (196, 196);
+        let opened = centered_offset(start, small, big);
+        let closed = centered_offset(opened, big, small);
+        assert_eq!(closed, start, "开→关必须回到原位");
+    }
+
+    /// 尺寸没变就一个像素都不动（状态推送会让 `apply_window_size` 反复跑，
+    /// 这里多挪一下灯就会自己走）。
+    #[test]
+    fn an_unchanged_size_does_not_move_the_window() {
+        assert_eq!(centered_offset((300, 400), (196, 196), (196, 196)), (300, 400));
     }
 
     // ---- 贴边吸附 -------------------------------------------------------------
