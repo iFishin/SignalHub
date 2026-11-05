@@ -348,7 +348,7 @@ pub struct StateStyle {
       牌高   = size × 3/2（一行）/ size × 5/2（带消息两行）
       牌间距 = size / 2
       牌尾只剩 `+N` 角标，flex: none，不另占高度
-      暂停 / 穿透角标绝对定位在窗口左上角的 10px 留白里，不吃牌身宽度
+      暂停 / 穿透角标绝对定位在窗口顶部留白正中，不吃牌身宽度
 折叠：宽 = (dots + badges) × size + (dots + badges − 1) × (size / 3)
       高 = size + 20
       dots   = min(可见组数, MAX_DOTS)，且至少 1
@@ -360,7 +360,7 @@ pub struct StateStyle {
 
 最多同时显示 `MAX_SIGNS`（4）块，超出的截断（服务端已按优先级排好，所以留下的恰好是最紧急的）。折叠态的上限 `MAX_DOTS` **刻意等于 `MAX_SIGNS`**：折叠只是换个外形，不该顺带少显示几个组——那会让人以为一折叠就把状态弄丢了。宽度**固定、超出用省略号截断**：让宽度跟着文字走会让窗口每次消息变化都跳一下。
 
-**折叠态的点数是「组数 + `+N` 角标数」。** 只有 `+N` 在折叠态占一个点的位置（展开态寄住在牌尾，不占额外高度）；暂停 / 穿透那枚是 `lamp.css` 的 `.lamp-flag` —— 绝对定位在窗口左上角留白里，两种形态共用同一枚 DOM，既不挤牌身也不占点位，所以切换穿透 / 暂停不会让窗口尺寸变化。它原来既是牌里的 flex 子项（挤掉 `.sign-body` 的组名）、又在折叠态多占一个点距，表现就是一开穿透整排灯珠被重新居中、像被箭头挤出去。`collapsed_window_size(size, dots, badges)` 的 `badges` 现在只数 `+N`，`MAX_BADGES` 也降到 1。**两个上限仍然分别封**：组数按 `MAX_DOTS`，角标按 `MAX_BADGES` —— 封住它们的和会让「多一枚角标」被当成「少一个组」，那正是截断要避免的那种谎。前端画几枚，这里就得算几枚：两边是同一个条件（`SignalLamp.tsx` 的 `hidden.length > 0` ↔ `config::more_badge`），少算一枚那枚角标就会被 `#root` 的 `overflow: hidden` 从右边切掉。
+**折叠态的点数是「组数 + `+N` 角标数」。** 只有 `+N` 在折叠态占一个点的位置（展开态寄住在牌尾，不占额外高度）；暂停 / 穿透那枚是 `lamp.css` 的 `.lamp-flag` —— 绝对定位在窗口顶部留白正中、下沿贴着主体的上沿，两种形态共用同一枚 DOM，既不挤牌身也不占点位，所以切换穿透 / 暂停不会让窗口尺寸变化。它原来既是牌里的 flex 子项（挤掉 `.sign-body` 的组名）、又在折叠态多占一个点距，表现就是一开穿透整排灯珠被重新居中、像被箭头挤出去。`collapsed_window_size(size, dots, badges)` 的 `badges` 现在只数 `+N`，`MAX_BADGES` 也降到 1。**两个上限仍然分别封**：组数按 `MAX_DOTS`，角标按 `MAX_BADGES` —— 封住它们的和会让「多一枚角标」被当成「少一个组」，那正是截断要避免的那种谎。前端画几枚，这里就得算几枚：两边是同一个条件（`SignalLamp.tsx` 的 `hidden.length > 0` ↔ `config::more_badge`），少算一枚那枚角标就会被 `#root` 的 `overflow: hidden` 从右边切掉。
 
 顺带一个量级问题：Rust 的点距是**整除**（`size / 3` = 7），CSS 的 `calc(var(--size) / 3)` 是 7.33 —— 一行点排下来 CSS 比 Rust 宽出 ~1.6px。这点差被两侧各 10px 的留白吃得下（`.lamp-root` 自己 `overflow: visible`，只是往 padding 里溢一点），所以不会裁切；但**留白不能再小了**，那点余量就是它兜的。
 
