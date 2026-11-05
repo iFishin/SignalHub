@@ -508,6 +508,11 @@ export interface Messages {
   customAgentsLimit: string;
   /** 「打开配置文件」按钮（文件不存在时先建一份带说明的空文件） */
   customAgentsOpen: string;
+  /** 「让智能体自己来配」那一块：标题、说明、按钮、指南页那句引导 */
+  setupPromptTitle: string;
+  setupPromptHint: string;
+  setupPromptCopy: string;
+  setupPromptGuide: string;
   /** 「已接入」但配置里那条命令现在跑不起来了 —— 静默失效，最该被看见的一种 */
   agentCommandBroken: string;
   /**
@@ -1243,6 +1248,12 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     customAgentsLimit:
       "只覆盖「格式同构、路径不同」这一类 —— 事件名是另一套的，仍然得等我们加一家。",
     customAgentsOpen: "打开配置文件",
+    setupPromptTitle: "让智能体自己来配",
+    setupPromptHint:
+      "不确定自己用的这一家在不在清单里？把整段提示词粘给它，让它自己判断该走哪条路、写好配置、装好 hook。里面带着这台机器当前的清单、路径和端口，不用你先去查文档。",
+    setupPromptCopy: "复制接入提示词",
+    setupPromptGuide:
+      "清单里没有你用的智能体？复制一段提示词给它，让它自己判断并配好 —— 不用先读文档。",
     agentCommandBroken:
       "接入是装上了，但配置里那条命令现在跑不起来 —— 智能体不会报错，灯也不会亮。多半是应用被挪走或删掉了，重新点一次「接入」就会改写成当前路径：",
     agentUpdateAvailable:
@@ -1938,6 +1949,12 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     customAgentsLimit:
       "This only covers agents that are format-compatible with a different path. If the event names differ, we still have to add one.",
     customAgentsOpen: "Open the config file",
+    setupPromptTitle: "Let the agent set itself up",
+    setupPromptHint:
+      "Not sure whether your agent is on the list? Paste the whole prompt into it and let it pick the right route, write the config and install the hooks. It carries this machine's current adapter list, paths and port, so there is nothing to look up first.",
+    setupPromptCopy: "Copy setup prompt",
+    setupPromptGuide:
+      "Your agent is not on the list? Copy a prompt into it and let it figure out the setup — no docs to read first.",
     agentCommandBroken:
       "Installed, but the command in the config no longer runs — the agent will not complain and the lamp will not light. Usually the app was moved or deleted; clicking Install again rewrites it to the current path:",
     agentUpdateAvailable:

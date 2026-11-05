@@ -740,11 +740,6 @@ impl Store {
         self.settle(now)
     }
 
-    /// 监控是否暂停中。灯上那枚持续可见的角标和折叠态的窗口尺寸都要读它。
-    pub fn paused(&self) -> bool {
-        self.paused
-    }
-
     /// 用「进程还在不在」修正会话 —— **必须在 [`Store::expire`] 之前调用**
     /// （`sweep` 里就是这么排的）。
     ///

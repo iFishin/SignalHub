@@ -13,7 +13,7 @@
 //! 认得的条目和读不懂的原因，界面把原因原样摆出来 —— 静默忽略是这类「配置文件」
 //! 功能最坏的失败方式：用户改了文件，什么都没发生，也没有任何提示。
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
 
 use crate::hooks::{self, Agent, InstallKind};
@@ -341,6 +341,180 @@ pub fn example() -> String {
     .to_string()
 }
 
+/// 想写进去的一条预设。**写入专用的输入**：和读文件用的 [`RawAgent`] 分开，
+/// 因为写入还要额外回答「同 id 已存在时要不要覆盖」。
+#[derive(Debug, Clone)]
+pub struct AddRequest {
+    pub id: String,
+    pub name: String,
+    pub family: String,
+    pub config: String,
+    pub marker: Option<String>,
+    pub command: Option<String>,
+}
+
+/// 一次写入到底做了什么。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WriteOutcome {
+    Added,
+    /// 同一条已经在了 —— 幂等，连文件都不碰
+    Unchanged,
+    /// 同 id 但内容不同，显式要求覆盖
+    Replaced,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AddResult {
+    /// 归一化之后的 id（调用方传进来的可能是 `My_Agent`）
+    pub id: String,
+    pub outcome: WriteOutcome,
+    /// 写到了哪个文件，回执里要说清楚
+    pub path: String,
+}
+
+/// 一条预设写进文件时的样子。可选字段留空就**不写这一行** —— 手写时它们最容易
+/// 被抄成空串，而加载器虽然认空串，文件里平白多两行只会让人以为必填。
+fn entry_value(agent: &CustomAgent) -> serde_json::Value {
+    let mut entry = serde_json::Map::new();
+    entry.insert("id".into(), serde_json::Value::String(agent.id.clone()));
+    entry.insert("name".into(), serde_json::Value::String(agent.name.clone()));
+    entry.insert(
+        "family".into(),
+        serde_json::Value::String(hooks::cli_name(agent.family).to_string()),
+    );
+    entry.insert("config".into(), serde_json::Value::String(agent.config.clone()));
+    if let Some(marker) = &agent.marker {
+        entry.insert("marker".into(), serde_json::Value::String(marker.clone()));
+    }
+    if let Some(command) = &agent.command {
+        entry.insert("command".into(), serde_json::Value::String(command.clone()));
+    }
+    serde_json::Value::Object(entry)
+}
+
+/// 把一条预设合并进已有的文件内容。**纯函数**，所有分支都能单测。
+///
+/// `forbidden` 是「不许把 hook 配置指向的目录」（SignalHub 自己的数据目录）；
+/// 传 `None` 表示不检查，测试里用它避开真实文件系统。
+pub fn insert(
+    existing: Option<&str>,
+    request: &AddRequest,
+    replace: bool,
+    forbidden: Option<&Path>,
+) -> Result<(String, WriteOutcome), String> {
+    let families = families();
+    let raw = RawAgent {
+        id: request.id.clone(),
+        name: request.name.clone(),
+        family: request.family.clone(),
+        config: request.config.clone(),
+        marker: request.marker.clone(),
+        command: request.command.clone(),
+    };
+    // 和 load() 走同一份 validate：写进去的东西必须立刻就能被读出来，不能
+    // 「命令报成功、接入页却摆一条错误」。
+    let agent = validate(raw, &families)?;
+
+    // hook 配置是**别人的**文件。让它指向 SignalHub 的数据目录，等于允许一次
+    // `install hooks` 往 config.json / token / agents.json 里插条目 —— 那条路上
+    // 写的是我们的配置，不是智能体的。手写文件时这只能靠文档提醒，命令入口
+    // 就该把它变成硬约束。
+    if let Some(dir) = forbidden {
+        let target = agent.config_path()?;
+        if target.starts_with(dir) {
+            return Err(format!(
+                "config 不能指向 SignalHub 的数据目录（{}）：{}。请填你自己的 hook 配置文件路径",
+                dir.display(),
+                agent.config
+            ));
+        }
+    }
+
+    // 读不懂的旧文件绝不覆盖：一次「添加」不能悄悄抹掉用户手写的全部条目。
+    let mut root: serde_json::Value = match existing {
+        Some(text) if !text.trim().is_empty() => serde_json::from_str(text)
+            .map_err(|err| format!("现有的 agents.json 不是合法 JSON，不会覆盖它：{err}"))?,
+        _ => serde_json::from_str(&example())
+            .map_err(|err| format!("内置模板不是合法 JSON：{err}"))?,
+    };
+
+    // 保持原有形态：裸数组仍是裸数组，对象仍带它原来的 `_说明` / `_example`。
+    // 按 Value 改而不是反序列化成 Vec<CustomAgent> 再重写，是为了**原样保留**
+    // 暂时读不懂的条目和任何未知键 —— 它们也是用户写的东西。
+    let list: &mut Vec<serde_json::Value> = match &mut root {
+        serde_json::Value::Array(items) => items,
+        serde_json::Value::Object(map) => match map.get_mut("agents") {
+            Some(serde_json::Value::Array(items)) => items,
+            Some(_) => return Err("顶层 \"agents\" 不是数组，不会覆盖它".to_string()),
+            None => return Err("顶层是对象但没有 \"agents\" 数组，不会覆盖它".to_string()),
+        },
+        _ => return Err("顶层既不是对象也不是数组，不会覆盖它".to_string()),
+    };
+
+    let position = list.iter().position(|item| {
+        item.get("id")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|id| normalize_id(id) == agent.id)
+    });
+
+    let outcome = if let Some(index) = position {
+        // 旧条目也过一遍同样的校验；只有「读得懂 + 完全一样」才算幂等。读不懂的
+        // 旧条目不能当成「已存在」放过去 —— 那会把一条坏配置永远留在文件里。
+        let same = serde_json::from_value::<RawAgent>(list[index].clone())
+            .ok()
+            .and_then(|old| validate(old, &families).ok())
+            .is_some_and(|old| old == agent);
+        if same {
+            return Ok((existing.unwrap_or_default().to_string(), WriteOutcome::Unchanged));
+        }
+        if !replace {
+            return Err(format!(
+                "id \"{}\" 已经存在，而且内容不一样。确认要覆盖再加 --replace。",
+                agent.id
+            ));
+        }
+        list[index] = entry_value(&agent);
+        WriteOutcome::Replaced
+    } else {
+        list.push(entry_value(&agent));
+        WriteOutcome::Added
+    };
+
+    let text = serde_json::to_string_pretty(&root)
+        .map_err(|err| format!("序列化 agents.json 失败：{err}"))?;
+    Ok((format!("{text}\n"), outcome))
+}
+
+/// 校验并**追加**一条预设。CLI 的 `add-agent` 和 app 的 `add_custom_agent` 共用
+/// 这一份 —— 两边走同一套校验和 `atomic_write`，不会出现「终端写的和界面写的
+/// 格式不一样」。
+///
+/// **并发边界**：这是 read-modify-write，`atomic_write` 的锁只管本进程；两个进程
+/// 同一瞬间各加一条会丢一条。这个入口的用法是人（或智能体）一条一条地加，不是
+/// 高频写入。真要并发得先加跨进程文件锁。
+pub fn add(request: AddRequest, replace: bool) -> Result<AddResult, String> {
+    let path = file_path()?;
+    let existing = match std::fs::read_to_string(&path) {
+        Ok(text) => Some(text),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => return Err(format!("读不了 {}：{err}", path.display())),
+    };
+    // data_dir() 顺带保证目录存在；它同时是「不许把 hook 写进来」的那个目录。
+    let dir = crate::config::data_dir()
+        .map_err(|err| format!("找不到配置目录: {err}"))?;
+    let (text, outcome) = insert(existing.as_deref(), &request, replace, Some(&dir))?;
+    if outcome != WriteOutcome::Unchanged {
+        crate::config::atomic_write(&path, &text, None)
+            .map_err(|err| format!("写 {} 失败: {err}", path.display()))?;
+    }
+    Ok(AddResult {
+        id: normalize_id(&request.id),
+        outcome,
+        path: path.to_string_lossy().into_owned(),
+    })
+}
+
 /// 文件不在就建一份带说明的空文件。返回它的路径。
 pub fn ensure_file() -> Result<PathBuf, String> {
     let path = file_path()?;
@@ -491,5 +665,139 @@ mod tests {
         // 非内置的照样归一化，只是认不出是哪一家 —— 那正是自定义预设的入口
         assert_eq!(normalize_id("My_Agent"), "my-agent");
         assert!(Agent::parse("my-agent").is_err());
+    }
+
+    // ---- 写入（insert 是纯函数，文件 I/O 留在 add 里）------------------------
+
+    fn request() -> AddRequest {
+        AddRequest {
+            id: "my-agent".into(),
+            name: "My Agent".into(),
+            family: "claude-code".into(),
+            config: ".my-agent/settings.json".into(),
+            marker: None,
+            command: None,
+        }
+    }
+
+    #[test]
+    fn insert_creates_a_file_the_reader_accepts() {
+        let (text, outcome) = insert(None, &request(), false, None).unwrap();
+        assert_eq!(outcome, WriteOutcome::Added);
+        assert!(text.contains("_说明"), "新文件仍该带那份说明书");
+        let loaded = parse(&text);
+        assert!(loaded.problems.is_empty(), "{:?}", loaded.problems);
+        assert_eq!(loaded.agents.len(), 1);
+        assert_eq!(loaded.agents[0].id, "my-agent");
+        // 可选字段留空就不写进条目（模板的 `_example` 里另有一份，别数错）
+        let root: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert!(root["agents"][0].get("marker").is_none());
+        assert!(root["agents"][0].get("command").is_none());
+    }
+
+    #[test]
+    fn insert_appends_instead_of_overwriting() {
+        let existing = r#"{"_注释":"keep me","agents":[
+            {"id":"first","name":"First","family":"codex","config":".first/s.json"}]}"#;
+        let (text, outcome) = insert(Some(existing), &request(), false, None).unwrap();
+        assert_eq!(outcome, WriteOutcome::Added);
+        let root: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(root["_注释"], "keep me", "未知键要原样留着");
+        let list = root["agents"].as_array().unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0]["id"], "first");
+        assert_eq!(list[1]["id"], "my-agent");
+        assert!(parse(&text).problems.is_empty(), "原有条目还得读得懂");
+    }
+
+    #[test]
+    fn a_bare_array_stays_a_bare_array() {
+        let existing = r#"[{"id":"first","name":"First","family":"codex","config":".first/s.json"}]"#;
+        let (text, _) = insert(Some(existing), &request(), false, None).unwrap();
+        let root: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert!(root.is_array(), "别把用户选的形态改掉");
+        assert_eq!(root.as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_broken_file_is_never_overwritten() {
+        let err = insert(Some("{ 这不是 JSON"), &request(), false, None).unwrap_err();
+        assert!(err.contains("不会覆盖"), "{err}");
+        let err = insert(Some(r#"{"_example":{}}"#), &request(), false, None).unwrap_err();
+        assert!(err.contains("不会覆盖"), "{err}");
+    }
+
+    #[test]
+    fn repeating_the_same_request_is_a_no_op() {
+        let (first, outcome) = insert(None, &request(), false, None).unwrap();
+        assert_eq!(outcome, WriteOutcome::Added);
+        let (second, outcome) = insert(Some(&first), &request(), false, None).unwrap();
+        assert_eq!(outcome, WriteOutcome::Unchanged);
+        assert_eq!(first, second, "连文本都不重写，更不该碰文件");
+        // 归一化过的 id 也算同一条
+        let upper = AddRequest { id: "My_Agent".into(), ..request() };
+        let (_, outcome) = insert(Some(&first), &upper, false, None).unwrap();
+        assert_eq!(outcome, WriteOutcome::Unchanged);
+    }
+
+    #[test]
+    fn a_different_entry_with_the_same_id_needs_explicit_replace() {
+        let (first, _) = insert(None, &request(), false, None).unwrap();
+        let changed = AddRequest { name: "Renamed".into(), ..request() };
+        let err = insert(Some(&first), &changed, false, None).unwrap_err();
+        assert!(err.contains("--replace"), "{err}");
+        let (replaced, outcome) = insert(Some(&first), &changed, true, None).unwrap();
+        assert_eq!(outcome, WriteOutcome::Replaced);
+        let loaded = parse(&replaced);
+        assert_eq!(loaded.agents.len(), 1, "替换而不是再追加一条重复 id");
+        assert_eq!(loaded.agents[0].name, "Renamed");
+        assert!(loaded.problems.is_empty(), "{:?}", loaded.problems);
+    }
+
+    #[test]
+    fn writing_goes_through_the_same_validation_as_reading() {
+        for bad in [
+            AddRequest { family: "nope".into(), ..request() },
+            AddRequest { family: "opencode".into(), ..request() },
+            AddRequest { id: "claude-code".into(), ..request() },
+            AddRequest { config: "../../etc/s.json".into(), ..request() },
+            AddRequest { command: Some("my agent".into()), ..request() },
+        ] {
+            assert!(insert(None, &bad, false, None).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn config_cannot_point_into_the_data_directory() {
+        let dir = std::env::temp_dir().join("signalhub-data-for-test");
+        let bad = AddRequest {
+            config: dir.join("config.json").to_string_lossy().into_owned(),
+            ..request()
+        };
+        let err = insert(None, &bad, false, Some(&dir)).unwrap_err();
+        assert!(err.contains("数据目录"), "{err}");
+        // 目录外的绝对路径照样能写 —— 这条约束不是「不许用绝对路径」
+        let ok = AddRequest {
+            config: std::env::temp_dir()
+                .join("elsewhere/settings.json")
+                .to_string_lossy()
+                .into_owned(),
+            ..request()
+        };
+        assert!(insert(None, &ok, false, Some(&dir)).is_ok());
+    }
+
+    #[test]
+    fn optional_fields_are_written_when_present() {
+        let full = AddRequest {
+            marker: Some(".my-agent".into()),
+            command: Some("my-agent".into()),
+            ..request()
+        };
+        let (text, _) = insert(None, &full, false, None).unwrap();
+        let root: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(root["agents"][0]["marker"], ".my-agent");
+        assert_eq!(root["agents"][0]["command"], "my-agent");
+        assert!(parse(&text).problems.is_empty(), "{:?}", parse(&text).problems);
     }
 }

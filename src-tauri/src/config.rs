@@ -82,11 +82,12 @@ pub fn sign_height(size: u16, has_message: bool, h: f32) -> u16 {
 /// 那样会让人以为一折叠就把状态弄丢了。
 pub const MAX_DOTS: usize = MAX_SIGNS;
 
-/// 折叠态最多几枚额外角标：暂停 / 穿透一枚，`+N` 一枚。
+/// 折叠态最多几枚额外角标：现在只有「还有几组」的 `+N` 一枚。
 ///
-/// 两种各自都最多一枚，所以这是个真上限、不是随手取的数 —— 它只用来兜住
-/// 一个算错的调用点，别让它把窗口撑得没边。
-const MAX_BADGES: usize = 2;
+/// 暂停 / 穿透那枚曾经也占一个点位，开关一拨窗口就要跟着加宽，整排灯珠被重新
+/// 居中、看着像被挤出去；它现在是窗口角落的绝对定位徽标（`lamp.css` 的
+/// `.lamp-flag`），不参与几何。这个上限只用来兜住一个算错的调用点。
+const MAX_BADGES: usize = 1;
 
 /// 折叠态要不要挂那枚 `+N` 角标：可见组数超过 [`MAX_DOTS`] 时，多出来的那些
 /// 在灯上**一点痕迹都没有** —— 而「有几个智能体在跑」恰恰是这盏灯要回答的问题。
@@ -105,13 +106,11 @@ pub fn more_badge(visible: usize) -> usize {
 /// 这套几何比展开态小得多 —— 折叠的意义就是让出地方。一个组一个点，
 /// 所以点数和组数一样；一个组都没有时也要有一个点（表示 offline）。
 ///
-/// `badges` 是**占一个点位的额外角标数**，目前两种：暂停 / 穿透那一枚（见 `lib.rs`
-/// 的 `ui_flag_count`），和「还有几组没画出来」的 `+N` 那一枚（见 [`more_badge`]）。
+/// `badges` 是**占一个点位的额外角标数**，现在只有「还有几组没画出来」的 `+N`
+/// 那一枚（见 [`more_badge`]）。暂停 / 穿透角标是绝对定位在窗口留白里的徽标，
+/// **不占点位**，所以切换穿透 / 暂停都不该让窗口尺寸变（那会把灯珠推偏）。
 ///
-/// 角标也占一个点的位置，所以点数要加上它 —— 忘了加的话那一枚会把窗口撑出界，
-/// 而折叠态的意义正是「让出地方」，撑出去就白让了。
-///
-/// ⚠️ 点径、点距、留白和 CSS 的 `.lamp-dot` / `.lamp-dot-flag` / `.lamp-dot-more` /
+/// ⚠️ 点径、点距、留白和 CSS 的 `.lamp-dot` / `.lamp-dot-more` /
 /// `.lamp-root` 是两处真值（见本文件头），改一处必须同步另一处。
 pub fn collapsed_window_size(size: u16, dots: usize, badges: usize) -> (u16, u16) {
     // 分别封顶再相加，而不是封顶它们的和：封住和的话「多枚角标」会被当成
@@ -3194,22 +3193,24 @@ mod tests {
         );
     }
 
-    /// 每一枚角标都占一个点的位置 —— 忘了算哪一枚，它就会落到窗口外面，
-    /// 而折叠态的意义正是让出地方。
+    /// 折叠态只有 `+N` 还占点位。暂停 / 穿透那枚是窗口角落的绝对定位徽标，
+    /// **不占点位** —— 把它算进来的话，开关一拨窗口就加宽一个点距，整排灯珠
+    /// 被重新居中，看着像被那枚箭头挤了出去。
     #[test]
-    fn every_badge_takes_a_dot_of_its_own() {
+    fn only_the_more_badge_takes_a_dot_of_its_own() {
         let size = Settings::default().size;
 
         let (bare, _) = collapsed_window_size(size, 2, 0);
         let (flagged, _) = collapsed_window_size(size, 2, 1);
-        let (both, _) = collapsed_window_size(size, 2, 2);
         assert_eq!(flagged - bare, size + size / 3, "多一个点加一个点距");
-        assert_eq!(both - flagged, size + size / 3, "两枚就是两个点位");
 
-        // 上限仍然要封住，否则一个算错的调用点会让窗口无限变宽
-        let (crazy, _) = collapsed_window_size(size, MAX_DOTS, 9);
-        let (capped, _) = collapsed_window_size(size, MAX_DOTS, MAX_BADGES);
-        assert_eq!(crazy, capped, "角标再多也只按 MAX_BADGES 算");
+        // 上限仍然要封住，否则一个算错的调用点会让窗口无限变宽。
+        // 现在只剩一枚角标，多传也只按 1 算。
+        assert_eq!(
+            collapsed_window_size(size, MAX_DOTS, 9),
+            collapsed_window_size(size, MAX_DOTS, MAX_BADGES),
+            "角标再多也只按 MAX_BADGES 算"
+        );
 
         // 角标上限是**单独**封的，不侵占组的份额：组数按 MAX_DOTS 截断，
         // 角标再占位，两者相加才是最终的点数。

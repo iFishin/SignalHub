@@ -677,21 +677,9 @@ fn set_pass_through_impl(app: &tauri::AppHandle, enabled: bool) -> Result<(), St
         .set_ignore_cursor_events(enabled)
         .map_err(|err| format!("切换点击穿透失败: {err}"))?;
 
-    // 折叠态那枚角标跟着这个开关出现 / 消失，所以窗口要重新算一次尺寸。
-    // 不改这一句的表现是：穿透开启时角标把窗口撑出去一截（或者退出时留着一截空白）。
-    {
-        let snapshot = app
-            .state::<SharedStore>()
-            .lock()
-            .expect("store poisoned")
-            .snapshot();
-        let settings = app
-            .state::<SharedSettings>()
-            .lock()
-            .expect("settings poisoned")
-            .clone();
-        sync_layout(app, &settings, &snapshot);
-    }
+    // **不重算窗口**：那枚 ⇥ 角标是绝对定位在窗口留白里的徽标（见 lamp.css 的
+    // `.lamp-flag`），不占牌身宽度、也不占折叠态的点位。曾经这里按角标数加宽
+    // 窗口，表现就是一开穿透整排灯珠被推偏；别把它加回来。
 
     // 开启时发一条通知说明怎么退出。**不再顺手把外形收起来**：穿透下窗口本来
     // 就点不动，而外形是用户自己选的、存在设置里的，替用户改掉反而是越权。
@@ -1390,6 +1378,38 @@ fn open_custom_agents() -> Result<String, String> {
     Ok(text)
 }
 
+/// 往 `agents.json` 校验并追加一条自定义预设。
+///
+/// 和 CLI 的 `signalhub add-agent` 共用 `agents::add` —— 同一份字段校验、同一份
+/// 原子写。界面目前只提供「打开配置文件」和提示词两个入口，这个命令是给面板里
+/// 将来的添加表单、以及本机自动化用的；外部智能体走 CLI（它在终端里，够不到
+/// webview 的 IPC）。
+///
+/// `replace` 默认 false：同 id 已存在且内容不同时**拒绝**，免得一次误操作把用户
+/// 手写的一条悄悄改掉。
+#[tauri::command]
+fn add_custom_agent(
+    id: String,
+    name: String,
+    family: String,
+    config: String,
+    marker: Option<String>,
+    command: Option<String>,
+    replace: Option<bool>,
+) -> Result<agents::AddResult, String> {
+    agents::add(
+        agents::AddRequest {
+            id,
+            name,
+            family,
+            config,
+            marker,
+            command,
+        },
+        replace.unwrap_or(false),
+    )
+}
+
 /// HTTP 式接入的探测上限。对面就是我们自己、走的是回环，3 秒绰绰有余 ——
 /// 而这个数字同时是「点下去界面最多等多久」的上限。
 const PROBE_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
@@ -1920,13 +1940,13 @@ fn main_window_groups<'a>(settings: &Settings, snapshot: &'a Snapshot) -> Vec<&'
 /// 每个可见组该有的灯窗：组名 + 这一帧的尺寸。
 ///
 /// 一盏组灯的几何 = 「只有这一组的单灯」：展开态是一块牌，折叠态是一个点（外加
-/// 暂停 / 穿透那枚角标）。**必须和前端渲染对齐** —— 多一块牌或少一枚角标，窗口
-/// 就会裁掉内容。
+/// 被截断的组那枚 `+N`）。暂停 / 穿透角标是绝对定位在窗口留白里的徽标，
+/// **不占点位、不进几何**。**必须和前端渲染对齐** —— 多一块牌或少一枚角标，
+/// 窗口就会裁掉内容。
 fn lamp_specs(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapshot) -> Vec<lamps::LampSpec> {
     if !per_group_active(settings, snapshot) {
         return Vec::new();
     }
-    let flags = ui_flag_count(app);
     visible_group_names(settings, snapshot)
         .into_iter()
         .map(|name| {
@@ -1949,7 +1969,7 @@ fn lamp_specs(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapshot) 
                     .find(|group| group.name == name)
                     .is_some_and(|group| group.message.is_some());
             let size = if collapsed {
-                config::collapsed_window_size(settings.size, 1, flags + config::more_badge(1))
+                config::collapsed_window_size(settings.size, 1, config::more_badge(1))
             } else {
                 settings.window_size(&[config::sign_height(settings.size, has_message, settings.sign_h_mult)])
             };
@@ -2134,30 +2154,9 @@ fn sign_heights(settings: &Settings, groups: &[&GroupView]) -> Vec<u16> {
     }
 }
 
-/// 折叠态末尾那枚全局状态角标算几个点。
-///
-/// 「暂停监控」和「点击穿透」共用同一枚角标（同时开着时穿透优先，见
-/// `SignalLamp.tsx` 的 `flagTitle`），所以**最多 1**。
-///
-/// 单独摘一个函数而不是在 `apply_window_size` 里现算：这里要读两个互不相干的
-/// 状态桶（`Store::paused` 和 `UiFlags::pass_through`），而调用点只关心「几枚」。
-fn ui_flag_count(app: &tauri::AppHandle) -> usize {
-    let paused = app
-        .state::<SharedStore>()
-        .lock()
-        .expect("store poisoned")
-        .paused();
-    let pass_through = app
-        .state::<SharedUi>()
-        .lock()
-        .expect("ui poisoned")
-        .pass_through;
-
-    usize::from(paused || pass_through)
-}
-
 /// 按可见牌的个数（折叠时是点的个数）调整窗口尺寸。
 ///
+/// 暂停 / 穿透角标不在这儿：它是绝对定位的徽标，不占点位，切换它不该改窗口尺寸。
 /// 只在尺寸真的变了才 `set_size`：状态变化一秒可能好几次，每次都 resize
 /// 是没必要的系统调用。
 ///
@@ -2186,9 +2185,11 @@ fn apply_window_size(app: &tauri::AppHandle, settings: &Settings, snapshot: &Sna
         config::menu_window_size()
     } else {
         let (width, height) = if collapsed {
-            // 折叠态里没有牌面，全局状态角标和「还有几组」的 `+N` 都得自己占一个点位。
+            // 折叠态里没有牌面，被截断的组那枚 `+N` 得自己占一个点位。
             // 少算一枚，那枚角标就落在窗口外面 —— 而折叠态最不该出的就是这种错：
             // 看不见的东西，人不会想到去查。
+            // 暂停 / 穿透角标不在这里：它是窗口角落的绝对定位徽标（`.lamp-flag`），
+            // 不占点位，所以切换穿透不该让窗口变宽、把整排灯珠推偏。
             //
             // **点数和角标都按未截断的可见组数算**：`groups` 已经被 `MAX_SIGNS` 截过，
             // 拿它的长度喂 `more_badge` 会恒得 0 —— 5 组以上时那枚 `+N` 就被裁掉了
@@ -2199,7 +2200,7 @@ fn apply_window_size(app: &tauri::AppHandle, settings: &Settings, snapshot: &Sna
             } else {
                 visible_group_names(settings, snapshot).len()
             };
-            let badges = ui_flag_count(app) + config::more_badge(visible);
+            let badges = config::more_badge(visible);
             config::collapsed_window_size(settings.size, visible, badges)
         } else {
             settings.window_size(&sign_heights(settings, &groups))
@@ -2852,6 +2853,7 @@ pub fn run() {
             detect_agents,
             custom_agents_info,
             open_custom_agents,
+            add_custom_agent,
             agent_receipts,
             get_hook_log,
             update::get_update_state,

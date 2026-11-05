@@ -1,10 +1,41 @@
-# SignalHub
+<div align="center">
 
-**中文** · [English](README.en.md)
+<img src="docs/assets/icon.png" width="104" alt="SignalHub" />
+
+<h1>SignalHub</h1>
+
+<p><strong>给桌面装一盏灯 —— 所有智能体在做什么，一眼就看得见。</strong></p>
+
+<p><sub><strong>中文</strong> · <a href="README.en.md">English</a> &nbsp;·&nbsp; macOS / Windows / Linux</sub></p>
+
+<p>
+  <img src="https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri" alt="Tauri 2" />
+  <img src="https://img.shields.io/badge/Rust-DEA584?logo=rust&amp;logoColor=black" alt="Rust" />
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT" />
+</p>
+
+</div>
+
+![默认灯效与「从灯上审批」的循环演示](docs/assets/demo.gif)
+
+<sub>这段动图不是录屏：颜色与闪烁节奏直接取自 <a href="src/styles/state.css"><code>state.css</code></a> / <a href="src/styles/lamp.css"><code>lamp.css</code></a>（绿 <code>#16a34a</code>、红 <code>#d0342c</code>，640 / 1600 / 900 ms），连 <code>permission</code> 的圆角方灯珠、安静模式的半透明牌、以及危险命令的「允许」要按住 800 ms 都照着代码画。改了默认灯效就跑 <a href="scripts/render-demo.sh"><code>sh scripts/render-demo.sh</code></a> 重画。</sub>
+
+## 这是什么
 
 跨平台的桌面悬浮状态指示器。一组始终置顶、可拖拽的透明状态牌，用颜色和明暗节奏表示当前状态；左键点一下打开「收件箱」，双击折叠成一颗单纯的灯。
 
 优先适配 AI 智能体：**Claude Code / Codex / Cursor / Gemini CLI / Goose / WorkBuddy / opencode / Pi / Hermes 都能一键接入**（大部分把 hook 写进它们自己的配置文件，opencode / Pi / Hermes 装的是插件文件）。但**不绑定智能体**——任何程序只要能发一个 HTTP 请求就能上报状态。
+
+```bash
+signalhub install hooks claude-code   # 一行接上智能体，装完重启它
+signalhub working --session demo     # 或者自己报一条状态
+```
+
+### 一条上报，处处可见
+
+![SignalHub 信号流：多来源 → 一处状态机 → 多个出口](docs/assets/overview.svg)
+
+**一个 HTTP POST 进一处状态机，再分发到所有出口**：悬浮灯、收件箱、系统通知、只读 Web 面板、手机推送、WLED 物理灯，以及多机汇总。输入侧可以是智能体的 hook、任意程序、系统采集器，甚至是托盘里的「专注 25 分钟」——它们走同一条路，所以统计 / 历史 / 转发全都自动认，没有第二套状态机。接口见[上报状态](#上报状态)。
 
 ## 状态
 
@@ -197,7 +228,18 @@ signalhub install hooks claude-code --dry-run   # 先看看会改什么
 
 装完重启智能体即可生效。之后提问 → 绿快闪、调工具 → 绿慢闪、需要授权 → 红闪、答完亮一下再回常亮。各家的差异（哪家没有「需要授权」事件、哪家的字段名不一样）见 [docs/api.md §4](docs/api.md)。
 
-**清单里没有的那一家，不用等我们发版。** 长尾里的冷门智能体大多是 Claude Code 的同构克隆 —— 事件名、字段、条目形状全一样，只是配置路径和名字不同。这种写进 `~/.signalhub/agents.json` 就行：声明它和哪一家同构（`family`）、配置写在哪（`config`）、叫什么（`id` / `name`），它就和内置那十家一样出现在「接入」页，接入 / 卸载 / 状态探测全部照常，CLI 也认（`signalhub install hooks my-agent`）。格式真不一样的（事件名是另一套）仍然得加代码 —— 那种情况可以先用 `signalhub run` 顶上。字段表和例子见 [docs/api.md §4.18](docs/api.md)。
+**清单里没有的那一家，不用等我们发版。** 长尾里的冷门智能体大多是 Claude Code 的同构克隆 —— 事件名、字段、条目形状全一样，只是配置路径和名字不同。这种用一条命令登记就行，不用自己拼 JSON：
+
+```bash
+signalhub add-agent --id my-agent --name "My Agent" \
+  --family claude-code --config ".my-agent/settings.json" \
+  --marker ".my-agent" --command my-agent
+signalhub install hooks my-agent
+```
+
+`add-agent` 会校验字段、**原样保留** `~/.signalhub/agents.json` 里已有的条目和未知键、原子写回，重复执行也不会写重；`--config` 指回 SignalHub 数据目录、id 和内置重名、family 不在白名单里，都会直接拒绝并说明原因。之后这条预设就和内置那十家一样出现在「接入」页，接入 / 卸载 / 状态探测全部照常。手写那份 JSON 仍是第二条路（字段表和例子见 [docs/api.md §4.18](docs/api.md)）。格式真不一样的（事件名是另一套）仍然得加代码 —— 那种情况可以先用 `signalhub run` 顶上。
+
+**不想自己判断，就让它自己来配。** 「设置 → 接入 → 自定义智能体」里有「复制接入提示词」，首次使用的「指南」页也有同一个入口。把那段提示词整个粘给你正在用的智能体，它会自己确认 CLI 在不在 PATH、判断自己在不在内置清单里、查自己的 hook 配置和事件格式、用 `signalhub add-agent` 写入一条预设、装 hook 并验证；格式不通时会退到 `signalhub run` 或直接上报。**写入走命令而不是让模型直接编辑配置文件** —— 校验、追加、幂等、别把坏文件覆盖掉，这些由程序保证，不靠一段自然语言叮嘱。提示词里带着这台机器当前的清单、可用 family、配置路径和端口（不用你先读文档），跟随界面语言给中 / 英两份，且要求拿不准 `family` 时列出候选而不是猜。
 
 建议先把 CLI 放进 PATH，这样写进配置的是可移植的裸名字而不是绝对路径：
 

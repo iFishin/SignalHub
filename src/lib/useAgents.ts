@@ -199,6 +199,51 @@ export function openCustomAgents(): Promise<string> {
   return invoke<string>("open_custom_agents");
 }
 
+/** 与 Rust 侧 `agents::AddResult` 对应。 */
+export interface AddCustomAgentResult {
+  /** 归一化之后的 id（传进去的可能是 `My_Agent`） */
+  id: string;
+  /** 同一条已存在时是 `unchanged`，连文件都不碰 */
+  outcome: "added" | "unchanged" | "replaced";
+  path: string;
+}
+
+export interface AddCustomAgentInput {
+  id: string;
+  name: string;
+  family: string;
+  config: string;
+  marker?: string | null;
+  command?: string | null;
+  /** 同 id 已存在且内容不同时才允许覆盖，默认拒绝 */
+  replace?: boolean;
+}
+
+/**
+ * 校验并**追加**一条自定义预设。
+ *
+ * 和 CLI 的 `signalhub add-agent` 共用 Rust 里同一份 `agents::add`：字段校验、
+ * 部分成功语义、原子写、幂等全在那一处，界面这边只负责收集字段。
+ *
+ * 面板目前只提供「打开配置文件」和「复制接入提示词」两个入口，这个函数是给
+ * 将来面板里的添加表单、以及本机自动化用的。**外部智能体走 CLI** —— 它在终端里
+ * 够不到 webview 的 IPC，但两者写出来的文件完全一样。
+ */
+export function addCustomAgent(input: AddCustomAgentInput): Promise<AddCustomAgentResult> {
+  // 显式列一遍而不是把 interface 整个丢给 invoke：Tauri 的 `InvokeArgs` 要索引
+  // 签名，interface 没有；顺手把可选值定成 null / false，Rust 侧的 Option 不必
+  // 再猜「字段缺失」和「显式空值」是不是一回事。
+  return invoke<AddCustomAgentResult>("add_custom_agent", {
+    id: input.id,
+    name: input.name,
+    family: input.family,
+    config: input.config,
+    marker: input.marker ?? null,
+    command: input.command ?? null,
+    replace: input.replace ?? false,
+  });
+}
+
 /**
  * 最近的 hook 调用记录，**最新的在后**。
  *

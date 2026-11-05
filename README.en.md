@@ -1,10 +1,41 @@
-# SignalHub
+<div align="center">
 
-[中文](README.md) · **English**
+<img src="docs/assets/icon.png" width="104" alt="SignalHub" />
+
+<h1>SignalHub</h1>
+
+<p><strong>One small lamp for your desktop — see what every agent is doing at a glance.</strong></p>
+
+<p><sub><a href="README.md">中文</a> · <strong>English</strong> &nbsp;·&nbsp; macOS / Windows / Linux</sub></p>
+
+<p>
+  <img src="https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri" alt="Tauri 2" />
+  <img src="https://img.shields.io/badge/Rust-DEA584?logo=rust&amp;logoColor=black" alt="Rust" />
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT" />
+</p>
+
+</div>
+
+![Looping demo of the default light effects and on-lamp approval](docs/assets/demo.gif)
+
+<sub>This is not a screen recording. Colours and blink timings are taken straight from <a href="src/styles/state.css"><code>state.css</code></a> / <a href="src/styles/lamp.css"><code>lamp.css</code></a> (green <code>#16a34a</code>, red <code>#d0342c</code>, 640 / 1600 / 900 ms), down to the rounded-square <code>permission</code> dot, the dimmed quiet-mode sign and the 800 ms hold on a destructive approval. Re-render with <a href="scripts/render-demo.sh"><code>sh scripts/render-demo.sh</code></a> when the defaults change.</sub>
+
+## What it is
 
 A cross-platform floating status light for your desktop. A stack of always-on-top, draggable transparent signs that show the current state with colour and rhythm; click one to open the inbox, double-click to collapse the whole thing into a single plain light.
 
 Built for AI coding agents first: **Claude Code, Codex, Cursor, Gemini CLI, Goose, WorkBuddy, opencode, Pi and Hermes all connect in one click** (most get hooks written into their own config files; opencode, Pi and Hermes get a plugin file). But it is **not tied to them** — any program that can send one HTTP request can report its state.
+
+```bash
+signalhub install hooks claude-code   # wire up an agent, then restart it
+signalhub working --session demo     # or just report a state yourself
+```
+
+### One report, every surface
+
+![SignalHub signal flow: many inputs, one state machine, many outputs](docs/assets/overview.svg)
+
+**One HTTP POST goes into one state machine and fans out to every output**: the floating lamp, inbox, system notifications, a read-only web panel, phone push, a WLED light, and multi-machine aggregation. Inputs can be agent hooks, any program, system collectors or even the tray's "focus for 25 minutes" — they all take the same path, so stats, history and forwarding recognise them without a second state machine. See [Reporting state](#reporting-state) for the API.
 
 > The design docs in [`docs/`](docs/) are written in Chinese. They are maintainer documentation: they record *why* each decision was made and which bugs were actually hit. This README and the app UI are available in English.
 
@@ -182,7 +213,18 @@ It writes hooks into the agent's config file (`~/.claude/settings.json` for Clau
 
 Restart the agent afterwards. Then: prompt → fast green, tool call → slow green, permission → red, answer → a pulse and back to steady. Per-agent differences (which ones have no "needs permission" event, whose payload field names differ) are in [docs/api.md §4](docs/api.md).
 
-**An agent that is not on the list does not have to wait for a release.** Most of the long tail are Claude Code clones — same event names, same fields, same entry shape, only the config path and the name differ. For those, write an entry in `~/.signalhub/agents.json`: say which family it mirrors (`family`), where its config lives (`config`) and what it is called (`id` / `name`). It then shows up in the Connect page next to the ten built-ins, and install / uninstall / detection all work the same way — the CLI accepts it too (`signalhub install hooks my-agent`). If the event names genuinely differ, that still needs code; `signalhub run` is the stopgap there. Field table and example: [docs/api.md §4.18](docs/api.md).
+**An agent that is not on the list does not have to wait for a release.** Most of the long tail are Claude Code clones — same event names, same fields, same entry shape, only the config path and the name differ. Register one with a single command instead of hand-writing JSON:
+
+```bash
+signalhub add-agent --id my-agent --name "My Agent" \
+  --family claude-code --config ".my-agent/settings.json" \
+  --marker ".my-agent" --command my-agent
+signalhub install hooks my-agent
+```
+
+`add-agent` validates the fields, **preserves** every existing entry and unknown key in `~/.signalhub/agents.json`, writes atomically, and is idempotent. It refuses (with a reason) a `--config` pointing into SignalHub's data directory, an id colliding with a built-in, or a family outside the whitelist. The preset then shows up in the Connect page next to the ten built-ins, and install / uninstall / detection all work the same way. Hand-writing the JSON is still a second route (field table and example: [docs/api.md §4.18](docs/api.md)). If the event names genuinely differ, that still needs code; `signalhub run` is the stopgap there.
+
+**Do not want to work that out yourself? Let the agent do it.** On Settings → Connect → Custom agents (and on the first-run Guide page) there is a **Copy setup prompt** button. Paste the whole prompt into the agent you are using and it will check whether the CLI is on PATH, work out whether it is already a built-in adapter, inspect its own hook config and event format, write a preset with `signalhub add-agent`, install the hooks and verify. If the format is incompatible it falls back to `signalhub run` or a direct report. **The write goes through a command rather than letting the model edit the config file**: validation, appending, idempotency and refusing to clobber a broken file are guaranteed by code, not by a paragraph of natural-language instructions. The prompt carries this machine's current adapter list, available families, config paths and port, comes in Chinese or English to match the UI language, and explicitly asks the agent to list candidates rather than guess when `family` is uncertain.
 
 Put the CLI on your PATH first, so what gets written into the config is the portable bare name rather than an absolute path:
 

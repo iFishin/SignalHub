@@ -188,6 +188,15 @@ struct Flags {
     /// 的 `foo` 会和被包的命令混在一起，分不出哪个是哪个。`--` 的语义就是
     /// 「这之后不是我的参数了」，那就该有个地方把它原封不动放着。
     command: Vec<String>,
+    /// `add-agent` 专用：往 `agents.json` 里写一条自定义预设。
+    add_id: Option<String>,
+    add_name: Option<String>,
+    add_family: Option<String>,
+    add_config: Option<String>,
+    add_marker: Option<String>,
+    add_command: Option<String>,
+    /// 同 id 已存在且内容不同时才允许覆盖（默认拒绝）
+    replace: bool,
 }
 
 fn take_value(args: &[String], index: &mut usize, name: &str) -> Result<String, Failure> {
@@ -242,6 +251,17 @@ impl Flags {
                     flags.timeout_ms = Some(parse_ttl(&raw)?);
                 }
                 "--until" => flags.until = Some(take_value(args, &mut index, "--until")?),
+                // add-agent 的选项。名字刻意和 agents.json 的字段名一一对应 ——
+                // 提示词里让智能体填的就是这几个，多一层别名只会多一处要记的映射。
+                "--id" => flags.add_id = Some(take_value(args, &mut index, "--id")?),
+                "--name" => flags.add_name = Some(take_value(args, &mut index, "--name")?),
+                "--family" => flags.add_family = Some(take_value(args, &mut index, "--family")?),
+                "--config" => flags.add_config = Some(take_value(args, &mut index, "--config")?),
+                "--marker" => flags.add_marker = Some(take_value(args, &mut index, "--marker")?),
+                "--command" => {
+                    flags.add_command = Some(take_value(args, &mut index, "--command")?)
+                }
+                "--replace" => flags.replace = true,
                 "--never-fail" => {} // main 已经从原始参数里处理过了
                 // `--` 之后**原样收下、不再解析** —— `run` 用它把命令和我们的选项
                 // 分开。**这条必须在下面那个兜底分支之前**：`--` 自己也以 `--` 开头，
@@ -353,6 +373,7 @@ fn run(args: &[String]) -> Result<(), Failure> {
         // `rest` 是**子命令之后**的位置参数，所以 `diagnose opencode` 里智能体在
         // `rest[0]`（不像 `install hooks <agent>` 那样在第 1 位）
         "diagnose" => run_diagnose(rest.first().map(String::as_str)),
+        "add-agent" => add_agent(&flags),
         state => {
             if !rest.is_empty() {
                 return Err(Failure::other(fill(t().too_many_args, &[&rest.join(" ")])));
@@ -923,6 +944,41 @@ fn run_diagnose(agent: Option<&str>) -> Result<(), Failure> {
         None => None,
     };
     print!("{}", diagnose::text(&receipts::Receipts::load(), filter));
+    Ok(())
+}
+
+/// 校验并追加一条自定义预设。**外部智能体接入时该走的就是这一条**：它在终端里
+/// 够不到 webview 的 IPC，但能执行 CLI；写入仍然全权交给 `agents::add`（同一份
+/// 字段校验 + 原子写），所以它不需要、也不该自己拼 JSON 去改 `agents.json`。
+///
+/// 让提示词去「编辑配置文件」的问题就在这儿：追加一行、别覆盖坏文件、别写重、
+/// 别把 config 指回我们的数据目录 —— 这些每条都该由程序保证，而不是靠一段
+/// 自然语言叮嘱一个会自由发挥的模型。
+fn add_agent(flags: &Flags) -> Result<(), Failure> {
+    let required = |value: &Option<String>, option: &str| {
+        value
+            .clone()
+            .ok_or_else(|| Failure::other(fill(t().missing_value, &[option])))
+    };
+    let request = agents::AddRequest {
+        id: required(&flags.add_id, "--id")?,
+        name: required(&flags.add_name, "--name")?,
+        family: required(&flags.add_family, "--family")?,
+        config: required(&flags.add_config, "--config")?,
+        marker: flags.add_marker.clone(),
+        command: flags.add_command.clone(),
+    };
+    let result = agents::add(request, flags.replace).map_err(Failure::other)?;
+    let outcome = match result.outcome {
+        agents::WriteOutcome::Added => t().add_agent_added,
+        agents::WriteOutcome::Unchanged => t().add_agent_unchanged,
+        agents::WriteOutcome::Replaced => t().add_agent_replaced,
+    };
+    println!(
+        "{}",
+        fill(t().add_agent_done, &[result.id.as_str(), outcome, result.path.as_str()])
+    );
+    println!("{}", fill(t().add_agent_hint, &[result.id.as_str()]));
     Ok(())
 }
 

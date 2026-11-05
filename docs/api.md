@@ -342,6 +342,7 @@ signalhub on | off                           monitor 的简写
 signalhub run [选项] -- <命令>               把一条命令包起来上报（见 §4.13）
 signalhub install hooks <agent>              写入智能体 hook 配置
 signalhub uninstall hooks <agent>            移除本工具写进去的 hook
+signalhub add-agent [选项]                   校验并追加一条自定义预设（§4.18）
 ```
 
 **CLI 的文案跟着界面语言走**（`--help`、报错、各子命令的输出都有中英两份）。它拿不到浏览器的 `navigator.language`，所以按可靠性排了三个来源：`config.json` 里**显式**的 `locale` → app 写下的 `~/.signalhub/lang`（界面**实际**显示的语言）→ 环境变量 `LC_ALL` / `LC_MESSAGES` / `LANG`。所以应用跑过一次之后，CLI 说的语言和设置面板上显示的一定一致。
@@ -1269,6 +1270,43 @@ Claude Code 同构（`map_claude` 共用），但那只让灯能变红，不等�
 长尾极长 —— 但它们里的大多数是 Claude Code 的同构克隆（事件名、`matcher` 语义、
 stdin 字段全都照抄），差异只有**配置路径和名字**。这一类不需要改代码：写进这个
 文件，它就和内置的那十家一样出现在「接入」页，接入 / 卸载 / 状态探测全部照常。
+
+**不想手写：让智能体自己来配。** 「接入 → 自定义智能体」和「指南」页各有一枚
+「复制接入提示词」，生成一段**给智能体看的**说明（`src/lib/onboardingPrompt.ts`，
+中英各一份）。它让对方依次：确认 CLI 在 PATH → 判断自己是不是内置（是就一条
+`install hooks` 结束）→ 查自己的 hook 格式与同构家族 → **追加**一条预设 → 装 hook
+并验证；格式不通时退到 `signalhub run` 或直接 POST。段落里的内置清单、可用 `family`、
+`agents.json` 路径、数据目录和端口全部取自运行时的 `detect_agents` /
+`custom_agents_info` / `get_endpoint`，**不另存一份常量** —— 加一家适配不会漏改。
+它要求拿不准 `family` 时列候选而不是猜（猜错会写出一份看着正常、却永远不报状态的
+hook），也不接收 token，只指向 `~/.signalhub/token`。
+
+**写入有命令，不必手改文件。** 两条入口共用 Rust 里同一份 `agents::add`
+（`src-tauri/src/agents.rs`），所以校验和落盘格式完全一致：
+
+- CLI：`signalhub add-agent --id <id> --name <name> --family <family> --config <path> [--marker <path>] [--command <name>] [--replace]`，给终端和外部智能体用。
+- Tauri IPC：`add_custom_agent(id, name, family, config, marker?, command?, replace?)`，给面板里将来的添加表单 / 本机自动化用（`src/lib/useAgents.ts` 有 `addCustomAgent` 封装）。返回 `AddResult { id, outcome, path }`，`outcome` 是 `added` / `unchanged` / `replaced`。
+
+**为什么外部智能体走 CLI 而不是 IPC**：它跑在终端里，够不到 webview 的 IPC；CLI 用
+`#[path = "../agents.rs"]` 把同一个模块编进自己的二进制（见 §3），所以两条路写出
+来的文件一模一样，不存在「终端写的和界面写的不一致」。
+
+命令保证的，正好是手写最容易出错的那几件：
+
+- 复用加载器的 `validate()`：id 白名单 / 长度 / 内置重名、`family` 白名单、路径不含
+  `..`、`command` 不带空格；**额外**禁止 `--config` 指向 `~/.signalhub` 自己 —— 否则
+  一次 `install hooks` 会写坏我们的配置。手写时这条只能靠文档提醒。
+- 按 `serde_json::Value` 改而不是反序列化重写：已有条目、暂时读不懂的条目、
+  `_说明` 这类未知键全部原样保留；顶层是裸数组就仍是裸数组。
+- 旧文件不是合法 JSON、或顶层对象没有 `agents` 数组时**拒绝覆盖**，让用户先修 ——
+  一次「添加」不能悄悄抹掉手写的东西。
+- 幂等：同一条再执行一次返回 `unchanged`，连文件都不碰；同 id 但内容不同默认拒绝，
+  显式 `--replace` / `replace: true` 才覆盖，且替换原位而不是追加一条重复 id。
+- 落盘走 `config::atomic_write`（同目录 tmp + rename + `sync_all`），和 settings /
+  token 同一套。写入后 `detect_agents` 每次重读，不用重启；设置窗重新获得焦点时补拉。
+
+**已知边界**：这是 read-modify-write，`atomic_write` 的锁只管本进程；两个进程同一
+瞬间各加一条会丢一条。这个入口按「一条一条地加」设计，不是高频写入。
 
 ```json
 {

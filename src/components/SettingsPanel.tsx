@@ -67,6 +67,7 @@ import {
   applyStylePreset,
 } from "../lib/presets";
 import { nameChanged, withGroupName } from "../lib/groupMeta";
+import { buildOnboardingPrompt } from "../lib/onboardingPrompt";
 import { SIGNALS, REPORTABLE_SIGNALS, type SignalState, type Snapshot } from "../lib/types";
 
 /**
@@ -2134,6 +2135,34 @@ export function SettingsPanel({ snapshot }: Props) {
       .catch(reported);
   };
 
+  /**
+   * 复制「让智能体自己来配」的提示词。
+   *
+   * **不用再 invoke**：清单、family、路径、端口都已经在组件的几份 hook 里了
+   * （`detect_agents` / `custom_agents_info` / `get_endpoint`），拼一下就行。这也
+   * 顺手保证提示词里没有第二份会漂移的内置清单 —— 加一家适配只改 Rust 一处。
+   */
+  const copySetupPrompt = () => {
+    copy(
+      "setup",
+      buildOnboardingPrompt({
+        lang,
+        builtin: agents.filter((a) => !a.custom).map((a) => a.id),
+        families: custom?.families ?? [],
+        agentsFile: custom?.path ?? null,
+        dataDir: endpoint?.dir ?? null,
+        port: endpoint?.port ?? null,
+      }),
+    );
+  };
+
+  /** 接入页和指南页共用一枚按钮：文案、复制态、生成逻辑都不该分叉。 */
+  const setupPromptButton = () => (
+    <button type="button" className="btn" onClick={copySetupPrompt}>
+      {copied === "setup" ? m.copied : m.setupPromptCopy}
+    </button>
+  );
+
   // ---- 系统体检 ----
   //
   // 判据全在 lib/health.ts，这里只负责取数。刻意**直接 invoke 一次**而不是复用
@@ -3220,6 +3249,18 @@ export function SettingsPanel({ snapshot }: Props) {
                 卡住，而且不知道卡在哪儿。 */}
             <div className="section">
               <div className="section-title">{m.customAgentsTitle}</div>
+
+              {/* ---- 让智能体自己来配 ----
+                   「打开配置文件」是给已经懂的人准备的：得知道 agents.json 长什么样、
+                   知道自己跟哪一家同构。第一次用的人恰恰卡在这一步，而他手上就有
+                   一个最清楚答案的东西 —— 他正在用的那个智能体。把说明反过来写给
+                   agent，人只做复制 + 粘贴。放在这一节最前面：手写 JSON 退成第二条路。 */}
+              <div className="setup-prompt">
+                <div className="setup-prompt-title">{m.setupPromptTitle}</div>
+                <p className="hint">{m.setupPromptHint}</p>
+                <div className="row">{setupPromptButton()}</div>
+              </div>
+
               <p className="hint">{m.customAgentsHint((custom?.families ?? []).join(" / "))}</p>
               <p className="hint">{m.customAgentsLimit}</p>
               {custom?.path && <span className="agent-config mono">{custom.path}</span>}
@@ -3746,6 +3787,12 @@ export function SettingsPanel({ snapshot }: Props) {
                 <li>{m.guideStep2}</li>
                 <li>{m.guideStep3}</li>
               </ol>
+              {/* 三步之外的那条岔路：清单里没有你用的智能体。放在这里而不是埋进
+                  「接入」页 —— 第一次用的人是从这一页出发的，正是他最迷茫的时候。 */}
+              <div className="row">
+                <span className="muted-text">{m.setupPromptGuide}</span>
+                {setupPromptButton()}
+              </div>
               <div className="row">
                 <span>{m.agentsTitle}</span>
                 <button

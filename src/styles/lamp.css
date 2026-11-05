@@ -25,8 +25,10 @@
  *   牌间距   = size / 2                (window_size 里的 gap)
  *   折叠点径 = size                    (collapsed_window_size)
  *   折叠点距 = size / 3
- *   折叠点数 = 组数 + 角标数            (collapsed_window_size 的 dots + flags)
+ *   折叠点数 = 组数 + `+N` 角标数       (collapsed_window_size 的 dots + badges)
  *   留白     = 10px 一侧                (LAMP_MARGIN 总量 20)
+ *   暂停 / 穿透那枚角标不参与上面任何一条几何：它绝对定位在左上角那块 10px
+ *   留白里（`.lamp-flag`），不吃牌身宽度、不占点距、也不让 Rust 加宽窗口。
  * 任何一处改了都要同步改那边，否则窗口会裁掉最后一块牌、或者底下留一条缝。
  * 两个倍率（`--sign-w-mult` / `--sign-h-mult`）由前端 lampVars 推过来；Rust 那边
  * 是**向上取整**的，所以窗口只会比牌略大、绝不会裁到 —— 别把取整方向改反。
@@ -56,6 +58,9 @@ body,
   --sign-fg: #ececef;
   --sign-muted: #9b9ba3;
 
+  /* 角标 / 审批气泡都绝对定位在这儿。加 relative 只是把它们的包含块明确成
+     这层全尺寸的盒子（和之前相对 viewport 等价），不是改布局。 */
+  position: relative;
   box-sizing: border-box;
   width: 100%;
   height: 100%;
@@ -93,7 +98,7 @@ body,
    不要。宽度见 `--sign-outline-w`（默认档约 1px）：0.5px 在浅色背景上仍偏
    「空心字」，约 1px 在 2× 屏上是两个物理像素，字心还留得住、亮底上却已经像深色勾边字。 */
 .lamp-root[data-sign-translucent] .sign,
-.lamp-root[data-sign-translucent] .lamp-dot-flag,
+.lamp-root[data-sign-translucent] .lamp-flag,
 .lamp-root[data-sign-translucent] .lamp-dot-more {
   text-shadow:
     var(--sign-outline-w) 0 0 var(--sign-outline),
@@ -487,11 +492,11 @@ body,
   font-variant-numeric: tabular-nums;
 }
 
-/* ---- 牌尾的两枚小角标 ---------------------------------------------------- */
+/* ---- 牌尾的小角标 -------------------------------------------------------- */
 
-/* 两枚都是 `flex: none`，寄住在已有的那块牌里 —— 不加新元素、不改展开态的窗口尺寸。
-   被挤掉的是 `.sign-body`（`flex: 1; min-width: 0`），也就是组名 / 状态先开始省略。
-   这样窗口高度仍然只由牌的条数决定，Rust 那边一个字都不用改。 */
+/* 现在只剩 `+N` 一枚寄住在牌里，`flex: none`、不改展开态的窗口尺寸。
+   暂停 / 穿透那枚原来也挤在这儿，让 `.sign-body`（`flex: 1; min-width: 0`）
+   先开始省略组名 / 状态；它已经搬到窗口左上角的留白里了，见 `.lamp-flag`。 */
 
 /* `+N`：`MAX_SIGNS` 之外还有几组。
    牌上看不出服务端截断了，于是灯上能显示出来的比内部状态少 —— 而灯是全局唯一
@@ -509,21 +514,41 @@ body,
 
 /* 全局状态（暂停监控 / 点击穿透）的**持续可见**提示。
    **必须是持续的**：只看颜色的话 `off`（暂停）和 `offline` 是两个都很淡的灰，
-   根本分不出来；而穿透时鼠标点不到那个窗口，开启时那条一次性通知早就忘光了。
-   做成文字而不是又一个色块 —— 文案才说得出「这是穿透，快捷键是这个」。
-   一次只显示一个（穿透优先），另一个在 tooltip 里。 */
-.sign-flag {
-  flex: none;
-  padding: 0 calc(var(--size) * 0.16);
+   根本分不出来；而穿透时鼠标点不到那个窗口，开启时那条一次性通知早就忘光了
+   （连 tooltip 都不会弹 —— 穿透下 `:hover` 根本不成立）。一次只显示一个
+   （穿透优先），另一个在 tooltip 里。
+
+   ⚠️ **绝不能参与布局**。它原来是牌里的一个 flex 子项，硬挤掉 `.sign-body`
+   的组名 / 状态；折叠态还要单独占一个点距，Rust 得为它把窗口加宽一截，
+   整排灯珠于是被重新居中、看着像「被箭头挤了出去」。
+   现在两种形态共用这一枚，绝对定位在 `.lamp-root` 左上角那 10px 留白里
+   （牌和点都从 (10,10) 起，这块留白本来就是空的）：牌宽、点距、窗口尺寸
+   全都不为它变，Rust 的 `collapsed_window_size` 也不再替它留点位。 */
+.lamp-flag {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  box-sizing: border-box;
+  width: 9px;
+  height: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
   border: 1px solid var(--sign-line);
-  border-radius: calc(var(--size) * 0.16);
+  border-radius: 50%;
+  background: var(--sign-bg);
   color: var(--sign-fg);
-  font-size: calc(var(--size) * 0.42);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 7px;
+  line-height: 1;
   white-space: nowrap;
+  /* 它只负责「看」，不抢指针 —— 穿透下窗口本来也收不到指针事件 */
+  pointer-events: none;
 }
 
 /* 穿透那枚更显眼一点：那个状态下窗口点不动、拖不动，用户得先知道自己在里面 */
-.lamp-root[data-pass-through] .sign-flag {
+.lamp-root[data-pass-through] .lamp-flag {
   border-color: var(--state, var(--sign-line));
 }
 
@@ -536,14 +561,12 @@ body,
   opacity: 1;
 }
 
-/* ---- 折叠态的一枚角标 ---------------------------------------------------- */
+/* ---- 折叠态的 `+N` 角标 ---------------------------------------------------- */
 
-/* 折叠态没有牌面可寄住，所以角标单独占**一个点的位置** —— 和一个点同样大，
-   同样占一个点距，`collapsed_window_size` 因此只要把点数加上角标数就够。
+/* 折叠态没有牌面可寄住，`+N` 单独占**一个点的位置** —— 和一个点同样大、
+   同样占一个点距，`collapsed_window_size` 的 `badges` 现在只数它这一枚。
    ⚠️ 这条宽高和 Rust 的 `collapsed_window_size(size, dots, badges)` 是两处真值。
-   两种角标（暂停 / 穿透、`+N`）共用这条：Rust 那边只知道**有几枚**、分不出是
-   哪一种，所以两者的外框必须严格同尺寸。 */
-.lamp-dot-flag,
+   暂停 / 穿透那枚**不在这里**：它是窗口角落的 `.lamp-flag`，不占点位。 */
 .lamp-dot-more {
   box-sizing: border-box;
   flex: none;
@@ -574,11 +597,6 @@ body,
   font-variant-numeric: tabular-nums;
 }
 
-/* 穿透的折叠角标：描边取当前状态色，和展开态那枚呼应 */
-.lamp-root[data-pass-through] .lamp-dot-flag {
-  border-color: var(--state, var(--sign-line));
-}
-
 /* ---- 折叠 / 展开的一次性反馈 --------------------------------------------- */
 
 /* 单组时切完连窗口尺寸都不变，没这点反馈就等于「点了没反应」。
@@ -587,7 +605,6 @@ body,
    `data-flash` 由前端在形态变化时挂上、420ms 后摘掉。 */
 .lamp-root[data-flash] .sign,
 .lamp-root[data-flash] .lamp-dot,
-.lamp-root[data-flash] .lamp-dot-flag,
 .lamp-root[data-flash] .lamp-dot-more {
   animation: flash 420ms ease-out 1;
 }

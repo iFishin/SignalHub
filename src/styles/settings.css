@@ -188,20 +188,24 @@ html[data-window="settings"] #root {
    区别是它**能选中**（是个页签），所以线在上面、文字仍是 `.rail-item`。
    它在 `.rail-nav` 的滚动区外面，所以不管页签滚到哪儿，它都贴在这道线上。 */
 .settings .rail-bottom {
+  /* flex 是为了让里面那枚 `.rail-item` 和上面 `.rail-nav` 里的页签一样
+     stretch 到整行宽 —— block 上下文里它是 inline-block，选中底只会有一小块
+     文字那么宽，和上面那几行对不齐。 */
+  display: flex;
+  flex-direction: column;
   padding-top: 6px;
   border-top: 1px solid var(--line);
 }
 
-/* 与 `.btn` 同一套：12px、6px 圆角、hover 才出底色。
-   选中态用 `--hover` 底 + 正文字色 + 中等字重，和 `.seg button` 逐字一致 ——
-   这两个都是「一组里选一个」，长得不一样只会让人以为是两种东西。 */
+/* 左栏是**一份目录**，不是一排卡片。选中态和 `.seg button` / `.chip` 同一套：
+   浅灰底 + 正文字色 + 中等字重（见 architecture.md「控件只有两种选法」）。
+   刻意不加圆角、不加 accent 竖线 —— 140px 的窄栏里，圆角色块配一条高亮边
+   会把每一行都打扮成一枚待点的按钮，整列看着像一排卡片；而这里要说的只是
+   「你现在在这一页」。没有边框就没有占位，文字位置一个像素都不动。 */
 .settings .rail-item {
-  /* 左边留一条 2px 的透明边框：选中时只把它染成 accent，文字位置一个像素
-     都不动。用 border 而不是 inset 阴影，是因为圆角下 inset 会被裁成一小截。 */
-  padding: 3px 10px 3px 8px;
+  display: block;
+  padding: 3px 10px;
   border: 0;
-  border-left: 2px solid transparent;
-  border-radius: 6px;
   background: transparent;
   color: var(--muted);
   font: inherit;
@@ -215,9 +219,10 @@ html[data-window="settings"] #root {
   color: var(--fg);
 }
 
+/* hover 与选中同底不同重：前者只是指针临时经过，后者是持久位置。靠字重
+   区分就够，不必再叠一层颜色、一条竖线或一道圆角框。 */
 .settings .rail-item[data-active="true"] {
   background: var(--hover);
-  border-left-color: var(--accent);
   color: var(--fg);
   font-weight: 500;
 }
@@ -531,6 +536,32 @@ html[data-window="settings"] #root {
   color: var(--muted);
   font-size: 12.5px;
   overflow-wrap: anywhere;
+}
+
+/* 「让智能体自己来配」：长尾智能体的第一条路，和给老手的「打开配置文件」在视觉上
+   分开。只用一条左竖线，不做成带背景的卡片 —— 设置页里盒子已经够多了（见 .hint
+   上面那条注释）。 */
+.setup-prompt {
+  margin-top: 12px;
+  padding: 2px 0 2px 12px;
+  border-left: 2px solid var(--line);
+}
+
+.setup-prompt-title {
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.setup-prompt > .hint {
+  margin-top: 4px;
+}
+
+/* 按钮靠左，别被 `.row` 的两端分布推到最右边 —— 它是这一块唯一的主操作。 */
+.setup-prompt > .row {
+  justify-content: flex-start;
+  min-height: 0;
+  margin-top: 8px;
 }
 
 .kv {

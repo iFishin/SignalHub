@@ -122,6 +122,15 @@ pub struct CliText {
     pub path_warning_3: &'static str,
     pub uninstall_nothing: &'static str,
 
+    // ---- add-agent ----
+    /// 三个 `{}`：归一化后的 id、结果词、文件路径
+    pub add_agent_done: &'static str,
+    pub add_agent_added: &'static str,
+    pub add_agent_unchanged: &'static str,
+    pub add_agent_replaced: &'static str,
+    /// `{}` id：写完这一步之后该干什么
+    pub add_agent_hint: &'static str,
+
     // ---- run ----
     pub run_needs_command: &'static str,
     /// `{}` 失败原因
@@ -232,6 +241,12 @@ pub const ZH: CliText = CliText {
     path_warning_3: "      把它放进 PATH（例如软链到 /usr/local/bin）后重新执行本命令即可改为裸名字。",
     uninstall_nothing: "没有找到本工具装过的 hook，无需改动。",
 
+    add_agent_done: "预设 {} {}，文件在 {}",
+    add_agent_added: "已新增",
+    add_agent_unchanged: "已存在且内容相同，无需改动",
+    add_agent_replaced: "已替换",
+    add_agent_hint: "接下来执行 signalhub install hooks {}；切回 SignalHub 设置窗会自动刷新出这一行。",
+
     run_needs_command: "run 需要一条命令，写在 -- 之后，例如 signalhub run --agent aider -- aider",
     run_report_failed: "上报失败（{}）；命令照跑",
     run_spawn_failed: "起不了 {}：{}",
@@ -269,6 +284,7 @@ signalhub {} —— 桌面悬浮状态灯的上报客户端
                                      要应用在跑；见 README「从灯上审批」）
   signalhub uninstall hooks <智能体> 移除本工具写进去的 hook
   signalhub diagnose [智能体]        打印一段排查文本（接不上时先跑它）
+  signalhub add-agent [选项]         校验并追加一条自定义智能体预设（不覆盖已有条目）
 
 状态:
   idle thinking working done attention permission error off
@@ -290,6 +306,13 @@ signalhub {} —— 桌面悬浮状态灯的上报客户端
   --until <状态>     watch 等到聚合变成该状态就退出 0（如 --until done）
   --timeout <时长>   watch 的等待上限，超时退出 1
   --port <n>        覆盖端口自动发现
+  --id <id>         add-agent：预设 id（--agent / 上报时的名字）
+  --name <name>     add-agent：界面上显示的名字
+  --family <name>   add-agent：和哪一家同构（清单见「接入」页）
+  --config <path>   add-agent：你自己的 hook 配置文件路径
+  --marker <path>   add-agent：可选，判断装没装你的目录痕迹
+  --command <name>  add-agent：可选，PATH 上的命令名
+  --replace         add-agent：同 id 已存在且内容不同时覆盖（默认拒绝）
   --never-fail      任何错误都以退出码 0 结束（hook 模式隐含此行为）
   -h, --help        显示本帮助
   -V, --version     显示版本
@@ -395,6 +418,12 @@ pub const EN: CliText = CliText {
     path_warning_3: "      Put it on PATH (symlink to /usr/local/bin, say) and re-run to use the bare name.",
     uninstall_nothing: "No hooks installed by this tool were found; nothing to change.",
 
+    add_agent_done: "Preset {} {} in {}",
+    add_agent_added: "added",
+    add_agent_unchanged: "already present, unchanged",
+    add_agent_replaced: "replaced",
+    add_agent_hint: "Next, run signalhub install hooks {}; switching back to SignalHub's settings refreshes the row.",
+
     run_needs_command: "run needs a command, after --, e.g. signalhub run --agent aider -- aider",
     run_report_failed: "Report failed ({}); running the command anyway",
     run_spawn_failed: "Could not start {}: {}",
@@ -433,6 +462,7 @@ Usage:
                                      (implies --http; see README)
   signalhub uninstall hooks <agent>  Remove the hooks this tool wrote
   signalhub diagnose [agent]         Print a troubleshooting block (run this first)
+  signalhub add-agent [options]      Validate and append a custom agent preset
 
 States:
   idle thinking working done attention permission error off
@@ -455,6 +485,13 @@ Options:
   --until <state>   watch exits 0 once the aggregate becomes that state
   --timeout <dur>   watch gives up after this long, exiting 1
   --port <n>        Override port auto-discovery
+  --id <id>         add-agent: preset id (the --agent / reported name)
+  --name <name>     add-agent: display name in the UI
+  --family <name>   add-agent: which built-in family you mirror (see Connect page)
+  --config <path>   add-agent: path to your own hook config file
+  --marker <path>   add-agent: optional directory whose presence means installed
+  --command <name>  add-agent: optional executable name on PATH
+  --replace         add-agent: overwrite an existing id when contents differ
   --never-fail      Exit 0 on any error (implied by hook mode)
   -h, --help        Show this help
   -V, --version     Show the version
@@ -634,6 +671,11 @@ mod tests {
             ("path_warning_2", t.path_warning_2),
             ("path_warning_3", t.path_warning_3),
             ("uninstall_nothing", t.uninstall_nothing),
+            ("add_agent_done", t.add_agent_done),
+            ("add_agent_added", t.add_agent_added),
+            ("add_agent_unchanged", t.add_agent_unchanged),
+            ("add_agent_replaced", t.add_agent_replaced),
+            ("add_agent_hint", t.add_agent_hint),
             ("run_needs_command", t.run_needs_command),
             ("run_report_failed", t.run_report_failed),
             ("run_spawn_failed", t.run_spawn_failed),

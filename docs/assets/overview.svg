@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="230" viewBox="0 0 880 230" role="img" aria-label="SignalHub signal flow: many inputs, one state machine, many outputs">
+  <defs>
+    <linearGradient id="flow" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#16a34a"/>
+      <stop offset="0.5" stop-color="#d99a06"/>
+      <stop offset="1" stop-color="#d0342c"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 自带底色：GitHub 明暗两种主题下都能看清，不依赖 currentColor -->
+  <rect x="0.5" y="0.5" width="879" height="229" rx="16" fill="#0F141B" stroke="#2C3646"/>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10" fill="#5B6878" letter-spacing="1.4">
+    <text x="32" y="30">INPUTS</text>
+    <text x="320" y="30">SIGNALHUB</text>
+    <text x="616" y="30">OUTPUTS</text>
+  </g>
+
+  <!-- 多源汇聚 / 多端发散：曲线把「很多输入」和「一个状态机」的关系画出来 -->
+  <g fill="none" stroke="#2C3646" stroke-width="1.4" opacity="0.9">
+    <path d="M272 63 C296 63, 298 120, 320 120"/>
+    <path d="M272 101 C296 101, 298 120, 320 120"/>
+    <path d="M272 139 C296 139, 298 120, 320 120"/>
+    <path d="M272 177 C296 177, 298 120, 320 120"/>
+    <path d="M560 120 C582 120, 592 63, 616 63"/>
+    <path d="M560 120 C582 120, 592 101, 616 101"/>
+    <path d="M560 120 C582 120, 592 139, 616 139"/>
+    <path d="M560 120 C582 120, 592 177, 616 177"/>
+  </g>
+  <path d="M311 115 L320 120 L311 125 Z" fill="url(#flow)"/>
+  <path d="M560 115 L569 120 L560 125 Z" fill="url(#flow)"/>
+
+  <!-- 左：四类输入 -->
+  <g>
+    <rect x="32" y="48" width="240" height="30" rx="8" fill="#1A2230" stroke="#2C3646"/>
+    <circle cx="48" cy="63" r="4" fill="#16a34a"/>
+    <text x="62" y="67" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#DCE4EF">AI agents · hooks / plugin</text>
+
+    <rect x="32" y="86" width="240" height="30" rx="8" fill="#1A2230" stroke="#2C3646"/>
+    <circle cx="48" cy="101" r="4" fill="#16a34a"/>
+    <text x="62" y="105" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#DCE4EF">Any app · one HTTP POST</text>
+
+    <rect x="32" y="124" width="240" height="30" rx="8" fill="#1A2230" stroke="#2C3646"/>
+    <circle cx="48" cy="139" r="4" fill="#d99a06"/>
+    <text x="62" y="143" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#DCE4EF">System sensors · meeting</text>
+
+    <rect x="32" y="162" width="240" height="30" rx="8" fill="#1A2230" stroke="#2C3646"/>
+    <circle cx="48" cy="177" r="4" fill="#d99a06"/>
+    <text x="62" y="181" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#DCE4EF">Manual · focus / away</text>
+  </g>
+
+  <!-- 中：唯一的状态机 -->
+  <rect x="320" y="48" width="240" height="144" rx="14" fill="#1B2230" stroke="#3A4658"/>
+  <circle cx="344" cy="76" r="7" fill="#16a34a"/>
+  <circle cx="368" cy="76" r="7" fill="#d99a06"/>
+  <circle cx="392" cy="76" r="7" fill="#d0342c"/>
+  <text x="340" y="108" font-family="system-ui, -apple-system, Helvetica, Arial, sans-serif" font-size="19" font-weight="700" fill="#E8EDF4">SignalHub</text>
+  <text x="340" y="130" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#8592A3">state machine · 127.0.0.1</text>
+  <text x="340" y="149" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#8592A3">priority / TTL / groups</text>
+  <text x="340" y="175" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10" fill="#4A5566">one source of truth</text>
+
+  <!-- 右：五种去处 -->
+  <g>
+    <rect x="616" y="48" width="232" height="30" rx="8" fill="#1A2230" stroke="#2C3646"/>
+    <circle cx="632" cy="63" r="4" fill="#16a34a"/>
+    <text x="646" y="67" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#DCE4EF">Floating lamp / inbox</text>
+
+    <rect x="616" y="86" width="232" height="30" rx="8" fill="#1A2230" stroke="#2C3646"/>
+    <circle cx="632" cy="101" r="4" fill="#d0342c"/>
+    <text x="646" y="105" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#DCE4EF">Notifications / approval</text>
+
+    <rect x="616" y="124" width="232" height="30" rx="8" fill="#1A2230" stroke="#2C3646"/>
+    <circle cx="632" cy="139" r="4" fill="#16a34a"/>
+    <text x="646" y="143" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#DCE4EF">Read-only web panel</text>
+
+    <rect x="616" y="162" width="232" height="30" rx="8" fill="#1A2230" stroke="#2C3646"/>
+    <circle cx="632" cy="177" r="4" fill="#d99a06"/>
+    <text x="646" y="181" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#DCE4EF">WLED / outbound hooks</text>
+  </g>
+
+  <text x="440" y="214" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10" letter-spacing="1.1" fill="#4A5566">ONE POST  &#8594;  ONE STATE MACHINE  &#8594;  EVERY SURFACE</text>
+</svg>

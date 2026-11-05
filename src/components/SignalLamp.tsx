@@ -885,17 +885,6 @@ export function SignalLamp({
                 </button>
               </span>
             )}
-            {flag && index === rows.length - 1 && (
-              <span
-                className="sign-flag"
-                // 挂上 data-state 才能从 state.css 拿到 `--state`（当前状态色）。
-                // 不带这个属性的话描边落回 --sign-line 那圈中性灰，穿透时就不显眼了。
-                data-state={aggregate}
-                title={flagTitle}
-              >
-                {passThrough ? "⇥" : "⏸"}
-              </span>
-            )}
             {hidden.length > 0 && index === rows.length - 1 && (
               <span className="sign-more" title={moreGroupsTip(m, hidden, settings.group_meta)}>
                 +{hidden.length}
@@ -909,11 +898,12 @@ export function SignalLamp({
       {pending > 0 && onDecide && (
         <ApprovalBubble approvals={approvals ?? []} onDecide={onDecide} />
       )}
-      {/* 折叠态没有牌面可寄住，角标只能自己占一个点的位置（见 CSS 的
-          .lamp-dot-flag / .lamp-dot-more），Rust 的 `collapsed_window_size`
-          因此要按「点数 + 角标数」算宽 —— 少留一个点位那枚角标就被裁掉了。 */}
-      {!expanded && flag && (
-        <span className="lamp-dot-flag" data-state={aggregate} title={flagTitle}>
+      {/* 暂停 / 穿透的角标。**两种形态共用一枚**：它绝对定位在窗口左上角的
+          10px 留白里（见 CSS 的 `.lamp-flag`），既不吃牌身宽度，也不在折叠态
+          占一个点距 —— 所以 Rust 的窗口尺寸完全不用为它变化。
+          挂 `data-state` 才能从 state.css 拿到 `--state`（穿透时描边取状态色）。 */}
+      {flag && (
+        <span className="lamp-flag" data-state={aggregate} title={flagTitle}>
           {passThrough ? "⇥" : "⏸"}
         </span>
       )}
