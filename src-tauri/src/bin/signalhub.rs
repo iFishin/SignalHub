@@ -1057,20 +1057,20 @@ fn uninstall_hooks(raw: &str, flags: &Flags) -> Result<(), Failure> {
 /// 注意服务端是**每次上报整体替换** message 的（`state.rs` 里那句「message 是
 /// 事件细节，每次替换」），所以 PreToolUse 和 PostToolUse 都得带 —— 只带一个的话
 /// 牌上那行会在两步之间闪一下空。
-/// `agent` 是**上报用的名字**，`family` 是**格式家族**的名字
-/// （`claude-code` / `gemini` …）。两者在自定义预设上不是同一个东西：`my-agent`
-/// 报出去叫 `my-agent`，但「这一帧算不算工具开始」要按它克隆的那一家判
-/// （见 `in_tool_ttl_ms`）。
+/// `names` 是**上报用的名字 + 格式家族**（`("my-agent", "claude-code")`）。两者在
+/// 自定义预设上不是同一个东西：`my-agent` 报出去叫 `my-agent`，但「这一帧算不算
+/// 工具开始」要按它克隆的那一家判（见 `in_tool_ttl_ms`）。它们永远一起出现，
+/// 就一起传 —— 顺手把参数个数留在 clippy 的上限之内。
 fn hook_body(
     text: &CliText,
     state: &str,
     session: &str,
-    agent: &str,
-    family: &str,
+    names: (&str, &str),
     payload: &Value,
     flags: &Flags,
     pid: Option<u32>,
 ) -> Value {
+    let (agent, family) = names;
     // 走 hook 报的**一定是智能体**：这个子命令就是给我们装进各家配置里的那条命令用的
     let mut body = json!({ "state": state, "session": session, "agent": agent, "source": "agent" });
     if let Some(cwd) = cwd_of(payload) {
@@ -1202,8 +1202,7 @@ fn hook(agent: &str, flags: &Flags) -> Result<(), Failure> {
             t(),
             state,
             &session,
-            agent,
-            map_key,
+            (agent, map_key),
             &payload,
             flags,
             env_pid(),
@@ -1988,8 +1987,7 @@ mod tests {
             &cli_text::ZH,
             "working",
             "s-1",
-            "claude-code",
-            "claude-code",
+            ("claude-code", "claude-code"),
             &payload,
             &flags,
             Some(4242),
@@ -2005,7 +2003,7 @@ mod tests {
 
         // 没有工具名的事件：这个键**根本不出现**，而不是发个空串
         let plain = json!({"hook_event_name": "Stop", "session_id": "s-1"});
-        let body = hook_body(&cli_text::ZH, "done", "s-1", "claude-code", "claude-code", &plain, &flags, None);
+        let body = hook_body(&cli_text::ZH, "done", "s-1", ("claude-code", "claude-code"), &plain, &flags, None);
         assert!(body.get("message").is_none(), "{body}");
     }
 
@@ -2021,7 +2019,7 @@ mod tests {
         });
         let flags = Flags::default();
 
-        let body = hook_body(&cli_text::ZH, "working", "s-1", "codex", "codex", &payload, &flags, None);
+        let body = hook_body(&cli_text::ZH, "working", "s-1", ("codex", "codex"), &payload, &flags, None);
         assert_eq!(
             body["ttl_ms"],
             json!(hookmap::IN_TOOL_TTL_MS),
@@ -2037,8 +2035,7 @@ mod tests {
             &cli_text::ZH,
             "working",
             "s-1",
-            "codex",
-            "codex",
+            ("codex", "codex"),
             &payload,
             &flags,
             Some(4242),
@@ -2047,7 +2044,7 @@ mod tests {
 
         // 不是「工具开始」的事件：也不带
         let stop = json!({"hook_event_name": "Stop", "session_id": "s-1"});
-        let body = hook_body(&cli_text::ZH, "done", "s-1", "codex", "codex", &stop, &flags, None);
+        let body = hook_body(&cli_text::ZH, "done", "s-1", ("codex", "codex"), &stop, &flags, None);
         assert!(body.get("ttl_ms").is_none(), "{body}");
     }
 

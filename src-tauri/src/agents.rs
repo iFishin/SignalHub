@@ -88,11 +88,6 @@ pub struct Loaded {
 }
 
 impl Loaded {
-    /// 有没有需要用户看一眼的问题。
-    pub fn has_problems(&self) -> bool {
-        !self.problems.is_empty()
-    }
-
     /// 按 id 找一个。`id` 应当已经是归一化过的（见 [`normalize_id`]）。
     pub fn find(&self, id: &str) -> Option<&CustomAgent> {
         self.agents.iter().find(|agent| agent.id == id)
@@ -134,6 +129,12 @@ pub fn find(id: &str) -> Option<CustomAgent> {
 ///
 /// CLI 的 `signalhub hook <id>` 拿它决定用哪张映射表 —— 内置与自定义在这里合流，
 /// 于是映射表本身**一行都不用改**。
+///
+/// **别因为「app 里没人调用」就删掉**：本文件同时被 CLI 用 `#[path]` 编进自己的
+/// 二进制（见 `bin/signalhub.rs` 开头），那边的 `hook` 路径每次工具调用都要走这里。
+/// 两份编译单元的使用面不同，而 CI 是 `-D warnings` —— 只对这一个函数放行，
+/// 比给整个模块盖 `#[allow]` 更能挡住以后真正的死代码。
+#[allow(dead_code)]
 pub fn family_of(id: &str) -> Option<Agent> {
     let id = normalize_id(id);
     if let Ok(agent) = Agent::parse(&id) {
@@ -172,12 +173,6 @@ struct RawAgent {
     marker: Option<String>,
     #[serde(default)]
     command: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct RawFile {
-    #[serde(default)]
-    agents: Vec<RawAgent>,
 }
 
 /// 解析一份配置内容。纯函数，能单测。
@@ -459,7 +454,7 @@ mod tests {
     fn an_empty_file_is_not_an_error() {
         let loaded = parse("   ");
         assert!(loaded.agents.is_empty());
-        assert!(!loaded.has_problems());
+        assert!(loaded.problems.is_empty(), "{:?}", loaded.problems);
     }
 
     #[test]
@@ -468,7 +463,7 @@ mod tests {
         // 看到 SignalHub 在提示接入一个他根本没有的智能体。
         let loaded = parse(&example());
         assert!(loaded.agents.is_empty());
-        assert!(!loaded.has_problems(), "{:?}", loaded.problems);
+        assert!(loaded.problems.is_empty(), "{:?}", loaded.problems);
         // 但把它抄进 agents 就能用 —— 说明书里那份必须是**能直接跑**的
         let copied = example().replace("\"agents\": []", "\"agents\": [{ \"id\": \"my-agent\", \"name\": \"My Agent\", \"family\": \"claude-code\", \"config\": \".my-agent/settings.json\" }]");
         assert_eq!(parse(&copied).agents.len(), 1);
