@@ -4,6 +4,8 @@ import { inTauri } from "./env";
 import { useSettings, type HttpPreset, type Settings } from "./useSettings";
 import type { SignalState } from "./types";
 import type { DemoGroupId } from "./demo";
+import type { HealthCheck, HealthLevel } from "./health";
+import type { DigestFact } from "./digest";
 
 export type Lang = "zh" | "en";
 
@@ -18,6 +20,205 @@ export interface HookResult {
   updated: number;
   already: number;
   removed: number;
+}
+
+/* ---- 体检 / 复盘的措辞 ----
+ *
+ * 这两块刻意写成模块级函数，而不是塞进 `MESSAGES` 的对象字面量里：它们要按
+ * 结构化事实（`HealthCheck` / `DigestFact`）分岔，写成一张对象表反而要第二套
+ * 查表。界面和「复制报告」都调同一个函数，所以两处不可能说两套话。
+ *
+ * 缩写和 `SettingsPanel.formatDuration` 同型（`45s` / `12m` / `2h14m`）——
+ * 数字写法不是语言问题，别在两种语言里各实现一遍。 */
+function humanDuration(seconds: number): string {
+  const value = Math.max(0, Math.round(seconds));
+  if (value < 60) return `${value}s`;
+  const minutes = Math.round(value / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${hours}h` : `${hours}h${rest}m`;
+}
+
+function humanWait(ms: number): string {
+  // `<1s` 两种语言都这么写，别把中文硬塞进英文那句里。
+  return ms < 1000 ? "<1s" : humanDuration(ms / 1000);
+}
+
+function zhHealthLine(check: HealthCheck): string {
+  const onOff = (value: string) => (value === "on" ? "开" : "关");
+  const perms: Record<string, string> = {
+    granted: "已允许",
+    denied: "已被拒绝",
+    prompt: "还没问过系统",
+    unknown: "读不出来",
+  };
+  switch (check.id) {
+    case "permission":
+      return `系统通知权限：${perms[check.value] ?? check.value}`;
+    case "notify":
+      return `系统通知：${onOff(check.value)}`;
+    case "sound":
+      return `提示音：${onOff(check.value)}`;
+    case "alertDelay":
+      return check.value === "0"
+        ? "提醒延迟：状态一变就提醒"
+        : `提醒延迟：要等 ${check.value}s 才提醒`;
+    case "quiet":
+      return check.value === "on"
+        ? "勿扰时段：开着（这段时间通知会被压住）"
+        : "勿扰时段：没开";
+    case "muted":
+      return check.value === "0" ? "静音组：没有" : `静音组：${check.value} 个`;
+    case "install":
+      return check.value === "0"
+        ? "已接入的智能体：一个都没有"
+        : `已接入的智能体：${check.value} 个`;
+    case "installBroken":
+      return `跑不起来的接入：${check.value}（配置里那条命令已失效，重装一次就好）`;
+    case "installStale":
+      return `需要重装的接入：${check.value}（升级后没重装，行为还停在旧版本）`;
+    case "receipt":
+      return check.value === "0"
+        ? "最近一次上报：一次都没收到过"
+        : `最近一次上报：${check.value} 前`;
+    case "approve":
+      return check.level === "warn"
+        ? "从灯上审批：已开，但没有 Claude Code 的 HTTP 式接入 —— 确认框不会到灯上"
+        : check.level === "ok"
+          ? "从灯上审批：已开，Claude Code 走 HTTP 式"
+          : "从灯上审批：没开";
+    case "custom":
+      return check.value === "-"
+        ? "自定义预设：没启用"
+        : check.value === "0"
+          ? "自定义预设：已启用，读得懂"
+          : `自定义预设：${check.value} 处读不懂（会被静默忽略）`;
+    case "shortcut":
+      return check.value === "0"
+        ? "全局快捷键：都抢到了"
+        : `全局快捷键：${check.value} 个没抢到（多半被别的程序占了）`;
+    case "hookLog":
+      return check.value === "0"
+        ? "hook 日志：还没有记录"
+        : `hook 日志：最近有 ${check.value} 行`;
+    case "sessions":
+      return `当前会话：${check.value} 个`;
+  }
+}
+
+function enHealthLine(check: HealthCheck): string {
+  const onOff = (value: string) => (value === "on" ? "on" : "off");
+  const perms: Record<string, string> = {
+    granted: "Granted",
+    denied: "Denied",
+    prompt: "Not asked yet",
+    unknown: "Unknown",
+  };
+  switch (check.id) {
+    case "permission":
+      return `Notification permission: ${perms[check.value] ?? check.value}`;
+    case "notify":
+      return `Notifications: ${onOff(check.value)}`;
+    case "sound":
+      return `Alert sound: ${onOff(check.value)}`;
+    case "alertDelay":
+      return check.value === "0"
+        ? "Alert delay: fires as soon as the state changes"
+        : `Alert delay: waits ${check.value}s before firing`;
+    case "quiet":
+      return check.value === "on"
+        ? "Quiet hours: on (notifications are suppressed during this window)"
+        : "Quiet hours: off";
+    case "muted":
+      return check.value === "0" ? "Muted groups: none" : `Muted groups: ${check.value}`;
+    case "install":
+      return check.value === "0"
+        ? "Installed agents: none"
+        : `Installed agents: ${check.value}`;
+    case "installBroken":
+      return `Broken installs: ${check.value} (the configured command no longer resolves; reinstall)`;
+    case "installStale":
+      return `Outdated installs: ${check.value} (written by an older version; reinstall)`;
+    case "receipt":
+      return check.value === "0"
+        ? "Last report: never received one"
+        : `Last report: ${check.value} ago`;
+    case "approve":
+      return check.level === "warn"
+        ? "Approve from lamp: on, but no Claude Code HTTP install — prompts will not reach the lamp"
+        : check.level === "ok"
+          ? "Approve from lamp: on, Claude Code is on HTTP mode"
+          : "Approve from lamp: off";
+    case "custom":
+      return check.value === "-"
+        ? "Custom agent presets: not in use"
+        : check.value === "0"
+          ? "Custom agent presets: loaded, no problems"
+          : `Custom agent presets: ${check.value} problem(s), silently ignored`;
+    case "shortcut":
+      return check.value === "0"
+        ? "Global shortcuts: all registered"
+        : `Global shortcuts: ${check.value} failed to register (likely taken by another app)`;
+    case "hookLog":
+      return check.value === "0"
+        ? "Hook log: no entries yet"
+        : `Hook log: ${check.value} recent line(s)`;
+    case "sessions":
+      return `Active sessions: ${check.value}`;
+  }
+}
+
+function zhDigestFact(fact: DigestFact): string {
+  switch (fact.kind) {
+    case "empty":
+      return "今天还没有任何记录。";
+    case "total":
+      return `今天记录了 ${humanDuration(fact.seconds)} 的状态时长（空闲 / 离线也算在内）。`;
+    case "top":
+      return `占得最多的是「${fact.label}」，${humanDuration(fact.seconds)}。`;
+    case "busy":
+      return `真正在跑（思考 + 执行）${humanDuration(fact.seconds)}。`;
+    case "wait":
+      return `等你处理（授权 / 需要输入）${humanDuration(fact.seconds)}。`;
+    case "approvals": {
+      const other = fact.total - fact.allow - fact.deny - fact.expired;
+      const tail = other > 0 ? `、其他 ${other}` : "";
+      return `审批 ${fact.total} 次：允许 ${fact.allow}、拒绝 ${fact.deny}、超时 ${fact.expired}${tail}；最久等了 ${humanWait(fact.longestWaitMs)}。`;
+    }
+    case "compare":
+      return fact.deltaSeconds > 0
+        ? `比之前 ${fact.days} 天的日均多 ${humanDuration(fact.deltaSeconds)}。`
+        : fact.deltaSeconds < 0
+          ? `比之前 ${fact.days} 天的日均少 ${humanDuration(-fact.deltaSeconds)}。`
+          : `和之前 ${fact.days} 天的日均差不多。`;
+  }
+}
+
+function enDigestFact(fact: DigestFact): string {
+  switch (fact.kind) {
+    case "empty":
+      return "Nothing recorded today yet.";
+    case "total":
+      return `${humanDuration(fact.seconds)} of aggregate state recorded today (idle / offline included).`;
+    case "top":
+      return `Most of it was "${fact.label}" — ${humanDuration(fact.seconds)}.`;
+    case "busy":
+      return `Actually running (thinking + working): ${humanDuration(fact.seconds)}.`;
+    case "wait":
+      return `Waiting on you (permission / attention): ${humanDuration(fact.seconds)}.`;
+    case "approvals": {
+      const other = fact.total - fact.allow - fact.deny - fact.expired;
+      const tail = other > 0 ? `, other ${other}` : "";
+      return `${fact.total} approvals: ${fact.allow} allowed, ${fact.deny} denied, ${fact.expired} expired${tail}; longest wait ${humanWait(fact.longestWaitMs)}.`;
+    }
+    case "compare":
+      return fact.deltaSeconds > 0
+        ? `${humanDuration(fact.deltaSeconds)} more than the daily average of the previous ${fact.days} day(s).`
+        : fact.deltaSeconds < 0
+          ? `${humanDuration(-fact.deltaSeconds)} less than the daily average of the previous ${fact.days} day(s).`
+          : `About the same as the daily average of the previous ${fact.days} day(s).`;
+  }
 }
 
 /**
@@ -111,6 +312,28 @@ export interface Messages {
   permUnknown: string;
   permRequest: string;
   permHint: string;
+  /** 一键测试通知：按钮、通知本身、以及发完之后的解释 */
+  notifyTest: string;
+  notifyTestTitle: string;
+  notifyTestBody: string;
+  notifyTestResult: (perm: string) => string;
+
+  // 系统体检（设置 → 系统）
+  healthTitle: string;
+  healthHint: string;
+  healthRun: string;
+  healthRerun: string;
+  healthSummary: (fail: number, warn: number) => string;
+  healthVerdict: (level: HealthLevel) => string;
+  healthLevel: (level: HealthLevel) => string;
+  healthLine: (check: HealthCheck) => string;
+  healthReportHeader: (at: string, version: string) => string;
+
+  // 今日复盘（设置 → 历史）
+  digestTitle: string;
+  digestHint: string;
+  digestFact: (fact: DigestFact) => string;
+  digestReportHeader: (day: string) => string;
 
   // 通用动作
   restoreAll: string;
@@ -799,6 +1022,35 @@ export const MESSAGES: Record<Lang, Messages> = {
     permRequest: "请求权限",
     permHint:
       "没有权限时通知会被静默丢弃 —— 不弹、不响，也不报错。显示「已被拒绝」的话，需要去系统设置的「通知」里手动打开 SignalHub。",
+    notifyTest: "发一条测试通知",
+    notifyTestTitle: "SignalHub 测试通知",
+    notifyTestBody: "看到这条，就说明系统通知和提示音都通了。",
+    notifyTestResult: (perm) =>
+      `已发出测试通知（权限：${perm}）。没看到的话，去系统设置 →「通知」检查 SignalHub，也看看控制中心有没有开着专注模式。`,
+
+    healthTitle: "系统体检",
+    healthHint:
+      "一次把通知权限、接入状态、上报回执和快捷键都过一遍。全是本机已有的数据，不改动任何设置。发出问题前点一下，把报告复制过去最省事。",
+    healthRun: "跑一次体检",
+    healthRerun: "重新体检",
+    healthSummary: (fail, warn) =>
+      fail > 0
+        ? `${fail} 项要处理${warn > 0 ? `，另有 ${warn} 项值得看` : ""}`
+        : warn > 0
+          ? `${warn} 项值得看，没有必须处理的`
+          : "没发现需要处理的问题",
+    healthVerdict: (level) =>
+      level === "fail" ? "要处理" : level === "warn" ? "值得看" : "都通了",
+    healthLevel: (level) =>
+      level === "fail" ? "问题" : level === "warn" ? "注意" : level === "ok" ? "正常" : "信息",
+    healthLine: zhHealthLine,
+    healthReportHeader: (at, version) => `SignalHub 系统体检 · ${at} · v${version}`,
+
+    digestTitle: "今日复盘",
+    digestHint:
+      "按聚合状态计时，同一时刻只记一个状态，所以各项可以直接相加；空闲 / 离线的时间也在里面。审批只取最近 100 条记录里属于今天的。这里没有事件流水 —— 出现过又消失的会话看不到。",
+    digestFact: zhDigestFact,
+    digestReportHeader: (day) => `SignalHub 今日复盘 · ${day}`,
 
     restoreAll: "全部恢复",
     mute: "静音",
@@ -1450,6 +1702,35 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     permRequest: "Request",
     permHint:
       "Without permission a notification is dropped silently — no popup, no sound, no error. If it says Denied, you need to turn SignalHub on by hand under Notifications in System Settings.",
+    notifyTest: "Send a test notification",
+    notifyTestTitle: "SignalHub test notification",
+    notifyTestBody: "If you can see this, notifications and the alert sound both work.",
+    notifyTestResult: (perm) =>
+      `Test notification sent (permission: ${perm}). If you did not see it, check SignalHub under Notifications in System Settings, and whether Focus is on in Control Center.`,
+
+    healthTitle: "System check",
+    healthHint:
+      "One pass over notification permission, installed agents, report receipts and shortcuts. It reads data that already exists on this machine and changes no settings. Copy the report into an issue before filing.",
+    healthRun: "Run check",
+    healthRerun: "Run again",
+    healthSummary: (fail, warn) =>
+      fail > 0
+        ? `${fail} need attention${warn > 0 ? `, plus ${warn} worth a look` : ""}`
+        : warn > 0
+          ? `${warn} worth a look, nothing blocking`
+          : "Nothing needs attention",
+    healthVerdict: (level) =>
+      level === "fail" ? "Needs attention" : level === "warn" ? "Worth a look" : "All clear",
+    healthLevel: (level) =>
+      level === "fail" ? "FAIL" : level === "warn" ? "WARN" : level === "ok" ? "OK" : "INFO",
+    healthLine: enHealthLine,
+    healthReportHeader: (at, version) => `SignalHub system check · ${at} · v${version}`,
+
+    digestTitle: "Today at a glance",
+    digestHint:
+      "Aggregate state is timed one state at a time, so the pieces add up; idle and offline are included. Approvals come from today's entries within the most recent 100 records. There is no event log — sessions that appeared and vanished while you were away are not visible here.",
+    digestFact: enDigestFact,
+    digestReportHeader: (day) => `SignalHub daily digest · ${day}`,
 
     restoreAll: "Restore all",
     mute: "Mute",

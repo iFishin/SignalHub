@@ -1590,6 +1590,103 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   margin-top: 0;
 }
 
+/* ---- 系统体检 / 今日复盘 ----
+ *
+ * 两块都是「一屏能扫完的报告」，靠一枚小圆点分级、不靠大色块：设置面板
+ * 自述是「没有阴影、没有渐变」，塞一堆彩色卡片会和整份面板打架。
+ * 黄色得单独给一份深色模式的值 —— theme.css 里只有 accent / danger。 */
+.health-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.health-dot[data-level="ok"] {
+  background: var(--accent);
+}
+
+.health-dot[data-level="warn"] {
+  background: #c07a00;
+}
+
+.health-dot[data-level="fail"] {
+  background: var(--danger);
+}
+
+@media (prefers-color-scheme: dark) {
+  .health-dot[data-level="warn"] {
+    background: #e3b341;
+  }
+}
+
+.health-verdict {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 12px;
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.health-verdict[data-level="fail"] {
+  color: var(--danger);
+}
+
+.health-verdict .muted-text {
+  font-size: 11.5px;
+  font-weight: 400;
+}
+
+.health-checks,
+.digest-list {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.health-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 0;
+  border-top: 1px solid var(--line);
+}
+
+.health-check .health-dot {
+  margin-top: 6px;
+}
+
+.health-line {
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+
+.health-level {
+  flex: none;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.9;
+}
+
+.health-check[data-level="fail"] .health-level {
+  color: var(--danger);
+}
+
+.digest-fact {
+  position: relative;
+  padding: 3px 0 3px 14px;
+  overflow-wrap: anywhere;
+}
+
+.digest-fact::before {
+  position: absolute;
+  left: 2px;
+  content: "·";
+  color: var(--muted);
+}
+
 /* 灯球那边早就尊重「减少动态效果」，设置窗补齐同一条底线。 */
 @media (prefers-reduced-motion: reduce) {
   .settings .page {

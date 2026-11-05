@@ -32,6 +32,14 @@ import { useStats } from "../lib/useStats";
 import { useHistory, type DayRow } from "../lib/useHistory";
 import { useApprovalLog, type ApprovalRecord } from "../lib/useApprovalLog";
 import { useTimeline, type TimelineSegment } from "../lib/useTimeline";
+import {
+  buildHealth,
+  healthCounts,
+  healthReport,
+  healthVerdict,
+  type HealthCheck,
+} from "../lib/health";
+import { buildDigest, digestMarkdown, type DigestFact } from "../lib/digest";
 import { useOutboundLog, lastAttemptFor, type Attempt } from "../lib/useOutboundLog";
 import { useNow } from "../lib/useNow";
 import {
@@ -42,10 +50,12 @@ import {
   useHookLog,
   useReceipts,
   type AgentStatus,
+  type CustomAgentsInfo,
   type HookChange,
+  type Receipt,
 } from "../lib/useAgents";
 import { useStateTtls } from "../lib/useStateTtls";
-import { useShortcuts } from "../lib/useShortcuts";
+import { useShortcuts, type ShortcutStatus } from "../lib/useShortcuts";
 import { percent, progressLabel } from "../lib/updateProgress";
 import { useUpdate } from "../lib/useUpdate";
 import { colorVars, resolveColors } from "../lib/palettes";
@@ -580,6 +590,14 @@ function Slider({
   );
 }
 
+/**
+ * 体检里的一次取值失败不该让整份报告出不来 —— 那一条按「读不出来」算就好。
+ * 用兜底值而不是 `Promise.all` 直接失败：六个来源里少一个，剩下的仍然有用。
+ */
+function safeInvoke<T>(call: Promise<T>, fallback: T): Promise<T> {
+  return call.catch(() => fallback);
+}
+
 /** 把秒数写成人看的时长：45s / 12m / 2h14m。 */
 function formatDuration(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
@@ -864,6 +882,112 @@ function shortDay(day: string): string {
 }
 
 /**
+ * 系统体检（设置 → 系统）。
+ *
+ * 只渲染，不取数：判据在 `lib/health.ts`（纯函数 + 单测），取数在
+ * `SettingsPanel.runHealth`。**没跑过就只有一句说明和一个按钮** —— 不摆一排
+ * 灰色的「未知」，那看起来像坏了而不是「还没查」。
+ */
+function HealthCard({
+  m,
+  checks,
+  running,
+  onRun,
+  onCopy,
+  copied,
+}: {
+  m: Messages;
+  checks: HealthCheck[] | null;
+  running: boolean;
+  onRun: () => void;
+  onCopy: () => void;
+  copied: boolean;
+}) {
+  const verdict = checks ? healthVerdict(checks) : null;
+  const counts = checks ? healthCounts(checks) : null;
+  return (
+    <div className="section">
+      <div className="row">
+        <span>{m.healthTitle}</span>
+        <div className="row-start">
+          {checks && (
+            <button type="button" className="btn btn-tiny" onClick={onCopy}>
+              {copied ? m.copied : m.copy}
+            </button>
+          )}
+          <button
+            type="button"
+            className="btn btn-tiny"
+            disabled={running}
+            onClick={onRun}
+          >
+            {checks ? m.healthRerun : m.healthRun}
+          </button>
+        </div>
+      </div>
+      <p className="hint">{m.healthHint}</p>
+      {checks && counts && verdict && (
+        <>
+          <div className="health-verdict" data-level={verdict}>
+            <span className="health-dot" data-level={verdict} />
+            <span>{m.healthVerdict(verdict)}</span>
+            <span className="muted-text">
+              · {m.healthSummary(counts.fail, counts.warn)}
+            </span>
+          </div>
+          <ul className="health-checks">
+            {checks.map((check) => (
+              <li className="health-check" key={check.id} data-level={check.level}>
+                <span className="health-dot" data-level={check.level} />
+                <span className="health-line">{m.healthLine(check)}</span>
+                <span className="health-level mono">{m.healthLevel(check.level)}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 今日复盘（设置 → 历史）。
+ *
+ * 事实由 `lib/digest.ts` 从三份现成数据里算出来；界面和「复制复盘」共用
+ * `m.digestFact`，所以贴到别处的那几句话和卡片上一字不差。
+ */
+function DigestCard({
+  m,
+  facts,
+  onCopy,
+  copied,
+}: {
+  m: Messages;
+  facts: DigestFact[];
+  onCopy: () => void;
+  copied: boolean;
+}) {
+  return (
+    <div className="section">
+      <div className="row">
+        <span>{m.digestTitle}</span>
+        <button type="button" className="btn btn-tiny" onClick={onCopy}>
+          {copied ? m.copied : m.copy}
+        </button>
+      </div>
+      <p className="hint">{m.digestHint}</p>
+      <ul className="digest-list">
+        {facts.map((fact, index) => (
+          <li className="digest-fact" key={`${fact.kind}-${index}`}>
+            {m.digestFact(fact)}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/**
  * 逐个状态的外观覆盖：颜色 / 形状 / 节奏，各自可以只覆盖其中几样。
  *
  * 单独提出来而不是内联在「外观」那个 case 里：它自成一块（一组预设 + 一张表 +
@@ -1134,6 +1258,8 @@ function PerStateStyles({
  */
 function NotifyPermission({ m, enabled }: { m: Messages; enabled: boolean }) {
   const [state, setState] = useState("unknown");
+  const [tested, setTested] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
 
   useEffect(() => {
     if (!inTauri) return;
@@ -1147,6 +1273,24 @@ function NotifyPermission({ m, enabled }: { m: Messages; enabled: boolean }) {
     denied: m.permDenied,
     prompt: m.permPrompt,
     unknown: m.permUnknown,
+  };
+
+  /** 走的是真实告警同一个出口（带提示音），不改任何状态。
+   *  Rust 会把发完之后的权限状态回过来 —— 没权限时通知是静默失败的，
+   *  光看「点了没反应」分不清是权限、专注模式还是代码坏了。 */
+  const sendTest = () => {
+    if (!inTauri) return;
+    setTesting(true);
+    invoke<string>("test_notification", {
+      title: m.notifyTestTitle,
+      body: m.notifyTestBody,
+    })
+      .then((perm) => {
+        setTested(perm);
+        setState(perm);
+      })
+      .catch(() => setTested("unknown"))
+      .finally(() => setTesting(false));
   };
 
   return (
@@ -1169,8 +1313,21 @@ function NotifyPermission({ m, enabled }: { m: Messages; enabled: boolean }) {
             {m.permRequest}
           </button>
         )}
+        <button
+          type="button"
+          className="btn btn-tiny"
+          disabled={testing}
+          onClick={sendTest}
+        >
+          {m.notifyTest}
+        </button>
       </div>
       {state !== "granted" && <p className="hint">{m.permHint}</p>}
+      {tested && (
+        <p className="hint">
+          {m.notifyTestResult(labels[tested] ?? m.permUnknown)}
+        </p>
+      )}
     </div>
   );
 }
@@ -1973,12 +2130,106 @@ export function SettingsPanel({ snapshot }: Props) {
       .catch(reported);
   };
 
+  // ---- 系统体检 ----
+  //
+  // 判据全在 lib/health.ts，这里只负责取数。刻意**直接 invoke 一次**而不是复用
+  // 上面那些 hook 的缓存：体检要的是「此刻」，而 `detect_agents` / `agent_receipts`
+  // 是打开设置那一刻取的，用户可能刚在别处改完配置文件切回来。
+  const [healthChecks, setHealthChecks] = useState<HealthCheck[] | null>(null);
+  const [healthRunning, setHealthRunning] = useState(false);
+  const runHealth = () => {
+    if (!inTauri || healthRunning) return;
+    setHealthRunning(true);
+    setError(null);
+    Promise.all([
+      safeInvoke(invoke<string>("get_notify_permission"), "unknown"),
+      safeInvoke(invoke<AgentStatus[]>("detect_agents"), []),
+      safeInvoke(invoke<Receipt[]>("agent_receipts"), []),
+      safeInvoke(invoke<CustomAgentsInfo | null>("custom_agents_info"), null),
+      safeInvoke(invoke<ShortcutStatus[]>("get_shortcuts"), []),
+      safeInvoke(invoke<string[]>("get_hook_log", { limit: 40 }), []),
+    ])
+      .then(([permission, agentsNow, receiptsNow, customNow, shortcutsNow, logNow]) => {
+        setHealthChecks(
+          buildHealth({
+            permission,
+            notify: settings.notify,
+            sound: settings.sound,
+            alertAfterSecs: settings.alert_after_secs,
+            quietHours: settings.quiet_hours.enabled,
+            mutedGroups: settings.muted_groups.length,
+            approveTools: settings.approve_tools,
+            agents: agentsNow,
+            receipts: receiptsNow,
+            custom: customNow,
+            shortcuts: shortcutsNow,
+            hookLogLines: logNow,
+            sessionCount: snapshot.groups.reduce(
+              (count, group) => count + group.sessions.length,
+              0,
+            ),
+            nowMs: Date.now(),
+          }),
+        );
+        // 顺手让接入页那几份缓存也跟上，切过去不用再等一次窗口显形。
+        refreshAgents();
+        refreshReceipts();
+        refreshLog();
+      })
+      .catch(reported)
+      .finally(() => setHealthRunning(false));
+  };
+  const copyHealth = () => {
+    if (!healthChecks) return;
+    copy(
+      "health",
+      healthReport(
+        healthChecks,
+        m.healthLine,
+        m.healthLevel,
+        m.healthReportHeader(
+          new Date().toLocaleString(),
+          update.state.current || "-",
+        ),
+      ),
+    );
+  };
+
+  // ---- 今日复盘 ----
+  // 三份数据本来就常驻在面板里（统计 / 近 7 天 / 审批记录），不额外取数。
+  // 每次重绘重算一遍很便宜，也不必为它引一个会过期的 memo。
+  const todayKey = new Date().toLocaleDateString("sv");
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const digestFacts = buildDigest({
+    stats,
+    days: historyDays,
+    approvals: approvalLog,
+    today: todayKey,
+    todayStartMs: todayStart.getTime(),
+    nowMs: Date.now(),
+  });
+  const copyDigest = () =>
+    copy(
+      "digest",
+      digestMarkdown(digestFacts, m.digestFact, m.digestReportHeader(todayKey)),
+    );
+
   // 每个页签的内容。写成函数而不是子组件，是为了免去把十几个 prop 一路传下去。
   const page = () => {
     switch (tab) {
       case "history":
         return (
           <>
+            {/* 先给一句「今天发生了什么」，再让人去翻条形图和审批流水。
+                两张表都在，但回来的人第一眼要的不是表。 */}
+            <DigestCard
+              m={m}
+              facts={digestFacts}
+              onCopy={copyDigest}
+              copied={copied === "digest"}
+            />
+
             <div className="section">
               <div className="row">
                 <span>{m.historyTitle}</span>
@@ -4073,6 +4324,17 @@ export function SettingsPanel({ snapshot }: Props) {
           : 0;
         return (
           <>
+            {/* 发版前自检摆在最上面：这一页剩下的都是「改设置」，而体检是
+                「先看一眼有没有坏」，顺序不该倒过来。 */}
+            <HealthCard
+              m={m}
+              checks={healthChecks}
+              running={healthRunning}
+              onRun={runHealth}
+              onCopy={copyHealth}
+              copied={copied === "health"}
+            />
+
             <Row label={m.launchAtLogin}>
               <Switch
                 on={toggles.autostart}

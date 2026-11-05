@@ -965,6 +965,20 @@ fn request_notify_permission(app: tauri::AppHandle) -> &'static str {
     alerts::request_permission(&app)
 }
 
+/// 发一条测试通知，并把发完之后的权限状态回给界面。
+///
+/// 为什么要有这一条：没权限时 `builder.show()` 是**静默失败**的 —— 不弹、不响、
+/// 也不报错（见 `alerts::permission_state`）。用户点完按钮什么都没发生，界面必须
+/// 能说清「是系统没放行，还是系统专注模式拦了」。所以这里走的是和真实告警同一个
+/// 出口（`send_timer`，跟着 `Settings::sound` 带提示音），并回报权限；标题正文由界面
+/// 给，好跟着界面语言走。它不改任何状态，也不记进统计。
+#[tauri::command]
+fn test_notification(app: tauri::AppHandle, title: String, body: String) -> String {
+    let sound = current_settings(&app).sound;
+    alerts::send_timer(&app, &title, &body, sound);
+    alerts::permission_state(&app).to_string()
+}
+
 /// 一个智能体在这台机器上的状态。
 #[derive(serde::Serialize)]
 struct AgentStatus {
@@ -2682,6 +2696,7 @@ pub fn run() {
             decide_approval,
             get_notify_permission,
             request_notify_permission,
+            test_notification,
             detect_agents,
             custom_agents_info,
             open_custom_agents,
