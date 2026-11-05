@@ -105,19 +105,55 @@ html[data-window="settings"] #root {
 }
 
 /* 定宽 140px。宽度按最长的页签名（英文 Forwarding / Guide）量出来，
-   再宽就是白占地方 —— 横向的每一像素都是从那块逐状态表身上拿的。 */
+   再宽就是白占地方 —— 横向的每一像素都是从那块逐状态表身上拿的。
+
+   `min-height: 0` 和下面 `.rail-nav` 的那一对，修的是 0.4.4 里的一处重叠：
+   左栏是「搜索 / 页签 / 系统 / 暂停」四段，页签那段 `flex: 1` 却没有收缩下限，
+   内容一多就把自己撑到比 `.rail` 还高，溢出部分直接压在「暂停监控」和底部
+   「退出」按钮上。窗口是固定 690（含标题栏，内容区更少），迟早会撞上。 */
 .settings .rail {
   display: flex;
   flex: none;
   flex-direction: column;
   width: 140px;
+  min-height: 0;
 }
 
+/* 只有页签这一段滚。搜索框、沉底的「系统」、全局开关都留在滚动区外面 ——
+   它们在哪儿、什么时候都在，不该跟着页签一起被滚走。 */
 .settings .rail-nav {
   display: flex;
   flex: 1;
   flex-direction: column;
   gap: 2px;
+  min-height: 0;
+  overflow-y: auto;
+  /* 给焦点环留出 3px：`overflow: auto` 会把超出内容盒的 outline 裁掉，
+     而这套面板刚补上键盘焦点环（见文件顶部那条规则）。负 margin 让这段
+     视觉宽度仍是原来的 140px，不往右栏多占一个像素。 */
+  padding: 3px 3px 3px 0;
+  margin: -3px -3px -3px 0;
+}
+
+/* 滚动条只在内容真的放不下时出现。做成 6px 的细条 —— 140px 的窄栏里，
+   默认那条 15px 的滚动槽会把页签挤窄一截，视觉上比滚动本身更吵。
+   颜色用 `--line`（和分隔线同一档），深浅两套主题都不用另配。 */
+.settings .rail-nav {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+
+.settings .rail-nav::-webkit-scrollbar {
+  width: 6px;
+}
+
+.settings .rail-nav::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: var(--line);
+}
+
+.settings .rail-nav::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 /* 「看 / 灯 / 通知 / 开始用」四组。
@@ -132,11 +168,11 @@ html[data-window="settings"] #root {
 }
 
 .settings .rail-group + .rail-group {
-  margin-top: 10px;
+  margin-top: 8px;
 }
 
 .settings .rail-group-title {
-  padding: 0 10px 2px;
+  padding: 0 10px 1px;
   color: var(--muted);
   font-size: 11px;
   font-weight: 600;
@@ -145,10 +181,9 @@ html[data-window="settings"] #root {
 
 /* 「系统」沉在底部：它不属于上面任何一组。和 `.rail-foot` 一样用一道细线分开，
    区别是它**能选中**（是个页签），所以线在上面、文字仍是 `.rail-item`。
-   `margin-top: auto` 把它推到 `.rail-foot` 上面。 */
+   它在 `.rail-nav` 的滚动区外面，所以不管页签滚到哪儿，它都贴在这道线上。 */
 .settings .rail-bottom {
-  margin-top: auto;
-  padding-top: 10px;
+  padding-top: 6px;
   border-top: 1px solid var(--line);
 }
 
@@ -158,7 +193,7 @@ html[data-window="settings"] #root {
 .settings .rail-item {
   /* 左边留一条 2px 的透明边框：选中时只把它染成 accent，文字位置一个像素
      都不动。用 border 而不是 inset 阴影，是因为圆角下 inset 会被裁成一小截。 */
-  padding: 5px 10px 5px 8px;
+  padding: 4px 10px 4px 8px;
   border: 0;
   border-left: 2px solid transparent;
   border-radius: 6px;
@@ -184,10 +219,9 @@ html[data-window="settings"] #root {
 
 /* 「暂停监控」这类**不随页签变**的全局入口。压到左栏底部并加一道细线，
    是为了和上面那组「去哪儿」分开 —— 它不是一个页签，是一个开关。
-   `margin-top: auto` 把它推到最下面。 */
+   同样在滚动区外面：页签再多，它也钉在最底下，不会被挤到「退出」上面去。 */
 .settings .rail-foot {
-  margin-top: auto;
-  padding-top: 12px;
+  padding-top: 8px;
   border-top: 1px solid var(--line);
 }
 
@@ -1533,7 +1567,7 @@ input[type="color"].style-swatch::-webkit-color-swatch {
 .settings .rail-search {
   box-sizing: border-box;
   width: 100%;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
   padding: 5px 8px;
   border: 1px solid var(--line);
   border-radius: 6px;

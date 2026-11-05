@@ -4572,18 +4572,20 @@ export function SettingsPanel({ snapshot }: Props) {
           又不过分大」的数，改内容就得重新量。改成 flex 之后这条性质由结构保证。 */}
       <div className="settings-body">
         <nav className="rail">
+          {/* 11 个页签里找东西，靠肉眼扫太慢。搜索只过滤左栏，回车跳第一个
+              匹配项，Esc 清空 —— 不抢焦点、不改右栏内容。
+              它放在 `.rail-nav` **外面**：页签再多，搜索框也钉在顶上，
+              不会跟着列表一起被滚走。 */}
+          <input
+            className="rail-search"
+            type="search"
+            value={query}
+            placeholder={m.railSearch}
+            aria-label={m.railSearch}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={onSearchKeyDown}
+          />
           <div className="rail-nav">
-            {/* 11 个页签里找东西，靠肉眼扫太慢。搜索只过滤左栏，回车跳第一个
-                匹配项，Esc 清空 —— 不抢焦点、不改右栏内容。 */}
-            <input
-              className="rail-search"
-              type="search"
-              value={query}
-              placeholder={m.railSearch}
-              aria-label={m.railSearch}
-              onChange={(event) => setQuery(event.target.value)}
-              onKeyDown={onSearchKeyDown}
-            />
             {noMatches && <p className="rail-empty">{m.railSearchEmpty}</p>}
             {visibleGroups.map((group) => (
               <div className="rail-group" key={group.title}>
@@ -4605,22 +4607,24 @@ export function SettingsPanel({ snapshot }: Props) {
               </div>
             ))}
 
-            {/* 系统沉在最下面：它不属于上面任何一组，塞进去就得为它编一个它并不
-                属于的标题。 */}
-            {showSystem && (
-              <div className="rail-bottom">
-                <button
-                  type="button"
-                  className="rail-item"
-                  data-active={tab === "system"}
-                  aria-current={tab === "system" ? "page" : undefined}
-                  onClick={() => setTab("system")}
-                >
-                  {m.tabSystem}
-                </button>
-              </div>
-            )}
           </div>
+
+          {/* 系统沉在最下面：它不属于上面任何一组，塞进去就得为它编一个它并不
+              属于的标题。它和下面的暂停开关都在滚动区**外面**，所以页签再多
+              也不会被挤到「退出」上面去（0.4.4 就是这么叠上的）。 */}
+          {showSystem && (
+            <div className="rail-bottom">
+              <button
+                type="button"
+                className="rail-item"
+                data-active={tab === "system"}
+                aria-current={tab === "system" ? "page" : undefined}
+                onClick={() => setTab("system")}
+              >
+                {m.tabSystem}
+              </button>
+            </div>
+          )}
 
           {/* 全局入口压在最下面：它不是一个页签，是一个开关 —— 放在这一组里
               会让人以为切过去能看到别的东西。 */}
