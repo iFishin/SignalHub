@@ -7,13 +7,16 @@
  *                  （深色圆角方块 + 彩点），这样悬浮灯和图标看起来是一个东西。
  *   折叠        —— 每组一颗裸灯，没有牌面。点一下就切回展开。
  *
- * 朴素简约仍然成立：没有装饰性的阴影、渐变、发光。要的是**结构**（外框、
- * 底色、文字位），不是装饰。唯一的例外是低透明度下给文字加的那圈对比描边
- * （`[data-sign-translucent]`）—— 那是可读性手段，不是装饰。
+ * 基础形态是朴素简约的：要的是**结构**（外框、底色、文字位），不是装饰。
+ * 低透明度下给文字加的那圈对比描边（`[data-sign-translucent]`）是可读性手段。
+ * 「灵动效果」开启后（`[data-lively]`，见文件末尾）才多一层柔光与跃迁涟漪 ——
+ * 它是可关的观感层，关掉后逐像素回到 0.4.4。
  *
  * 两条硬性约束：
  * 1) html/body/#root 必须完全透明，否则 webview 会画出白底，透明窗口就白做了。
- * 2) 动画只动 opacity，交给 GPU 合成，避免这个常驻窗口烧 CPU。
+ * 2) **常驻**动画只动 opacity，交给 GPU 合成，避免这个常驻窗口烧 CPU。
+ *    一次性转场（420ms 的涟漪 / motion 弹簧）可以动 transform：它不是循环，
+ *    且 transform 走合成层、不触发重排。**两者不要混为一谈**。
  *
  * 几何必须和 Rust 的 config.rs 严格对齐：
  *   牌宽     = size × 7 × 宽倍率         (sign_width)
@@ -777,6 +780,110 @@ body,
   }
 }
 
+/* ---- 灵动效果：柔光呼吸 -------------------------------------------------- */
+
+/*
+ * 一层**可关**的观感，只在 `.lamp-root[data-lively]` 下生效。三件事：
+ *   1) 灯珠外一圈同色柔光，按**该状态自己的节奏**呼吸。节奏来自 TS 挂在每个
+ *      灯珠上的 `--halo-anim`（见 lampStyle.ts::resolveHaloAnimations），所以
+ *      blink_speed 和逐个状态设的 blink_ms 都跟着变；
+ *   2) 状态跃迁时从灯珠扩出一圈涟漪（一次性 420ms）；
+ *   3) 牌面一道细内高光 + 悬停提亮。
+ *
+ * 为什么不改几何：牌宽高、点径、间距仍与 config.rs 是两处真值。柔光与涟漪
+ * 都是伪元素，画在元素盒之外但**不改盒**；涟漪只动 transform。窗口一个像素
+ * 都不用重算，也就不会被 Rust 那个瞬间变尺寸的窗口裁到。
+ */
+.lamp-root[data-lively] .dot {
+  position: relative;
+}
+
+.lamp-root[data-lively] .dot::before {
+  content: "";
+  position: absolute;
+  /* 外扩 38%：牌内左边距 ≈0.36×size、灯珠径 0.55×size，外扩 ≈4.6px 仍落在牌里；
+     折叠态窗口留白 10px，size 22 时外扩 8.4px 也不出窗。再大会被 .sign 的
+     overflow:hidden 切成半圈，或超出透明窗口被裁。 */
+  inset: -38%;
+  border-radius: 50%;
+  background: var(--state);
+  /* 把实心圆挖成「中心透明 → 中段柔亮 → 外缘渐隐」的一圈，免得给灯珠中心
+     再叠一层同色。mask 与 ring 形状用的是同一套能力；老 WebKitGTK 不支持时
+     只是退化成一层很淡的方形色斑，由 opacity 压着，不会挡字。 */
+  -webkit-mask: radial-gradient(circle, transparent 30%, #000 46%, transparent 74%);
+  mask: radial-gradient(circle, transparent 30%, #000 46%, transparent 74%);
+  opacity: 0.42;
+  pointer-events: none;
+  /* 逐状态挂在灯珠 style 上（不是根上）：一个窗口里多块牌节奏可以不同。
+     常亮状态解析成 `none`，那时就是一圈稳定的柔光。 */
+  animation: var(--halo-anim, none);
+}
+
+/* ring 形状自己就带着一圈环，再叠柔光会糊成两个不同心的圆；而且它的 mask
+   会把外扩的伪元素一起裁掉，只剩几段怪异的弧。直接不画。 */
+.lamp-root[data-lively] .dot[data-shape="ring"]::before {
+  display: none;
+}
+
+/* 折叠态没有牌面，那一排点就是全部，柔光可以稍亮一档。
+   keyframes 读变量而不是写死，展开 / 折叠共用同一条曲线。 */
+.lamp-root[data-lively] .lamp-dot::before {
+  --halo-max: 0.72;
+  --halo-min: 0.2;
+}
+
+@keyframes halo-breathe {
+  0%,
+  100% {
+    opacity: var(--halo-max, 0.6);
+  }
+  50% {
+    opacity: var(--halo-min, 0.16);
+  }
+}
+
+/* 跃迁涟漪：与 `.sign[data-pulse]` 的 opacity 脉冲同一时刻，从灯珠扩出去一圈。
+   只在**那一帧**动 transform（420ms 后摘掉 data-pulse），不是常驻循环。
+   ring + stale 那条旧的 `::after { display: none }` 会兜住它 —— 正好，环形
+   状态下再扩一圈环是重复信息。 */
+.lamp-root[data-lively] .sign[data-pulse] .dot::after {
+  content: "";
+  position: absolute;
+  inset: -18%;
+  border: 1px solid var(--state);
+  border-radius: 50%;
+  opacity: 0;
+  pointer-events: none;
+  animation: halo-ripple 420ms ease-out 1;
+}
+
+@keyframes halo-ripple {
+  0% {
+    opacity: 0.7;
+    transform: scale(0.62);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(2);
+  }
+}
+
+/* 牌面：一道极细的顶部内高光把「一块深色牌」变成「一片有厚度的玻璃」，
+   再叠一层从上往下淡出的白（3.5%，只在亮桌面才隐约看得见）。
+   都不改盒模型，也不碰 --sign-bg 的 alpha —— 低透明度那套浅字 + 描边照旧。 */
+.lamp-root[data-lively] .sign {
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 58%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  transition: border-color 200ms ease, box-shadow 200ms ease;
+}
+
+.lamp-root[data-lively] .sign:hover {
+  border-color: rgba(255, 255, 255, 0.3);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 0 0 1px rgba(255, 255, 255, 0.05);
+}
+
 /* 无障碍：系统开了「减少动态效果」时，闪烁一律降级为常亮，由颜色承载语义。
    这里必须赢过按状态写的那条 `animation: var(--anim-x, ...)`。用 !important：
    作者样式表里的 !important 会盖过普通声明（连内联 style 也盖），而且动画变量
@@ -790,5 +897,18 @@ body,
      只是不闪。 */
   .lamp-root .sign[data-pulse] {
     animation: none !important;
+  }
+  /* 灵动效果里的常驻呼吸 / 一次性涟漪也降级：柔光留着（静态的一圈光，仍由
+     颜色承载语义），但不再动；牌的悬停过渡也去掉。motion 弹簧那一层由
+     SignalLamp 的 useReducedMotion 关掉，两端不会打架。 */
+  .lamp-root[data-lively] .dot::before {
+    animation: none !important;
+    opacity: 0.34;
+  }
+  .lamp-root[data-lively] .sign[data-pulse] .dot::after {
+    display: none;
+  }
+  .lamp-root[data-lively] .sign {
+    transition: none;
   }
 }

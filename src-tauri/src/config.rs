@@ -1074,6 +1074,13 @@ pub struct Settings {
     pub hidden_groups: Vec<String>,
     /// 闪烁节奏倍率（50–200，100 = 默认）。闪得太快会分心，太慢又看不出在动。
     pub blink_speed: u16,
+    /// **灵动效果**：灯珠外一圈同色柔光随状态节奏呼吸，状态跃迁 / 折叠展开有一次性
+    /// 弹簧反馈，牌面加一道细内高光。默认开 —— 这是门面的观感，不是会打扰人的能力。
+    ///
+    /// 关掉之后**逐像素回到 0.4.4 的样子**：柔光、涟漪、高光、弹簧全部不长，
+    /// 只剩原有的 opacity 脉冲。给「只想要一颗朴素灯」和开了「减少动态效果」的人留路。
+    /// 它只影响前端绘制，不进任何状态判断、不影响窗口几何（`config.rs` 那套尺寸）。
+    pub lively: bool,
     /// 需要你注意时，系统通知是否带声音。
     ///
     /// 声音挂在系统通知上（`NotificationBuilder::sound`），所以关掉通知就没有
@@ -1399,6 +1406,8 @@ impl Default for Settings {
             show: SignFields::default(),
             sign_opacity: DEFAULT_SIGN_OPACITY,
             blink_speed: 100,
+            // 门面默认带一层呼吸感；关掉就完全回到旧观感（见字段注释）
+            lively: true,
             hidden_groups: Vec::new(),
             sound: true,
             quiet_hours: QuietHours::default(),
@@ -2084,6 +2093,8 @@ mod tests {
             sign_opacity: 40,
             hidden_groups: vec!["noisy".into()],
             blink_speed: 150,
+            // 新字段同样设成非默认值：全默认的话「漏了字段」在往返里看不出来
+            lively: false,
             sound: false,
             quiet_hours: QuietHours {
                 enabled: true,

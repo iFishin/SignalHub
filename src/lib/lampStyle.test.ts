@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   lampVars,
   resolveAnimations,
+  resolveHaloAnimations,
   resolveShapes,
   signTextNeedsContrast,
   stateOverridden,
@@ -264,5 +265,66 @@ describe("isQuietDimmed", () => {
   it("ignores quiet while pass-through is on", () => {
     expect(isQuietDimmed(true, "idle", true)).toBe(false);
     expect(isQuietDimmed(false, "idle")).toBe(false);
+  });
+});
+
+describe("resolveHaloAnimations", () => {
+  /**
+   * 柔光呼吸的时长是灯珠节奏的 **2 倍**。
+   *
+   * 柔光不该和灯珠同步闪 —— 那是「闪」，不是「呼吸」。慢一倍读起来才是呼吸。
+   * 这条测试盯住 2 倍这个关系：改了一边忘了改另一边，这里会红。
+   */
+  it("breathes at twice the lamp rhythm", () => {
+    const halo = resolveHaloAnimations(DEFAULTS);
+    expect(halo.thinking).toBe("halo-breathe 1280ms ease-in-out infinite");
+    expect(halo.working).toBe("halo-breathe 3200ms ease-in-out infinite");
+    expect(halo.attention).toBe("halo-breathe 2000ms ease-in-out infinite");
+    expect(halo.permission).toBe("halo-breathe 1800ms ease-in-out infinite");
+    expect(halo.error).toBe("halo-breathe 680ms ease-in-out infinite");
+  });
+
+  /**
+   * 常亮状态 → 柔光也不动。
+   *
+   * 「常亮」的意思是「没有变化」，柔光再呼吸就变成「一颗一直在跳的灯」——
+   * 而 `done`（任务完成）恰恰是**最该静下来**的那一刻。
+   */
+  it("stays still for the always-on states", () => {
+    const halo = resolveHaloAnimations(DEFAULTS);
+    expect(halo.done).toBe("none");
+    expect(halo.idle).toBe("none");
+    expect(halo.stale).toBe("none");
+    expect(halo.offline).toBe("none");
+    expect(halo.off).toBe("none");
+  });
+
+  /**
+   * 用户给某个状态单独设了节奏 → 柔光跟着那个节奏（同样 2 倍）。
+   *
+   * `blink_ms: 0` 是用户明确要「常亮」，柔光也不该动 —— 和默认常亮一视同仁。
+   */
+  it("follows a per-state blink override", () => {
+    const halo = resolveHaloAnimations(
+      withSettings({ styles: { thinking: { blink_ms: 300 } } }),
+    );
+    expect(halo.thinking).toBe("halo-breathe 600ms ease-in-out infinite");
+
+    const off = resolveHaloAnimations(
+      withSettings({ styles: { thinking: { blink_ms: 0 } } }),
+    );
+    expect(off.thinking).toBe("none");
+  });
+
+  /**
+   * 全局倍率同样作用于柔光 —— 灯珠和柔光得同步加速，否则「呼吸」和「闪烁」
+   * 会各走各的，读起来像两个东西在动。
+   */
+  it("scales with the global blink speed", () => {
+    const fast = resolveHaloAnimations(withSettings({ blink_speed: 200 }));
+    expect(fast.thinking).toBe("halo-breathe 640ms ease-in-out infinite");
+
+    const slow = resolveHaloAnimations(withSettings({ blink_speed: 50 }));
+    expect(slow.thinking).toBe("halo-breathe 2560ms ease-in-out infinite");
   });
 });

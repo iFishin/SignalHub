@@ -106,6 +106,43 @@ export function resolveAnimations(settings: Settings): Record<SignalState, strin
 }
 
 /**
+ * 每个状态的柔光呼吸 `animation` 简写，挂在灯珠的 `--halo-anim` 上。
+ *
+ * 灯珠本身的闪烁（`--anim-*`）是 `pulse`（opacity 1↔0.25），柔光不必跟着
+ * 同步——它应该比灯珠「慢一拍」、范围更柔，读起来像灯珠在「呼吸」而不是「闪」。
+ * 所以柔光用**自己的** keyframe `halo-breathe`（opacity 0.6↔0.16），时长是灯珠
+ * 节奏的 **2 倍**——同样的节奏感，但更缓。
+ *
+ * - 常亮状态（done / idle / stale / offline / off）→ `"none"`：一圈稳定的柔光，
+ *   不动。常亮是「没有变化」，柔光也不该动。
+ * - 用户单独设了 `blink_ms` 的状态 → 柔光也跟着那个节奏的 2 倍呼吸。
+ * - 全局倍率同样作用于柔光——和灯珠同步呼吸，用户调快闪频率时柔光也跟着变。
+ */
+export function resolveHaloAnimations(settings: Settings): Record<SignalState, string> {
+  const speed = settings.blink_speed / 100;
+  const out = {} as Record<SignalState, string>;
+  for (const state of SIGNALS) {
+    const blink = settings.styles[state]?.blink_ms;
+    // 用户显式设成常亮
+    if (blink === 0) {
+      out[state] = "none";
+      continue;
+    }
+    // 用户显式设了节奏：柔光用 2 倍时长
+    if (typeof blink === "number" && blink > 0) {
+      out[state] = `halo-breathe ${blink * 2}ms ease-in-out infinite`;
+      continue;
+    }
+    // 没单独设：跟基础配方走，但时长 ×2
+    const recipe = BASE_ANIMATION[state];
+    out[state] = recipe
+      ? `halo-breathe ${Math.round(recipe.ms * 2 / speed)}ms ease-in-out infinite`
+      : "none";
+  }
+  return out;
+}
+
+/**
  * 牌面淡到这条线以下，牌里的字改成「浅字 + 深描边」（`lamp.css` 的
  * `[data-sign-translucent]`）。
  *

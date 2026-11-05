@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { motion, useReducedMotion } from "motion/react";
 import { inTauri } from "../lib/env";
 import { signalLabel, justFinishedLabel } from "../lib/signals";
 import { useLang, useMessages, type Messages, type Lang } from "../lib/i18n";
-import { lampVars, resolveShapes, signTextNeedsContrast, isQuietDimmed } from "../lib/lampStyle";
+import { lampVars, resolveShapes, resolveHaloAnimations, signTextNeedsContrast, isQuietDimmed } from "../lib/lampStyle";
 import { transitions, type AggregateMap } from "../lib/lampTransitions";
 import { labelOf, orderVisible } from "../lib/lampSort";
 import { nameChanged, withGroupName } from "../lib/groupMeta";
@@ -323,6 +324,15 @@ export function SignalLamp({
   // 「一个值」，没法塞进一个根变量里。
   const shapes = resolveShapes(settings);
 
+  // 灵动效果：柔光呼吸的逐状态 animation 值。挂在每个灯珠的 style 上（不是根上），
+  // 这样一个窗口里多块牌的节奏可以不同。CSS 的 `[data-lively] .dot::before` 读
+  // `var(--halo-anim, none)` —— 没挂（开关关了 / 旧配置）就是 `none`，柔光不画。
+  const lively = settings.lively;
+  const haloAnims = lively ? resolveHaloAnimations(settings) : null;
+  // motion 弹簧也尊重系统的「减少动态效果」。motion 的 useReducedMotion 返回
+  // boolean | null（null = 未检测），按 falsy 处理。
+  const reduceMotion = useReducedMotion();
+
   // 折叠态悬停**临时**展开：只改渲染 + 让 Rust 把窗口算大，**不改设置** —— 退出
   // 重开仍是折叠态（这是这一项的验收之一）。3s 到点、或鼠标移开就回去。窗口尺寸
   // 由 Rust 按同一个标志算（命令 `set_peek`；多灯下只有被指着的那盏会变），所以
@@ -578,6 +588,9 @@ export function SignalLamp({
       data-pass-through={passThrough || undefined}
       data-collapsed={!expanded}
       data-flash={flash || undefined}
+      // 灵动效果总开关。CSS 里所有 `[data-lively]` 规则只在它下面才生效，
+      // 关掉后柔光 / 涟漪 / 高光 / 悬停提亮一个都不长，逐像素回到旧观感。
+      data-lively={lively || undefined}
       title={
         preview
           ? undefined
@@ -604,16 +617,31 @@ export function SignalLamp({
         const dotStyle = {
           ...progressStyle(group),
           ...(tint ? { "--state": tint } : {}),
+          // 灵动效果：把该状态的柔光呼吸 animation 挂到灯珠上，CSS 的
+          // `.dot::before { animation: var(--halo-anim, none) }` 读它。
+          ...(haloAnims ? { "--halo-anim": haloAnims[group.aggregate] } : {}),
         } as React.CSSProperties;
+        // 灵动效果 + 没开「减少动态效果」时，灯珠用 motion 弹簧入场。
+        // spring 比 ease-out 更「灵动」——有一点过冲，像灯珠落到了位。
+        // 只动 opacity 和 scale：**不改盒模型**，scale 走 transform 合成层，
+        // 不触发重排（红线 2 只限制「常驻循环动画」，一次性弹簧不在此列）。
+        const dotMotion = lively && !reduceMotion
+          ? {
+              initial: { opacity: 0, scale: 0.6 },
+              animate: { opacity: 1, scale: 1 },
+              transition: { type: "spring" as const, stiffness: 300, damping: 18, duration: 0.42 },
+            }
+          : {};
         return !expanded ? (
-          <span
+          <motion.span
             // 折叠后只有点，没有可读的文字，所以 key 用下标；组名可能为空（占位那块）
             key={index}
             className="dot lamp-dot"
             data-state={group.aggregate}
             data-shape={shapes[group.aggregate]}
             style={dotStyle}
-            onContextMenu={(event) => handleGroupMenu(event, group.name)}
+            {...dotMotion}
+            onContextMenu={(event: React.MouseEvent) => handleGroupMenu(event, group.name)}
           />
         ) : (
           <div
@@ -625,11 +653,12 @@ export function SignalLamp({
             data-pulse={pulses.includes(group.name) || undefined}
             onContextMenu={(event) => handleGroupMenu(event, group.name)}
           >
-            <span
+            <motion.span
               className="dot"
               data-state={group.aggregate}
               data-shape={shapes[group.aggregate]}
               style={dotStyle}
+              {...dotMotion}
             />
             <div className="sign-body">
               <div className="sign-line">

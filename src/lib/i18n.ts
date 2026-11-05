@@ -383,6 +383,9 @@ export interface Messages {
   signWidth: string;
   signHeight: string;
   blinkSpeed: string;
+  /** 「灵动效果」开关及其说明（柔光呼吸 + 弹簧转场）。 */
+  lively: string;
+  livelyHint: string;
   onSign: string;
   quietMode: string;
   snapToEdge: string;
@@ -1098,6 +1101,9 @@ export const MESSAGES: Record<Lang, Messages> = {
     signWidth: "牌宽",
     signHeight: "牌高",
     blinkSpeed: "闪烁节奏",
+    lively: "灵动效果",
+    livelyHint:
+      "灯珠外多一层同色柔光，跟着状态的节奏呼吸；换状态、折叠展开时轻轻弹一下。关掉就回到原来那颗朴素的灯。系统开了「减少动态效果」时会自动降级。",
     onSign: "牌上显示",
     quietMode: "安静模式",
     snapToEdge: "贴边吸附",
@@ -1779,6 +1785,9 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     signWidth: "Sign width",
     signHeight: "Sign height",
     blinkSpeed: "Blink speed",
+    lively: "Lively motion",
+    livelyHint:
+      "A soft halo around each light breathes with its state rhythm, with a gentle spring on state changes and expand/collapse. Turn it off for the plain light of old. Automatically dialled down when the system asks for reduced motion.",
     onSign: "On the sign",
     quietMode: "Quiet mode",
     snapToEdge: "Snap to edges",

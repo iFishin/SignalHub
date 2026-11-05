@@ -242,7 +242,7 @@ type Tab =
 const TAB_ALIASES: Record<Tab, string[]> = {
   status: ["状态", "现在", "时间线", "status", "now", "timeline"],
   history: ["历史", "近 7 天", "统计", "history", "stats", "week"],
-  look: ["外观", "颜色", "形状", "大小", "透明度", "预设", "look", "color", "size", "preset"],
+  look: ["外观", "颜色", "形状", "大小", "透明度", "预设", "灵动", "柔光", "呼吸", "光晕", "look", "color", "size", "preset", "lively", "glow"],
   behavior: ["行为", "静默超时", "超时", "安静模式", "点击穿透", "behavior", "ttl", "timeout"],
   groups: ["分组", "置顶", "多灯", "每组分灯", "group", "pin", "lamp count"],
   alert: ["提醒", "通知", "勿扰", "提示音", "声音", "alert", "notify", "dnd", "sound"],
@@ -476,6 +476,10 @@ function LampPreview({ settings }: { settings: Settings }) {
           { "--size": `${settings.size}px`, ...lampVars(settings) } as React.CSSProperties
         }
         data-sign-translucent={signTextNeedsContrast(settings.sign_opacity) || undefined}
+        /* 预览也跟着「灵动效果」开关走 —— 否则关了开关，预览里还亮着一圈柔光，
+           用户会以为开关没生效。这里只借 CSS 的柔光 / 高光，不挂 motion 弹簧：
+           预览是静态示意，不该每帧动。 */
+        data-lively={settings.lively || undefined}
       >
         {cards.map((card) => (
           <div
@@ -2623,6 +2627,16 @@ export function SettingsPanel({ snapshot }: Props) {
                 onChange={(blink_speed) => patch({ blink_speed })}
                 format={(value) => `${value}%`}
               />
+            </Row>
+            {/* 灵动效果是「怎么动」的总闸，和闪烁节奏同一层。放在节奏下面：改完节奏
+                立刻能开关柔光，看得出两者是同步的。关掉后 SignalLamp 连 motion 的
+                弹簧都不挂，逐像素回到旧观感。 */}
+            <Row
+              label={m.lively}
+              hint={m.livelyHint}
+              onReset={resetFor(settings, "lively", patch)}
+            >
+              <Switch on={settings.lively} onChange={(on) => patch({ lively: on })} />
             </Row>
             <Row label={m.onSign} onReset={resetFor(settings, "show", patch)}>
               <div className="chips chips-tight">

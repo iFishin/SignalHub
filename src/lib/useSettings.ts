@@ -291,6 +291,13 @@ export interface Settings {
   muted_groups: string[];
   /** 闪烁节奏倍率（50–200，100 = 原始速度）。数字越大闪得越快。对没有单独设节奏的状态生效。 */
   blink_speed: number;
+  /**
+   * **灵动效果**（默认开）：灯珠外的柔光呼吸、跃迁涟漪、牌面内高光与弹簧转场。
+   *
+   * 纯前端观感，不进任何状态判断、也不影响 Rust 算窗口尺寸。关掉就逐像素回到
+   * 0.4.4 的样子 —— 常驻动画仍然只有 opacity，适合「只想要一颗朴素灯」的人。
+   */
+  lively: boolean;
   /** 需要你注意时，系统通知是否带提示音。 */
   sound: boolean;
   /** 勿扰时段：这段时间里不弹通知、不出声。 */
@@ -391,6 +398,7 @@ export const DEFAULTS: Settings = {
   hidden_groups: [],
   muted_groups: [],
   blink_speed: 100,
+  lively: true,
   sound: true,
   quiet_hours: { enabled: false, start: 22, end: 8 },
   alert_after_secs: 5,
