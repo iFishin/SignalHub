@@ -62,7 +62,7 @@ html[data-window="settings"] #root {
   align-items: center;
   gap: 8px;
   margin: 0;
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
 }
 
@@ -78,7 +78,7 @@ html[data-window="settings"] #root {
 .settings .headline-message {
   margin: 4px 0 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 12.5px;
   overflow-wrap: anywhere;
 }
 
@@ -135,24 +135,29 @@ html[data-window="settings"] #root {
   margin: -3px -3px -3px 0;
 }
 
-/* 滚动条只在内容真的放不下时出现。做成 6px 的细条 —— 140px 的窄栏里，
-   默认那条 15px 的滚动槽会把页签挤窄一截，视觉上比滚动本身更吵。
-   颜色用 `--line`（和分隔线同一档），深浅两套主题都不用另配。 */
-.settings .rail-nav {
+/* 两处滚动条用同一套：6px 细条、`--line` 颜色。
+   左栏是 140px 的窄栏，右栏在 720px 窗口里也要留出正文的右边距 —— 默认那条
+   15px 的滚动槽在两处都太抢眼。`scrollbar-width` 给 Firefox，webkit 那组给
+   其余平台（macOS 默认是 overlay，只在滚动时出现）。 */
+.settings .rail-nav,
+.settings .page {
   scrollbar-width: thin;
   scrollbar-color: var(--line) transparent;
 }
 
-.settings .rail-nav::-webkit-scrollbar {
+.settings .rail-nav::-webkit-scrollbar,
+.settings .page::-webkit-scrollbar {
   width: 6px;
 }
 
-.settings .rail-nav::-webkit-scrollbar-thumb {
+.settings .rail-nav::-webkit-scrollbar-thumb,
+.settings .page::-webkit-scrollbar-thumb {
   border-radius: 3px;
   background: var(--line);
 }
 
-.settings .rail-nav::-webkit-scrollbar-track {
+.settings .rail-nav::-webkit-scrollbar-track,
+.settings .page::-webkit-scrollbar-track {
   background: transparent;
 }
 
@@ -176,7 +181,7 @@ html[data-window="settings"] #root {
   color: var(--muted);
   font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
 }
 
 /* 「系统」沉在底部：它不属于上面任何一组。和 `.rail-foot` 一样用一道细线分开，
@@ -193,14 +198,14 @@ html[data-window="settings"] #root {
 .settings .rail-item {
   /* 左边留一条 2px 的透明边框：选中时只把它染成 accent，文字位置一个像素
      都不动。用 border 而不是 inset 阴影，是因为圆角下 inset 会被裁成一小截。 */
-  padding: 4px 10px 4px 8px;
+  padding: 3px 10px 3px 8px;
   border: 0;
   border-left: 2px solid transparent;
   border-radius: 6px;
   background: transparent;
   color: var(--muted);
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
   text-align: left;
   cursor: pointer;
 }
@@ -248,6 +253,8 @@ html[data-window="settings"] #root {
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
+  /* 正文 12.5px 下 1.5 偏紧：设置页里多的是两三行的说明，1.6 读起来才不挤。 */
+  line-height: 1.6;
   animation: page-in 140ms ease-out;
 }
 
@@ -279,7 +286,7 @@ html[data-window="settings"] #root {
 .section-title {
   margin-bottom: 8px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12.5px;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -429,7 +436,7 @@ html[data-window="settings"] #root {
   background: transparent;
   color: var(--muted);
   font: inherit;
-  font-size: 12px;
+  font-size: 12.5px;
   cursor: pointer;
 }
 
@@ -522,7 +529,7 @@ html[data-window="settings"] #root {
 .hint {
   margin-top: 8px;
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: 12.5px;
   overflow-wrap: anywhere;
 }
 
@@ -554,7 +561,7 @@ html[data-window="settings"] #root {
   background: var(--bg);
   color: var(--fg);
   font: inherit;
-  font-size: 12px;
+  font-size: 12.5px;
 }
 
 .input::placeholder {
@@ -627,7 +634,7 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   background: var(--bg);
   color: var(--fg);
   font: inherit;
-  font-size: 11.5px;
+  font-size: 12.5px;
   cursor: pointer;
 }
 
@@ -703,7 +710,7 @@ input[type="color"].style-swatch::-webkit-color-swatch {
 
 .muted-text {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 12.5px;
 }
 
 .btn:disabled {
@@ -1308,7 +1315,7 @@ input[type="color"].style-swatch::-webkit-color-swatch {
 .session .message {
   overflow: hidden;
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: 12.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1524,7 +1531,7 @@ input[type="color"].style-swatch::-webkit-color-swatch {
 /* 消息本身要能读，所以换行、**不**截断 */
 .feed-message {
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: 12.5px;
   overflow-wrap: anywhere;
 }
 
@@ -1536,7 +1543,7 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   margin: 0;
   padding-left: 20px;
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: 12.5px;
   line-height: 1.6;
 }
 
@@ -1548,7 +1555,7 @@ input[type="color"].style-swatch::-webkit-color-swatch {
    两者才不会糊成一团。 */
 .faq-q {
   margin: 10px 0 2px;
-  font-size: 12px;
+  font-size: 12.5px;
 }
 
 /* 指南页的正文。**刻意不套 `.hint` 那个边框盒子**：短提示套框是好的（它把
@@ -1557,7 +1564,7 @@ input[type="color"].style-swatch::-webkit-color-swatch {
 .doc {
   margin: 0 0 6px;
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: 12.5px;
   line-height: 1.6;
   overflow-wrap: anywhere;
 }
@@ -1574,7 +1581,7 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   background: var(--bg);
   color: var(--fg);
   font: inherit;
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .settings .rail-search::placeholder {
@@ -1669,7 +1676,7 @@ input[type="color"].style-swatch::-webkit-color-swatch {
 }
 
 .health-verdict .muted-text {
-  font-size: 11.5px;
+  font-size: 12.5px;
   font-weight: 400;
 }
 
