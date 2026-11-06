@@ -11,6 +11,7 @@
 //! **存的是截到 200 字符的详情，不是全文。** 审计要回答「大概是什么」，
 //! 而把 `API_KEY=…` 那种东西永久写盘是另一回事 —— 全文只该活在本地界面里。
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -159,6 +160,63 @@ pub fn recent_in(dir: &Path, limit: usize) -> Vec<Record> {
     out
 }
 
+/// 某个时刻之后的审批记录，新的在前。
+///
+/// 和 [`recent`] 不同：那个只读最近两个文件（界面上的「审批记录」列表只需要
+/// 翻到昨天），而「本周洞察」要跨 7 天按工具聚合，得读整个保留期。
+pub fn since(since_ms: u64, limit: usize) -> Vec<Record> {
+    match dir() {
+        Ok(dir) => since_in(&dir, since_ms, limit),
+        Err(_) => Vec::new(),
+    }
+}
+
+pub fn since_in(dir: &Path, since_ms: u64, limit: usize) -> Vec<Record> {
+    let mut out = read_since_in(dir, since_ms, |record: &Record| record.ts_ms);
+    out.sort_by_key(|record| std::cmp::Reverse(record.ts_ms));
+    out.truncate(limit);
+    out
+}
+
+/// 「每日一个 jsonl、按时间下界读」的实现只写这一份：事件流水（`events.rs`）
+/// 和审批日志的文件名约定、坏行处理、截止日剪枝完全一样，差别只有记录类型和
+/// 排序规则。各写一份的话，跨零点那天两份日志会对不上。
+pub(crate) fn read_since_in<T, F>(dir: &Path, since_ms: u64, ts_of: F) -> Vec<T>
+where
+    T: DeserializeOwned,
+    F: Fn(&T) -> u64,
+{
+    let cutoff = day_key(since_ms);
+    let mut files = jsonl_files(dir);
+    files.sort_by(|a, b| b.cmp(a));
+
+    let mut out: Vec<T> = Vec::new();
+    for name in files {
+        // 文件名是 `YYYY-MM-DD.jsonl`，倒序扫到比截止日更早的就可以停。
+        // `cutoff` 少了后缀，所以当天那个文件字典序更大，不会被误跳过。
+        if name.as_str() < cutoff.as_str() {
+            break;
+        }
+        let Ok(file) = std::fs::File::open(dir.join(&name)) else {
+            continue;
+        };
+        for line in io::BufReader::new(file).lines() {
+            let Ok(line) = line else { continue };
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            // 坏一行只丢一条：这是日志，不该因为一次写坏就整份读不出来。
+            if let Ok(item) = serde_json::from_str::<T>(line)
+                && ts_of(&item) >= since_ms
+            {
+                out.push(item);
+            }
+        }
+    }
+    out
+}
+
 /// 删掉超过 [`KEEP_DAYS`] 天的文件。启动时调一次就够 —— 它不是实时要求。
 pub fn prune(now_ms: u64) {
     if let Ok(dir) = dir() {
@@ -191,7 +249,7 @@ fn jsonl_files(dir: &Path) -> Vec<String> {
 ///
 /// 用 UTC 而不是本地时区：这里不引时区数据依赖（和 `config::utc_hms` 同一个取舍），
 /// 而**跨零点那条记录落在哪个文件并不重要** —— 界面按 `ts_ms` 排序显示，不按文件。
-fn day_key(ts_ms: u64) -> String {
+pub(crate) fn day_key(ts_ms: u64) -> String {
     let (year, month, day) = civil_from_days((ts_ms / 86_400_000) as i64);
     format!("{year:04}-{month:02}-{day:02}")
 }
@@ -314,6 +372,25 @@ mod tests {
 
         assert!(!dir.join("2024-01-01.jsonl").exists(), "该删的没删");
         assert!(dir.join("2024-06-01.jsonl").exists(), "不该删的被删了");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 「本周洞察」要跨 7 天按工具聚合，`recent` 只读两个文件是不够的。
+    #[test]
+    fn since_reads_across_more_than_two_days() {
+        let dir = std::env::temp_dir().join(format!("shub-approvals-since-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        append_in(&dir, &record(1_704_067_200_000, "allow")).unwrap();
+        append_in(&dir, &record(1_704_153_600_000, "deny")).unwrap();
+        append_in(&dir, &record(1_704_240_000_000, "expired")).unwrap();
+
+        assert_eq!(since_in(&dir, 0, 10).len(), 3, "三天都要读到");
+        let since = since_in(&dir, 1_704_153_600_000, 10);
+        assert_eq!(since.len(), 2);
+        assert_eq!(since[0].decision, "expired", "新的在前");
+        assert_eq!(since_in(&dir, 0, 1).len(), 1);
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

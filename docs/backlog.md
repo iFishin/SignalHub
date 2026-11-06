@@ -38,11 +38,15 @@
 > 而 `plan-multi-machine.md:274` 与 `architecture.md:935` 写「不做远程审批」。
 > 开工前先定「谁有权点」，见 §5。
 
-### 1.2 离开回来摘要的三个子项
+### 1.2 离开回来摘要剩下的两个子项
 
-`plan-round5.md:54-55`：事件流水（否则离开期间出现过又消失的会话看不到）、
-`git diff` 摘要、每行「等了多久」改成悬停提示（现在是行内文字）。
-第一版摘要**已落地**（`architecture.md` §3.25.1），这三件没有。
+**事件流水已落地**（2026-11-07，`events.rs` / `awaySummary.ts` v2 / `insights.ts`）：
+`~/.signalhub/events/*.jsonl` 每日 append-only、保留 30 天；离开期间跑完就被删掉的
+会话现在会单独报「另有 N 个跑完就结束了」，历史页还多了一张「本周洞察」。设计取舍见
+`architecture.md` §3.25.2。摘要 v2 读不到事件时会安静退回只看快照的第一版行为。
+
+`plan-round5.md:54-55` 里还剩两件没做：`git diff` 摘要、每行「等了多久」改成
+悬停提示（现在是行内文字）。
 
 ### 1.3 plan-round4 里没排期的提案
 
@@ -108,7 +112,7 @@ D2（ntfy / Bark 预设）已作为**转发 preset** 落地（`plan-hub-round2.m
 | Linux 提示音 | 恒关（dunst / GNOME 不认 XDG `sound-name`），设置等于没接 | `alerts.rs:263`；`architecture.md:394-396` |
 | 从灯上审批 | **只认 Claude Code + HTTP 式接入**；其余智能体（含 WorkBuddy）确认框仍留在自己界面 | `server.rs:550`；`api.md:1181-1192`；`README.md:107` |
 | 远程会话 | **只读**：不能审批、不能跳转 | `README.md:288`；`plan-multi-machine.md:274-275` |
-| 没有事件流水 | 「离开这段时间」「今日复盘」都基于快照 | `awaySummary.ts:44-47`；`README.md:136` |
+| ~~没有事件流水~~ | **2026-11-07 已解除**（见 §1.2 与 `architecture.md` §3.25.2）。「今日复盘」仍按聚合时长计时 —— 那是它的定义，不是限制；逐会话的问题交给「本周洞察」 | `events.rs`；`insights.ts` |
 | 审批面板的暴露面 | `web_approve` **不是安全边界**，真正的门是 token | `plan-approval.md:163-166`；`README.md:97` |
 
 **Windows 命令式 hook 的 pid（2026-11-06 变化）**：Windows 的进程探活

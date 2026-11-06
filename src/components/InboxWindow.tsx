@@ -11,6 +11,7 @@ import { buildInbox, formatAge, type InboxRow } from "../lib/inboxRows";
 import {
   buildAwaySummary,
   isQuiet,
+  type AwayEvent,
   type AwaySummary,
 } from "../lib/awaySummary";
 import { dangerLabel, reasonLabel } from "../lib/approvalLabels";
@@ -112,7 +113,22 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
     // 等真的有了行再算。收件箱本来就空就一直不算 —— 那种情况也没有摘要可给。
     if (all.length === 0) return;
     awaySettled.current = true;
-    setAway(buildAwaySummary(model, Date.now(), readLastSeen()));
+
+    const now = Date.now();
+    const lastSeen = readLastSeen();
+    // 事件流水是增强，不是依赖：读不到（盘坏、旧版本 Rust、非 Tauri 环境）就
+    // 安静地退回第一版「只看快照」，而不是把整块摘要藏起来。
+    const fallback = () => setAway(buildAwaySummary(model, now, lastSeen));
+    if (lastSeen === null || !inTauri) {
+      fallback();
+      return;
+    }
+    invoke<AwayEvent[]>("get_events", { sinceMs: lastSeen, limit: 5000 })
+      .then((events) => setAway(buildAwaySummary(model, now, lastSeen, events)))
+      .catch((err) => {
+        console.error("get_events 失败", err);
+        fallback();
+      });
   }, [all.length, model]);
 
   // 打开就记「看过」，关掉再记一次。少了卸载那一次的话，收件箱开着一小时后
@@ -131,6 +147,10 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
     if (away.failed > 0) parts.push(m.inbox.awayFailed(away.failed));
     if (away.done > 0) parts.push(m.inbox.awayDone(away.done));
     if (away.running > 0) parts.push(m.inbox.awayRunning(away.running));
+    // 「跑完就被删掉」的那些只在事件流水里，收件箱列表上找不到 —— 单独说出来，
+    // 否则用户数一遍列表会以为摘要多报了。
+    if (away.transientDone > 0) parts.push(m.inbox.awayTransientDone(away.transientDone));
+    if (away.transientFailed > 0) parts.push(m.inbox.awayTransientFailed(away.transientFailed));
     return parts;
   }, [away, m.inbox]);
 
@@ -159,6 +179,16 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
     (row: InboxRow) => row.ageMs + Math.max(0, now - snapshotAt.current),
     [now],
   );
+
+  // 「跑完叫我」的订阅只活在 Rust 内存里。挂载时拉一次，之后每次点按钮用命令
+  // 返回的列表覆盖本地状态 —— 两边始终是同一份真值，不各自记一份。
+  const [watched, setWatched] = useState<string[]>([]);
+  useEffect(() => {
+    if (!inTauri) return;
+    invoke<string[]>("get_watches")
+      .then(setWatched)
+      .catch((err) => console.error("get_watches 失败", err));
+  }, []);
 
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
@@ -239,6 +269,23 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
         .catch((err) => say(String(err)));
     },
     [m.inbox.cleared, say],
+  );
+
+  const toggleWatch = useCallback(
+    (row: InboxRow) => {
+      if (!inTauri) return;
+      const isWatched = watched.includes(row.session);
+      invoke<string[]>(isWatched ? "unwatch_session" : "watch_session", {
+        session: row.session,
+        label: row.label,
+      })
+        .then((ids) => {
+          setWatched(ids);
+          say(isWatched ? m.inbox.watchCleared(row.label) : m.inbox.watchSet(row.label));
+        })
+        .catch((err) => say(String(err)));
+    },
+    [watched, m.inbox, say],
   );
 
   const openSettings = useCallback(() => {
@@ -474,6 +521,21 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
             >
               {m.inbox.jump}
             </button>
+            {row.session && (
+              <button
+                type="button"
+                className="inbox-btn"
+                data-active={watched.includes(row.session) || undefined}
+                onMouseDown={stop}
+                onDoubleClick={stop}
+                onClick={(event) => {
+                  stop(event);
+                  toggleWatch(row);
+                }}
+              >
+                {watched.includes(row.session) ? m.inbox.unwatch : m.inbox.watch}
+              </button>
+            )}
             {row.group && (
               <button
                 type="button"

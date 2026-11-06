@@ -5,6 +5,7 @@ mod approvals;
 mod collect;
 mod devices;
 mod diagnose;
+mod events;
 mod hookmap;
 mod inbox;
 mod jump;
@@ -28,6 +29,7 @@ mod stats;
 mod sweep;
 mod tray;
 mod update;
+mod watches;
 
 // CLI (`src/bin/signalhub.rs`) 通过 #[path] 直接包含这几个模块的源码，
 // 因此它们是 lib 的公开 API，而不是只给 app 内部用的私有模块。
@@ -917,13 +919,60 @@ fn decide_approval(
     }
 }
 
-/// 最近的审批记录（设置 → 历史页读它，见 `docs/plan-approval.md` A1）。
+/// 审批记录（设置 → 历史页读它，见 `docs/plan-approval.md` A1）。
 ///
 /// 直接读盘而不是从内存里取：那份文件才是「跨重启」的那一份，而读它是低频动作
 /// （只在打开那一页时）。读不出来就当空 —— 历史坏了不该挡住别的。
+///
+/// 不给 `since_ms` 就是**最近若干条**（只读最近两个文件，够列表翻的）；给了就
+/// 读整个保留期，给「本周洞察」按工具聚合用。两种读法共用一套落盘格式。
 #[tauri::command]
-fn get_approval_history(limit: Option<usize>) -> Vec<approval_log::Record> {
-    approval_log::recent(limit.unwrap_or(100).min(500))
+fn get_approval_history(
+    limit: Option<usize>,
+    since_ms: Option<u64>,
+) -> Vec<approval_log::Record> {
+    match since_ms {
+        Some(since) => approval_log::since(since, limit.unwrap_or(2000).min(5000)),
+        None => approval_log::recent(limit.unwrap_or(100).min(500)),
+    }
+}
+
+/// 某时刻之后的事件流水（收件箱摘要 v2、历史页「本周洞察」读它）。
+///
+/// `since_ms` 是**前端给的墙上时钟**：Rust 不知道本地时区（和 `stats.rs` 同一个
+/// 取舍），而「今天零点」「上次打开收件箱的时刻」都只有前端说得准。上限是硬的 ——
+/// 常驻应用攒一天的事件可以有几千条，IPC 不该一次搬一座山；界面如实说明这个上限。
+#[tauri::command]
+fn get_events(since_ms: u64, limit: Option<usize>) -> Vec<events::Event> {
+    events::since(since_ms, limit.unwrap_or(2000).min(5000))
+}
+
+/// 收件箱里「跑完叫我」。`label` 是那一行的显示名，通知里要能认出是哪个任务。
+///
+/// 订阅只活在内存里、触发即移除（见 `watches.rs`）：它盯的是这一次运行，
+/// 不是一条要跨重启保留的偏好。
+#[tauri::command]
+fn watch_session(
+    watches: tauri::State<'_, watches::Watches>,
+    session: String,
+    label: String,
+) -> Vec<String> {
+    watches.add(session, label);
+    watches.ids()
+}
+
+#[tauri::command]
+fn unwatch_session(
+    watches: tauri::State<'_, watches::Watches>,
+    session: String,
+) -> Vec<String> {
+    let _ = watches.remove(&session);
+    watches.ids()
+}
+
+#[tauri::command]
+fn get_watches(watches: tauri::State<'_, watches::Watches>) -> Vec<String> {
+    watches.ids()
 }
 
 /// 清掉某一组的全部会话（灯上那块牌右上角的 `×`）。
@@ -2808,6 +2857,7 @@ pub fn run() {
         .manage(shortcuts::SharedShortcuts::default())
         // 专注倒计时的代号（取消上一个线程用，见 manual.rs）
         .manage(manual::SharedManual::default())
+        .manage(watches::Watches::default())
         // 等用户点的那些审批（灯上的气泡读它，见 approvals.rs）。
         // 历史落到 `~/.signalhub/approvals/`；拿不到目录就只在内存里 —— 功能不受影响。
         .manage(std::sync::Arc::new(approvals::Registry::new(
@@ -2846,6 +2896,10 @@ pub fn run() {
             get_shortcuts,
             get_approvals,
             get_approval_history,
+            get_events,
+            watch_session,
+            unwatch_session,
+            get_watches,
             decide_approval,
             get_notify_permission,
             request_notify_permission,
@@ -2915,6 +2969,7 @@ pub fn run() {
                 .map(|duration| duration.as_millis() as u64)
                 .unwrap_or(0);
             approval_log::prune(now_ms);
+            events::prune(now_ms);
 
             // token 建不出来说明 ~/.signalhub 不可写。这是无法降级的配置问题，
             // 让启动直接失败并打出来，好过一个「能启动但上报接口静默不工作」的 app。

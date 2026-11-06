@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AWAY_MIN_MS, buildAwaySummary, isQuiet } from "./awaySummary";
+import { AWAY_MIN_MS, buildAwaySummary, isQuiet, type AwayEvent } from "./awaySummary";
 import type { InboxModel, InboxRow } from "./inboxRows";
 import type { SignalState } from "./types";
 
@@ -38,6 +38,10 @@ function modelOf(rows: InboxRow[]): InboxModel {
 
 const NOW = 1_000_000_000;
 const MIN = 60_000;
+
+function ended(session: string, state: string, tsMs: number, kind = "end"): AwayEvent {
+  return { ts_ms: tsMs, kind, session, state };
+}
 
 describe("buildAwaySummary", () => {
   it("没有基准就不猜", () => {
@@ -99,13 +103,71 @@ describe("buildAwaySummary", () => {
     expect(summary).not.toBeNull();
     expect(isQuiet(summary!)).toBe(true);
   });
+
+  it("事件流水补上「跑完就消失」的会话 —— 这一版存在的理由", () => {
+    const lastSeen = NOW - 30 * MIN;
+    const summary = buildAwaySummary(modelOf([]), NOW, lastSeen, [
+      ended("gone-ok", "done", NOW - 5 * MIN),
+      ended("gone-bad", "error", NOW - 8 * MIN),
+      ended("still-here", "done", NOW - 2 * MIN),
+    ]);
+    // `still-here` 没有出现在快照里，所以也是 transient；这里特意用空快照验证
+    // 「列表里一条都没有，摘要照样能说话」。
+    expect(summary).toMatchObject({ transientDone: 2, transientFailed: 1 });
+    expect(isQuiet(summary!)).toBe(false);
+  });
+
+  it("窗口外的 end、非 end 事件、其他状态都不算", () => {
+    const lastSeen = NOW - 30 * MIN;
+    const summary = buildAwaySummary(modelOf([]), NOW, lastSeen, [
+      ended("before", "done", lastSeen - MIN),
+      ended("future", "done", NOW + MIN),
+      ended("running", "working", NOW - MIN),
+      ended("started", "done", NOW - MIN, "start"),
+      ended("changed", "done", NOW - MIN, "change"),
+    ]);
+    expect(summary).toMatchObject({ transientDone: 0, transientFailed: 0 });
+  });
+
+  it("同一 session 只算一次，且不看已过时的旧 end", () => {
+    const lastSeen = NOW - 30 * MIN;
+    const summary = buildAwaySummary(modelOf([]), NOW, lastSeen, [
+      ended("twice", "done", NOW - MIN),
+      ended("twice", "done", NOW - 10 * MIN),
+      ended("twice", "error", NOW - 20 * MIN),
+    ]);
+    expect(summary?.transientDone).toBe(1);
+    expect(summary?.transientFailed).toBe(0);
+  });
+
+  it("快照里还看得见的会话不重复算进 transient", () => {
+    const lastSeen = NOW - 30 * MIN;
+    const summary = buildAwaySummary(
+      modelOf([row("reused", "done", 2 * MIN)]),
+      NOW,
+      lastSeen,
+      [ended("reused", "done", NOW - MIN)],
+    );
+    expect(summary).toMatchObject({ done: 1, transientDone: 0 });
+  });
 });
 
 describe("isQuiet", () => {
   it("四档全零才算安静", () => {
-    const base = { awayMs: 20 * MIN, done: 0, failed: 0, need: 0, running: 0, longestWaitMs: 0 };
+    const base = {
+      awayMs: 20 * MIN,
+      done: 0,
+      failed: 0,
+      need: 0,
+      running: 0,
+      longestWaitMs: 0,
+      transientDone: 0,
+      transientFailed: 0,
+    };
     expect(isQuiet(base)).toBe(true);
     expect(isQuiet({ ...base, running: 1 })).toBe(false);
     expect(isQuiet({ ...base, need: 1 })).toBe(false);
+    expect(isQuiet({ ...base, transientDone: 1 })).toBe(false);
+    expect(isQuiet({ ...base, transientFailed: 1 })).toBe(false);
   });
 });

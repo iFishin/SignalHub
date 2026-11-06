@@ -348,6 +348,14 @@ html[data-window="inbox"] body {
   background: rgba(255, 255, 255, 0.12);
 }
 
+/* 「跑完叫我」的选中态。和设置面板那套单选控件同一个口径：浅一点的底 + 500
+   字重，不加边框、不加 accent 竖条 —— 一眼看得出「已盯住」就够了。 */
+.inbox-btn[data-active="true"] {
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+  font-weight: 500;
+}
+
 /* 按住确认的进度条（A3）：和灯上用的是同一个组件，所以类名一样 */
 .inbox-btn .hold-fill {
   position: absolute;

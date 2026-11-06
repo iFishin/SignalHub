@@ -61,6 +61,25 @@ pub fn signal_label(lang: Lang, state: Signal) -> &'static str {
     }
 }
 
+/// 「盯住这个任务」到点那条通知。标题跟着结果走，正文点名是哪个会话。
+///
+/// 返回 `(title, body)` 而不是一个拼好的字符串：通知插件要两个字段，而在调用点
+/// 再拆一次字符串只会让「哪一半是标题」变成第二处真值。
+pub fn watch_notice(lang: Lang, state: Option<Signal>, label: &str) -> (String, String) {
+    match lang {
+        Lang::Zh => match state {
+            Some(Signal::Done) => ("任务完成".to_string(), format!("「{label}」跑完了")),
+            Some(Signal::Error) => ("任务失败".to_string(), format!("「{label}」出错了")),
+            _ => ("任务结束".to_string(), format!("「{label}」已经结束")),
+        },
+        Lang::En => match state {
+            Some(Signal::Done) => ("Task finished".to_string(), format!("\"{label}\" has finished")),
+            Some(Signal::Error) => ("Task failed".to_string(), format!("\"{label}\" hit an error")),
+            _ => ("Task ended".to_string(), format!("\"{label}\" has ended")),
+        },
+    }
+}
+
 /// 工具动词的分类 → 这个词（HTTP 式 hook 生成「正在做什么」那一行要用）。
 ///
 /// **和 CLI 侧那张表（`cli_text.rs` 的 `tool_v_*`）必须是同一组词。** 同一个工具在

@@ -1461,3 +1461,27 @@ Phase 1–2 阶段还没有 HTTP 和 CLI，前端内置了调试快捷键：灯�
 | `8` | `off` |
 
 这些快捷键直接调 Rust 侧的 `set_state` 命令，走的是与 HTTP 完全相同的 Store 路径，所以能顺带验证聚合、TTL、事件推送三条链路。仅在 `debug` 构建中注册。
+
+## 8. 事件流水与前端专用命令（0.5.1 之后）
+
+这一节的命令**只在 webview 内部**由 `invoke()` 调用，和 §2 的 HTTP 接口不是同一条路：HTTP 要 token、给外部程序用；IPC 不监听端口，给设置面板 / 收件箱自己用。
+
+事件落在 `~/.signalhub/events/YYYY-MM-DD.jsonl`，每日一个文件、append-only、`0600`、保留 30 天。一行一条（`start` / `change` / `end`）：
+
+```json
+{"ts_ms":1730937600000,"kind":"end","session":"s1","group":"default","agent":"claude-code","machine":"","state":"done","cwd":"/work/signalhub","message":"build finished"}
+```
+
+`end` 的 `state` 是**最后已知状态**，不是「结束」这个状态 —— 「跑完就被删掉」的那条靠它才看得见。`message` 是智能体上报的短说明，盘上截到 200 字符；审批详情那种命令原文不经过这里。事件的唯一产生点是 `notify::compose`（合帧外层），详见 `architecture.md` §3.25.2。
+
+| 命令 | 参数 | 返回 | 说明 |
+|---|---|---|---|
+| `get_events` | `since_ms: u64`（墙上时钟，前端算）、`limit?: usize` | `Event[]`，新的在前 | 默认 2000、上限 5000。跨零点按文件日期剪枝；坏行跳过 |
+| `get_approval_history` | `limit?: usize`、`since_ms?: u64` | `Record[]` | **不给 `since_ms`** 时是最近若干条（只读最近两个文件，默认 100、上限 500，给设置页的列表用）；**给了** 就读整个 30 天保留期（默认 2000、上限 5000，给「本周洞察」聚合用） |
+| `watch_session` | `session: string`、`label: string` | `string[]`（当前订阅的 session id） | 一次性订阅；`label` 只是通知里显示的名字 |
+| `unwatch_session` | `session: string` | `string[]` | 幂等 |
+| `get_watches` | — | `string[]` | 收件箱拿它决定按钮文案 |
+
+`watch_session` / `unwatch_session` **返回整份列表**，前端用它覆盖本地状态，不在两边各记一份。订阅只活在内存里、触发即移除、重启不保留；触发条件是 `done` / `error` / `end`（被清掉也算，否则用户会一直以为还在跑）。通知走 `alerts::send_message`，不带声音、**不受勿扰时段影响**（勿扰是全局开关，这是用户针对单个任务点名要的那一条），也不补发。
+
+「本周洞察」的聚合是**前端纯函数**（`src/lib/insights.ts`）：按会话去重后取项目（`cwd` 末段）、智能体、最常被拒绝的工具、审批等待总和与中位数。它只做加法和挑最大值，不推测；两份日志各最多 5000 条，界面把这个上限写清楚。

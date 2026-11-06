@@ -6,6 +6,7 @@ import type { SignalState } from "./types";
 import type { DemoGroupId } from "./demo";
 import type { HealthCheck, HealthLevel } from "./health";
 import type { DigestFact } from "./digest";
+import type { InsightFact } from "./insights";
 import type { DraftProblem } from "./customAgentForm";
 
 export type Lang = "zh" | "en";
@@ -222,6 +223,44 @@ function enDigestFact(fact: DigestFact): string {
   }
 }
 
+function zhInsightFact(fact: InsightFact): string {
+  switch (fact.kind) {
+    case "empty":
+      return "这段时间还没有任何事件记录。";
+    case "volume":
+      return `近 ${fact.days} 天有 ${fact.sessions} 个会话活跃过：${fact.finished} 个完成、${fact.failed} 个失败。`;
+    case "peakDay":
+      return `${fact.day} 最忙，有 ${fact.sessions} 个会话开始。`;
+    case "topProject":
+      return `出场最多的是「${fact.name}」，${fact.sessions} 个会话。`;
+    case "topAgent":
+      return `最活跃的是 ${fact.name}，${fact.sessions} 个会话。`;
+    case "deniedTool":
+      return `拒绝过 ${fact.total} 次，最常拒绝的是 ${fact.tool}（${fact.count} 次）。`;
+    case "wait":
+      return `${fact.count} 次审批一共等了 ${humanWait(fact.totalMs)}，中位数 ${humanWait(fact.medianMs)}。`;
+  }
+}
+
+function enInsightFact(fact: InsightFact): string {
+  switch (fact.kind) {
+    case "empty":
+      return "No events recorded in this window yet.";
+    case "volume":
+      return `${fact.sessions} sessions were active over the last ${fact.days} days: ${fact.finished} finished, ${fact.failed} failed.`;
+    case "peakDay":
+      return `${fact.day} was the busiest, with ${fact.sessions} sessions starting.`;
+    case "topProject":
+      return `Most sessions came from "${fact.name}" — ${fact.sessions}.`;
+    case "topAgent":
+      return `${fact.name} was the most active, with ${fact.sessions} sessions.`;
+    case "deniedTool":
+      return `${fact.total} denials; ${fact.tool} was denied most often (${fact.count}).`;
+    case "wait":
+      return `${fact.count} approvals took ${humanWait(fact.totalMs)} in total, median ${humanWait(fact.medianMs)}.`;
+  }
+}
+
 /**
  * 全部界面文案。加一条就得两种语言都加 —— 类型系统会盯着。
  *
@@ -335,6 +374,13 @@ export interface Messages {
   digestHint: string;
   digestFact: (fact: DigestFact) => string;
   digestReportHeader: (day: string) => string;
+
+  // 本周洞察（设置 → 历史，紧接今日复盘）
+  insightTitle: string;
+  insightHint: string;
+  insightFact: (fact: InsightFact) => string;
+  insightReportHeader: (days: number) => string;
+  insightError: string;
 
   // 通用动作
   restoreAll: string;
@@ -895,6 +941,11 @@ export interface Messages {
     mute: string;
     unmute: string;
     clear: string;
+    /** 「盯住这个任务」：跑完 / 出错 / 消失时通知我，一次性。 */
+    watch: string;
+    unwatch: string;
+    watchSet: (label: string) => string;
+    watchCleared: (label: string) => string;
     close: string;
     settings: string;
     truncated: string;
@@ -923,6 +974,9 @@ export interface Messages {
     awayFailed: (count: number) => string;
     awayNeed: (count: number) => string;
     awayRunning: (count: number) => string;
+    /** 只存在于事件流水里：跑完 / 失败之后已经从收件箱消失的那些。 */
+    awayTransientDone: (count: number) => string;
+    awayTransientFailed: (count: number) => string;
     /** 离开期间什么都没发生。 */
     awayQuiet: string;
     awayDismiss: string;
@@ -1089,9 +1143,16 @@ export const MESSAGES: Record<Lang, Messages> = {
 
     digestTitle: "今日复盘",
     digestHint:
-      "按聚合状态计时，同一时刻只记一个状态，所以各项可以直接相加；空闲 / 离线的时间也在里面。审批只取最近 100 条记录里属于今天的。这里没有事件流水 —— 出现过又消失的会话看不到。",
+      "按聚合状态计时，同一时刻只记一个状态，所以各项可以直接相加；空闲 / 离线的时间也在里面。审批只取最近 100 条记录里属于今天的。它看的是时长、不逐会话 —— 出现过又消失的会话请看下方的「本周洞察」。",
     digestFact: zhDigestFact,
     digestReportHeader: (day) => `SignalHub 今日复盘 · ${day}`,
+
+    insightTitle: "本周洞察",
+    insightHint:
+      "按会话和审批记录数数，数据来自本机近 7 天的事件流水与审批日志（各最多 5000 条，超出只取最新的）。只做加法和挑最大值，不联网、不推测。",
+    insightFact: zhInsightFact,
+    insightReportHeader: (days) => `SignalHub 本周洞察 · 近 ${days} 天`,
+    insightError: "本地事件流水读不出来，这张卡片暂时不显示。",
 
     restoreAll: "全部恢复",
     mute: "静音",
@@ -1634,6 +1695,10 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       mute: "静音该组",
       unmute: "取消静音",
       clear: "清除",
+      watch: "跑完叫我",
+      unwatch: "取消盯",
+      watchSet: (label) => `已盯住「${label}」，结束时通知你`,
+      watchCleared: (label) => `已取消盯住「${label}」`,
       close: "关闭",
       settings: "设置…",
       truncated: "命令太长，只能拒绝；要放行请回终端里看全。",
@@ -1654,6 +1719,8 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       awayFailed: (count) => `${count} 个失败`,
       awayNeed: (count) => `${count} 个在等你`,
       awayRunning: (count) => `${count} 个还在跑`,
+      awayTransientDone: (count) => `另有 ${count} 个跑完就结束了`,
+      awayTransientFailed: (count) => `另有 ${count} 个失败后结束了`,
       awayQuiet: "没有新动静",
       awayDismiss: "知道了",
     },
@@ -1812,9 +1879,16 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
 
     digestTitle: "Today at a glance",
     digestHint:
-      "Aggregate state is timed one state at a time, so the pieces add up; idle and offline are included. Approvals come from today's entries within the most recent 100 records. There is no event log — sessions that appeared and vanished while you were away are not visible here.",
+      "Aggregate state is timed one state at a time, so the pieces add up; idle and offline are included. Approvals come from today's entries within the most recent 100 records. It measures duration, not individual sessions — see \"This week in focus\" below for sessions that came and went.",
     digestFact: enDigestFact,
     digestReportHeader: (day) => `SignalHub daily digest · ${day}`,
+
+    insightTitle: "This week in focus",
+    insightHint:
+      "Counts sessions and approvals from the last 7 days of local event and approval logs (up to 5000 entries each; the newest win). Only sums and maxima — nothing leaves this machine and nothing is guessed.",
+    insightFact: enInsightFact,
+    insightReportHeader: (days) => `SignalHub weekly insights · last ${days} days`,
+    insightError: "The local event log could not be read; this card is hidden for now.",
 
     restoreAll: "Restore all",
     mute: "Mute",
@@ -2368,6 +2442,10 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
       mute: "Mute group",
       unmute: "Unmute",
       clear: "Clear",
+      watch: "Notify me when done",
+      unwatch: "Stop watching",
+      watchSet: (label) => `Watching “${label}” — you'll get a notice when it ends`,
+      watchCleared: (label) => `Stopped watching “${label}”`,
       close: "Close",
       settings: "Settings…",
       truncated:
@@ -2389,6 +2467,8 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
       awayFailed: (count) => `${count} failed`,
       awayNeed: (count) => `${count} waiting on you`,
       awayRunning: (count) => `${count} still running`,
+      awayTransientDone: (count) => `${count} more finished and cleared`,
+      awayTransientFailed: (count) => `${count} more failed and cleared`,
       awayQuiet: "Nothing new",
       awayDismiss: "Got it",
     },

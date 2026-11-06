@@ -33,7 +33,10 @@ pub type Notifier = Arc<dyn Fn(&Snapshot) + Send + Sync>;
 /// HTTP。表现是「通知和 webhook 从来不发」，但两边都不报错，极难发现。
 /// 只有一个入口就不会再出现这种事。
 pub fn compose(app: tauri::AppHandle) -> Notifier {
-    coalesce(compose_now(app))
+    // 事件流水挂在**合帧外层**：`coalesce` 只把 100ms 里最后一帧送进这条链，
+    // 而流水要的是每一帧（一轮里「出现 → 完成」的中间态正是它存在的理由）。
+    // 这样 `crate::mutate` 和 `sweep::spawn` 两条路都自动覆盖，不用各自记一遍。
+    crate::events::tap(app.clone(), coalesce(compose_now(app)))
 }
 
 /// 合帧窗口。见 [`coalesce`]。

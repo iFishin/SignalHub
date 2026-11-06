@@ -40,6 +40,8 @@ import {
   type HealthCheck,
 } from "../lib/health";
 import { buildDigest, digestMarkdown, type DigestFact } from "../lib/digest";
+import { buildInsights, insightsMarkdown, type InsightFact } from "../lib/insights";
+import { useInsights } from "../lib/useInsights";
 import { useOutboundLog, lastAttemptFor, type Attempt } from "../lib/useOutboundLog";
 import { useNow } from "../lib/useNow";
 import {
@@ -991,6 +993,61 @@ function DigestCard({
         {facts.map((fact, index) => (
           <li className="digest-fact" key={`${fact.kind}-${index}`}>
             {m.digestFact(fact)}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * 本周洞察（设置 → 历史，紧接今日复盘）。
+ *
+ * 和 DigestCard 用同一套 `.digest-list` / `.digest-fact`：两张卡问的是同一个
+ * 「过去发生了什么」，只是数据源不同，没必要另起一套视觉语言。读盘失败时
+ * **不画成「没有记录」** —— 那两种状态对用户完全不是一回事。
+ */
+function InsightCard({
+  m,
+  facts,
+  failed,
+  onCopy,
+  onRefresh,
+  copied,
+}: {
+  m: Messages;
+  facts: InsightFact[];
+  failed: boolean;
+  onCopy: () => void;
+  onRefresh: () => void;
+  copied: boolean;
+}) {
+  if (failed) {
+    return (
+      <div className="section">
+        <div className="row">
+          <span>{m.insightTitle}</span>
+          <button type="button" className="btn btn-tiny" onClick={onRefresh}>
+            {m.diagRefresh}
+          </button>
+        </div>
+        <p className="empty">{m.insightError}</p>
+      </div>
+    );
+  }
+  return (
+    <div className="section">
+      <div className="row">
+        <span>{m.insightTitle}</span>
+        <button type="button" className="btn btn-tiny" onClick={onCopy}>
+          {copied ? m.copied : m.copy}
+        </button>
+      </div>
+      <p className="hint">{m.insightHint}</p>
+      <ul className="digest-list">
+        {facts.map((fact, index) => (
+          <li className="digest-fact" key={`${fact.kind}-${index}`}>
+            {m.insightFact(fact)}
           </li>
         ))}
       </ul>
@@ -2301,6 +2358,28 @@ export function SettingsPanel({ snapshot }: Props) {
       digestMarkdown(digestFacts, m.digestFact, m.digestReportHeader(todayKey)),
     );
 
+  // ---- 本周洞察 ----
+  // 只在「历史」页打开时读盘。日期分桶用本地日期（和 todayKey 同一套 sv 格式），
+  // 纯函数自己不碰时区 —— 见 insights.ts 文件头。
+  const { data: insightData, refresh: refreshInsights } = useInsights(tab === "history");
+  const insightFacts = buildInsights({
+    events: insightData.events,
+    approvals: insightData.approvals,
+    sinceMs: insightData.sinceMs,
+    nowMs: Date.now(),
+    days: insightData.days,
+    dayKey: (ts) => new Date(ts).toLocaleDateString("sv"),
+  });
+  const copyInsights = () =>
+    copy(
+      "insights",
+      insightsMarkdown(
+        insightFacts,
+        m.insightFact,
+        m.insightReportHeader(insightData.days),
+      ),
+    );
+
   // 每个页签的内容。写成函数而不是子组件，是为了免去把十几个 prop 一路传下去。
   const page = () => {
     switch (tab) {
@@ -2314,6 +2393,15 @@ export function SettingsPanel({ snapshot }: Props) {
               facts={digestFacts}
               onCopy={copyDigest}
               copied={copied === "digest"}
+            />
+
+            <InsightCard
+              m={m}
+              facts={insightFacts}
+              failed={insightData.failed}
+              onCopy={copyInsights}
+              onRefresh={refreshInsights}
+              copied={copied === "insights"}
             />
 
             <div className="section">
