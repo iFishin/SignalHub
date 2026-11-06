@@ -647,6 +647,10 @@ pub fn resolve_hook_command(agent: Agent) -> String {
     // 其余几家没探过它们的 hook 是怎么派生的：万一把一个短命的 shell 当成进程号，
     // 服务端会按「进程没了」把会话立刻收掉 —— 那比现在的「沉默」糟得多。所以
     // 它们继续走老路，等有人实测再加。
+    //
+    // Windows 走的是**另一条路**：CLI 自己沿父进程链找（见 `win_pid.rs` 与 CLI 的
+    // `hook_pid`），这里刻意不改命令文本 —— 换了文本会让所有 Windows 用户被
+    // `command_stale` 提示「已装的是旧版、请重装 hook」。
     if agent == Agent::ClaudeCode && cfg!(unix) {
         // 前缀赋值把进程号放进**环境变量**，而不是新加一个命令行选项：
         // 用户 PATH 上如果放的是旧版本的 CLI，它不认识新选项，会把整条 hook

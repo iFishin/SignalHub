@@ -67,6 +67,13 @@ mod diagnose;
 #[path = "../hookmap.rs"]
 mod hookmap;
 
+// Windows 上「沿父进程链找智能体」的那一段。纯函数部分在所有平台都编译（好让
+// 单测在开发机上跑），真正调 ToolHelp API 的那段是 `#[cfg(windows)]`。
+// 只挂在这个二进制里：app 侧不需要找 pid，挂过去只会换来一片 dead_code。
+#[allow(dead_code)]
+#[path = "../win_pid.rs"]
+mod win_pid;
+
 use hookmap::{
     clip, cwd_of, event_name, in_tool_ttl_ms, map_event, session_id, tool_target, tool_verb,
     Action, Verb, TOOL_NAME_MAX,
@@ -518,6 +525,29 @@ fn apply_env_pid(body: &mut Value) {
 
 fn env_pid() -> Option<u32> {
     parse_pid(&std::env::var("SIGNALHUB_PID").ok()?)
+}
+
+/// `hook` 路径用的进程号：**先信显式给进来的，再让 Windows 自己找**。
+///
+/// 插件式接入（`process.pid`）、Unix 命令式（`$PPID`）、`signalhub run` 都已经
+/// 把 pid 放进 `SIGNALHUB_PID`，那是最准的，不许被后面的推断覆盖。
+/// 只有它没给时，Windows 命令式才由 CLI 沿父进程链找（见 `win_pid.rs`）；
+/// 找不到就返回 `None`，回落「工具开始时给 30 分钟」那条兜底 —— 最坏和以前一样。
+///
+/// `report` 子命令刻意**不走这里**：那是人手写的一条上报，凭空猜一个 pid 会把
+/// 别人的会话按「进程没了」删掉。它仍然只用 `apply_env_pid`。
+fn hook_pid() -> Option<u32> {
+    if let Some(pid) = env_pid() {
+        return Some(pid);
+    }
+    #[cfg(windows)]
+    {
+        win_pid::current_agent_pid()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
 }
 
 /// 只认正整数。没被 shell 展开的 `$PPID`、0、空串都算「没给」。
@@ -1261,7 +1291,7 @@ fn hook(agent: &str, flags: &Flags) -> Result<(), Failure> {
             (agent, map_key),
             &payload,
             flags,
-            env_pid(),
+            hook_pid(),
         )),
         Action::Clear => None,
     };

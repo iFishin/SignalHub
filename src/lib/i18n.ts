@@ -6,6 +6,7 @@ import type { SignalState } from "./types";
 import type { DemoGroupId } from "./demo";
 import type { HealthCheck, HealthLevel } from "./health";
 import type { DigestFact } from "./digest";
+import type { DraftProblem } from "./customAgentForm";
 
 export type Lang = "zh" | "en";
 
@@ -508,6 +509,23 @@ export interface Messages {
   customAgentsLimit: string;
   /** 「打开配置文件」按钮（文件不存在时先建一份带说明的空文件） */
   customAgentsOpen: string;
+  /** 手写之外的第三条路：面板里直接填一条，走 `add_custom_agent` IPC 写入 */
+  customAgentAddToggle: string;
+  customAgentAddTitle: string;
+  customAgentAddHint: string;
+  customAgentFieldId: string;
+  customAgentFieldName: string;
+  customAgentFieldFamily: string;
+  customAgentFieldConfig: string;
+  customAgentFieldMarker: string;
+  customAgentFieldCommand: string;
+  customAgentReplace: string;
+  customAgentSubmit: string;
+  customAgentCancel: string;
+  /** 预校验的错误文案。Record 保证每个 DraftProblem 都有中英两份，靠 tsc 兜住 */
+  customAgentProblems: Record<DraftProblem, string>;
+  /** 写入结果：added / unchanged / replaced，参数是归一化后的 id */
+  customAgentOutcome: (outcome: "added" | "unchanged" | "replaced", id: string) => string;
   /** 「让智能体自己来配」那一块：标题、说明、按钮、指南页那句引导 */
   setupPromptTitle: string;
   setupPromptHint: string;
@@ -1248,6 +1266,33 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     customAgentsLimit:
       "只覆盖「格式同构、路径不同」这一类 —— 事件名是另一套的，仍然得等我们加一家。",
     customAgentsOpen: "打开配置文件",
+    customAgentAddToggle: "在面板里添加",
+    customAgentAddTitle: "添加一条预设",
+    customAgentAddHint:
+      "不用直接改配置文件：填完走应用内的写入命令，会先校验、保留已有条目，也不会覆盖坏掉的 JSON。拿不准同构家族就别猜 —— 猜错会装出一份看着正常、却永远不报状态的 hook。",
+    customAgentFieldId: "id（上报时的名字）",
+    customAgentFieldName: "显示名称",
+    customAgentFieldFamily: "同构家族",
+    customAgentFieldConfig: "hook 配置文件路径",
+    customAgentFieldMarker: "安装痕迹目录（可选）",
+    customAgentFieldCommand: "命令名（可选）",
+    customAgentReplace: "覆盖同名条目",
+    customAgentSubmit: "写入并校验",
+    customAgentCancel: "收起",
+    customAgentProblems: {
+      idRequired: "请填 id。",
+      nameRequired: "请填显示名称。",
+      familyRequired: "请选一个同构家族。",
+      configRequired: "请填 hook 配置文件路径。",
+      configParent: "路径里不能有 .. —— 请填你自己的配置文件路径。",
+      commandSpaces: "命令名不能带参数或空格。",
+    },
+    customAgentOutcome: (outcome, id) =>
+      outcome === "added"
+        ? `已写入 ${id}，列表已刷新。`
+        : outcome === "unchanged"
+          ? `${id} 已存在且内容相同，没有改动文件。`
+          : `已覆盖 ${id}，列表已刷新。`,
     setupPromptTitle: "让智能体自己来配",
     setupPromptHint:
       "不确定自己用的这一家在不在清单里？把整段提示词粘给它，让它自己判断该走哪条路、写好配置、装好 hook。里面带着这台机器当前的清单、路径和端口，不用你先去查文档。",
@@ -1949,6 +1994,33 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     customAgentsLimit:
       "This only covers agents that are format-compatible with a different path. If the event names differ, we still have to add one.",
     customAgentsOpen: "Open the config file",
+    customAgentAddToggle: "Add from this panel",
+    customAgentAddTitle: "Add a preset",
+    customAgentAddHint:
+      "No need to edit the file by hand: this goes through the app's write command, which validates the entry, keeps existing ones and refuses to overwrite broken JSON. Do not guess the family — a wrong one installs a hook that looks fine but never reports anything.",
+    customAgentFieldId: "id (the reported name)",
+    customAgentFieldName: "Display name",
+    customAgentFieldFamily: "Compatible family",
+    customAgentFieldConfig: "Hook config path",
+    customAgentFieldMarker: "Install marker directory (optional)",
+    customAgentFieldCommand: "Executable name (optional)",
+    customAgentReplace: "Replace an entry with the same id",
+    customAgentSubmit: "Write and validate",
+    customAgentCancel: "Close",
+    customAgentProblems: {
+      idRequired: "An id is required.",
+      nameRequired: "A display name is required.",
+      familyRequired: "Pick a compatible family.",
+      configRequired: "A hook config path is required.",
+      configParent: "The path cannot contain .. — point at your own config file.",
+      commandSpaces: "The executable name cannot contain arguments or spaces.",
+    },
+    customAgentOutcome: (outcome, id) =>
+      outcome === "added"
+        ? `Added ${id}; the list has been refreshed.`
+        : outcome === "unchanged"
+          ? `${id} already exists with the same content; the file was left untouched.`
+          : `Replaced ${id}; the list has been refreshed.`,
     setupPromptTitle: "Let the agent set itself up",
     setupPromptHint:
       "Not sure whether your agent is on the list? Paste the whole prompt into it and let it pick the right route, write the config and install the hooks. It carries this machine's current adapter list, paths and port, so there is nothing to look up first.",

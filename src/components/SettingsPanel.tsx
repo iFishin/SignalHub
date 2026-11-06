@@ -44,6 +44,7 @@ import { useOutboundLog, lastAttemptFor, type Attempt } from "../lib/useOutbound
 import { useNow } from "../lib/useNow";
 import {
   groupReceipts,
+  addCustomAgent,
   openCustomAgents,
   useAgents,
   useCustomAgents,
@@ -68,6 +69,11 @@ import {
 } from "../lib/presets";
 import { nameChanged, withGroupName } from "../lib/groupMeta";
 import { buildOnboardingPrompt } from "../lib/onboardingPrompt";
+import {
+  checkAgentDraft,
+  EMPTY_AGENT_DRAFT,
+  type AgentDraft,
+} from "../lib/customAgentForm";
 import { SIGNALS, REPORTABLE_SIGNALS, type SignalState, type Snapshot } from "../lib/types";
 
 /**
@@ -2163,6 +2169,53 @@ export function SettingsPanel({ snapshot }: Props) {
     </button>
   );
 
+  // ---- 面板里直接添加一条自定义预设 ----------------------------------------
+  // 和「打开配置文件」写的是同一份文件，但走 `add_custom_agent` IPC：校验、保留
+  // 已有条目、拒绝覆盖坏 JSON 全在 Rust 那边，前端不碰文件内容。
+  // 默认收起 —— 这一节已经有提示词、说明、路径和错误列表，再摊开六个输入框会把
+  // 「复制提示词」这条主路挤到下面去。
+  const [showAgentForm, setShowAgentForm] = useState(false);
+  const [agentDraft, setAgentDraft] = useState<AgentDraft>(EMPTY_AGENT_DRAFT);
+  const [agentReplace, setAgentReplace] = useState(false);
+  const [agentFormBusy, setAgentFormBusy] = useState(false);
+  // 预校验文案和 Rust 的 Err(String) 共用一行；后者是中文，原样摆出来就好
+  const [agentFormError, setAgentFormError] = useState<string | null>(null);
+  const [agentFormNotice, setAgentFormNotice] = useState<string | null>(null);
+
+  const setDraft = (field: keyof AgentDraft, value: string) =>
+    setAgentDraft((draft) => ({ ...draft, [field]: value }));
+
+  const submitCustomAgent = () => {
+    setAgentFormError(null);
+    setAgentFormNotice(null);
+    const problem = checkAgentDraft(agentDraft, custom?.families ?? []);
+    if (problem) {
+      setAgentFormError(m.customAgentProblems[problem]);
+      return;
+    }
+    setAgentFormBusy(true);
+    addCustomAgent({
+      id: agentDraft.id,
+      name: agentDraft.name,
+      family: agentDraft.family,
+      config: agentDraft.config,
+      marker: agentDraft.marker.trim() || null,
+      command: agentDraft.command.trim() || null,
+      replace: agentReplace,
+    })
+      .then((result) => {
+        // 两份列表都得补拉：新条目出现在 detect_agents 那张表里（custom: true），
+        // 而 path / problems / families 来自 custom_agents_info。
+        refreshCustom();
+        refreshAgents();
+        setAgentFormNotice(m.customAgentOutcome(result.outcome, result.id));
+        setAgentDraft(EMPTY_AGENT_DRAFT);
+        setAgentReplace(false);
+      })
+      .catch((err) => setAgentFormError(String(err)))
+      .finally(() => setAgentFormBusy(false));
+  };
+
   // ---- 系统体检 ----
   //
   // 判据全在 lib/health.ts，这里只负责取数。刻意**直接 invoke 一次**而不是复用
@@ -3287,7 +3340,95 @@ export function SettingsPanel({ snapshot }: Props) {
                 >
                   {m.customAgentsOpen}
                 </button>
+                <button
+                  type="button"
+                  className="btn btn-tiny"
+                  onClick={() => {
+                    setShowAgentForm((open) => !open);
+                    setAgentFormError(null);
+                    setAgentFormNotice(null);
+                  }}
+                >
+                  {m.customAgentAddToggle}
+                </button>
               </div>
+
+              {/* 字段顺序和 Rust 的 AddRequest 一致。family 的选项取自运行时的
+                  `custom_agents_info`，不另抄一份清单 —— 加一家适配只改 Rust 一处。 */}
+              {showAgentForm && (
+                <div className="custom-agent-form">
+                  <div className="custom-agent-form-title">{m.customAgentAddTitle}</div>
+                  <p className="hint">{m.customAgentAddHint}</p>
+                  <div className="custom-agent-grid">
+                    {(
+                      [
+                        ["id", m.customAgentFieldId],
+                        ["name", m.customAgentFieldName],
+                        ["family", m.customAgentFieldFamily],
+                        ["config", m.customAgentFieldConfig],
+                        ["marker", m.customAgentFieldMarker],
+                        ["command", m.customAgentFieldCommand],
+                      ] as const
+                    ).map(([key, label]) => (
+                      <label className="custom-agent-field" key={key}>
+                        <span>{label}</span>
+                        {key === "family" ? (
+                          <select
+                            className="select custom-agent-select"
+                            value={agentDraft.family}
+                            onChange={(event) => setDraft("family", event.target.value)}
+                          >
+                            <option value="">—</option>
+                            {(custom?.families ?? []).map((family) => (
+                              <option key={family} value={family}>
+                                {family}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <input
+                            className={key === "name" ? "input" : "input mono"}
+                            value={agentDraft[key]}
+                            spellCheck={false}
+                            onChange={(event) => setDraft(key, event.target.value)}
+                          />
+                        )}
+                      </label>
+                    ))}
+                  </div>
+                  <label className="custom-agent-replace">
+                    <input
+                      type="checkbox"
+                      checked={agentReplace}
+                      onChange={(event) => setAgentReplace(event.target.checked)}
+                    />
+                    {m.customAgentReplace}
+                  </label>
+                  <div className="row-start">
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={agentFormBusy}
+                      onClick={submitCustomAgent}
+                    >
+                      {m.customAgentSubmit}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-tiny"
+                      onClick={() => {
+                        setShowAgentForm(false);
+                        setAgentDraft(EMPTY_AGENT_DRAFT);
+                        setAgentFormError(null);
+                      }}
+                    >
+                      {m.customAgentCancel}
+                    </button>
+                  </div>
+                  {agentFormError && <p className="agent-broken">{agentFormError}</p>}
+                  {agentFormNotice && <p className="hint">{agentFormNotice}</p>}
+                </div>
+              )}
             </div>
 
             {/* ---- 系统信号源 ----

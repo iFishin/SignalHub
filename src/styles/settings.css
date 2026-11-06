@@ -564,6 +564,65 @@ html[data-window="settings"] #root {
   margin-top: 8px;
 }
 
+/* 「在面板里添加」：沿用 `.section` 那条 1px 细线分层，不做卡片、不加底色。
+   两列是 720px 设置窗里最省纵向空间的排法，窄窗自动塌成一列。 */
+.custom-agent-form {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.custom-agent-form-title {
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.custom-agent-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 12px;
+  margin-top: 8px;
+}
+
+.custom-agent-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+/* `.select` 的 84px 是灯效表对齐用的，这里要撑满一整列 */
+.custom-agent-select {
+  width: 100%;
+}
+
+.custom-agent-replace {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.custom-agent-form > .row-start {
+  margin-top: 10px;
+}
+
+.custom-agent-form > .agent-broken,
+.custom-agent-form > .hint {
+  margin-top: 6px;
+}
+
+@media (max-width: 560px) {
+  .custom-agent-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .kv {
   display: flex;
   gap: 10px;

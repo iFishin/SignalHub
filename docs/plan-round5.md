@@ -44,7 +44,9 @@
   重给。若被拒绝，界面会明说，不会退回「假装跳了」。
 - 没有在真实的多 tab / tmux / VS Code 场景逐一点过（需要人工）；解析层有单测，端到端要
   真机确认。
-- 没有做「离开回来后的摘要」和手机审批 —— 这是下一块（见下）。
+- 「离开回来后的摘要」**第一版已落地**（见下面第 1 项），还缺事件流水 / `git diff`
+  摘要 / 悬停时长三个子项；手机审批的 **A4 面板版也已完成**，没做的是 PWA + 主动
+  推送那一步（第 2 项，Away approvals）。两者不是同一件事，见下。
 
 ## 下一步（按价值排序）
 
@@ -55,6 +57,8 @@
    `git diff` 摘要、以及「等了多久」只作为那一条的悬停提示。
 2. **Away approvals**：把只读 Web 面板升级成带 token 的 PWA，配合 outbound 的手机推送，
    能看命令并允许 / 拒绝。
+   > 与 `plan-approval.md` 的 A4「手机审批（已完成）」**不是一回事**：A4 只是面板上
+   > 能点，这里多了 PWA 化和主动推送。转发预设（ntfy / Bark / PushDeer）已经有了。
 3. ~~**团队 / 多机 hub**~~ —— **已落地，见 [plan-multi-machine.md](./plan-multi-machine.md)**（v0.4.2）。一台机器当 hub，把别的机器的看板拉过来合并进同一盏灯；对端不用升级，只要开「允许局域网访问」并把 token 抄过来。
 4. 再往后才是更多 agent 适配器和主题 —— 那些不解决需求性。
 
@@ -85,6 +89,9 @@
   - **Windows 也有进程探活了**（#20）：`OpenProcess` + `WaitForSingleObject`，
     插件式接入（opencode / Pi / Hermes）在 Windows 上终于能「进程没了就立刻收」。
     命令式 hook 在 Windows 上还没有进程号（父进程派生方式未实测），仍是老路。
+    > **2026-11-06 补**：这一半已由 `src-tauri/src/win_pid.rs` 实现 —— CLI 自己沿
+    > 父进程链找智能体，找不到就不报 pid。历史记录留着不动，但**仍待 Windows 真机
+    > 验收**，见 [docs/backlog.md](./backlog.md) §2。
 
 - **v0.4.0**（2026-10-28）：tag `v0.4.0` → `21ad2d5`；Release workflow `40712336996`
   四平台全绿（macOS aarch64 / x64、Windows、Linux），产物含 dmg、Windows setup +

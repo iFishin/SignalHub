@@ -160,7 +160,7 @@ impl Store {
 
 **带进程号的会话不靠这条窗口兜底。** sweep 的探活把「pid 还活着、又没收到结束事件」读成「它还在这一轮里」：TTL 到了只续期，**不**把 `working` / `thinking` 降成 `idle`，也不清掉「正在跑什么」。长任务（20 分钟的构建、十分钟的推理）在整段时间里保持原状态；一轮什么时候结束由智能体自己的结束事件（`Stop` / `agent_end` / `execution.succeeded` …）说了算，进程没了则下一拍立刻收掉。早先这里会在 TTL 到期时降成 `idle`，于是「跑了几分钟就自己暗下去」—— 那是拿「多久没说话」当「有没有在干活」，对长任务正好是反的。`permission` / `attention` / `error` 不适用这条（进程活着不能说明授权已经批了）。
 
-没有进程号的接入（Codex / Cursor / Gemini / Goose / CSC / WorkBuddy，以及没重装过的旧 hook）仍按上面的 TTL 走 —— 它们的长任务在 `working` 600 秒后还是会转 `stale`，因为「没事件」和「进程没了」在那一侧仍然分不开。真遇到更长的静默，可以在「行为 → 静默超时」里把这一档再放宽，或由上报方显式带 `ttl_ms`。
+没有进程号的接入（Codex / Cursor / Gemini / Goose / CSC / WorkBuddy，以及没重装过的旧 hook）仍按上面的 TTL 走 —— 它们的长任务在 `working` 600 秒后还是会转 `stale`，因为「没事件」和「进程没了」在那一侧仍然分不开。真遇到更长的静默，可以在「行为 → 静默超时」里把这一档再放宽，或由上报方显式带 `ttl_ms`。Windows 的命令式 hook 由 CLI 沿父进程链补 pid（`win_pid.rs`），但那是**保守近似、真机未验**，找不到就仍走这条路；插件式在 Windows 上本来就有 pid。
 
 ### 3.4 `stale`：把「不说话了」和「空闲」分开
 

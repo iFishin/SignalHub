@@ -470,7 +470,7 @@ pub fn insert(
         }
         if !replace {
             return Err(format!(
-                "id \"{}\" 已经存在，而且内容不一样。确认要覆盖再加 --replace。",
+                "id \"{}\" 已经存在，而且内容不一样。确认要覆盖：面板里勾「覆盖同名条目」后重提，CLI 里加 --replace。",
                 agent.id
             ));
         }
