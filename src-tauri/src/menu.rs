@@ -98,7 +98,8 @@ pub fn show(app: &AppHandle, window: &WebviewWindow, group: &str) -> Result<(), 
         MenuItem::with_id(app, CLEAR, t.menu_clear, true, None::<&str>).map_err(menu_err)?;
     // 「手动状态」子菜单（issue #1）：灯不只是展示 —— 点哪盏灯，就能把那盏灯设成
     // 自己要的状态。它不是第二套状态机：走 `manual::set_group` 的普通上报路径，
-    // 收掉用下面那个「清除该组的状态」。
+    // 只是那条会话会在**本组牌面**上压过真实智能体会话（否则组里有个 working /
+    // permission 的会话时点了看不出变化）。收掉用下面那个「清除该组的状态」。
     let lang = crate::current_lang(app);
     let manual_items = MANUAL_STATES
         .iter()

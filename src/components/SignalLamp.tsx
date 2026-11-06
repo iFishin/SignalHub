@@ -898,9 +898,10 @@ export function SignalLamp({
       {pending > 0 && onDecide && (
         <ApprovalBubble approvals={approvals ?? []} onDecide={onDecide} />
       )}
-      {/* 暂停 / 穿透的角标。**两种形态共用一枚**：它绝对定位在窗口顶部留白的
-          正中、下沿贴着牌 / 灯珠的上沿（见 CSS 的 `.lamp-flag`），既不吃牌身宽度，
-          也不在折叠态占一个点距 —— 所以 Rust 的窗口尺寸完全不用为它变化。
+      {/* 暂停 / 穿透的角标。**两种形态共用一枚**：它绝对定位在灯体内部的最上沿
+          （`top: --lamp-inset`，即内容区开始的那条边，见 CSS 的 `.lamp-flag`），
+          既不吃牌身宽度，也不在折叠态占一个点距 —— 所以 Rust 的窗口尺寸
+          完全不用为它变化。挂在灯内而不是窗口顶部留白里，才不会像飘在灯外面。
           挂 `data-state` 才能从 state.css 拿到 `--state`（穿透时描边取状态色）。 */}
       {flag && (
         <span className="lamp-flag" data-state={aggregate} title={flagTitle}>

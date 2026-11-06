@@ -1,5 +1,5 @@
 use serde::{Deserialize, Deserializer, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::str::FromStr;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -423,6 +423,26 @@ pub struct GroupView {
     pub sessions: Vec<SessionView>,
 }
 
+impl GroupView {
+    /// 「要不要通知」该看的状态：**按会话**取最高优先级，不看牌面覆盖。
+    ///
+    /// 和 [`GroupView::aggregate`] 分开是后来补上的：牌面会被用户手动设的状态
+    /// 覆盖（见 `Store::winner_in`），而通知问的是「有没有真的在等你」——
+    /// 拿牌面来答，一次「手动设成空闲」就会把底下「等授权」的提醒整个吞掉。
+    /// 所以这里只从 `sessions` 算（手动那条也是会话，照常参与取最大值），
+    /// 不看 `aggregate`。
+    ///
+    /// 没有会话视图时退回 `aggregate`：那种紧凑快照是单测和外部构造的
+    /// （`alerts.rs` 的用例就是），生产路径上组名本来就来自会话，不会走到。
+    pub fn alert_state(&self) -> Signal {
+        self.sessions
+            .iter()
+            .map(|session| session.state)
+            .max_by_key(|state| state.priority())
+            .unwrap_or(self.aggregate)
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Snapshot {
     /// 所有组里最高的那个 —— 通知、钩子、托盘都用它，与分组无关
@@ -467,6 +487,16 @@ struct Visible {
 #[derive(Debug, Default)]
 pub struct Store {
     sessions: HashMap<String, Session>,
+    /// 「这一组的状态是用户手动设的」那些会话的 id。
+    ///
+    /// 手动状态仍然是一条普通会话（统计、历史、只读面板、钩子全都照旧认它），
+    /// 只是它**在这一组的牌面上说了算** —— 否则用户从灯上右键设了「空闲」，
+    /// 组里恰好有个正在干活的智能体会话，按优先级一对，牌上什么都不会变，
+    /// 表现就是「点了没反应」。见 `winner_in`。
+    ///
+    /// 不落盘：会话本身也不落盘，`settle` 会顺手把已经不在会话表里的 id 清掉，
+    /// 所以「清除该组」/ 到期 / 会话上限淘汰都不会留下悬空的标记。
+    manual_sessions: HashSet<String>,
     paused: bool,
     /// 聚合值最后一次发生变化的时间
     since: Option<SystemTime>,
@@ -500,6 +530,16 @@ impl Store {
     /// 锁**（`SharedSettings`），在这个已经持着状态锁的地方再去拿它会多一对锁序，
     /// 而算它只需要一次不涉及状态的纯计算。
     pub fn apply(&mut self, now: Instant, req: Report, ttl: Duration) -> bool {
+        self.apply_tagged(now, req, ttl)
+    }
+
+    /// 记一次**用户手动设的状态**（`manual.rs` 用：托盘那三个 + 灯上右键那一组）。
+    ///
+    /// 和普通上报走同一条 `apply_tagged`，只多一步：把这条会话标成「本组牌面由
+    /// 它说了算」。**不改 `Report`** —— 那个结构是 HTTP 的请求体，加一个只有本地
+    /// 能写的字段会让接口契约多一处要解释；而「谁说了算」本来就是 Store 内部的事。
+    pub fn apply_manual(&mut self, now: Instant, req: Report, ttl: Duration) -> bool {
+        self.manual_sessions.insert(req.session_id().to_string());
         self.apply_tagged(now, req, ttl)
     }
 
@@ -815,7 +855,14 @@ impl Store {
             }
             // done 的语义就是「完成，回到常态」，直接消失；
             // 已经是 stale 的再到期就真删掉。
-            if matches!(session.state, Signal::Done | Signal::Stale) {
+            //
+            // **手动设的状态也直接收掉，不转 stale**：它又不是智能体，「它沉默了」
+            // 对一枚用户自己按出来的牌子毫无意义；更要紧的是 `STALE_GRACE` 有
+            // 30 分钟，一条 stale 的手动会话会一直压着底下真实会话，灯在半个
+            // 小时里既不说实话、也不把控制权还回去。想继续用就再设一次。
+            if matches!(session.state, Signal::Done | Signal::Stale)
+                || self.is_manual(session)
+            {
                 to_remove.push(id.clone());
             } else {
                 to_stale.push(id.clone());
@@ -935,26 +982,66 @@ impl Store {
         views
     }
 
+    fn is_manual(&self, session: &Session) -> bool {
+        self.manual_sessions.contains(&session.id)
+    }
+
     /// 优先级最高者；平局时取最近进入该状态的，再平局取 id 最小者，保证结果确定。
+    ///
+    /// **全局聚合不看手动标记**：所有会话（含手动那条）按普通优先级比，一颗灯
+    /// 被手动设成绿，不该把别处「等授权」的红从托盘、物理灯、今日统计里抹掉
+    /// —— 那些问的是「世界是什么样」。
     fn winner(&self) -> Option<&Session> {
         self.sessions.values().max_by(|a, b| by_priority(a, b))
     }
 
-    /// 某一组里优先级最高的会话 —— 那块牌的颜色和消息由它决定。
-    fn winner_in(&self, group: &str) -> Option<&Session> {
+    /// 组里**真实会话**的最高优先级（手动那条不算）。
+    fn real_winner_in(&self, group: &str) -> Option<&Session> {
         self.sessions
             .values()
-            .filter(|s| s.group == group)
+            .filter(|s| s.group == group && !self.is_manual(s))
             .max_by(|a, b| by_priority(a, b))
     }
 
-    /// 某一组「决定聚合那个会话」的工作目录 —— 「打开项目目录」用它。
+    /// 这一组用户手动设的那条会话。转了 `stale` 就不再算数（正常路径上
+    /// `expire` 会直接把它删掉，这里只是兜住别的来路）。
+    fn manual_winner_in(&self, group: &str) -> Option<&Session> {
+        self.sessions
+            .values()
+            .filter(|s| s.group == group && self.is_manual(s) && s.state != Signal::Stale)
+            .max_by(|a, b| by_priority(a, b))
+    }
+
+    /// 某一组里决定牌面颜色和消息的会话。
     ///
-    /// 取 winner 而不是组内随便一个：牌上那块颜色 / 消息就是 winner 的，菜单要打开
-    /// 的自然也该是同一个会话的目录（组内多个会话在同一个仓库时看不出来，但按会话
-    /// 分组时一组就是一个会话，这条就没有歧义了）。
+    /// **手动设的优先**：那是用户对这一盏灯下的指令，不是又一条等着被优先级
+    /// 比下去的上报。早先它就是普通会话，于是组里只要有个更紧急的智能体会话
+    /// （`working` / `permission` / `error` …），点「空闲」之后牌上一个像素都
+    /// 不会变 —— 用户看到的就是「手动设置没生效」。
+    ///
+    /// 只在**这一组的牌面**上优先：全局聚合仍按普通优先级取最大值
+    /// （`Store::winner`），告警判定也不看牌面（`GroupView::alert_state`）。
+    fn winner_in(&self, group: &str) -> Option<&Session> {
+        self.manual_winner_in(group)
+            .or_else(|| self.real_winner_in(group))
+            // 手动那条若转了 stale、组里又没有别的会话：还是把它画出来，别让
+            // 牌子突然说「没有智能体在上报」（那不等于「沉默了」）。
+            .or_else(|| {
+                self.sessions
+                    .values()
+                    .filter(|s| s.group == group)
+                    .max_by(|a, b| by_priority(a, b))
+            })
+    }
+
+    /// 某一组「打开项目目录」该用哪个目录。
+    ///
+    /// 取**真实会话**的 winner 而不是牌面的 winner：手动那条会话没有 `cwd`，
+    /// 照原来的写法，用户手动设过一次状态之后「打开项目目录」就会无故置灰。
     pub fn winner_cwd_in(&self, group: &str) -> Option<String> {
-        self.winner_in(group).and_then(|s| s.cwd.clone())
+        self.real_winner_in(group)
+            .or_else(|| self.manual_winner_in(group))
+            .and_then(|s| s.cwd.clone())
     }
 
     /// 用于前后比对：只要会话集合、聚合值或 tooltip 文本变了就返回不同的值。
@@ -990,6 +1077,12 @@ impl Store {
     /// **首次调用（还没有基线）时算有变化**：`last_pushed` 是 `None` 表示前端还没
     /// 收到过任何东西，这时哪怕内容一样也得推一次，否则前端永远停在初始状态。
     fn settle(&mut self, now: Instant) -> bool {
+        // 会话没了（清除该组 / 到期 / 被上限淘汰）就把手动标记一起收掉：
+        // 留着的话，将来同一个 id 的普通上报会被误认成「用户手动设的」。
+        // 放在这里是唯一一个所有改动路径都会经过的点，不必在五处各删一次。
+        let sessions = &self.sessions;
+        self.manual_sessions.retain(|id| sessions.contains_key(id));
+
         let current = self.visible(now);
         let changed = match &self.last_pushed {
             Some(previous) => *previous != current,
@@ -2175,5 +2268,119 @@ mod tests {
         }
         assert_eq!(Signal::Offline.priority(), 0, "没有任何会话时最低");
         assert_eq!(Signal::Off.priority(), 0, "暂停时最低");
+    }
+
+    // ---- 手动设的状态（0.5.1 之后：牌面覆盖）-------------------------------
+
+    /// 用户手动设的状态：走 `apply_manual`，和 `manual.rs` 同一条路。
+    fn rep_manual_in(s: &mut Store, t: Instant, session: &str, group: &str, state: Signal) -> bool {
+        let mut req = Report::new(state);
+        req.session = Some(session.to_string());
+        req.group = Some(group.to_string());
+        req.message = Some("手动设置".to_string());
+        s.apply_manual(t, req, Duration::from_secs(12 * 60 * 60))
+    }
+
+    /// 用户反馈的那个 bug：组里有个正在等授权的智能体，手动点「空闲」之后
+    /// 牌上一个像素都没变 —— 手动那条只是普通会话，被优先级压住了。
+    #[test]
+    fn a_manual_state_wins_its_own_sign_but_not_the_global_state() {
+        let mut store = Store::default();
+        let t = Instant::now();
+        rep_in(&mut store, t, "agent-1", "ci", Signal::Permission);
+        assert_eq!(store.snapshot().groups[0].aggregate, Signal::Permission);
+
+        rep_manual_in(&mut store, t, "manual:ci", "ci", Signal::Idle);
+        let snapshot = store.snapshot();
+        let group = &snapshot.groups[0];
+        assert_eq!(group.aggregate, Signal::Idle, "手动设的 idle 必须显示在牌上");
+        assert_eq!(group.message.as_deref(), Some("手动设置"));
+        assert_eq!(group.sessions.len(), 2, "真实会话不能被删掉，它只是不再决定牌面");
+        assert_eq!(group.alert_state(), Signal::Permission, "通知仍该看真实会话");
+        assert_eq!(
+            snapshot.aggregate,
+            Signal::Permission,
+            "托盘 / 物理灯 / 今日统计仍是真实最高优先级"
+        );
+    }
+
+    /// 手动设成「错误」也是一条真会话：全局该红还是得红。
+    #[test]
+    fn a_manual_error_still_counts_in_the_global_aggregate() {
+        let mut store = Store::default();
+        let t = Instant::now();
+        rep_in(&mut store, t, "agent-1", "ci", Signal::Working);
+        rep_manual_in(&mut store, t, "manual:ci", "ci", Signal::Error);
+        assert_eq!(store.aggregate(), Signal::Error);
+        assert_eq!(store.snapshot().groups[0].aggregate, Signal::Error);
+    }
+
+    /// 「清除该组的状态」要连手动标记一起收掉；之后同一个 id 被普通上报复用，
+    /// 不该被误认成「用户手动设的」而继续压着更紧急的会话。
+    #[test]
+    fn clearing_the_group_also_drops_the_manual_marker() {
+        let mut store = Store::default();
+        let t = Instant::now();
+        rep_manual_in(&mut store, t, "manual:ci", "ci", Signal::Idle);
+        assert_eq!(store.clear_group("ci", t).0, 1);
+        assert!(store.manual_sessions.is_empty(), "标记不能留成悬空 id");
+
+        rep_in(&mut store, t, "manual:ci", "ci", Signal::Working);
+        rep_in(&mut store, t, "agent-1", "ci", Signal::Error);
+        assert_eq!(store.snapshot().groups[0].aggregate, Signal::Error);
+    }
+
+    /// 手动状态到期直接删、不转 `stale`：`STALE_GRACE` 有 30 分钟，一条 stale
+    /// 的手动会话会压着底下真实会话整整半小时，灯既不说实话也不还控制权。
+    #[test]
+    fn an_expired_manual_state_hands_the_sign_back_without_going_stale() {
+        let mut store = Store::default();
+        let t = Instant::now();
+        rep_in(&mut store, t, "agent-1", "ci", Signal::Working);
+
+        let mut req = Report::new(Signal::Idle);
+        req.session = Some("manual:ci".into());
+        req.group = Some("ci".into());
+        store.apply_manual(t, req, Duration::from_millis(1));
+        assert_eq!(store.snapshot().groups[0].aggregate, Signal::Idle);
+
+        store.expire(t + Duration::from_secs(1));
+        let snapshot = store.snapshot();
+        assert_eq!(snapshot.groups[0].aggregate, Signal::Working, "该把牌还给真实会话");
+        assert!(
+            sessions(&snapshot).iter().all(|s| s.id != "manual:ci"),
+            "手动会话该被直接删掉，不是转 stale"
+        );
+        assert!(store.manual_sessions.is_empty(), "标记也一起清掉");
+    }
+
+    /// 手动那条会话没有 `cwd`：照老写法「打开项目目录」会在设过状态之后无故置灰。
+    #[test]
+    fn the_project_dir_still_comes_from_the_real_session() {
+        let mut store = Store::default();
+        let t = Instant::now();
+        let mut req = Report::new(Signal::Permission);
+        req.session = Some("agent-1".into());
+        req.group = Some("ci".into());
+        req.cwd = Some("/tmp/project".into());
+        store.apply(t, req, ttl_of(Signal::Permission, None));
+
+        rep_manual_in(&mut store, t, "manual:ci", "ci", Signal::Idle);
+        assert_eq!(store.winner_cwd_in("ci").as_deref(), Some("/tmp/project"));
+    }
+
+    /// 紧凑快照（单测 / 外部构造）里没有会话视图时，`alert_state` 退回牌面聚合。
+    #[test]
+    fn alert_state_falls_back_to_the_sign_without_session_views() {
+        let group = GroupView {
+            name: "ci".into(),
+            default_label: None,
+            aggregate: Signal::Permission,
+            message: None,
+            since_ms: 0,
+            stale_progress: None,
+            sessions: vec![],
+        };
+        assert_eq!(group.alert_state(), Signal::Permission);
     }
 }

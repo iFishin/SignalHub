@@ -18,8 +18,12 @@ use tauri_plugin_notification::{Action, ActionType, NotificationExt};
 /// 与 `snapshot.aggregate` 分开是刻意的：那个是全局的（托盘、钩子、`/v1/state`
 /// 都用它），而静音只该影响「打扰你」的那一部分。静音一个组不该让托盘变色，
 /// 也不该让钩子不触发 —— 那两件事看的是「世界是什么样」，不是「要不要吵你」。
+///
+/// **看 `alert_state()` 而不是牌面的 `aggregate`**：用户对某一盏灯手动设过状态
+/// 之后，牌面是「用户说它是什么」，底下真实会话可能正卡在等授权。拿牌面来判
+/// 的话，一次「手动设成空闲」就能把「需要你批准」的提醒整个吞掉。
 pub fn alerting_aggregate(snapshot: &Snapshot, muted: &[String]) -> Signal {
-    // 暂停监控时不提醒。**这一条必须单独判**：组自己的 aggregate 不看 `paused`
+    // 暂停监控时不提醒。**这一条必须单独判**：组自己的状态不看 `paused`
     // （那是全局开关，只作用在 `Store::aggregate` 上），照搬「取各组最大值」会让
     // 「暂停」变成「只熄灯、照样弹通知」—— 而用户点暂停的意思正是别打扰我。
     if snapshot.paused {
@@ -30,7 +34,7 @@ pub fn alerting_aggregate(snapshot: &Snapshot, muted: &[String]) -> Signal {
         .groups
         .iter()
         .filter(|group| !is_muted(&group.name, muted))
-        .map(|group| group.aggregate)
+        .map(|group| group.alert_state())
         .max_by_key(|state| state.priority())
         // 全被静音（或一个组都没有）时没有可告警的东西。返回 Offline 而不是
         // 保留某个组的旧值：Offline 不是紧急状态，闸门会直接放行成「不弹」。
@@ -209,8 +213,10 @@ impl Gate {
 /// 这个状态已经持续了多久（毫秒）。取**最久的那一组**：几组同时处于同一个紧急
 /// 状态时，只要有一组卡了很久，这个状态就该按最久的算。
 ///
-/// 和 `sustained` 用同一个事实来源（`GroupView::since_ms`）—— 各算一份的话，两处
-/// 迟早会对「到底卡了多久」给出不同的答案。
+/// `notify.rs::sustained` 直接复用这个函数：重复提醒里的「已经等了多久」和
+/// 首次通知的「够不够久才弹」是同一个量，各算一份迟早给出不同答案。
+/// 找组用 `GroupView::alert_state()` 而不是牌面的 `aggregate` —— 手动设过的
+/// 那盏灯牌面是用户选的颜色，底下真实会话该等多久还是等多久。
 pub fn stuck_for_ms(snapshot: &Snapshot, muted: &[String], state: Signal) -> u64 {
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -221,8 +227,19 @@ pub fn stuck_for_ms(snapshot: &Snapshot, muted: &[String], state: Signal) -> u64
         .groups
         .iter()
         .filter(|group| !is_muted(&group.name, muted))
-        .filter(|group| group.aggregate == state)
-        .map(|group| now_ms.saturating_sub(group.since_ms))
+        .filter(|group| group.alert_state() == state)
+        .map(|group| {
+            // 被手动覆盖过的组：`since_ms` 是「手动设了多久」，而这条提醒说的
+            // 是真实会话卡了多久 —— 两件事不能混。真实会话自己的 `age_ms`
+            // 才是那个时间；没有会话视图的紧凑快照才退回组的 `since_ms`。
+            group
+                .sessions
+                .iter()
+                .filter(|session| session.state == state)
+                .map(|session| session.age_ms)
+                .max()
+                .unwrap_or_else(|| now_ms.saturating_sub(group.since_ms))
+        })
         .max()
         .unwrap_or(0)
 }
@@ -1087,5 +1104,59 @@ mod tests {
             "重复提醒的间隔应当递增：{gaps:?}"
         );
         assert!(!gaps.is_empty(), "至少得提一次，否则这个功能不存在");
+    }
+
+    // ---- 牌面被手动覆盖时，通知仍看真实会话 ----------------------------------
+
+    /// 用户把一盏灯手动设成「空闲」，底下其实还有个智能体在等授权。
+    /// 标题、正文、动作按钮三处都必须跟着真实会话，否则一次手动设置就把
+    /// 「需要你批准」的提醒整个吞掉。
+    #[test]
+    fn a_manual_override_on_the_sign_does_not_silence_a_real_permission() {
+        let snap = snapshot(
+            Signal::Idle, // 牌面：用户手动设的
+            vec![
+                session("manual:ci", Signal::Idle, None, Some("手动设置")),
+                session(
+                    "agent-1",
+                    Signal::Permission,
+                    Some("/Users/me/proj"),
+                    Some("需要批准: rm -rf build"),
+                ),
+            ],
+        );
+
+        assert_eq!(snap.groups[0].aggregate, Signal::Idle);
+        assert_eq!(snap.groups[0].alert_state(), Signal::Permission);
+        assert_eq!(alerting_aggregate(&snap, &[]), Signal::Permission);
+        assert_eq!(body(&snap, &[]), "proj · 需要批准: rm -rf build");
+        assert_eq!(
+            target_for(&snap, &[]),
+            AlertTarget {
+                cwd: Some("/Users/me/proj".into()),
+                group: DEFAULT_GROUP.into(),
+            }
+        );
+    }
+
+    /// 重复提醒里的「已经等了多久」也得是真实会话的年龄，不是手动设了多久。
+    #[test]
+    fn stuck_for_uses_the_real_session_age_when_the_sign_is_overridden() {
+        let mut waiting = session("agent-1", Signal::Permission, None, None);
+        waiting.age_ms = 20 * 60_000;
+        let mut ci = group(
+            "ci",
+            Signal::Idle,
+            vec![session("manual:ci", Signal::Idle, None, None), waiting],
+        );
+        ci.since_ms = now_ms(); // 手动状态是刚设的，牌上的「已持续」接近 0
+
+        let snap = snapshot_of(vec![ci]);
+        assert_eq!(alerting_aggregate(&snap, &[]), Signal::Permission);
+        let ms = stuck_for_ms(&snap, &[], Signal::Permission);
+        assert!(
+            (20 * 60_000..21 * 60_000).contains(&ms),
+            "该取真实会话的 20 分钟，实际 {ms}"
+        );
     }
 }

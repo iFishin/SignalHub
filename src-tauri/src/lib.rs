@@ -677,7 +677,7 @@ fn set_pass_through_impl(app: &tauri::AppHandle, enabled: bool) -> Result<(), St
         .set_ignore_cursor_events(enabled)
         .map_err(|err| format!("切换点击穿透失败: {err}"))?;
 
-    // **不重算窗口**：那枚 ⇥ 角标是绝对定位在窗口顶部留白正中的徽标（见
+    // **不重算窗口**：那枚 ⇥ 角标是绝对定位在灯体内部最上沿的徽标（见
     // lamp.css 的 `.lamp-flag`），不占牌身宽度、也不占折叠态的点位。曾经这里按角标数加宽
     // 窗口，表现就是一开穿透整排灯珠被推偏；别把它加回来。
 
@@ -1940,7 +1940,7 @@ fn main_window_groups<'a>(settings: &Settings, snapshot: &'a Snapshot) -> Vec<&'
 /// 每个可见组该有的灯窗：组名 + 这一帧的尺寸。
 ///
 /// 一盏组灯的几何 = 「只有这一组的单灯」：展开态是一块牌，折叠态是一个点（外加
-/// 被截断的组那枚 `+N`）。暂停 / 穿透角标是绝对定位在窗口顶部留白正中的徽标，
+/// 被截断的组那枚 `+N`）。暂停 / 穿透角标是绝对定位在灯体内部最上沿的徽标，
 /// **不占点位、不进几何**。**必须和前端渲染对齐** —— 多一块牌或少一枚角标，
 /// 窗口就会裁掉内容。
 fn lamp_specs(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapshot) -> Vec<lamps::LampSpec> {
@@ -2188,7 +2188,7 @@ fn apply_window_size(app: &tauri::AppHandle, settings: &Settings, snapshot: &Sna
             // 折叠态里没有牌面，被截断的组那枚 `+N` 得自己占一个点位。
             // 少算一枚，那枚角标就落在窗口外面 —— 而折叠态最不该出的就是这种错：
             // 看不见的东西，人不会想到去查。
-            // 暂停 / 穿透角标不在这里：它是窗口顶部留白正中的绝对定位徽标
+            // 暂停 / 穿透角标不在这里：它是灯体内部最上沿的绝对定位徽标
             // （`.lamp-flag`），不占点位，所以切换穿透不该让窗口变宽、把整排灯珠推偏。
             //
             // **点数和角标都按未截断的可见组数算**：`groups` 已经被 `MAX_SIGNS` 截过，

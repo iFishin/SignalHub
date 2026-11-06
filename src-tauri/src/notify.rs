@@ -341,25 +341,16 @@ fn spawn_reminders(
 
 /// 这个聚合值真的已经持续够久了吗。
 ///
-/// 从快照里读，而不是自己记一个「什么时候开始的」：`GroupView::since_ms` 就是
-/// 「这一组进入当前状态的时刻」，是唯一的事实来源。自己记一份的话，状态离开又
-/// 回来时那份记录会说谎，而且还得再写一套失效逻辑。
+/// 从快照里读，而不是自己记一个「什么时候开始的」：真实会话的 `age_ms` /
+/// `GroupView::since_ms` 就是「这一组进入当前状态的时刻」，是唯一的事实来源。
+/// 自己记一份的话，状态离开又回来时那份记录会说谎，还得再写一套失效逻辑。
 ///
-/// 用「任一组成立」而不是「最早的那组」：几组同时处于同一个紧急状态时，只要
-/// 有一组已经卡了很久，这个状态就该算数。
+/// **直接复用 `alerts::stuck_for_ms`**：重复提醒里的「已经等了多久」和这里的
+/// 「够不够久才弹」本来就是同一个量，各算一份迟早给出不同答案。它按
+/// `GroupView::alert_state()` 找组，所以某一盏灯被手动设成别的状态时，底下
+/// 真实卡着的「等授权」照样能过这道闸门。
 fn sustained(snapshot: &Snapshot, muted: &[String], state: Signal, threshold: Duration) -> bool {
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-    let threshold_ms = threshold.as_millis() as u64;
-
-    snapshot
-        .groups
-        .iter()
-        .filter(|group| !muted.iter().any(|name| name == &group.name))
-        .filter(|group| group.aggregate == state)
-        .any(|group| now_ms.saturating_sub(group.since_ms) >= threshold_ms)
+    alerts::stuck_for_ms(snapshot, muted, state) >= threshold.as_millis() as u64
 }
 
 /// 只负责把快照推给前端窗口。窗口尺寸、统计、通知都由 `compose` 里的闭包管。

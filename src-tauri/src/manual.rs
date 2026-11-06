@@ -5,6 +5,12 @@
 //! 第二套状态机。`source` 照实声明成 `custom`（见 B1 的「信号源」）—— 本地注入这
 //! 条路没人读它（凭证表只在上报服务里写），但声明成 agent 会是错的。
 //!
+//! 唯一多出来的一步是 `Store::apply_manual`：把这条会话标成「本组牌面由我说了算」。
+//! 不加这一步的话，组里只要有个更紧急的真实会话就会把它压住，用户点完手动状态
+//! 看不出任何变化（见 `state::Store::winner_in`）。全局聚合和告警判定**都不看这个
+//! 标记**，仍按普通优先级在所有会话（含手动那条）里取最大值 —— 手动把一盏灯画成
+//! 绿，不该让底下正在等授权的红消失。
+//!
 //! 为什么值得做：这是「信号中枢在**没有任何 agent** 时也有用」的最低成本证明 ——
 //! 一个倒计时占一盏灯、到点提醒；开会 / 离开各占一盏灯。桌面上的那盏灯从此不只说
 //! 「智能体在干什么」，也说「我在干什么」。
@@ -163,12 +169,15 @@ fn request(lang: Lang, state: Signal, message: String, ttl_ms: Option<u32>) -> R
 /// 走 `crate::mutate`（和 HTTP 上报、测试上报同一条路），所以推送、聚合、今日统计
 /// 都自动跟上；`ttl_ms` 显式给，因此设置里那个「静默多久算过期」压不过它
 /// （见 `state::state_ttl` 的第一级）。
+///
+/// 用 `apply_manual` 而不是 `apply`：这是**用户自己设的**状态，该在自己那一组
+/// 的牌面上说了算（见 `state::Store::winner_in`）。
 fn report(app: &AppHandle, state: Signal, message: String, ttl_ms: Option<u32>) {
     let lang = crate::current_lang(app);
     let req = request(lang, state, message, ttl_ms);
     let ttl = crate::report_ttl(app, &req);
     let store = app.state::<crate::SharedStore>();
-    crate::mutate(app, &store, |guard, now| guard.apply(now, req, ttl));
+    crate::mutate(app, &store, |guard, now| guard.apply_manual(now, req, ttl));
 }
 
 /// 把旧名字那个组清掉（换过语言之后它还在），再报当前语言的名字。
@@ -276,14 +285,21 @@ pub fn clear(app: &AppHandle) {
 /// 停留时长同样给 [`LONG_TTL_MS`]：撑得过一个工作日，但撑不过夜 —— 忘了收也不会
 /// 第二天还挂着一块假状态。收掉用右键菜单里现有的「清除该组的状态」。
 ///
-/// **不压过智能体**：它只是一条普通上报，组里要是有更紧急的会话（比如正在等授权），
-/// 聚合仍按原有优先级来 —— 手动控制是「把盏灯当灯用」，不是绕过状态机。
+/// **压过这一组里的智能体会话**（0.5.1 之前恰好相反，见下）：用户点的是哪一盏
+/// 灯、要它变成什么，牌上就该变成什么。早先它只是一条普通上报，组里只要有个
+/// `working` / `permission` / `error` 的会话，按优先级一对就把这条 `idle` 压住，
+/// 牌上一个像素都不变 —— 表现正是「手动设置没生效」。
+///
+/// 覆盖只作用在**这一组的牌面**：全局聚合仍按普通优先级在所有会话里取最大值
+/// （托盘 / 物理灯 / 今日统计不会骗人），告警判定也不看牌面
+/// （`GroupView::alert_state`，在会话里取最大值）。
+/// 想收掉用右键菜单里现有的「清除该组的状态」，到期也会自己消失。
 pub fn set_group(app: &AppHandle, group: &str, state: Signal) {
     let lang = crate::current_lang(app);
     let req = group_request(lang, group, state);
     let ttl = crate::report_ttl(app, &req);
     let store = app.state::<crate::SharedStore>();
-    crate::mutate(app, &store, |guard, now| guard.apply(now, req, ttl));
+    crate::mutate(app, &store, |guard, now| guard.apply_manual(now, req, ttl));
 }
 
 /// 某一组的手动状态那条上报。抽成纯函数，字段就是这条功能的全部对外表现
