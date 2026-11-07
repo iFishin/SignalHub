@@ -161,3 +161,18 @@ export function formatAge(ageMs: number): string {
   const hours = Math.floor(minutes / 60);
   return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
 }
+
+/**
+ * 路径的最后一段，用来在行里说「这个会话在哪个项目」。整条路径在 420px 的窗口里
+ * 只能被截成省略号，而认项目靠的正是最后那一段。
+ *
+ * 为了两边都能跑，`/` 和 `\` 都当分隔符（多机中枢收上来的 `cwd` 可能来自
+ * Windows）。根目录、盘符这种取不到名字的情况原样返回，不返回空字符串 ——
+ * 空字符串会让调用方以为「没有目录」，于是那一格整个消失。
+ */
+export function dirName(cwd: string): string {
+  const trimmed = cwd.replace(/[\\/]+$/, "");
+  const cut = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  const base = cut >= 0 ? trimmed.slice(cut + 1) : trimmed;
+  return base === "" ? (trimmed === "" ? cwd : trimmed) : base;
+}

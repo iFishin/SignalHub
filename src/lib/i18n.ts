@@ -942,6 +942,11 @@ export interface Messages {
     quiet: string;
     emptyTitle: string;
     emptyHint: string;
+    /** 空态上的两条出路：去接入一个智能体 / 先看看它长什么样。 */
+    emptyConnect: string;
+    emptyDemo: string;
+    /** 行尾「更多动作」按钮的无障碍名字（次要动作收在它后面）。 */
+    more: string;
     paused: string;
     jump: string;
     allow: string;
@@ -1706,6 +1711,9 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       quiet: "空闲 / 沉默",
       emptyTitle: "现在没有需要你处理的事",
       emptyHint: "智能体在跑的时候这里会安静；有授权、出错或完成时会出现在这里。",
+      emptyConnect: "接入智能体",
+      emptyDemo: "看演示",
+      more: "更多动作",
       paused: "监控已暂停",
       jump: "跳转",
       allow: "允许",
@@ -2463,6 +2471,9 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
       emptyTitle: "Nothing needs you right now",
       emptyHint:
         "While agents are running this stays quiet; approvals, errors and completions show up here.",
+      emptyConnect: "Connect an agent",
+      emptyDemo: "See the demo",
+      more: "More actions",
       paused: "Monitoring paused",
       jump: "Jump",
       allow: "Allow",

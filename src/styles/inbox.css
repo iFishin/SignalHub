@@ -168,6 +168,14 @@ html[data-window="inbox"] body {
   margin-top: 6px;
 }
 
+/* 「需要你」那一段：底板抬一档、标题提亮。**只改这两个值** —— 加左边框或色条
+   会变成另一套强调语言（设置面板里被否掉过的那种），而这里要的只是「先看这段」。 */
+.inbox-section[data-tone="need"] .inbox-row {
+  --row-bg: rgba(255, 255, 255, 0.055);
+  --row-hover: rgba(255, 255, 255, 0.085);
+  --row-selected: rgba(255, 255, 255, 0.105);
+}
+
 .inbox-section-title {
   display: flex;
   align-items: baseline;
@@ -181,32 +189,46 @@ html[data-window="inbox"] body {
   letter-spacing: 0.03em;
 }
 
+.inbox-section[data-tone="need"] .inbox-section-title {
+  color: #ececef;
+}
+
 .inbox-section-count {
   color: #9b9ba3;
   font-weight: 500;
 }
 
-.inbox-section-extra {
-  margin-left: auto;
-  font-weight: 400;
+.inbox-section[data-tone="need"] .inbox-section-count {
+  color: #b7b7bf;
 }
 
 /* ---- 一行 --------------------------------------------------------------- */
 
+/* 底色的三个取值走变量，让「需要你」那一段能整体抬一档而不必为每个状态
+   （常态 / hover / 选中）各写一遍后代选择器。 */
 .inbox-row {
+  --row-bg: rgba(255, 255, 255, 0.035);
+  --row-hover: rgba(255, 255, 255, 0.072);
+  --row-selected: rgba(255, 255, 255, 0.095);
   display: flex;
   gap: 9px;
   margin-bottom: 5px;
   padding: 9px 10px;
   border: 1px solid transparent;
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.035);
+  background: var(--row-bg);
   cursor: default;
+}
+
+/* 指针落在哪一行要看得出来 —— 每一行都能点、都能双击跳走，而底板和窗口底色
+   只差 0.035 的白，不划过去等于没有反馈。 */
+.inbox-row:hover {
+  background: var(--row-hover);
 }
 
 .inbox-row[data-selected] {
   border-color: rgba(255, 255, 255, 0.22);
-  background: rgba(255, 255, 255, 0.075);
+  background: var(--row-selected);
 }
 
 .inbox-dot {
@@ -223,19 +245,36 @@ html[data-window="inbox"] body {
   min-width: 0;
 }
 
+/* 第一行：名字 + 等了多久。名字占满剩余宽度，才不会被徽章和状态挤成
+   「Signal…」；`min-width: 0` 是 `text-overflow: ellipsis` 在 flex 子项里生效的前提。 */
 .inbox-line {
   display: flex;
   align-items: baseline;
-  gap: 7px;
+  gap: 8px;
   min-width: 0;
 }
 
 .inbox-name {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   color: #f2f2f5;
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 第二行：机器 / 智能体 / 目录 / 状态。整体比名字弱一档 —— 这一行是补充信息，
+   一眼扫的是左边那颗色点；状态文字留着是为了「红点到底是授权还是出错」，
+   以及读屏器（颜色对它没有意义）。 */
+.inbox-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 2px;
+  color: #86868f;
+  font-size: 11px;
 }
 
 .inbox-agent {
@@ -244,9 +283,21 @@ html[data-window="inbox"] body {
   font-size: 11px;
 }
 
+/* 目录只放最后一段（见 `inboxRows.dirName`），整条路径在 title 里。它是元信息里
+   唯一可能变长的一段，所以只有它可以被压窄、出省略号。 */
+.inbox-dir {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: #86868f;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* 多机中枢：这一行来自另一台机器。
-   用一枚小胶囊而不是纯文字 —— 它要在一行已经挤了「名字 / 智能体 / 状态 / 等了
-   多久」的地方一眼被认出来，而纯灰字会读成名字的一部分。 */
+   用一枚小胶囊而不是纯灰字 —— 它要一眼被认出来（下面那个「跳转」对它是无效的），
+   而纯灰字会读成智能体名字的一部分。 */
 .inbox-machine {
   flex: none;
   padding: 0 5px;
@@ -263,8 +314,10 @@ html[data-window="inbox"] body {
 
 .inbox-state {
   flex: none;
+  margin-left: auto;
   color: var(--state, #d7d7df);
   font-size: 11px;
+  white-space: nowrap;
 }
 
 .inbox-age {
@@ -449,6 +502,19 @@ html[data-window="inbox"] body {
   line-height: 1.6;
 }
 
+/* 空态的两条出路。首次打开时这里什么都没有，光一句「现在没有需要你处理的事」
+   等于不给下一步 —— 接入页和演示页都有现成的，直接带过去。 */
+.inbox-empty-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.inbox-empty-actions .inbox-btn {
+  padding: 5px 12px;
+}
+
 .inbox-foot {
   position: relative;
   flex: none;
@@ -479,19 +545,26 @@ html[data-window="inbox"] body {
 
 /* ---- 主次动作分层 ------------------------------------------------------- */
 
-/* 420px 宽的窗口里，每行常驻 4–7 个按钮会把列表撑成一片按钮墙，而且「清除」
-   紧挨着「允许」。主操作（允许 / 拒绝 / 跳转）始终可见；次要的（拒绝理由、盯住、
-   静音、清除）只在指着这一行、或键盘选中这一行时出现 —— 灯牌的 `.sign-actions`
-   也是这个脾气，不另起一套视觉语言。`data-selected` 保证键盘选中后一样够得着，
-   底栏的 M / W 是它们的快捷键。 */
-.inbox-actions .inbox-btn-secondary {
-  display: none;
+/* 主操作（允许 / 拒绝 / 理由 / 跳转）常驻；盯住 / 静音 / 清除收进行尾的 ⋯，
+   点开才出现在下一排。**刻意不用 hover 显形**：显形会把行撑成两排、整列下移，
+   而指针正要点的「允许」就在被推走的那一排里。 */
+.inbox-btn-more {
+  margin-left: auto;
+  padding: 3px 7px;
+  color: #9b9ba3;
+  letter-spacing: 0.06em;
+  line-height: 1;
 }
 
-.inbox-row:hover .inbox-btn-secondary,
-.inbox-row[data-selected] .inbox-btn-secondary,
-.inbox-row:focus-within .inbox-btn-secondary {
-  display: inline-block;
+.inbox-btn-more[aria-expanded="true"] {
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+
+/* 展开后是同一排按钮的第二行，样式完全一样 —— 分组靠上面那枚 ⋯ 的选中态
+   （`aria-expanded`）说明，不另加竖线或底色。 */
+.inbox-actions-more {
+  margin-top: 5px;
 }
 
 /* ---- 拉伸把手 ----------------------------------------------------------- */

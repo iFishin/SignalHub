@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { motion, useReducedMotion } from "motion/react";
 import { inTauri } from "../lib/env";
+import { requestSettingsTab } from "../lib/settingsIntent";
 import { signalLabel, justFinishedLabel } from "../lib/signals";
 import { useLang, useMessages, type Messages, type Lang } from "../lib/i18n";
 import { lampVars, resolveShapes, resolveHaloAnimations, signTextNeedsContrast, isQuietDimmed } from "../lib/lampStyle";
@@ -74,8 +75,6 @@ interface Props {
 /** 首次启动引导只记一次。存 localStorage 而不是设置里：它纯粹是「这个窗口有没有
  *  打扰过你」，不该进配置导出、也不该跨机器同步。 */
 const FIRST_RUN_KEY = "signalhub.firstRunGuideDone";
-/** 灯窗 → 设置窗的一次性暗号：设置窗打开时看到它就直接翻到「演示」页。 */
-export const OPEN_DEMO_KEY = "signalhub.openDemo";
 
 function useFirstRunGuide(visible: boolean) {
   const [dismissed, setDismissed] = useState(() => {
@@ -458,11 +457,9 @@ export function SignalLamp({
 
   const openDemo = () => {
     guide.dismiss();
-    try {
-      localStorage.setItem(OPEN_DEMO_KEY, "1");
-    } catch {
-      // 记不住也没关系：设置窗左栏有独立的「演示」页签
-    }
+    // 「打开设置并翻到演示页」的纸条（见 `lib/settingsIntent.ts`）—— 设置窗的组件
+    // 启动时就挂载好了，翻页只能靠这张纸。
+    requestSettingsTab("demo");
     if (inTauri) {
       invoke("open_settings").catch(console.error);
     } else {

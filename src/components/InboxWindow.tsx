@@ -9,7 +9,8 @@ import { useSettings } from "../lib/useSettings";
 import { signalLabel } from "../lib/signals";
 import type { Approval, DenyReason } from "../lib/useApprovals";
 import type { Snapshot } from "../lib/types";
-import { buildInbox, formatAge, type InboxRow } from "../lib/inboxRows";
+import { buildInbox, dirName, formatAge, type InboxRow } from "../lib/inboxRows";
+import { requestSettingsTab } from "../lib/settingsIntent";
 import {
   buildAwaySummary,
   isQuiet,
@@ -196,6 +197,12 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
   const [reasonFor, setReasonFor] = useState<string | null>(null);
   const [customReason, setCustomReason] = useState("");
 
+  // 哪一行的「更多动作」（盯住 / 静音 / 清除）展开了。**同时只可能有一行**：
+  // 这几件事都是低频的，摊开两行只会把列表拉长。默认收起，点行尾的 ⋯ 才展开 ——
+  // 早先的做法是 hover 或键盘选中时让它们直接出现，结果是「指针一划过按钮墙就
+  // 冒出来、行被撑成两排」，正要点的「允许」会被推走。
+  const [moreFor, setMoreFor] = useState<string | null>(null);
+
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   // 选中的那一行消失（审批被处理、会话过期）时自动接住第一行；否则键盘焦点会
   // 停在一个已经不在列表里的 key 上，下一次 Enter 什么也不会发生。
@@ -345,10 +352,14 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
     [watched, m.inbox, say],
   );
 
-  const openSettings = useCallback(() => {
+  const openSettings = useCallback((tab?: string) => {
     // 直接开设置：设置窗拿到焦点时收件箱会自己 blur 收起（见 rust 的 `wire`），
     // 不在这里先 hide —— 两条 IPC 并发时，hide 可能晚于 show 执行，把激活策略
     // 又切回 Accessory。
+    //
+    // 想翻到某一页（空态的「接入」「看演示」）只能靠一张一次性纸条：设置窗的
+    // 组件在应用启动时就挂载好了，`open_settings` 也不带参数（见 `settingsIntent.ts`）。
+    if (tab) requestSettingsTab(tab);
     invoke("open_settings").catch((err) => console.error("open_settings 失败", err));
   }, []);
 
@@ -431,6 +442,8 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
     const approval = row.approval;
     const danger = dangerLabel(m, approval?.danger);
     const picking = approval ? reasonFor === approval.id : false;
+    const moreOpen = moreFor === row.key;
+    const dir = row.cwd ? dirName(row.cwd) : "";
     return (
       <div
         key={row.key}
@@ -445,18 +458,29 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
       >
         <span className="inbox-dot" aria-hidden />
         <div className="inbox-body">
+          {/* 第一行只有「哪个项目」和「等了多久」。名字独占一行才不会被机器徽章
+              和状态挤成「Signal…」；等待时长右对齐之后，几行之间形成一列可扫的
+              读数 —— 那正是这个窗口要回答的第一个问题。 */}
           <div className="inbox-line">
-            {/* 机器徽章排在名字前面：一眼就能看出这一行不是本机的，也就不会
-                去点那个跳转按钮。 */}
-            {row.machine && <span className="inbox-machine">{row.machine}</span>}
             <span className="inbox-name">{row.label}</span>
-            {row.agent && <span className="inbox-agent">{row.agent}</span>}
-            <span className="inbox-state">{signalLabel(lang, row.state)}</span>
             <span className="inbox-age">
               {row.approval || row.state === "permission" || row.state === "attention" || row.state === "error"
                 ? m.inbox.waiting(formatAge(ageOf(row)))
                 : formatAge(ageOf(row))}
             </span>
+          </div>
+          {/* 第二行是元信息：来自哪台机器 / 哪个智能体 / 哪个目录 / 什么状态。
+              状态在这里退成文字补充 —— 一眼扫的是左边那颗色点，文字留给读屏和
+              「红点到底是授权还是出错」这种需要说清楚的时候。 */}
+          <div className="inbox-meta">
+            {row.machine && <span className="inbox-machine">{row.machine}</span>}
+            {row.agent && <span className="inbox-agent">{row.agent}</span>}
+            {dir && (
+              <span className="inbox-dir" title={row.cwd ?? undefined}>
+                {dir}
+              </span>
+            )}
+            <span className="inbox-state">{signalLabel(lang, row.state)}</span>
           </div>
           {row.message && <div className="inbox-message">{row.message}</div>}
           {approval && (
@@ -519,6 +543,9 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
               )}
             </div>
           )}
+          {/* 主操作常驻：允许 / 拒绝（含理由）/ 跳转。其余三件低频动作收进行尾
+              的 ⋯，点开才展开 —— 常驻的话它们会在 360px 宽时折成第二排，把整列
+              往下推，而你正要点的「允许」会跟着挪走。 */}
           <div className="inbox-actions">
             {approval && (
               <>
@@ -560,10 +587,11 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
                 >
                   {m.inbox.deny}
                 </button>
-                {/* 展开拒绝理由（A2） */}
+                {/* 展开拒绝理由（A2）。跟着「拒绝」放在一起：它改的是拒绝的
+                    内容，不是另一件事，收进 ⋯ 反而要多找一步。 */}
                 <button
                   type="button"
-                  className="inbox-btn inbox-btn-reason inbox-btn-secondary"
+                  className="inbox-btn inbox-btn-reason"
                   title={m.approvalReason}
                   aria-label={m.approvalReason}
                   aria-expanded={picking}
@@ -591,61 +619,83 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
             >
               {m.inbox.jump}
             </button>
-            {row.session && (
-              <button
-                type="button"
-                className="inbox-btn inbox-btn-secondary"
-                data-active={watched.includes(row.session) || undefined}
-                onMouseDown={stop}
-                onDoubleClick={stop}
-                onClick={(event) => {
-                  stop(event);
-                  toggleWatch(row);
-                }}
-              >
-                {watched.includes(row.session) ? m.inbox.unwatch : m.inbox.watch}
-              </button>
-            )}
-            {row.group && (
-              <button
-                type="button"
-                className="inbox-btn inbox-btn-secondary"
-                onMouseDown={stop}
-                onDoubleClick={stop}
-                onClick={(event) => {
-                  stop(event);
-                  toggleMute(row);
-                }}
-              >
-                {muted ? m.inbox.unmute : m.inbox.mute}
-              </button>
-            )}
             <button
               type="button"
-              className="inbox-btn inbox-btn-secondary"
+              className="inbox-btn inbox-btn-more"
+              title={m.inbox.more}
+              aria-label={m.inbox.more}
+              aria-expanded={moreOpen}
               onMouseDown={stop}
               onDoubleClick={stop}
               onClick={(event) => {
                 stop(event);
-                clear(row);
+                setMoreFor(moreOpen ? null : row.key);
               }}
             >
-              {m.inbox.clear}
+              ⋯
             </button>
           </div>
+          {moreOpen && (
+            <div className="inbox-actions inbox-actions-more">
+              {row.session && (
+                <button
+                  type="button"
+                  className="inbox-btn"
+                  data-active={watched.includes(row.session) || undefined}
+                  onMouseDown={stop}
+                  onDoubleClick={stop}
+                  onClick={(event) => {
+                    stop(event);
+                    toggleWatch(row);
+                  }}
+                >
+                  {watched.includes(row.session) ? m.inbox.unwatch : m.inbox.watch}
+                </button>
+              )}
+              {row.group && (
+                <button
+                  type="button"
+                  className="inbox-btn"
+                  onMouseDown={stop}
+                  onDoubleClick={stop}
+                  onClick={(event) => {
+                    stop(event);
+                    toggleMute(row);
+                  }}
+                >
+                  {muted ? m.inbox.unmute : m.inbox.mute}
+                </button>
+              )}
+              <button
+                type="button"
+                className="inbox-btn"
+                onMouseDown={stop}
+                onDoubleClick={stop}
+                onClick={(event) => {
+                  stop(event);
+                  clear(row);
+                }}
+              >
+                {m.inbox.clear}
+              </button>
+            </div>
+          )}
         </div>
       </div>
     );
   };
 
-  const section = (title: string, rows: InboxRow[], extra?: string) => {
+  /**
+   * 一段。`tone="need"` 只把这一段的底板抬一档、标题提亮 —— 不加左边框、不加色条：
+   * 那是被否掉过的样子，而这里要的只是「先看这一段」。
+   */
+  const section = (title: string, rows: InboxRow[], tone?: "need") => {
     if (rows.length === 0) return null;
     return (
-      <section className="inbox-section">
+      <section className="inbox-section" data-tone={tone}>
         <h2 className="inbox-section-title">
           {title}
           <span className="inbox-section-count">{rows.length}</span>
-          {extra && <span className="inbox-section-extra">{extra}</span>}
         </h2>
         {rows.map(renderRow)}
       </section>
@@ -719,13 +769,31 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
 
       <div className="inbox-scroll">
         {all.length === 0 ? (
+          /* 空态要给下一步。只写「现在没事」的话，第一次打开的人拿到的是一句
+             「所以呢」—— 而这里恰好是他最可能什么都不懂的时候。 */
           <div className="inbox-empty">
             <div className="inbox-empty-title">{m.inbox.emptyTitle}</div>
             <div className="inbox-empty-hint">{m.inbox.emptyHint}</div>
+            <div className="inbox-empty-actions">
+              <button
+                type="button"
+                className="inbox-btn inbox-btn-allow"
+                onClick={() => openSettings("connect")}
+              >
+                {m.inbox.emptyConnect}
+              </button>
+              <button
+                type="button"
+                className="inbox-btn"
+                onClick={() => openSettings("demo")}
+              >
+                {m.inbox.emptyDemo}
+              </button>
+            </div>
           </div>
         ) : (
           <>
-            {section(m.inbox.need, model.need)}
+            {section(m.inbox.need, model.need, "need")}
             {section(m.inbox.running, model.running)}
             {section(m.inbox.done, model.done)}
             {section(m.inbox.quiet, model.quiet)}

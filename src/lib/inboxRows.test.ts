@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildInbox, formatAge } from "./inboxRows";
+import { buildInbox, dirName, formatAge } from "./inboxRows";
 import type { Approval } from "./useApprovals";
 import type { GroupMeta } from "./useSettings";
 import type { GroupView, SessionView, SignalState, Snapshot } from "./types";
@@ -159,5 +159,25 @@ describe("formatAge", () => {
   it("负数和 NaN 不变成怪字符串", () => {
     expect(formatAge(-1)).toBe("0s");
     expect(formatAge(Number.NaN)).toBe("0s");
+  });
+});
+
+describe("dirName", () => {
+  it("取最后一段，忽略结尾的分隔符", () => {
+    expect(dirName("/Users/x/CODE/SignalHub")).toBe("SignalHub");
+    expect(dirName("/Users/x/CODE/SignalHub/")).toBe("SignalHub");
+    expect(dirName("/Users/x/CODE/SignalHub///")).toBe("SignalHub");
+  });
+
+  it("Windows 的反斜杠也当分隔符", () => {
+    expect(dirName("C:\\work\\proj")).toBe("proj");
+    expect(dirName("C:\\work\\proj\\")).toBe("proj");
+  });
+
+  it("取不出名字时原样返回，不返回空串", () => {
+    // 空串会让调用方以为「这一行没有目录」，那一格就整块消失了。
+    expect(dirName("/")).toBe("/");
+    expect(dirName("C:\\")).toBe("C:");
+    expect(dirName("proj")).toBe("proj");
   });
 });

@@ -11,9 +11,9 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { inTauri } from "../lib/env";
+import { clearSettingsTab, readSettingsTab } from "../lib/settingsIntent";
 import { signalLabel } from "../lib/signals";
 import { DemoStage } from "./DemoStage";
-import { OPEN_DEMO_KEY } from "./SignalLamp";
 import { labelOf } from "../lib/lampSort";
 import { signTextNeedsContrast, stateOverridden, lampVars, resolveShapes } from "../lib/lampStyle";
 import {
@@ -310,6 +310,17 @@ function tabGroups(m: Messages): { title: string; entries: { id: Tab; label: str
       ],
     },
   ];
+}
+
+/**
+ * 全部页签 id（左栏四组 + 系统）。
+ *
+ * 单独一个函数而不是在组件里手写一遍：初始化「上次那页 / 纸条要翻的那页」和
+ * 窗口显形时重读纸条都要判「这个 id 认不认识」，两处各写一份的话，加一页就
+ * 只改了其中一处 —— 表现成「纸条指向一个不存在的页，整页空白」。
+ */
+function tabIds(m: Messages): Tab[] {
+  return [...tabGroups(m).flatMap((group) => group.entries.map((entry) => entry.id)), "system"];
 }
 
 interface SectionLink {
@@ -1506,29 +1517,35 @@ export function SettingsPanel({ snapshot }: Props) {
   const [scrollToQuery, setScrollToQuery] = useState<string | null>(null);
   // 记住上次翻到哪一页。11 个页签里找东西，重开设置又被送回「状态」最烦人。
   // 存页签 id 而不是下标 —— 以后插一页也不会把人送错地方；认不出来就退回默认。
-  // 灯窗上的「看演示」会留一个一次性暗号，优先级高于「上次那页」。
+  // 「打开设置并翻到某页」的纸条（收件箱空态的「接入」、灯上引导的「看演示」）
+  // 优先级高于「上次那页」：那是用户刚刚明确要去的方向。
   const [tab, setTab] = useState<Tab>(() => {
     try {
-      if (localStorage.getItem(OPEN_DEMO_KEY) === "1") return "demo";
+      const requested = readSettingsTab();
+      if (requested && tabIds(m).includes(requested as Tab)) return requested as Tab;
       const saved = localStorage.getItem("signalhub.settings.tab");
-      const ids: Tab[] = [
-        ...groups.flatMap((group) => group.entries.map((entry) => entry.id)),
-        "system",
-      ];
-      return ids.includes(saved as Tab) ? (saved as Tab) : "status";
+      return tabIds(m).includes(saved as Tab) ? (saved as Tab) : "status";
     } catch {
       // 隐私模式 / 禁用本地存储：退回默认页，不影响其它功能
       return "status";
     }
   });
-  // 暗号只用一次：读完就删，别让以后每次打开设置都跳去演示页。
+  // 纸条要在**每次窗口显形时**重读。设置窗启动就以 `visible: false` 建好、之后
+  // 只是 `show()`（见 `lib.rs` 的 `reveal_settings`），组件不会重新挂载 —— 只在
+  // 初始化时读一次的话，用户点「接入」时写下的纸条永远不会被看到。
+  // `focus` 是同一个判据：`reveal_settings` 会 `show()` + `set_focus()`。
   useEffect(() => {
-    try {
-      localStorage.removeItem(OPEN_DEMO_KEY);
-    } catch {
-      // 删不掉不影响使用，只是下次可能再跳一次
-    }
-  }, []);
+    const ids = tabIds(m);
+    const apply = () => {
+      const requested = readSettingsTab();
+      if (!requested) return;
+      clearSettingsTab();
+      if (ids.includes(requested as Tab)) setTab(requested as Tab);
+    };
+    apply();
+    window.addEventListener("focus", apply);
+    return () => window.removeEventListener("focus", apply);
+  }, [m]);
   useEffect(() => {
     try {
       localStorage.setItem("signalhub.settings.tab", tab);
