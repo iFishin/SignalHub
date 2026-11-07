@@ -480,6 +480,10 @@ export interface Messages {
   ttlWorking: string;
   ttlThinking: string;
   behaviorWindowTitle: string;
+  clickAction: string;
+  clickActionHint: string;
+  /** 三个选项的文案，键和 Rust `config::ClickAction` 的序列化值一一对应。 */
+  clickActionLabels: { collapse: string; inbox: string; none: string };
   resetToGlobal: string;
   styleHint: string;
   perStateStyle: string;
@@ -837,7 +841,8 @@ export interface Messages {
   quit: string;
 
   // 灯球 tooltip
-  lampHint: string;
+  /** 灯上的悬停说明按「单击做什么」分三份，免得改了设置之后提示还在说旧话。 */
+  lampHint: { collapse: string; inbox: string; none: string };
   /**
    * 空状态：「刚完成 · N 分钟前」。
    *
@@ -871,6 +876,7 @@ export interface Messages {
    * 长了就折行。两处措辞该各自为政，不该为了少几个字符串硬凑成一份。
    */
   lampMenuInbox: string;
+  lampMenuLabel: string;
   lampMenuSettings: string;
   lampMenuPause: string;
   lampMenuResume: string;
@@ -1251,6 +1257,9 @@ export const MESSAGES: Record<Lang, Messages> = {
     ttlWorking: "干活时的静默容忍",
     ttlThinking: "思考时的静默容忍",
     behaviorWindowTitle: "窗口与交互",
+    clickAction: "单击灯做什么",
+    clickActionHint: "把最顺手的单击留给最常做的事。长按呼出的圆环菜单、拖拽、右键菜单都不变；默认仍是折叠 / 展开，升级不会改变现有手感。",
+    clickActionLabels: { collapse: "折叠 / 展开", inbox: "打开收件箱", none: "不做事" },
     resetToGlobal: "恢复成跟随全局",
     styleHint:
       "「跟随」= 形状和节奏用「外观」页选的那两项，停留时长用内置默认（跟在每一项里）。停留时长指的是「智能体不出声之后，这块牌还在灯上待多久」—— 它只在「下一次上报」时生效，不会追溯已经亮着的牌。",
@@ -1615,7 +1624,11 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
 
     quit: "退出 SignalHub",
 
-    lampHint: "左键折叠 / 展开 · 长按呼出圆环菜单 · 右键单组菜单",
+    lampHint: {
+      collapse: "单击折叠 / 展开 · 长按呼出圆环菜单 · 右键牌面是单组菜单 / 空白处是灯菜单",
+      inbox: "单击打开收件箱 · 长按呼出圆环菜单 · 右键牌面是单组菜单 / 空白处是灯菜单",
+      none: "单击不做事 · 长按呼出圆环菜单 · 右键牌面是单组菜单 / 空白处是灯菜单",
+    },
     justFinished: (minutes) =>
       minutes < 1 ? "刚完成 · 刚刚" : `刚完成 · ${minutes} 分钟前`,
     groupsCount: (n) => `（${n} 组）`,
@@ -1630,6 +1643,7 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     moreGroupsLead: "被收起来的组：",
 
     lampMenuInbox: "收件箱",
+    lampMenuLabel: "灯菜单",
     lampMenuSettings: "设置",
     lampMenuPause: "暂停",
     lampMenuResume: "继续",
@@ -1713,7 +1727,7 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       muted: (group) => `已静音「${group}」`,
       unmuted: (group) => `已取消静音「${group}」`,
       waiting: (age) => `等了 ${age}`,
-      keys: "↑↓ 选择 · Enter 跳转 · A 允许 · D 拒绝 · Esc 关闭",
+      keys: "↑↓ 选择 · Enter 跳转 · A 允许 · D 拒绝 · M 静音 · W 盯住 · Esc 关闭",
       jumpUnsupported: "精确定位终端目前只在 macOS 上；已尝试打开项目目录。",
       remoteJump: (machine) => `这是 ${machine} 上的会话，跳转只对本机有效`,
       approvalHint: "这是智能体主动请求的授权；允许只对被问到的这一次生效。",
@@ -1992,6 +2006,9 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     ttlWorking: "Silence while working",
     ttlThinking: "Silence while thinking",
     behaviorWindowTitle: "Window & interaction",
+    clickAction: "Click on the lamp",
+    clickActionHint: "Give the cheapest gesture to the thing you do most. The long-press radial menu, dragging and right-click menus are unchanged; the default is still collapse / expand, so upgrading does not change any existing behaviour.",
+    clickActionLabels: { collapse: "Collapse / expand", inbox: "Open inbox", none: "Do nothing" },
     resetToGlobal: "Reset to follow global",
     styleHint:
       '"Follow" means shape and blink speed come from the Look tab, and the expiry is the built-in default (shown on each row). Expiry is how long a card stays on the lamp after its agent goes quiet — it takes effect on the *next* report, not retroactively.',
@@ -2360,7 +2377,11 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
 
     quit: "Quit SignalHub",
 
-    lampHint: "Click to collapse / expand · long-press for the radial menu · right-click for a group menu",
+    lampHint: {
+      collapse: "Click to collapse / expand · long-press for the radial menu · right-click a sign for its group menu, empty space for the lamp menu",
+      inbox: "Click to open the inbox · long-press for the radial menu · right-click a sign for its group menu, empty space for the lamp menu",
+      none: "Click does nothing · long-press for the radial menu · right-click a sign for its group menu, empty space for the lamp menu",
+    },
     justFinished: (minutes) =>
       minutes < 1 ? "Just finished · moments ago" : `Just finished · ${minutes} min ago`,
     groupsCount: (n) => ` (${plural(n, "group", "groups")})`,
@@ -2375,6 +2396,7 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     moreGroupsLead: "Hidden groups: ",
 
     lampMenuInbox: "Inbox",
+    lampMenuLabel: "Lamp menu",
     lampMenuSettings: "Settings",
     lampMenuPause: "Pause",
     lampMenuResume: "Resume",
@@ -2463,7 +2485,7 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
       muted: (group) => `Muted “${group}”`,
       unmuted: (group) => `Unmuted “${group}”`,
       waiting: (age) => `waiting ${age}`,
-      keys: "↑↓ select · Enter jump · A allow · D deny · Esc close",
+      keys: "↑↓ select · Enter jump · A allow · D deny · M mute · W watch · Esc close",
       jumpUnsupported: "Exact terminal focus is macOS-only for now; tried opening the project folder.",
       remoteJump: (machine) => `This session is on ${machine} — jumping only works for local sessions`,
       approvalHint: "This is a permission the agent asked for; allowing applies only to this request.",

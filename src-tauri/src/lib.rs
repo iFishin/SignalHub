@@ -511,7 +511,8 @@ fn open_settings(app: tauri::AppHandle) {
     reveal_settings(&app);
 }
 
-/// 打开 / 关闭收件箱。灯左键单击、托盘菜单、全局快捷键都走它（见 `inbox.rs`）。
+/// 打开 / 关闭收件箱。灯上圆环菜单、托盘菜单、全局快捷键都走它（见 `inbox.rs`）。
+/// v0.5.0 之后灯左键单击是折叠 / 展开，不再直达这里。
 #[tauri::command]
 fn toggle_inbox(app: tauri::AppHandle) {
     inbox::toggle(&app);
@@ -693,6 +694,11 @@ fn set_pass_through_impl(app: &tauri::AppHandle, enabled: bool) -> Result<(), St
             &lang::pass_through_body(lang, &shortcuts::pass_through_label()),
         );
     }
+
+    // 托盘那一项在穿透开着时会写成「退出点击穿透 · ⌃⌥S」。命令 / 托盘 / 快捷键
+    // 三条入口都汇到这里，所以菜单只在这一处重建，文案不会和真实状态漂移。
+    // 通知是一次性的，这条是穿透期间**一直查得到**的退出指引。
+    tray::rebuild_menu(app, current_lang(app));
 
     let _ = app.emit(TOGGLES_EVENT, toggles(app));
     Ok(())

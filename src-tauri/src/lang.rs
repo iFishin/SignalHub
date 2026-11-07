@@ -118,6 +118,9 @@ pub struct NativeText {
     pub tray_settings: &'static str,
     pub tray_pause: &'static str,
     pub tray_pass_through: &'static str,
+    /// 穿透开着时托盘那一项的文案。带上快捷键后由 `tray.rs` 拼成
+    /// 「退出点击穿透 · ⌃⌥S」—— 通知只弹一次，菜单是随时能回去查的那一处。
+    pub tray_pass_through_exit: &'static str,
     pub tray_collapsed: &'static str,
     pub tray_quit: &'static str,
 
@@ -254,6 +257,7 @@ static ZH: NativeText = NativeText {
     tray_settings: "设置…",
     tray_pause: "暂停 / 恢复监控",
     tray_pass_through: "切换点击穿透",
+    tray_pass_through_exit: "退出点击穿透",
     tray_collapsed: "展开 / 折叠外形",
     tray_quit: "退出 SignalHub",
 
@@ -290,6 +294,7 @@ static EN: NativeText = NativeText {
     tray_settings: "Settings…",
     tray_pause: "Pause / resume monitoring",
     tray_pass_through: "Toggle click-through",
+    tray_pass_through_exit: "Exit click-through",
     tray_collapsed: "Expand / collapse shape",
     tray_quit: "Quit SignalHub",
 
@@ -382,6 +387,7 @@ mod tests {
             en.tray_settings,
             en.tray_pause,
             en.tray_pass_through,
+            en.tray_pass_through_exit,
             en.tray_collapsed,
             en.tray_quit,
             en.menu_hide,

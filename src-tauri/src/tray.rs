@@ -304,10 +304,27 @@ fn build_menu(app: &AppHandle, lang: crate::config::Lang) -> tauri::Result<Menu<
     let toggle = MenuItem::with_id(app, "toggle", t.tray_show_hide, true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", t.tray_settings, true, None::<&str>)?;
     let pause = MenuItem::with_id(app, "pause", t.tray_pause, true, None::<&str>)?;
-    // 故意不显示「开 / 关」状态：快捷键也能切换它，菜单里的状态会漂移。
-    // 准确状态在设置面板里（get_toggles）。
+    // 穿透开着时把这一项写成「退出点击穿透 · ⌃⌥S」。**不画勾选态**，而是给一条
+    // 能照着做的指令：穿透下窗口收不到任何指针事件，开启时那条通知又是一次性的，
+    // 托盘菜单是用户回头唯一还能查到「怎么退出」的地方。
+    // 真值只有 `SharedUi.pass_through` 一处：命令、托盘、快捷键三条入口都走
+    // `set_pass_through_impl`，它每次都会重建菜单，所以文案不会和真实状态漂移。
+    let pass_through_on = app
+        .state::<crate::SharedUi>()
+        .lock()
+        .expect("ui poisoned")
+        .pass_through;
+    let pass_through_label = if pass_through_on {
+        format!(
+            "{} · {}",
+            t.tray_pass_through_exit,
+            crate::shortcuts::pass_through_label()
+        )
+    } else {
+        t.tray_pass_through.to_string()
+    };
     let pass_through =
-        MenuItem::with_id(app, "pass_through", t.tray_pass_through, true, None::<&str>)?;
+        MenuItem::with_id(app, "pass_through", &pass_through_label, true, None::<&str>)?;
     // 折叠后只剩一个点，没有别的入口切回来 —— 所以托盘这一项是必需的
     let collapsed = MenuItem::with_id(app, "collapsed", t.tray_collapsed, true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", t.tray_quit, true, None::<&str>)?;

@@ -275,6 +275,11 @@ export interface Settings {
   styles: Record<string, StateStyle>;
   /** 折叠成一颗单纯的灯（只剩灯，没有牌面）。**默认 false = 展开成牌。** */
   collapsed: boolean;
+  /**
+   * 灯上单击的主操作。`collapse` = 折叠 / 展开（默认），`inbox` = 打开收件箱，
+   * `none` = 什么都不做。长按圆环菜单与拖拽不受影响。
+   */
+  click_action: "collapse" | "inbox" | "none";
   /** 展开的牌上显示哪几段内容 */
   show: SignFields;
   /** 牌面背景的不透明度（0–100）。调低能看见桌面。 */
@@ -393,6 +398,7 @@ export const DEFAULTS: Settings = {
   palette: "default",
   styles: {},
   collapsed: false,
+  click_action: "collapse",
   show: { name: true, state: true, age: true, message: true },
   sign_opacity: 86,
   hidden_groups: [],

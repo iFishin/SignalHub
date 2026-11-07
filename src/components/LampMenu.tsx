@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { motion, useReducedMotion } from "motion/react";
 import { useMessages } from "../lib/i18n";
 import type { SignalState } from "../lib/types";
@@ -47,22 +47,63 @@ export function LampMenu({ items, aggregate, onClose }: Props) {
   const m = useMessages();
   const reduceMotion = useReducedMotion();
   const count = items.length;
+  const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const [active, setActive] = useState(0);
 
-  // Esc 关闭。灯窗平时不接键盘（它是个常驻小窗），但菜单开着时按 Esc 是最自然的
-  // 「算了」—— 和设置窗、收件箱的 Esc 行为对齐。
+  // 打开就把焦点交给第一项。之前 `role="menu"` 只有 Esc 能用，方向键会走到哪一项
+  // 全靠猜 —— 现在它是一圈真的能用键盘走的菜单。
   useEffect(() => {
+    itemRefs.current[0]?.focus();
+  }, []);
+
+  // Esc 关闭（和设置窗 / 收件箱对齐），方向键沿圆环走，数字键 1–4 直达。
+  // 监听挂在 window 而不是菜单容器上：灯窗是 `focus: false` 的常驻小窗，
+  // 万一焦点没能落到按钮上，方向键也得能走。Enter / Space 交给按钮自己处理。
+  useEffect(() => {
+    const focusAt = (index: number) => {
+      setActive(index);
+      itemRefs.current[index]?.focus();
+    };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        onClose();
+      switch (event.key) {
+        case "Escape":
+          event.stopPropagation();
+          onClose();
+          return;
+        case "ArrowRight":
+        case "ArrowDown":
+          focusAt((active + 1) % count);
+          break;
+        case "ArrowLeft":
+        case "ArrowUp":
+          focusAt((active - 1 + count) % count);
+          break;
+        case "Home":
+          focusAt(0);
+          break;
+        case "End":
+          focusAt(count - 1);
+          break;
+        default: {
+          const digit = Number(event.key);
+          if (!Number.isInteger(digit) || digit < 1 || digit > count) return;
+          focusAt(digit - 1);
+        }
       }
+      event.preventDefault();
+      event.stopPropagation();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
+  }, [active, count, onClose]);
 
   return (
-    <div className="lamp-menu" role="menu" aria-label={m.lampMenuSettings}>
+    <div
+      className="lamp-menu"
+      role="menu"
+      aria-label={m.lampMenuLabel}
+      aria-activedescendant={`lamp-menu-item-${items[active]?.id ?? ""}`}
+    >
       {/* 点击空白处关闭。铺满整个窗口，所以圆环之间的空隙也能点中。
           它在菜单项**之前**，靠 z-index 落在下面（见 CSS）。 */}
       <button
@@ -113,6 +154,12 @@ export function LampMenu({ items, aggregate, onClose }: Props) {
             <motion.button
               type="button"
               role="menuitem"
+              id={`lamp-menu-item-${item.id}`}
+              ref={(node) => {
+                itemRefs.current[index] = node;
+              }}
+              tabIndex={index === active ? 0 : -1}
+              onFocus={() => setActive(index)}
               className="lamp-menu-item"
               data-danger={item.danger || undefined}
               title={item.label}

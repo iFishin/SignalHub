@@ -7,12 +7,16 @@
 //! 2. **关掉时回到 Accessory** —— 灯球应用平时不占 Dock；收件箱和设置窗一样，
 //!    打开时临时变成 Regular，关掉时再退回去（设置窗还开着就别退）。
 //! 3. **关窗只隐藏、不销毁** —— 和设置窗同一个理由：重建 webview 比 show 慢，
-//!    而且会丢掉滚动位置。
+//!    而且会丢掉滚动位置。**代价**：前端组件整个应用生命周期只挂载一次，所以
+//!    「每次打开都要做的事」不能写在 mount 里，得由这里的事件广播驱动。
+//! 4. **显示 / 隐藏各广播一次事件** —— `signalhub://inbox-shown` 让前端重算
+//!    「你离开的这段时间」，`-hidden` 把「上次看过收件箱」推进到当下。
 //!
-//! 窗口尺寸在 `tauri.conf.json` 里固定（420×560），这里只做定位；不参与「尺寸由
-//! 内容决定」那套灯球几何 —— 收件箱是普通的可滚动窗口，不是像素级拼出来的牌。
+//! 窗口初始尺寸在 `tauri.conf.json` 里（420×560，可由用户拉伸），这里只做定位；
+//! 不参与「尺寸由内容决定」那套灯球几何 —— 收件箱是普通的可滚动窗口，不是像素级
+//! 拼出来的牌。
 
-use tauri::{AppHandle, Manager, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
 /// 窗口 label。`tauri.conf.json` 与 `capabilities/default.json` 里必须一致。
 pub const LABEL: &str = "inbox";
@@ -20,7 +24,12 @@ pub const LABEL: &str = "inbox";
 /// 收件箱与灯之间的间距（物理像素）。
 const GAP: i32 = 12;
 
-/// 打开 / 关闭。灯、托盘菜单、全局快捷键都走这一个入口 —— 「点一下开着就关掉」
+/// 每次 show / hide 都发。名字和 `InboxWindow.tsx` 里监听的字符串是两处真值，
+/// 改一处必须同步另一处。
+const SHOWN_EVENT: &str = "signalhub://inbox-shown";
+const HIDDEN_EVENT: &str = "signalhub://inbox-hidden";
+
+/// 打开 / 关闭。灯上圆环菜单、托盘菜单、全局快捷键都走这一个入口 —— 「点一下开着就关掉」
 /// 是弹层的直觉，不需要第二个命令。
 pub fn toggle(app: &AppHandle) {
     let Some(window) = app.get_webview_window(LABEL) else {
@@ -47,12 +56,15 @@ pub fn show(app: &AppHandle) {
     place_near_lamp(app, &window);
     let _ = window.show();
     let _ = window.set_focus();
+    // 窗口只隐藏不销毁，所以「每次打开」这件事只能靠事件通知前端，不能靠组件挂载。
+    let _ = app.emit(SHOWN_EVENT, ());
 }
 
 pub fn hide(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(LABEL) {
         let _ = window.hide();
     }
+    let _ = app.emit(HIDDEN_EVENT, ());
     restore_activation(app);
 }
 
@@ -87,12 +99,18 @@ pub fn wire(app: &tauri::App) {
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
                 let _ = handle.hide();
+                // 只要是「隐藏」就必须广播：前端只认这条事件推进「上次看过」的基准，
+                // 三条隐藏路径（命令 / 失焦 / 关闭）漏一条，摘要的基准就会偏。
+                let _ = app.emit(HIDDEN_EVENT, ());
                 restore_activation(app);
             }
             // 像弹层一样：点到别的应用就收起。没有这一条的话，收件箱会一直
             // 置顶挡在终端前面 —— 而它本来只是「看一眼、处理一条」的地方。
             tauri::WindowEvent::Focused(false) => {
                 let _ = handle.hide();
+                // 失焦隐藏不经过 `hide(app)`，基准得在这里补写一次 —— 否则「上次
+                // 看过收件箱」会一路停到上回主动关窗那一刻。
+                let _ = app.emit(HIDDEN_EVENT, ());
                 restore_activation(app);
             }
             _ => {}

@@ -65,7 +65,7 @@ interface Props {
    * 演示 / 预览模式：**只画，不动真东西**。
    *
    * 演示窗口和设置里的「演示」页复用这同一个组件，为的是画面永远和真灯一致。
-   * 但拖拽、单击开收件箱、右键菜单、就地改名、清组这些交互全都得关掉 ——
+   * 但拖拽、单击折叠、右键菜单、就地改名、清组这些交互全都得关掉 ——
    * 它们是「操作这个应用」，不是「看这个应用长什么样」。默认 false，真灯一行不改。
    */
   preview?: boolean;
@@ -121,8 +121,9 @@ function tooltip(
   extra: string[],
   /** 一组都没有时那句话说这句 —— 「刚完成 · N 分钟前」顶替「没有智能体在上报」 */
   emptyLabel: string,
+  /** 按「单击做什么」挑好的那一份提示，免得改了设置之后 tooltip 还在说旧话。 */
+  hint: string,
 ): string {
-  const hint = m.lampHint;
 
   // 没有组时 tooltip 只剩一句状态。Hints 仍然拼上 —— 空灯球正需要「右键能进设置」。
   if (groups.length === 0) return [emptyLabel, hint, ...extra].join("\n");
@@ -520,8 +521,14 @@ export function SignalLamp({
   }, [menuOpen]);
 
   // hook 无条件调用（React 规则），预览时只是不把那组事件挂到根节点上。
-  // **单击 = 折叠 / 展开，长按 = 圆环菜单**（见 `useDragOrClick`）。
-  const drag = useDragOrClick(toggleCollapsed, () => setMenuOpen(true));
+  // **长按 = 圆环菜单**始终不变；单击做什么由设置决定（默认折叠 / 展开）。
+  // 判据仍在 `useDragOrClick` 那一条时间线上：拖拽和长按优先，单击不抢它们。
+  const onClickLamp = () => {
+    if (settings.click_action === "inbox") openInbox();
+    else if (settings.click_action === "collapse") toggleCollapsed();
+    // "none"：按下 / 松开照常判定，只是不产生动作
+  };
+  const drag = useDragOrClick(onClickLamp, () => setMenuOpen(true));
 
   // 就地改名：被点开的那一组（原始组名）+ 输入框里的草稿 + 打开那一刻填进去的值。
   //
@@ -676,7 +683,7 @@ export function SignalLamp({
           : tooltip(m, lang, aggregate, groups, settings.group_meta, [
               paused ? m.lampPaused : "",
               passThrough ? m.lampPassThrough : "",
-            ].filter((line) => line !== ""), emptyLabel)
+            ].filter((line) => line !== ""), emptyLabel, m.lampHint[settings.click_action])
       }
       // 折叠态被指着时临时展开（见上），移开 / 超时收回
       onMouseEnter={() => {
@@ -743,7 +750,7 @@ export function SignalLamp({
               <div className="sign-line">
                 {show.name && group.name && renaming?.group === group.name ? (
                   /* 就地改名的输入框。**必须吃掉 mousedown / mouseup / click**：
-                     否则按一下就开始拖窗口、松开又被当成「点了一下灯」→ 打开收件箱。
+                     否则按一下就开始拖窗口、松开又被当成「点了一下灯」→ 折叠。
                      Enter 提交、Esc 取消、失焦提交（同 macOS 各处的手感）。 */
                   <input
                     className="sign-rename"
@@ -778,7 +785,7 @@ export function SignalLamp({
                       className="sign-name"
                       title={m.renameHint}
                       /* **只吃 mouseup，不吃 mousedown**：冒到 `.lamp-root` 上的
-                         mouseup 会被当成「点了一下灯」→ 打开收件箱（见 `useDragOrClick`）。
+                         mouseup 会被当成「点了一下灯」→ 折叠（见 `useDragOrClick`）。
                          而 mousedown 留着，从名字上照样能把灯拖走 —— 拖拽靠的是
                          mousemove 上的 `startDragging()`，那条路不受影响。 */
                       onMouseUp={stopMouse}

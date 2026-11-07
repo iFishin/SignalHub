@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { inTauri } from "../lib/env";
 import { useLang, useMessages } from "../lib/i18n";
 import { useNow } from "../lib/useNow";
@@ -49,6 +50,10 @@ const TOAST_MS = 3200;
  * 是同一份。
  */
 const LAST_SEEN_KEY = "signalhub.inbox.lastSeen";
+
+/** 与 Rust `inbox.rs` 里那两个 emit 的名字是两处真值，改一处必须同步另一处。 */
+const SHOWN_EVENT = "signalhub://inbox-shown";
+const HIDDEN_EVENT = "signalhub://inbox-hidden";
 
 function readLastSeen(): number | null {
   try {
@@ -104,40 +109,71 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
 
   // ---- 「你离开的这段时间」----
   //
-  // 只在**打开收件箱**时算一次：摘要说的是「离开期间发生了什么」，不是「现在
-  // 怎么样」—— 后者就是下面那份列表。基准是上次打开的时刻。
+  // **每次显示收件箱都重算一次**。窗口关掉只隐藏、不销毁（见 `inbox.rs`），前端
+  // 组件整个应用生命周期只挂载一次 —— 早先靠 mount 算一次的写法，第二次打开就
+  // 再也不会有摘要，而且「上次看过」永远停在应用启动那一刻。现在由 Rust 在
+  // show() / hide() 广播 `signalhub://inbox-shown` / `-hidden`：显示时算、隐藏时推进
+  // 基准。摘要说的是「离开期间发生了什么」，不是「现在怎么样」—— 后者是下面那份列表。
   const [away, setAway] = useState<AwaySummary | null>(null);
-  const awaySettled = useRef(false);
-  useEffect(() => {
-    if (awaySettled.current) return;
-    // 快照是异步来的：第一帧模型是空的，这时算出来必然是「什么都没发生」。
-    // 等真的有了行再算。收件箱本来就空就一直不算 —— 那种情况也没有摘要可给。
-    if (all.length === 0) return;
-    awaySettled.current = true;
+  // 模型每帧都在变，但摘要只在「显示」那一刻取一次快照。读 ref，不把它们放进
+  // effect 依赖，否则一次状态推送就会把摘要重算成「当前怎么样」。
+  const modelRef = useRef(model);
+  modelRef.current = model;
+  const countRef = useRef(all.length);
+  countRef.current = all.length;
+  /** shown 事件可能跑在快照前面（刚启动就按快捷键）—— 记下来，等有行再补算。 */
+  const pendingShown = useRef(false);
 
+  const computeAway = useCallback(() => {
+    if (countRef.current === 0) {
+      pendingShown.current = true;
+      return;
+    }
+    pendingShown.current = false;
     const now = Date.now();
     const lastSeen = readLastSeen();
     // 事件流水是增强，不是依赖：读不到（盘坏、旧版本 Rust、非 Tauri 环境）就
     // 安静地退回第一版「只看快照」，而不是把整块摘要藏起来。
-    const fallback = () => setAway(buildAwaySummary(model, now, lastSeen));
+    const fallback = () => setAway(buildAwaySummary(modelRef.current, now, lastSeen));
     if (lastSeen === null || !inTauri) {
       fallback();
       return;
     }
     invoke<AwayEvent[]>("get_events", { sinceMs: lastSeen, limit: 5000 })
-      .then((events) => setAway(buildAwaySummary(model, now, lastSeen, events)))
+      .then((events) => setAway(buildAwaySummary(modelRef.current, now, lastSeen, events)))
       .catch((err) => {
         console.error("get_events 失败", err);
         fallback();
       });
-  }, [all.length, model]);
-
-  // 打开就记「看过」，关掉再记一次。少了卸载那一次的话，收件箱开着一小时后
-  // 关掉，下次打开会把这一小时也算成「你不在」。
-  useEffect(() => {
-    writeLastSeen(Date.now());
-    return () => writeLastSeen(Date.now());
   }, []);
+
+  // 快照异步到达时补算那一次 pending 的显示。
+  useEffect(() => {
+    if (all.length > 0 && pendingShown.current) computeAway();
+  }, [all.length, computeAway]);
+
+  useEffect(() => {
+    let disposed = false;
+    const offs: (() => void)[] = [];
+    const on = (event: string, fn: () => void) => {
+      listen(event, fn)
+        .then((off) => {
+          if (disposed) off();
+          else offs.push(off);
+        })
+        .catch((err) => console.error(`监听 ${event} 失败`, err));
+    };
+    on(SHOWN_EVENT, computeAway);
+    on(HIDDEN_EVENT, () => writeLastSeen(Date.now()));
+    return () => {
+      disposed = true;
+      offs.forEach((off) => off());
+    };
+  }, [computeAway]);
+
+  // 整个应用退出时收件箱可能还开着、收不到 hidden —— 卸载时补写一次基准，
+  // 免得下次启动把「应用关着的那段时间」也算成离开。
+  useEffect(() => () => writeLastSeen(Date.now()), []);
 
   const awayParts = useMemo(() => {
     if (!away) return [];
@@ -349,6 +385,16 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
           hide();
           event.preventDefault();
           return;
+        case "m":
+          // 静音是幂等的，按错再按一次就回来；`x` 清会话不给键盘入口 ——
+          // 那是唯一不可撤销的动作，不该变成一个容易误碰的单键。
+          if (selected?.group) toggleMute(selected);
+          event.preventDefault();
+          return;
+        case "w":
+          if (selected?.session) toggleWatch(selected);
+          event.preventDefault();
+          return;
         default:
           break;
       }
@@ -364,7 +410,7 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [all, decideRow, hide, jump, selected, selectedKey]);
+  }, [all, decideRow, hide, jump, selected, selectedKey, toggleMute, toggleWatch]);
 
   // 选中的行滚进视野 —— 键盘走到底部时列表要跟着走。
   useEffect(() => {
@@ -376,6 +422,8 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
       ?.scrollIntoView({ block: "nearest" });
   }, [indexByKey, selectedKey]);
 
+  /** 行里嵌着按钮，套 `role="option"` 会让读屏器忽略那些按钮；用 `aria-current`
+   *  说「键盘现在在这一行」就够，不必换掉整份语义。 */
   const renderRow = (row: InboxRow) => {
     const index = indexByKey.get(row.key) ?? 0;
     const isSelected = row.key === selectedKey;
@@ -390,6 +438,7 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
         data-inbox-index={index}
         data-state={row.state}
         data-selected={isSelected || undefined}
+        aria-current={isSelected ? "true" : undefined}
         title={row.cwd ?? undefined}
         onClick={() => setSelectedKey(row.key)}
         onDoubleClick={() => jump(row)}
@@ -514,7 +563,7 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
                 {/* 展开拒绝理由（A2） */}
                 <button
                   type="button"
-                  className="inbox-btn inbox-btn-reason"
+                  className="inbox-btn inbox-btn-reason inbox-btn-secondary"
                   title={m.approvalReason}
                   aria-label={m.approvalReason}
                   aria-expanded={picking}
@@ -545,7 +594,7 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
             {row.session && (
               <button
                 type="button"
-                className="inbox-btn"
+                className="inbox-btn inbox-btn-secondary"
                 data-active={watched.includes(row.session) || undefined}
                 onMouseDown={stop}
                 onDoubleClick={stop}
@@ -560,7 +609,7 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
             {row.group && (
               <button
                 type="button"
-                className="inbox-btn"
+                className="inbox-btn inbox-btn-secondary"
                 onMouseDown={stop}
                 onDoubleClick={stop}
                 onClick={(event) => {
@@ -573,7 +622,7 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
             )}
             <button
               type="button"
-              className="inbox-btn"
+              className="inbox-btn inbox-btn-secondary"
               onMouseDown={stop}
               onDoubleClick={stop}
               onClick={(event) => {
@@ -686,8 +735,26 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
 
       <footer className="inbox-foot">
         <span>{m.inbox.keys}</span>
-        {toast && <div className="inbox-toast">{toast}</div>}
+        {toast && (
+          <div className="inbox-toast" role="status" aria-live="polite">
+            {toast}
+          </div>
+        )}
       </footer>
+
+      {/* 无边框窗口没有系统给的 resize 边缘，右下角这枚 14px 的把手是唯一落点。
+          视觉提示是两条 1px 细线（见 inbox.css）；按住右下角拖即可改尺寸。 */}
+      <div
+        className="inbox-resize"
+        aria-hidden="true"
+        onMouseDown={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (inTauri) {
+            getCurrentWindow().startResizeDragging("SouthEast").catch(console.error);
+          }
+        }}
+      />
     </div>
   );
 }

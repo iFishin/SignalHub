@@ -1501,6 +1501,9 @@ export function SettingsPanel({ snapshot }: Props) {
   const groups = tabGroups(m);
   const pageRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState("");
+  /** 回车跳页时要顺手滚到的小节关键词。别名表里那些英文词不一定和本地化的小节
+      标题对得上，匹配不上就只跳页 —— 搜索的语义始终是「去哪一页」。 */
+  const [scrollToQuery, setScrollToQuery] = useState<string | null>(null);
   // 记住上次翻到哪一页。11 个页签里找东西，重开设置又被送回「状态」最烦人。
   // 存页签 id 而不是下标 —— 以后插一页也不会把人送错地方；认不出来就退回默认。
   // 灯窗上的「看演示」会留一个一次性暗号，优先级高于「上次那页」。
@@ -1560,10 +1563,36 @@ export function SettingsPanel({ snapshot }: Props) {
     if (event.key !== "Enter") return;
     const first = visibleGroups[0]?.entries[0]?.id ?? (showSystem ? "system" : null);
     if (first) {
+      setScrollToQuery(query.trim());
       setTab(first);
       setQuery("");
     }
   };
+  // 跳到那一页之后，顺手滚到名字对得上的小节。标题从**渲染出来的 DOM** 里读
+  // （和 `PageSectionsNav` 同一套做法），不另写一份会腐化的清单。`key={tab}` 会
+  // 重挂内容，所以等一帧再找；找不到就安静地停在页顶。
+  useEffect(() => {
+    if (!scrollToQuery) return;
+    const q = scrollToQuery.toLowerCase();
+    const frame = window.requestAnimationFrame(() => {
+      const sections = Array.from(
+        pageRef.current?.querySelectorAll<HTMLElement>(".section") ?? [],
+      );
+      const target = sections.find((section) =>
+        section
+          .querySelector<HTMLElement>(".section-title")
+          ?.textContent?.toLowerCase()
+          .includes(q),
+      );
+      if (target) {
+        const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        target.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
+      }
+      setScrollToQuery(null);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [tab, scrollToQuery]);
+
   // 审批历史（`docs/plan-approval.md` A1）：只在「历史」页打开时读盘
   const { records: approvalLog, refresh: refreshApprovalLog } = useApprovalLog(
     tab === "history",
@@ -2634,6 +2663,24 @@ export function SettingsPanel({ snapshot }: Props) {
             <p className="hint">{m.silenceTimeoutsMore}</p>
 
             <div className="section-title">{m.behaviorWindowTitle}</div>
+            {/* 单击是灯上最便宜的手势。v0.5.0 把它给了折叠，收件箱被挤进
+                「长按 → 圆环 → 点图标」三步；这里让用户自己把主操作换回来。
+                沿用页里其它单选的 seg（浅灰底 + 正文字色 + 500 字重），不另起一套。 */}
+            <Row label={m.clickAction} onReset={resetFor(settings, "click_action", patch)}>
+              <div className="seg">
+                {(["collapse", "inbox", "none"] as const).map((action) => (
+                  <button
+                    key={action}
+                    type="button"
+                    data-active={settings.click_action === action}
+                    onClick={() => patch({ click_action: action })}
+                  >
+                    {m.clickActionLabels[action]}
+                  </button>
+                ))}
+              </div>
+            </Row>
+            <p className="hint">{m.clickActionHint}</p>
             <Row label={m.quietMode} onReset={resetFor(settings, "quiet", patch)}>
               <Switch on={settings.quiet} onChange={(on) => patch({ quiet: on })} />
             </Row>

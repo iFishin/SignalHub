@@ -335,6 +335,24 @@ pub enum LampLayout {
     PerGroup,
 }
 
+/// 灯上**单击**的主操作。
+///
+/// v0.5.0 的手势重做把折叠挪到了单击，收件箱被挤进「长按 → 圆环 → 点图标」三步。
+/// 这里让用户把最便宜的手势还给自己最常做的事，而不是替所有人规定一个「主操作」。
+///
+/// **默认 `Collapse`**：升级不该让任何人的单击突然变成打开一个窗口（红线 3）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ClickAction {
+    /// 折叠 / 展开（v0.5.0 至今的行为）。
+    #[default]
+    Collapse,
+    /// 打开收件箱。
+    Inbox,
+    /// 什么都不做；拖拽与长按仍然照常。
+    None,
+}
+
 /// 配色方案。
 ///
 /// 给的是**预设而不是任意取色**：红 = 危险、黄 = 注意是有语义的，
@@ -1204,6 +1222,9 @@ pub struct Settings {
     /// 可以忽略。
     #[serde(default = "default_machine_poll_ms")]
     pub machine_poll_ms: u64,
+    /// 灯上单击做什么，见 [`ClickAction`]。容器级 `serde(default)` 会让旧配置
+    /// 自动落到 `Collapse`，升级不改变既有手感。
+    pub click_action: ClickAction,
 }
 
 /// [`Settings::machine_poll_ms`] 的缺省值。见那里的说明。
@@ -1450,6 +1471,8 @@ impl Default for Settings {
             // 多机中枢默认一台都不配 —— 空数组 = 一条请求都不发
             machines: Vec::new(),
             machine_poll_ms: default_machine_poll_ms(),
+            // 旧版配置里没有这个字段 —— 默认折叠，升级不让单击改行为
+            click_action: ClickAction::default(),
         }
     }
 }
@@ -2107,6 +2130,9 @@ mod tests {
             .into_iter()
             .collect(),
             collapsed: true,
+            // 新字段设成非默认值：`ClickAction` 默认是 `Collapse`，用默认值的话
+            // 「漏了这个字段」在往返里看不出来
+            click_action: ClickAction::Inbox,
             show: SignFields {
                 name: false,
                 state: true,

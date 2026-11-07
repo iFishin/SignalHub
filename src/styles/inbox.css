@@ -29,6 +29,9 @@ html[data-window="inbox"] body {
 }
 
 .inbox-window {
+  /* 右下角那枚 resize 把手的包含块。窗口无边框、没有系统的拖拽边缘，
+     所以拉伸得自己给一个落点（见文件末尾 `.inbox-resize`）。 */
+  position: relative;
   box-sizing: border-box;
   height: 100vh;
   display: flex;
@@ -74,7 +77,7 @@ html[data-window="inbox"] body {
   border-radius: 9px;
   background: rgba(208, 52, 44, 0.92);
   color: #fff;
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
   line-height: 18px;
   text-align: center;
@@ -238,7 +241,7 @@ html[data-window="inbox"] body {
 .inbox-agent {
   flex: none;
   color: #86868f;
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 /* 多机中枢：这一行来自另一台机器。
@@ -261,14 +264,14 @@ html[data-window="inbox"] body {
 .inbox-state {
   flex: none;
   color: var(--state, #d7d7df);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 .inbox-age {
   flex: none;
   margin-left: auto;
   color: #86868f;
-  font-size: 10.5px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -294,7 +297,7 @@ html[data-window="inbox"] body {
 
 .inbox-approval-head {
   color: #d9d9df;
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 .inbox-target {
@@ -307,7 +310,7 @@ html[data-window="inbox"] body {
   overflow: auto;
   color: #d7d7df;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-all;
@@ -472,4 +475,47 @@ html[data-window="inbox"] body {
   font-size: 11px;
   line-height: 1.4;
   white-space: normal;
+}
+
+/* ---- 主次动作分层 ------------------------------------------------------- */
+
+/* 420px 宽的窗口里，每行常驻 4–7 个按钮会把列表撑成一片按钮墙，而且「清除」
+   紧挨着「允许」。主操作（允许 / 拒绝 / 跳转）始终可见；次要的（拒绝理由、盯住、
+   静音、清除）只在指着这一行、或键盘选中这一行时出现 —— 灯牌的 `.sign-actions`
+   也是这个脾气，不另起一套视觉语言。`data-selected` 保证键盘选中后一样够得着，
+   底栏的 M / W 是它们的快捷键。 */
+.inbox-actions .inbox-btn-secondary {
+  display: none;
+}
+
+.inbox-row:hover .inbox-btn-secondary,
+.inbox-row[data-selected] .inbox-btn-secondary,
+.inbox-row:focus-within .inbox-btn-secondary {
+  display: inline-block;
+}
+
+/* ---- 拉伸把手 ----------------------------------------------------------- */
+
+/* 无边框窗口没有系统给的 resize 边缘，`startResizeDragging("SouthEast")` 得有
+   一个能按住的地方。只画两条 1px 细线（macOS resize grip 的极简版），不加圆角、
+   底色、图标或发光；鼠标变成 nwse-resize 就是提示。 */
+.inbox-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+}
+
+.inbox-resize::after {
+  content: "";
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 6px;
+  height: 6px;
+  border-right: 1px solid rgba(255, 255, 255, 0.28);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.28);
+  pointer-events: none;
 }
