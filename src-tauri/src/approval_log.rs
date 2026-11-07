@@ -164,11 +164,11 @@ pub fn recent_in(dir: &Path, limit: usize) -> Vec<Record> {
 ///
 /// 和 [`recent`] 不同：那个只读最近两个文件（界面上的「审批记录」列表只需要
 /// 翻到昨天），而「本周洞察」要跨 7 天按工具聚合，得读整个保留期。
-pub fn since(since_ms: u64, limit: usize) -> Vec<Record> {
-    match dir() {
-        Ok(dir) => since_in(&dir, since_ms, limit),
-        Err(_) => Vec::new(),
-    }
+/// 同上，但**读不到要报错**：`get_approval_history` 拿它做「本周洞察」，
+/// 目录不可读时界面得说「读不到」，不能说「这段时间没有记录」。
+/// 供列表用的 [`recent`] 保持原来的「读不到就当空」语义不变。
+pub fn since(since_ms: u64, limit: usize) -> io::Result<Vec<Record>> {
+    Ok(since_in(&dir()?, since_ms, limit))
 }
 
 pub fn since_in(dir: &Path, since_ms: u64, limit: usize) -> Vec<Record> {

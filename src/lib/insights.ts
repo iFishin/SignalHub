@@ -101,11 +101,11 @@ export function buildInsights(input: InsightInput): InsightFact[] {
     }
     if (event.state === "done") finished.add(event.session);
     if (event.state === "error") failed.add(event.session);
-    if (event.kind === "start") {
-      const day = dayKey(event.ts_ms);
-      if (!daysCount.has(day)) daysCount.set(day, new Set());
-      daysCount.get(day)!.add(event.session);
-    }
+    // 活跃日按「这一天出现过事件的会话」去重，而不是只数 start：跨天的长会话
+    // 在第二天没有 start，但它那天确实还在跑，漏掉会让「最忙的一天」失真。
+    const day = dayKey(event.ts_ms);
+    if (!daysCount.has(day)) daysCount.set(day, new Set());
+    daysCount.get(day)!.add(event.session);
   }
 
   const facts: InsightFact[] = [

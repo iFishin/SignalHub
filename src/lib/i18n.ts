@@ -230,7 +230,7 @@ function zhInsightFact(fact: InsightFact): string {
     case "volume":
       return `近 ${fact.days} 天有 ${fact.sessions} 个会话活跃过：${fact.finished} 个完成、${fact.failed} 个失败。`;
     case "peakDay":
-      return `${fact.day} 最忙，有 ${fact.sessions} 个会话开始。`;
+      return `${fact.day} 最忙，有 ${fact.sessions} 个会话活跃。`;
     case "topProject":
       return `出场最多的是「${fact.name}」，${fact.sessions} 个会话。`;
     case "topAgent":
@@ -249,7 +249,7 @@ function enInsightFact(fact: InsightFact): string {
     case "volume":
       return `${fact.sessions} sessions were active over the last ${fact.days} days: ${fact.finished} finished, ${fact.failed} failed.`;
     case "peakDay":
-      return `${fact.day} was the busiest, with ${fact.sessions} sessions starting.`;
+      return `${fact.day} was the busiest, with ${fact.sessions} sessions active.`;
     case "topProject":
       return `Most sessions came from "${fact.name}" — ${fact.sessions}.`;
     case "topAgent":
@@ -381,6 +381,8 @@ export interface Messages {
   insightFact: (fact: InsightFact) => string;
   insightReportHeader: (days: number) => string;
   insightError: string;
+  /** 撞到 5000 条上限时追加的一句，别把截断后的数字当全量结论。 */
+  insightTruncated: string;
 
   // 通用动作
   restoreAll: string;
@@ -1153,6 +1155,8 @@ export const MESSAGES: Record<Lang, Messages> = {
     insightFact: zhInsightFact,
     insightReportHeader: (days) => `SignalHub 本周洞察 · 近 ${days} 天`,
     insightError: "本地事件流水读不出来，这张卡片暂时不显示。",
+    insightTruncated:
+      "记录数已到上限，这里只统计了最近的一部分，上面的数字可能偏小。",
 
     restoreAll: "全部恢复",
     mute: "静音",
@@ -1889,6 +1893,8 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     insightFact: enInsightFact,
     insightReportHeader: (days) => `SignalHub weekly insights · last ${days} days`,
     insightError: "The local event log could not be read; this card is hidden for now.",
+    insightTruncated:
+      "The entry cap was reached: only the newest records are counted, so the numbers above may be low.",
 
     restoreAll: "Restore all",
     mute: "Mute",

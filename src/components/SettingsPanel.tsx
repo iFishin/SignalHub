@@ -1011,6 +1011,7 @@ function InsightCard({
   m,
   facts,
   failed,
+  truncated,
   onCopy,
   onRefresh,
   copied,
@@ -1018,6 +1019,7 @@ function InsightCard({
   m: Messages;
   facts: InsightFact[];
   failed: boolean;
+  truncated: boolean;
   onCopy: () => void;
   onRefresh: () => void;
   copied: boolean;
@@ -1044,6 +1046,8 @@ function InsightCard({
         </button>
       </div>
       <p className="hint">{m.insightHint}</p>
+      {/* 撞到上限时数字只覆盖最近一段，别让它看起来像全量结论。 */}
+      {truncated && <p className="hint">{m.insightTruncated}</p>}
       <ul className="digest-list">
         {facts.map((fact, index) => (
           <li className="digest-fact" key={`${fact.kind}-${index}`}>
@@ -2399,6 +2403,7 @@ export function SettingsPanel({ snapshot }: Props) {
               m={m}
               facts={insightFacts}
               failed={insightData.failed}
+              truncated={insightData.truncated}
               onCopy={copyInsights}
               onRefresh={refreshInsights}
               copied={copied === "insights"}

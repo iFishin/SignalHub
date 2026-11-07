@@ -122,6 +122,22 @@ describe("buildInsights", () => {
     const peak = facts.find((fact) => fact.kind === "peakDay");
     expect(peak).toMatchObject({ kind: "peakDay", sessions: 2 });
   });
+
+  it("活跃日按所有事件算，跨天的长会话也计入（不只数 start）", () => {
+    const facts = buildInsights(
+      input([
+        ev({ session: "s1", ts_ms: NOW - 3 * DAY }),
+        ev({ session: "s1", kind: "change", state: "done", ts_ms: NOW - 2 * DAY }),
+        ev({ session: "s2", kind: "change", state: "done", ts_ms: NOW - 2 * DAY }),
+        ev({ session: "s3", kind: "end", state: "done", ts_ms: NOW - 2 * DAY }),
+      ]),
+    );
+    // 只数 start 的话第二天一条都没有；现在第二天有 3 个会话，应当胜出。
+    expect(facts.find((fact) => fact.kind === "peakDay")).toMatchObject({
+      kind: "peakDay",
+      sessions: 3,
+    });
+  });
 });
 
 describe("insightsMarkdown", () => {

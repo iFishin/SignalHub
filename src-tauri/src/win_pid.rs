@@ -121,6 +121,17 @@ pub fn current_agent_pid() -> Option<u32> {
         TH32CS_SNAPPROCESS,
     };
 
+    // `dwSize` 必须在 Process32FirstW 之前填好。用结构体字面量一次给全，不要写
+    // `Default::default()` 再逐字段赋值：clippy 的 `field_reassign_with_default`
+    // 在 CI 的 `-D warnings` 下会直接把 Windows 那个 job 判红，而这段只在
+    // `#[cfg(windows)]` 下编译，macOS 本地跑 clippy 是抓不到的。
+    fn snapshot_entry() -> PROCESSENTRY32W {
+        PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        }
+    }
+
     // 每条 early return 都得关掉快照句柄 —— 用 Drop 包一层，别靠人记得。
     struct Snapshot(HANDLE);
     impl Drop for Snapshot {
@@ -138,8 +149,7 @@ pub fn current_agent_pid() -> Option<u32> {
     let _guard = Snapshot(handle);
 
     let mut table: HashMap<u32, (u32, String)> = HashMap::new();
-    let mut entry = PROCESSENTRY32W::default();
-    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+    let mut entry = snapshot_entry();
     if unsafe { Process32FirstW(handle, &mut entry) } == 0 {
         return None;
     }
@@ -152,8 +162,7 @@ pub fn current_agent_pid() -> Option<u32> {
         let exe = normalize_exe(&String::from_utf16_lossy(&entry.szExeFile[..end]));
         table.insert(entry.th32ProcessID, (entry.th32ParentProcessID, exe));
 
-        entry = PROCESSENTRY32W::default();
-        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        entry = snapshot_entry();
         if unsafe { Process32NextW(handle, &mut entry) } == 0 {
             break;
         }

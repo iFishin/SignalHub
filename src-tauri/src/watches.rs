@@ -15,11 +15,18 @@
 //!
 //! 判据挂在事件流水上（`events::tap`），所以 HTTP 上报、hook、TTL 到期、手动
 //! 清掉会话都会触发，不用在 `Store::apply` 的每个调用点各写一遍。
+//!
+//! **远程会话的 `end` 不算终态**：它们靠几秒一次的拉取维持，TTL 一抖就会整批
+//! 消失、下一拍整批回来（`remote.rs`）。把这种抖动当「跑完了」既会误报，还会
+//! 把订阅提前用掉。真跑完时远程也会先送 `change: done`，那条照样触发。
+//!
+//! 触发后广播 `watches-changed`：收件箱窗口常驻、只是隐藏，挂载时那次
+//! `get_watches` 不会重跑，不广播的话按钮会一直停在「取消盯」。
 
 use crate::events::Event;
 use std::collections::HashMap;
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 #[derive(Debug, Clone)]
 struct Watch {
@@ -71,24 +78,47 @@ impl Watches {
     }
 }
 
-/// 「不用再等了」的三种情况：`done` / `error` 是会话自己说的，`end` 是它被删掉
-/// （到期或手动清除）—— 后者也该叫一声，否则用户会一直以为还在跑。
+/// 「不用再等了」：`done` / `error` 是会话自己说的；本地会话被删掉（`end`，
+/// 到期或手动清除）也该叫一声，否则用户会一直以为还在跑。
+///
+/// 远程的 `end` 例外 —— 见文件头。它只在最后状态不是终态时被忽略：远程会话
+/// 真报了 `done` 再消失，`state == "done"` 这一条照样会触发。
 fn is_final(event: &Event) -> bool {
-    event.kind == "end" || event.state == "done" || event.state == "error"
+    if event.state == "done" || event.state == "error" {
+        return true;
+    }
+    event.kind == "end" && event.machine.is_empty()
 }
 
-/// 每帧事件流过后调一次。读不到 app state（setup 还没跑完）就安静跳过：
-/// 那时前端也还没法点「盯住」，不存在漏掉一次通知的问题。
+/// 每帧事件流过后调一次。两个 state 都在 `build()` 链上 `manage`，但通知链可能
+/// 在 `setup` 跑完前就送来第一帧 —— 一律用 `try_state` 安静跳过，别让启动期
+/// 的一帧把应用带崩（那时前端也还没法点「盯住」，不会漏掉通知）。
+///
+/// ⚠️ 语言 state 注册的是 `Arc<lang::LocalLang>`（即 `crate::SharedLang`），
+/// 不是裸 `LocalLang`。Tauri 按 `TypeId` 取 state，写错类型不会在编译期报错，
+/// 而是运行时 `state() called before manage()` panic —— release 下 `panic=abort`
+/// 直接退出。取配置里的那一个类型，别照着别的模块抄。
 pub fn fire(app: &AppHandle, events: &[Event]) {
-    let Some(watches) = app.try_state::<Watches>() else {
+    let (Some(watches), Some(lang_state)) = (
+        app.try_state::<Watches>(),
+        app.try_state::<crate::SharedLang>(),
+    ) else {
         return;
     };
-    let lang = app.state::<crate::lang::LocalLang>().get();
-    for (label, state_name) in watches.take_fired(events) {
+    let fired = watches.take_fired(events);
+    if fired.is_empty() {
+        return;
+    }
+
+    let lang = lang_state.get();
+    for (label, state_name) in fired {
         let state = crate::state::Signal::from_name(&state_name);
         let (title, body) = crate::lang::watch_notice(lang, state, &label);
         crate::alerts::send_message(app, &title, &body);
     }
+    // 订阅已被拿走，让还开着的收件箱把按钮刷回「盯住」。没有 webview 时
+    // emit 会失败，那也无所谓 —— 下次打开会重新拉一次全量。
+    let _ = app.emit("watches-changed", ());
 }
 
 #[cfg(test)]
@@ -129,6 +159,23 @@ mod tests {
         watches.add("s1".to_string(), "build".to_string());
         let out = watches.take_fired(&[event("end", "s1", "working")]);
         assert_eq!(out.len(), 1, "被清掉也要叫一声");
+    }
+
+    /// 远程会话靠 TTL 维持，掉一拍就整批消失又回来。这种 `end` 既不能误报
+    /// 「跑完了」，也不能把订阅用掉 —— 用户还在等真正的终态。
+    #[test]
+    fn a_remote_session_dropping_out_does_not_consume_the_watch() {
+        let watches = Watches::default();
+        watches.add("s1".to_string(), "build".to_string());
+        let mut dropped = event("end", "s1", "working");
+        dropped.machine = "macbook".to_string();
+        assert!(watches.take_fired(&[dropped]).is_empty());
+        assert_eq!(watches.ids(), vec!["s1"]);
+
+        // 它真报了 done，那条仍然要响。
+        let mut done = event("change", "s1", "done");
+        done.machine = "macbook".to_string();
+        assert_eq!(watches.take_fired(&[done]).len(), 1);
     }
 
     #[test]

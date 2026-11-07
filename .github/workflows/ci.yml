@@ -8,6 +8,14 @@ name: CI
 # 存在的 API、`.exe` 后缀没处理）恰恰是最容易犯、又最难在自己机器上发现的。
 #
 # 前端一起跑：`npm run build` 里含 `tsc`，类型错误三平台一样，但顺手跑不花时间。
+#
+# **本地怎么验 Windows-only 分支**（macOS 上 `cargo clippy` 根本编不到
+# `#[cfg(windows)]`）：先 `rustup target add x86_64-pc-windows-msvc`，再用一个只
+# `#[path]` 引入该文件的临时 crate 跑
+#   cargo clippy --target x86_64-pc-windows-msvc --all-targets -- -D warnings
+# clippy 只做 check，不需要 MSVC 链接器，也不必编整个项目（整包交叉编译会卡在
+# `ring` 的 C 代码）。0.5.1 那两轮 CI 连红，就是 `win_pid.rs` 的
+# `field_reassign_with_default` 一直没被本地检查覆盖到 —— 别再只跑 macOS 就推。
 
 on:
   push:

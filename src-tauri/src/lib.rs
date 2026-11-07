@@ -930,10 +930,12 @@ fn decide_approval(
 fn get_approval_history(
     limit: Option<usize>,
     since_ms: Option<u64>,
-) -> Vec<approval_log::Record> {
+) -> Result<Vec<approval_log::Record>, String> {
     match since_ms {
-        Some(since) => approval_log::since(since, limit.unwrap_or(2000).min(5000)),
-        None => approval_log::recent(limit.unwrap_or(100).min(500)),
+        // 洞察用的这条要区分「读不到」和「没有记录」：前者让前端显示错误态。
+        Some(since) => approval_log::since(since, limit.unwrap_or(2000).min(5000))
+            .map_err(|err| err.to_string()),
+        None => Ok(approval_log::recent(limit.unwrap_or(100).min(500))),
     }
 }
 
@@ -941,10 +943,11 @@ fn get_approval_history(
 ///
 /// `since_ms` 是**前端给的墙上时钟**：Rust 不知道本地时区（和 `stats.rs` 同一个
 /// 取舍），而「今天零点」「上次打开收件箱的时刻」都只有前端说得准。上限是硬的 ——
-/// 常驻应用攒一天的事件可以有几千条，IPC 不该一次搬一座山；界面如实说明这个上限。
+/// 常驻应用攒一天的事件可以有几千条，IPC 不该一次搬一座山；界面如实说明这个
+/// 上限，并在真的截断时把「数字可能偏小」说出来，而不是把截断后的数据当全量。
 #[tauri::command]
-fn get_events(since_ms: u64, limit: Option<usize>) -> Vec<events::Event> {
-    events::since(since_ms, limit.unwrap_or(2000).min(5000))
+fn get_events(since_ms: u64, limit: Option<usize>) -> Result<Vec<events::Event>, String> {
+    events::since(since_ms, limit.unwrap_or(2000).min(5000)).map_err(|err| err.to_string())
 }
 
 /// 收件箱里「跑完叫我」。`label` 是那一行的显示名，通知里要能认出是哪个任务。

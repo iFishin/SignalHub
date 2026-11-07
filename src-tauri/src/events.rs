@@ -175,6 +175,12 @@ pub fn append_in(dir: &Path, events: &[Event]) -> io::Result<()> {
     let Some(first) = events.first() else {
         return Ok(());
     };
+    // 系统时钟回拨到 epoch 之前时 `now_ms()` 给 0。写进 `1970-01-01.jsonl`
+    // 既没有意义，又会被 `read_since_in` 的 `ts_of >= since_ms` 永远滤掉
+    // （写了读不出），还会平白占一个 30 天后才删的文件。
+    if first.ts_ms == 0 {
+        return Ok(());
+    }
     if !dir.exists() {
         std::fs::create_dir_all(dir)?;
         let _ = crate::config::set_mode(dir, 0o700);
@@ -199,11 +205,12 @@ pub fn append_in(dir: &Path, events: &[Event]) -> io::Result<()> {
 }
 
 /// 某个时刻之后的事件，新的在前。`limit` 是硬上限，别让 IPC 一次搬一座山。
-pub fn since(since_ms: u64, limit: usize) -> Vec<Event> {
-    match dir() {
-        Ok(dir) => since_in(&dir, since_ms, limit),
-        Err(_) => Vec::new(),
-    }
+///
+/// **读不到要报错，不能当空**：数据目录建不出来（HOME 不可写）时，界面必须说
+/// 「读不到」，而不是「这段时间没有记录」—— 那两句对用户完全是两回事，而且
+/// 后者会让一份本该有数据的卡片安静地显示成空白。
+pub fn since(since_ms: u64, limit: usize) -> io::Result<Vec<Event>> {
+    Ok(since_in(&dir()?, since_ms, limit))
 }
 
 pub fn since_in(dir: &Path, since_ms: u64, limit: usize) -> Vec<Event> {
@@ -339,6 +346,20 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].kind, "end");
         assert_eq!(out[1].kind, "start");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 时钟异常时别在盘上留下一个永远读不出来的 `1970-01-01.jsonl`。
+    #[test]
+    fn a_zero_timestamp_never_hits_the_disk() {
+        let dir = temp("zero");
+        let mut observer = Observer::default();
+        let events = observer.observe(&snapshot(vec![session("a", Signal::Working, "")]), 0);
+        append_in(&dir, &events).unwrap();
+        assert!(
+            std::fs::read_dir(&dir).unwrap().next().is_none(),
+            "ts=0 不该在盘上留下任何文件"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

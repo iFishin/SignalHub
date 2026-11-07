@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { inTauri } from "../lib/env";
 import { useLang, useMessages } from "../lib/i18n";
 import { useNow } from "../lib/useNow";
@@ -182,13 +183,33 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
 
   // 「跑完叫我」的订阅只活在 Rust 内存里。挂载时拉一次，之后每次点按钮用命令
   // 返回的列表覆盖本地状态 —— 两边始终是同一份真值，不各自记一份。
+  //
+  // 订阅被事件触发后 Rust 会把它移除并广播 `watches-changed`。收件箱窗口常驻、
+  // 只是隐藏，挂载那次 useEffect 不会重跑；不监听的话通知都响了，按钮还停在
+  // 「取消盯」。
   const [watched, setWatched] = useState<string[]>([]);
-  useEffect(() => {
+  const refreshWatches = useCallback(() => {
     if (!inTauri) return;
     invoke<string[]>("get_watches")
       .then(setWatched)
       .catch((err) => console.error("get_watches 失败", err));
   }, []);
+  useEffect(() => {
+    refreshWatches();
+    if (!inTauri) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    listen("watches-changed", refreshWatches)
+      .then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      })
+      .catch((err) => console.error("监听 watches-changed 失败", err));
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [refreshWatches]);
 
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
