@@ -56,7 +56,7 @@ signalhub working --session demo     # or just report a state yourself
 
 Priority is **red > amber > green**: while one group is waiting for approval, another group reporting "working" will not override the red; and when the waiting group goes back to work, the red clears on its own. The global state is the highest priority across all groups.
 
-**Each sign** is a dark rounded pill (the same visual language as the app icon): a coloured dot, the group name, the state, and how long it has been that way — plus a second line when there is a message.
+**Each sign** is a dark rounded pill (the same visual language as the app icon): a coloured dot, the group name, the state, and how long it has been that way — plus a second line when there is a message. **When there is more than one sign, the ones that want you are louder** — on approval, attention and error the dot is larger and the pill stays solid; everything else (working, done, idle…) steps back one level, so your peripheral vision can tell which one to look at first. With a single sign there is no such split: there is nothing to compare against, so dimming it would only make the whole lamp recede. State words on the lamp are the short form ("Approve", "Work", "Done"), which leaves the width to the group name.
 
 **Grouping** is decided by the reporter — pass an optional `group` (the `group` field in the HTTP body, or `--group` on the command line):
 

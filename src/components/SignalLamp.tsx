@@ -6,7 +6,7 @@ import { inTauri } from "../lib/env";
 import { requestSettingsTab } from "../lib/settingsIntent";
 import { signalLabel, justFinishedLabel } from "../lib/signals";
 import { useLang, useMessages, type Messages, type Lang } from "../lib/i18n";
-import { lampVars, resolveShapes, resolveHaloAnimations, signTextNeedsContrast, isQuietDimmed } from "../lib/lampStyle";
+import { lampVars, resolveShapes, resolveHaloAnimations, signTextNeedsContrast, isQuietDimmed, toneOf } from "../lib/lampStyle";
 import { transitions, type AggregateMap } from "../lib/lampTransitions";
 import { labelOf, orderVisible } from "../lib/lampSort";
 import { nameChanged, withGroupName } from "../lib/groupMeta";
@@ -31,10 +31,19 @@ const DRAG_THRESHOLD_PX = 4;
  * 「立刻响应」的前提** —— 见 `useDragOrClick` 里那段说明。
  */
 const LONG_PRESS_MS = 480;
-/** 跃迁脉冲的时长（ms）。必须和 lamp.css 里 `pulse-in` 的一致。 */
+/** 跃迁脉冲的时长（ms）。必须和 lamp.css 里 `edge-flash` 的一致。 */
 const PULSE_MS = 420;
 /** 折叠态悬停临时展开的时长（ms）。到点或鼠标移开就收回折叠态。 */
 const PEEK_MS = 3000;
+/**
+ * 折叠态悬停多久才真的展开（ms）。
+ *
+ * **这个延迟是必须的，不是手感糖**：折叠态窗口只有 42px 宽（22px 档一颗点），
+ * 而展开会把窗口撑到 174px —— 鼠标只是从灯旁边划过去，桌面上就突然多出一块
+ * 牌盖住东西。240ms 是「停下来了」和「路过」的分界，比操作系统的 hover 提示
+ * （通常 400ms+）短，不会让人觉得迟钝。移开不延迟，立刻收回。
+ */
+const PEEK_DELAY_MS = 240;
 
 interface Props {
   aggregate: SignalState;
@@ -362,6 +371,31 @@ export function SignalLamp({
     return () => window.clearTimeout(timer);
   }, [peek]);
 
+  // 悬停意图：进入后等 `PEEK_DELAY_MS` 才展开（理由见那个常量），移开立刻收回。
+  // 定时器单独持一个 ref，不放进 effect —— 它由鼠标事件驱动，不是渲染状态的派生。
+  const peekTimer = useRef<number | null>(null);
+  const armPeek = () => {
+    if (!collapsed) return;
+    if (peekTimer.current !== null) window.clearTimeout(peekTimer.current);
+    peekTimer.current = window.setTimeout(() => {
+      peekTimer.current = null;
+      setPeek(true);
+    }, PEEK_DELAY_MS);
+  };
+  const disarmPeek = () => {
+    if (peekTimer.current !== null) {
+      window.clearTimeout(peekTimer.current);
+      peekTimer.current = null;
+    }
+    setPeek(false);
+  };
+  useEffect(
+    () => () => {
+      if (peekTimer.current !== null) window.clearTimeout(peekTimer.current);
+    },
+    [],
+  );
+
   // 折叠设置 + 临时展开，合成「这一帧到底画哪一态」。**下面所有渲染分支都读它**，
   // 别再直接读 `collapsed` —— 一处分歧就会画成「窗口是展开的大、内容却只有点」。
   const expanded = !collapsed || peek;
@@ -682,11 +716,10 @@ export function SignalLamp({
               passThrough ? m.lampPassThrough : "",
             ].filter((line) => line !== ""), emptyLabel, m.lampHint[settings.click_action])
       }
-      // 折叠态被指着时临时展开（见上），移开 / 超时收回
-      onMouseEnter={() => {
-        if (collapsed) setPeek(true);
-      }}
-      onMouseLeave={() => setPeek(false)}
+      // 折叠态被指着时临时展开（见上），移开 / 超时收回。**进入带延迟**：
+      // 路过不该把窗口撑开；移开不延迟，立刻收回去。
+      onMouseEnter={armPeek}
+      onMouseLeave={disarmPeek}
       // 空白处（牌之间、留白）也要吃掉右键，否则会冒出 webview 自己的菜单；
       // 顺手弹的是灯自己那张（进设置 / 暂停 / 折叠 / 退出）。预览里只吃掉菜单。
       onContextMenu={preview ? (event) => event.preventDefault() : openLampMenu}
@@ -731,6 +764,29 @@ export function SignalLamp({
             key={group.name || index}
             className="sign"
             data-has-message={show.message && group.message ? "true" : "false"}
+            /* 视觉分量：`need` = 正在等你动手，`calm` = 只是现在怎么样。
+               判据在 `lampStyle.ts::toneOf`（有单测），CSS 按它给点径 / 牌底 /
+               字重 —— 三样都不参与布局，牌宽高一个像素都不变。
+               **只有一块牌时不分层**（`shown.length > 1`）：分层的用途是在多块
+               之间分先后，只有一块时压淡只是让整盏灯退一档、没有换来任何信息。
+               而 `group_by` 默认是 `none` —— 所有上报归一组，也就是**一块牌**，
+               这正是最常见的用法，不能让它无缘无故变淡。
+               **占位牌也不参与**（`name` 为空 = 一个真实的组都没有）：它不是
+               「某一块组牌」，是整盏灯的自述，那句「没有智能体在上报 / 刚完成 ·
+               N 分钟前」正是回来时最该读的一句话。 */
+            data-tone={
+              shown.length > 1 && group.name !== ""
+                ? toneOf(group.aggregate)
+                : undefined
+            }
+            /* 给 `.sign` 挂 data-state，是为了让 state.css 的 `[data-state] { --state }`
+               在**牌**这一层也生效 —— 跃迁时描边闪的是这个状态的颜色（见 lamp.css
+               的 `edge-flash`）。
+               **顺带**把两处一直取不到 `--state` 的兜底实现了：`.sign-action:hover`
+               和 `.sign-rename` 的下划线现在会取状态色，而不是退回近白 / 细灰线。
+               那本来就是它们写着的意图（`var(--state, …)`），只是以前 `.sign` 上没有
+               这个变量；只在悬停 / 改名时出现，不影响静态观感。 */
+            data-state={group.aggregate}
             // 刚换了状态就闪一下（`pulses` 是这一帧跃迁的组名）。折叠态的点不带
             // 这个 —— 点的状态动画本身就会重放，重复闪反而糊。
             data-pulse={pulses.includes(group.name) || undefined}
@@ -818,9 +874,15 @@ export function SignalLamp({
                 ) : (
                   show.state && (
                     /* 占位牌（`name` 为空，见上面 `rows` 的构造）说 `emptyLabel`：
-                       一组都没有时它可能是「刚完成 · N 分钟前」。 */
+                       一组都没有时它可能是「刚完成 · N 分钟前」。它没有组名要让位，
+                       所以用长句。
+                       真组用**两字短词**（`shortSignal`，中文「需要授权」→「授权」、
+                       「出错 / 阻塞」→「出错」）。牌宽是固定的 154px（22px 档），
+                       长词光状态就吃掉 40–53px，组名常被截成五六个字符；短词把
+                       省下的宽度还给组名。也不能干脆不显示状态词 —— `working` 和
+                       `done` 默认同色，只靠「慢闪 / 常亮」区分，静态一瞥分不出来。 */
                     <span className="sign-state">
-                      {group.name === "" ? emptyLabel : signalLabel(lang, group.aggregate)}
+                      {group.name === "" ? emptyLabel : m.shortSignal[group.aggregate]}
                     </span>
                   )
                 )}

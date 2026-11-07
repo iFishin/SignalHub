@@ -8,6 +8,9 @@
  *   折叠        —— 每组一颗裸灯，没有牌面。点一下就切回展开。
  *
  * 基础形态是朴素简约的：要的是**结构**（外框、底色、文字位），不是装饰。
+ * 牌面按「在等我」分两档（`.sign[data-tone]`，判据在 `lampStyle.ts::toneOf`）：
+ * 需要你动手的那几块灯珠更大、牌面更实，其余退后一档 —— 层次只靠明暗和大小，
+ * 不加边框、色条或发光。
  * 低透明度下给文字加的那圈对比描边（`[data-sign-translucent]`）是可读性手段。
  * 「灵动效果」开启后（`[data-lively]`，见文件末尾）才多一层柔光与跃迁涟漪 ——
  * 它是可关的观感层，关掉后逐像素回到 0.4.4。
@@ -58,7 +61,11 @@ body,
      **定义在根上，不是 `.sign` 上**：折叠态一个 `.sign` 都没有，只有一排点，
      而角标正好寄在那儿 —— 挂在牌上的话那两枚取不到 `--sign-line` / `--sign-muted`，
      `var()` 失效后描边退回 currentColor、底色变透明，在透明窗口上一枚都看不清。 */
-  --sign-bg: rgba(28, 28, 32, var(--sign-alpha, 0.86));
+  /* 牌面的基色（只有色值，没有 alpha）。抽出来是因为「视觉分量」那一档要把
+     同一块深色按 0.72 再调淡 —— 两处各写一遍 `rgba(28, 28, 32, …)`，以后换
+     基色就会漏掉一处。 */
+  --sign-rgb: 28, 28, 32;
+  --sign-bg: rgba(var(--sign-rgb, 28, 28, 32), var(--sign-alpha, 0.86));
   --sign-line: rgba(255, 255, 255, 0.14);
   --sign-fg: #ececef;
   --sign-muted: #9b9ba3;
@@ -350,6 +357,44 @@ body,
   height: calc(var(--size) * 5 / 2 * var(--sign-h-mult, 1));
 }
 
+/* ---- 视觉分量：谁在等我 -------------------------------------------------- */
+
+/*
+ * 灯上同时有好几块牌，抢的是同一份余光。早先四块同底、同点径、同字重 ——
+ * 「等你授权的那块」和「刚跑完的那块」读起来一样响，只能逐块读字才知道该先看谁。
+ * 现在只分两档（判据在 `lampStyle.ts::toneOf`，有单测）：
+ *
+ *   need  —— 授权 / 关注 / 出错（真的在等你动手）：点径 0.72×，牌底不动
+ *   calm  —— 其余七个（只是「现在怎么样」）：点径 0.55×，牌底 ×0.72，组名 400
+ *
+ * **三样都不参与布局**：点径是 `.dot` 的 `--dot`，牌底是 background，字重是
+ * font-weight。牌宽高仍由 `config.rs` 与这里共享那两个值 —— 多占一个像素就会被
+ * `overflow: hidden` 裁掉最后一块牌。
+ *
+ * **牌底 ×0.72 之后仍然读得清**：0.86 → 0.62，浅字还是落在 62% 的深色上。真正
+ * 压到读不清的区间（用户把不透明度滑杆拉到一半以下）走的是原来那套
+ * `[data-sign-translucent]` 浅字 + 四向描边，这里不另造一套可读性机制。
+ *
+ * **只有一块牌时没有 `data-tone`**（见 SignalLamp 的说明）：分层是在多块之间分
+ * 先后，一块牌没有比较对象，压淡只换来「整盏灯退一档」。而 `group_by` 默认是
+ * `none` —— 默认就是一块牌，不能让最常见的那种用法无故变淡。占位牌同理。
+ */
+.sign[data-tone="need"] .dot {
+  --dot: calc(var(--size) * 0.72);
+}
+
+.sign[data-tone="calm"] {
+  /* 直接覆盖 background，**不改 `--sign-alpha`**：那个变量是「用户设的牌面
+     不透明度」，被 `signTextNeedsContrast` 的阈值判断读着 —— 在这里乘 0.72
+     会让「要不要换浅字 + 描边」的判断跟着失准。
+     基色取 `--sign-rgb`：牌面的深色只有那一处真值。 */
+  background: rgba(var(--sign-rgb, 28, 28, 32), calc(var(--sign-alpha, 0.86) * 0.72));
+}
+
+.sign[data-tone="calm"] .sign-name {
+  font-weight: 400;
+}
+
 .sign-body {
   flex: 1;
   min-width: 0;
@@ -638,20 +683,25 @@ body,
 /* ---- 跃迁脉冲：哪块牌刚换了状态就闪一下 -------------------------------- */
 
 /* 判据在前端（`lib/lampTransitions.ts`），它把「这一帧变了的组」翻成 `data-pulse`。
-   动画**只动 opacity**（红线 2）：从 0.35 淡到 1，一次，约 420ms。
+   **闪的是描边，不是整块牌。** 早先是 opacity 0.35 → 1：在透明窗口上整块牌淡进来，
+   读起来像「这块牌消失了一下」，而不是「这一格刚更新」；而且它和灯珠自己的状态
+   动画叠成两层闪，越紧急越糊。现在描边从状态色淡回常态色 —— 余光里看到的是
+   「这块牌的边框亮了一下」，指向的正是那一块。
+   只动 border-color（paint，不走合成层）：它是一次性的 420ms，不是红线 2 管的
+   常驻循环；牌才 154×33，这点重绘可以忽略。
    这里原来是 `done` 那条 `pop`（`transform: scale`）——**本项目唯一的 transform
-   违例**，会令牌这个常驻窗口每帧重排。现在「完成」的落定观感由这条脉冲承担，
+   违例**，会令牌这个常驻窗口每帧重排。现在「完成」的落定观感由这条描边闪承担，
    `pop` 整个删掉。 */
 .lamp-root .sign[data-pulse] {
-  animation: pulse-in 420ms ease-out 1;
+  animation: edge-flash 420ms ease-out 1;
 }
 
-@keyframes pulse-in {
+@keyframes edge-flash {
   0% {
-    opacity: 0.35;
+    border-color: var(--state, var(--sign-line));
   }
   100% {
-    opacity: 1;
+    border-color: var(--sign-line);
   }
 }
 
@@ -890,7 +940,9 @@ body,
   }
 }
 
-/* 跃迁涟漪：与 `.sign[data-pulse]` 的 opacity 脉冲同一时刻，从灯珠扩出去一圈。
+/* 跃迁涟漪：与 `.sign[data-pulse]` 的描边闪同一时刻（都是 420ms），从灯珠扩出去
+   一圈。两者一个指向「这块牌」（边框）、一个指向「这颗灯珠」（涟漪），而不是
+   各干各的 —— 早先牌是整块 opacity 淡入，和涟漪叠起来就是两团糊。
    只在**那一帧**动 transform（420ms 后摘掉 data-pulse），不是常驻循环。
    ring + stale 那条旧的 `::after { display: none }` 会兜住它 —— 正好，环形
    状态下再扩一圈环是重复信息。 */

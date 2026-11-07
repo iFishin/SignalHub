@@ -7,9 +7,11 @@ import {
   signTextNeedsContrast,
   stateOverridden,
   isQuietDimmed,
+  toneOf,
   SIGN_TRANSLUCENT_BELOW,
 } from "./lampStyle";
 import { DEFAULTS, type Settings } from "./useSettings";
+import { SIGNALS } from "./types";
 
 const withSettings = (patch: Partial<Settings>): Settings => ({ ...DEFAULTS, ...patch });
 
@@ -70,6 +72,36 @@ describe("resolveShapes", () => {
       expect(shape, `${state} 没有形状`).toBeTruthy();
     }
     expect(Object.keys(shapes)).toHaveLength(10);
+  });
+});
+
+/**
+ * 分层只回答一个问题：「谁在等我」。
+ *
+ * 这份表就是 `lamp.css` 里 `.sign[data-tone="need"]` 那一档的定义 —— 改这里
+ * 等于改灯上哪几块会变大、变实。所以逐条钉死，别让它悄悄漂。
+ */
+describe("toneOf", () => {
+  it("puts the three actionable states in need", () => {
+    for (const state of ["permission", "attention", "error"] as const) {
+      expect(toneOf(state)).toBe("need");
+    }
+  });
+
+  /**
+   * `done` 刻意归 calm。
+   *
+   * 它值得看一眼，但不需要你动手 —— 而 need 的定义是「等你做什么」。把 done
+   * 也算进去的话，一次跑完十个任务的上午，整叠牌会全是「要你」的分量，分层就白做了。
+   */
+  it("keeps done in calm even though it is worth a glance", () => {
+    expect(toneOf("done")).toBe("calm");
+  });
+
+  it("covers every state with exactly one tone", () => {
+    for (const state of SIGNALS) {
+      expect(["need", "calm"]).toContain(toneOf(state));
+    }
   });
 });
 

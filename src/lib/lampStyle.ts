@@ -42,6 +42,33 @@ export function resolveShapes(settings: Settings): Record<SignalState, Shape> {
 }
 
 /**
+ * 这一块牌属于哪一档视觉分量。
+ *
+ * 灯上同时会有好几块牌，而它们抢的是同一份余光。早先每块牌的牌底、点径、
+ * 字重、状态词长度全都一样 —— 于是「等你授权的那块」和「刚跑完的那块」读起来
+ * 一样响，只能逐块读字才知道该先看谁。分层就是回答「谁在叫我」。
+ *
+ * **只有两档，因为规则要能被记住**：
+ * - `need` —— 三件真的需要你动手的事：授权、关注、出错；
+ * - `calm` —— 其余七个（推理中 / 执行中 / 完成 / 空闲 / 沉默 / 离线 / 暂停），
+ *   它们只是「现在怎么样」，不是「等你做什么」。
+ *
+ * **`done` 归 calm 是刻意的**：它值得看一眼，但不需要行动；而「安静模式」里
+ * done 不算安静（见 lamp.css 那段压暗规则），所以它仍然会显形，只是不抢前排。
+ *
+ * 视觉落点在 `lamp.css` 的 `.sign[data-tone]`：need 的点径 0.72×、calm 的
+ * 0.55×，calm 的牌底再乘 0.72、组名降到 400 字重。**没有一处动窗口几何** ——
+ * 点径是 CSS 变量，牌宽高仍由 `config.rs` 与 lamp.css 共享那两个值。
+ */
+export type SignTone = "need" | "calm";
+
+const NEEDS_YOU: readonly SignalState[] = ["permission", "attention", "error"];
+
+export function toneOf(state: SignalState): SignTone {
+  return NEEDS_YOU.includes(state) ? "need" : "calm";
+}
+
+/**
  * 动画基础配方，逐条抄自 lamp.css（**那边的时长是唯一真相**）。
  *
  * 抄成表而不是在 CSS 里留着再覆盖：全局倍率要在 JS 里做除法，两边都留一份
@@ -59,9 +86,9 @@ const BASE_ANIMATION: Record<
   permission: { name: "pulse", timing: "ease-in-out", iterations: "infinite", ms: 900 },
   error: { name: "pulse", timing: "steps(2, end)", iterations: "infinite", ms: 340 },
   // 完成：常亮。原来那一下入场脉冲（`pop`）已经删掉 —— 它动的是 transform，
-  // 是这个常驻窗口唯一的 CPU 违例（红线 2）。「落定」的观感现在由**跃迁脉冲**
-  // 承担（见 SignalLamp 的 `data-pulse` / lamp.css 的 `pulse-in`），而它更通用：
-  // 任何状态变化都会闪，不只 done。
+  // 是这个常驻窗口唯一的 CPU 违例（红线 2）。「落定」的观感现在由**跃迁闪**
+  // 承担（见 SignalLamp 的 `data-pulse` / lamp.css 的 `edge-flash`），而它更通用：
+  // 任何状态变化都会闪一下描边，不只 done。
   done: null,
   idle: null,
   stale: null,
