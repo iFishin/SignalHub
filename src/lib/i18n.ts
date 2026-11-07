@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { inTauri } from "./env";
 import { useSettings, type HttpPreset, type Settings } from "./useSettings";
 import type { SignalState } from "./types";
-import type { DemoGroupId } from "./demo";
+import type { DemoGroupId, DemoScenarioId } from "./demo";
 import type { HealthCheck, HealthLevel } from "./health";
 import type { DigestFact } from "./digest";
 import type { InsightFact } from "./insights";
@@ -318,6 +318,8 @@ export interface Messages {
   demoBackToSettings: string;
   demoNotReal: string;
   demoGroup: Record<DemoGroupId, string>;
+  /** 场景 chip 上的名字。键是 demo.ts 里的 DemoScenarioId。 */
+  demoScenario: Record<DemoScenarioId, string>;
   /** 每一步的标题 + 说明。键是 demo.ts 里的 DemoStep.id。 */
   demoStep: Record<string, { title: string; body: string }>;
   demoStepCount: (index: number, total: number) => string;
@@ -1056,14 +1058,20 @@ export const MESSAGES: Record<Lang, Messages> = {
     pageNav: "本页小节",
     lampFirstRun: "第一次用？",
     lampFirstRunDemo: "看演示",
-    lampFirstRunDemoHint: "不接智能体，先看这盏灯怎么亮（约 25 秒）",
+    lampFirstRunDemoHint: "不接智能体，先看这盏灯怎么亮（四段场景，每段 10–20 秒）",
     lampFirstRunDismiss: "不再提示",
 
-    demoTitle: "30 秒看懂 SignalHub",
-    demoIntro: "一段循环播放的演示，不用接任何智能体。",
+    demoTitle: "看懂 SignalHub 的四种场景",
+    demoIntro: "按场景循环播放 —— 想看哪一段点哪一段，不用接任何智能体。",
     demoBackToSettings: "返回设置",
     demoNotReal: "演示画面 · 不会改动任何真实状态",
     demoGroup: { build: "构建", api: "接口", review: "审阅" },
+    demoScenario: {
+      day: "一天的节奏",
+      asking: "有事要你",
+      silence: "它不说话了",
+      tucked: "收起来的样子",
+    },
     demoStep: {
       idle: {
         title: "接上之后，灯是安静的",
@@ -1093,6 +1101,42 @@ export const MESSAGES: Record<Lang, Messages> = {
         title: "牌走了，灯还记得",
         body: "空状态说的是「刚完成 · 1 分钟前」，而不是「没有智能体在上报」—— 这正是你最想确认的那一刻。",
       },
+      attention: {
+        title: "黄色：值得扫一眼，但不用马上动手",
+        body: "需要关注 = 黄色、1 秒一闪。它没卡住，也没等你批什么 —— 只是有件事你应该知道，而不用放下手上正在做的事。",
+      },
+      both: {
+        title: "两种都有时，红在上、黄在中",
+        body: "一组的紧急度就是它在牌堆里的位置：红 > 黄 > 绿。你不用自己挑哪块先看 —— 从上往下就是处理顺序。",
+      },
+      error: {
+        title: "同样是红色，节奏不一样",
+        body: "出错是频闪（快而硬），等授权是平滑闪。授权在等你点允许，出错在等你去看一眼日志。长时间没有新消息，两者都会转灰：出错 5 分钟，授权 10 分钟。",
+      },
+      stale: {
+        title: "半小时没消息，它就转灰",
+        body: "灰不是「空闲」—— 空闲是它还在、只是没在干活；静默是我们已经不知道它还在不在。再没人管，半小时后这块牌会被彻底移除。",
+      },
+      staleRing: {
+        title: "换成圆环，弧长就是剩余时间",
+        body: "外观页把点形状改成「圆环」之后，弧长就是它距离被移除还剩多少，会一点点缩到消失。默认的实心点没有地方画进度 —— 这是个可选形状。",
+      },
+      offline: {
+        title: "环走完了，牌就消失",
+        body: "这时说的是「没有智能体在上报」，和「刚完成」是两件事。真有事要找你时，它会重新出现。",
+      },
+      quiet: {
+        title: "安静模式：空闲时几乎看不见",
+        body: "空闲、静默、没上报时整块压到很淡，只剩一颗浅点；一有事就恢复原来的分量。它让这盏灯平时不占注意力，而不是把提醒关掉。",
+      },
+      collapsed: {
+        title: "收起来，只剩一颗灯",
+        body: "单击（设置 →「行为」里可以改成打开收件箱或什么都不做）把整叠牌收成一颗灯。三组聚合成一颗点：只要有一组在等你，它就是红的。",
+      },
+      collapsedDone: {
+        title: "收起来也照样会亮",
+        body: "完成时这颗灯会闪一下再落定。折叠只是少占桌面，不是把提醒关掉 —— 这也是很多人平时的默认形态。",
+      },
     },
     demoStepCount: (index, total) => `${index} / ${total}`,
     demoPrev: "上一步",
@@ -1100,7 +1144,7 @@ export const MESSAGES: Record<Lang, Messages> = {
     demoPlay: "播放",
     demoPause: "暂停",
     demoReplay: "重播",
-    demoCta: "看 30 秒演示",
+    demoCta: "看四段演示",
     demoCtaHint: "还没接智能体？先看一遍这盏灯会怎么亮，不用配任何东西。",
 
     guideEntry: "第一次用？",
@@ -1805,14 +1849,21 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     pageNav: "On this page",
     lampFirstRun: "New here?",
     lampFirstRunDemo: "See a demo",
-    lampFirstRunDemoHint: "See the lamp in action without connecting any agent (~25s)",
+    lampFirstRunDemoHint:
+      "See the lamp in action without connecting any agent (four scenes, 10–20s each)",
     lampFirstRunDismiss: "Don't show again",
 
-    demoTitle: "SignalHub in 30 seconds",
-    demoIntro: "A looping walkthrough — no agent needed.",
+    demoTitle: "SignalHub in four scenes",
+    demoIntro: "Four looping scenes — jump to the one you care about, no agent needed.",
     demoBackToSettings: "Back to settings",
     demoNotReal: "Demo only · no real state is changed",
     demoGroup: { build: "Build", api: "API", review: "Review" },
+    demoScenario: {
+      day: "A day in the life",
+      asking: "When it wants you",
+      silence: "When it goes quiet",
+      tucked: "Tucked away",
+    },
     demoStep: {
       idle: {
         title: "Once connected, the lamp is quiet",
@@ -1842,6 +1893,42 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
         title: "The card is gone, the lamp remembers",
         body: "The empty state says “Just finished · 1 min ago” instead of “No agents reporting” — exactly when you want to know.",
       },
+      attention: {
+        title: "Amber: worth a glance, not an action",
+        body: "Needs attention = amber, a one-second blink. It is not stuck and it is not waiting for an approval — it just has something you should know, without needing you to stop what you are doing.",
+      },
+      both: {
+        title: "Red on top, amber in the middle",
+        body: "A group's urgency is its position in the stack: red > amber > green. You never have to pick which one to read first — top to bottom is the order to handle them.",
+      },
+      error: {
+        title: "Also red, different rhythm",
+        body: "An error blinks hard and fast; a pending approval blinks smoothly. The approval waits for you to allow it, the error waits for you to read the log. After a while with no new messages both turn grey: five minutes for an error, ten for an approval.",
+      },
+      stale: {
+        title: "Half an hour without news and it turns grey",
+        body: "Grey is not idle — idle means it is there and not working; silent means we no longer know whether it is there at all. Left alone for another half hour, the card is dropped for good.",
+      },
+      staleRing: {
+        title: "Switch to a ring and the arc is the time left",
+        body: "Set the dot shape to “ring” under Appearance and the arc becomes how long is left before the group is removed, shrinking until it disappears. The default solid dot has nowhere to draw that progress — it is an optional shape.",
+      },
+      offline: {
+        title: "The ring runs out and the card is gone",
+        body: "Now it says “No agents reporting”, which is a different sentence from “Just finished”. When something really needs you, it comes back.",
+      },
+      quiet: {
+        title: "Quiet mode: almost invisible when idle",
+        body: "Idle, silent or not reporting, the whole stack fades to a faint dot; the moment something happens it comes back to full weight. It keeps the lamp out of your way without turning notifications off.",
+      },
+      collapsed: {
+        title: "Collapsed to a single light",
+        body: "A click (Settings → Behavior can make that click open the inbox or do nothing) folds the stack into one light. Three groups become one dot: if any group wants you, that dot is red.",
+      },
+      collapsedDone: {
+        title: "Collapsed still lights up",
+        body: "On completion the light flashes once and settles. Collapsing only saves desktop space — it does not mute anything, which is why many people keep it this way.",
+      },
     },
     demoStepCount: (index, total) => `${index} / ${total}`,
     demoPrev: "Prev",
@@ -1849,7 +1936,7 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     demoPlay: "Play",
     demoPause: "Pause",
     demoReplay: "Replay",
-    demoCta: "Watch a 30-second demo",
+    demoCta: "Watch the demo",
     demoCtaHint: "No agent connected yet? See how the lamp behaves first — nothing to configure.",
 
     guideEntry: "New here?",

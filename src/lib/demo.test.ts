@@ -1,17 +1,27 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEMO_SCENARIOS,
   DEMO_STEPS,
   demoAggregate,
   demoSnapshot,
   nextDemoStep,
+  prevDemoStep,
+  scenarioStart,
+  scenarioSteps,
+  stepScenario,
   type DemoGroupId,
+  type DemoScenarioId,
 } from "./demo";
+import { MESSAGES } from "./i18n";
 
 const LABELS: Record<DemoGroupId, string> = {
   build: "构建",
   api: "接口",
   review: "审阅",
 };
+
+const LANGS = ["zh", "en"] as const;
+const NOW = 1_700_000_000_000;
 
 describe("demo steps", () => {
   it("每一步的 aggregate 都等于各组里最急的那个", () => {
@@ -20,16 +30,62 @@ describe("demo steps", () => {
     }
   });
 
-  it("最后一步是空的，但记得刚完成", () => {
-    const last = DEMO_STEPS[DEMO_STEPS.length - 1];
-    expect(last.rows).toHaveLength(0);
-    expect(last.aggregate).toBe("offline");
-    expect(last.lastDoneAgoMs).toBeGreaterThan(0);
+  it("场景首尾相接，摊平后的顺序与声明一致", () => {
+    let cursor = 0;
+    for (const scenario of DEMO_SCENARIOS) {
+      expect(scenario.steps.length, scenario.id).toBeGreaterThanOrEqual(2);
+      expect(scenarioStart(scenario.id), scenario.id).toBe(cursor);
+      for (const step of scenario.steps) {
+        expect(DEMO_STEPS[cursor], step.id).toBe(step);
+        expect(stepScenario(cursor), step.id).toBe(scenario.id);
+        cursor += 1;
+      }
+    }
+    expect(cursor).toBe(DEMO_STEPS.length);
+    expect(scenarioSteps("day")).toBe(DEMO_SCENARIOS[0].steps);
+  });
 
-    const now = 1_700_000_000_000;
-    const frame = demoSnapshot(DEMO_STEPS.length - 1, now, LABELS);
+  it("步骤 id 不重复，且中英文都写了文案", () => {
+    const ids = DEMO_STEPS.map((step) => step.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const lang of LANGS) {
+      for (const id of ids) {
+        const info = MESSAGES[lang].demoStep[id];
+        expect(info, `${lang}/${id}`).toBeDefined();
+        expect(info.title.length, `${lang}/${id}`).toBeGreaterThan(0);
+        expect(info.body.length, `${lang}/${id}`).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("每个场景中英文都有名字", () => {
+    for (const lang of LANGS) {
+      for (const scenario of DEMO_SCENARIOS) {
+        expect(MESSAGES[lang].demoScenario[scenario.id], `${lang}/${scenario.id}`)
+          .toBeTruthy();
+      }
+    }
+  });
+
+  it("「刚完成」那一步是空的，但记得刚完成", () => {
+    const empty = DEMO_STEPS.find((step) => step.id === "empty")!;
+    expect(empty.rows).toHaveLength(0);
+    expect(empty.aggregate).toBe("offline");
+    expect(empty.lastDoneAgoMs).toBeGreaterThan(0);
+
+    const index = DEMO_STEPS.indexOf(empty);
+    const frame = demoSnapshot(index, NOW, LABELS);
     expect(frame.groups).toHaveLength(0);
-    expect(frame.lastDoneMs).toBe(now - last.lastDoneAgoMs!);
+    expect(frame.lastDoneMs).toBe(NOW - empty.lastDoneAgoMs!);
+  });
+
+  it("「没上报」那一步不冒充「刚完成」", () => {
+    const offline = DEMO_STEPS.find((step) => step.id === "offline")!;
+    expect(offline.rows).toHaveLength(0);
+    expect(offline.aggregate).toBe("offline");
+    // 没有 lastDoneAgoMs，牌上才会说「没有智能体在上报」而不是「刚完成」
+    expect(offline.lastDoneAgoMs).toBeUndefined();
+    expect(demoSnapshot(DEMO_STEPS.indexOf(offline), NOW, LABELS).lastDoneMs).toBe(0);
   });
 
   it("有牌的步骤里，「完成」不是转沉默", () => {
@@ -44,17 +100,76 @@ describe("demo steps", () => {
     expect(permission.aggregate).toBe("permission");
   });
 
-  it("循环：最后一步的下一步是第一步", () => {
-    expect(nextDemoStep(DEMO_STEPS.length - 1)).toBe(0);
+  it("红黄同屏时，红排在黄前面", () => {
+    const both = DEMO_STEPS.find((step) => step.id === "both")!;
+    expect(both.rows.map((row) => row.state)).toEqual([
+      "permission",
+      "attention",
+      "working",
+    ]);
+  });
+
+  it("静默那一步不假装有进度，圆环那一步才带真实的环进度", () => {
+    const stale = DEMO_STEPS.find((step) => step.id === "stale")!;
+    expect(stale.rows[0].state).toBe("stale");
+    // 默认形状是实心点 —— 没有地方画进度，就不该给一个画不出来的值
+    expect(stale.shape).toBeUndefined();
+    expect(stale.rows[0].staleProgress).toBeUndefined();
+
+    const ring = DEMO_STEPS.find((step) => step.id === "staleRing")!;
+    expect(ring.shape).toBe("ring");
+    const row = ring.rows[0];
+    expect(row.state).toBe("stale");
+    expect(row.staleProgress).toBeGreaterThan(0);
+    expect(row.staleProgress).toBeLessThanOrEqual(1);
+
+    const frame = demoSnapshot(DEMO_STEPS.indexOf(ring), NOW, LABELS);
+    expect(frame.shape).toBe("ring");
+    expect(frame.groups[0].stale_progress).toBe(row.staleProgress);
+  });
+
+  it("折叠 / 安静由剧本决定，其余步骤一律展开不压暗", () => {
+    const flags = (id: string) => {
+      const frame = demoSnapshot(
+        DEMO_STEPS.findIndex((step) => step.id === id),
+        NOW,
+        LABELS,
+      );
+      return [frame.collapsed, frame.quiet];
+    };
+
+    expect(flags("collapsed")).toEqual([true, false]);
+    expect(flags("collapsedDone")).toEqual([true, false]);
+    expect(flags("quiet")).toEqual([false, true]);
+    expect(flags("working")).toEqual([false, false]);
+    expect(flags("idle")).toEqual([false, false]);
+  });
+
+  it("循环在场景内：上一步 / 下一步都不跨场景", () => {
+    for (const scenario of DEMO_SCENARIOS) {
+      const first = scenarioStart(scenario.id);
+      const last = first + scenario.steps.length - 1;
+      expect(nextDemoStep(last), scenario.id).toBe(first);
+      expect(prevDemoStep(first), scenario.id).toBe(last);
+      expect(stepScenario(nextDemoStep(first)), scenario.id).toBe(scenario.id);
+      expect(stepScenario(prevDemoStep(last)), scenario.id).toBe(scenario.id);
+    }
+    // 只有一个场景时，globals 的首尾相接仍然成立
     expect(nextDemoStep(0)).toBe(1);
   });
 
+  it("场景 id 覆盖四种用法，且默认从「一天的节奏」开始", () => {
+    const ids: DemoScenarioId[] = ["day", "asking", "silence", "tucked"];
+    expect(DEMO_SCENARIOS.map((scenario) => scenario.id)).toEqual(ids);
+    expect(scenarioStart("day")).toBe(0);
+  });
+
   it("demoSnapshot 给出可直接渲染的 GroupView", () => {
-    const now = 1_700_000_000_000;
-    const frame = demoSnapshot(2, now, LABELS);
+    const index = DEMO_STEPS.findIndex((step) => step.id === "working");
+    const frame = demoSnapshot(index, NOW, LABELS);
     expect(frame.groups).toHaveLength(3);
     expect(frame.groups[0].default_label).toBe("构建");
-    expect(frame.groups[0].since_ms).toBe(now - 6_000);
+    expect(frame.groups[0].since_ms).toBe(NOW - 6_000);
     expect(frame.groups[0].sessions).toEqual([]);
     expect(frame.groups[0].stale_progress).toBeNull();
   });
