@@ -83,6 +83,9 @@ tauri-plugin-updater = { version = "2", default-features = false, features = [
   "system-proxy",
 ] }
 axum = "0.8"
+# 本机 Call Me 服务直接复用服务器 crate 的路由与存储。依赖方向只有
+# desktop → server；server 本身仍不链接 Tauri，可单独编进 VPS 的 Docker 镜像。
+signalhub-callme = { path = "../server" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # 直接用 tauri::async_runtime::spawn 起 sweep 和 HTTP 任务；tokio 由 Tauri 内置。

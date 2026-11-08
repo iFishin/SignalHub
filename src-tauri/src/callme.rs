@@ -1,4 +1,4 @@
-//! Call Me：定时拉取用户自部署的收信服务器，把留言交给设置面板的「Call Me」页。
+//! Call Me：定时拉取用户自部署的收信服务器，把留言交给设置面板的「留言」页。
 //!
 //! 和 `remote.rs` 同一套骨架（`std::thread` + `ureq` 阻塞拉取），但**数据不进
 //! `Store`**，这是一条刻意的分叉：
@@ -84,6 +84,11 @@ pub struct CallMeState {
     pub messages: Vec<MessageView>,
     /// 每个来源读到第几条（`source_id → last_read_seq`）。
     pub read: BTreeMap<String, u64>,
+    /// 上一拍拉的是哪台服务器（归一化后的地址）。只用来判断「地址换了」——
+    /// 换了就得把缓存清掉：`seq` 只在**同一台服务器**内单调，换了服务器之后
+    /// 两边各自的 1、2、3 会按 seq 撞在一起，缓存里会混进上一台机器的留言。
+    #[serde(skip)]
+    pub origin: String,
 }
 
 pub type SharedCallMe = Arc<Mutex<CallMeState>>;
@@ -142,13 +147,20 @@ fn poll_once(config: &CallMeConfig, state: &SharedCallMe) -> bool {
         return true;
     }
 
+    // 地址换了就先把缓存清空 —— 见 `origin` 字段的注释。清完 `after` 自然是 0，
+    // 等于「对着新服务器从头拉最近一页」，这正是换服务器时想要的。
+    let base = endpoint(&config.url);
+    let switched = {
+        let mut current = state.lock().expect("callme state poisoned");
+        reorient(&mut current, &base)
+    };
+
     // 只有拿到缓存里最大的 seq 才需要读锁；网络 I/O 一律在锁外。
     let after = {
         let current = state.lock().expect("callme state poisoned");
         current.messages.last().map(|message| message.seq)
     };
 
-    let base = endpoint(&config.url);
     let started = Instant::now();
     let fetched = fetch_messages(&base, &config.token, after)
         .and_then(|messages| fetch_sources(&base, &config.token).map(|sources| (messages, sources)));
@@ -167,10 +179,11 @@ fn poll_once(config: &CallMeConfig, state: &SharedCallMe) -> bool {
             current.last_ok_ms = now_ms();
             current.latency_ms = latency_ms;
             current.error = None;
-            current.messages.len() != before_len || sources_changed || !was_ok
+            current.messages.len() != before_len || sources_changed || !was_ok || switched
         }
         Err(error) => {
-            let changed = current.ok || current.error.as_deref() != Some(error.as_str());
+            let changed =
+                switched || current.ok || current.error.as_deref() != Some(error.as_str());
             current.enabled = true;
             current.ok = false;
             current.latency_ms = latency_ms;
@@ -178,6 +191,26 @@ fn poll_once(config: &CallMeConfig, state: &SharedCallMe) -> bool {
             changed
         }
     }
+}
+
+/// 记下这一拍打的是哪台服务器；地址变了就把缓存清空并返回 `true`。
+///
+/// 这看起来像个细节，其实是**换服务器时唯一不撒谎的做法**：`seq` 由各台服务器
+/// 自己发号，本机服务今天才起（seq 从 1 开始），VPS 上已经有了 300 条 —— 不清
+/// 就会把两边的留言按 seq 交叉拼在一起，而且 `after=<旧的最大 seq>` 会让新服务器
+/// 直接跳过它自己的前几条。
+fn reorient(current: &mut CallMeState, base: &str) -> bool {
+    if current.origin == base {
+        return false;
+    }
+    let had_data = !current.messages.is_empty() || !current.sources.is_empty() || current.ok;
+    current.origin = base.to_string();
+    current.messages.clear();
+    current.sources.clear();
+    current.ok = false;
+    current.last_ok_ms = 0;
+    current.error = None;
+    had_data
 }
 
 /// 把服务端的一页合并进缓存：按 `seq` 去重（首拉 / 重装后重新拉最近 200 条，
@@ -501,6 +534,38 @@ mod tests {
         assert_eq!(cached[0].text, "a");
         assert_eq!(cached[1].text, "b2", "同 seq 以新到的为准");
         assert_eq!(cached[2].seq, 3);
+    }
+
+    #[test]
+    fn switching_servers_drops_the_cache() {
+        let mut state = CallMeState {
+            enabled: true,
+            ok: true,
+            last_ok_ms: 42,
+            messages: vec![message(1, "a"), message(2, "b")],
+            sources: vec![SourceView {
+                id: "a".into(),
+                ..SourceView::default()
+            }],
+            origin: "http://127.0.0.1:43877".into(),
+            ..CallMeState::default()
+        };
+
+        // 同一个地址：一拍不动（否则每次轮询都会把列表清空再拉回来）
+        assert!(!reorient(&mut state, "http://127.0.0.1:43877"));
+        assert_eq!(state.messages.len(), 2);
+        assert_eq!(state.last_ok_ms, 42);
+
+        // 换了服务器：缓存必须清掉 —— seq 只在同一台机器内单调
+        assert!(reorient(&mut state, "https://callme.example.com"));
+        assert!(state.messages.is_empty());
+        assert!(state.sources.is_empty());
+        assert!(!state.ok);
+        assert_eq!(state.last_ok_ms, 0);
+        assert_eq!(state.origin, "https://callme.example.com");
+
+        // 空状态换地址没什么可清，不该触发一次多余的广播
+        assert!(!reorient(&mut state, "https://other.example.com"));
     }
 
     #[test]

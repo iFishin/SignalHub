@@ -3,6 +3,7 @@ mod alerts;
 mod approval_log;
 mod approvals;
 mod callme;
+mod callme_local;
 mod collect;
 mod devices;
 mod diagnose;
@@ -1415,6 +1416,30 @@ async fn callme_revoke_source(url: String, token: String, id: String) -> Result<
     tauri::async_runtime::spawn_blocking(move || callme::revoke_source(&url, &token, &id))
         .await
         .map_err(|err| format!("调用没能跑起来：{err}"))?
+}
+
+/// 本机 Call Me 服务的状态。只监听回环地址；公网部署仍走 `server/` 独立服务。
+#[tauri::command]
+fn callme_local_status(
+    local: tauri::State<'_, callme_local::SharedLocal>,
+) -> callme_local::LocalStatus {
+    callme_local::status(&local)
+}
+
+/// 启动本机服务并返回界面需要填写的地址与 token。tokio 任务随应用退出而结束。
+#[tauri::command]
+async fn callme_local_start(
+    local: tauri::State<'_, callme_local::SharedLocal>,
+    port: u16,
+) -> Result<callme_local::LocalStatus, String> {
+    callme_local::start(local.inner().clone(), port).await
+}
+
+#[tauri::command]
+fn callme_local_stop(
+    local: tauri::State<'_, callme_local::SharedLocal>,
+) -> callme_local::LocalStatus {
+    callme_local::stop(&local)
 }
 
 /// 标记某个来源读到第几条。写本地文件，**不回写服务器**（见 `callme.rs` 文件头）。
@@ -2945,8 +2970,10 @@ pub fn run() {
         )))
         // 多机中枢的健康状态（轮询线程写，「多机」页读，见 remote.rs）
         .manage(remote::registry())
-        // Call Me 的拉取状态（轮询线程写，「Call Me」页读，见 callme.rs）
+        // Call Me 的拉取状态（轮询线程写，「留言」页读，见 callme.rs）
         .manage(callme::state())
+        // 可选的本机收信服务。默认不开，只有用户在「Call Me → 服务器」点启动。
+        .manage(callme_local::state())
         .invoke_handler(tauri::generate_handler![
             get_state,
             set_state,
@@ -3007,6 +3034,9 @@ pub fn run() {
             callme_probe,
             callme_add_source,
             callme_revoke_source,
+            callme_local_status,
+            callme_local_start,
+            callme_local_stop,
             callme_mark_read,
             uninstall_agent_hooks,
             try_agent,

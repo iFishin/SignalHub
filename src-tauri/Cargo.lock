@@ -3621,6 +3621,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "signalhub-callme"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "getrandom 0.3.4",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "signalhub-desktop"
 version = "0.5.1"
 dependencies = [
@@ -3628,6 +3639,7 @@ dependencies = [
  "getrandom 0.3.4",
  "serde",
  "serde_json",
+ "signalhub-callme",
  "tauri",
  "tauri-build",
  "tauri-plugin-autostart",
@@ -4472,6 +4484,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",
