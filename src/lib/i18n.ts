@@ -293,6 +293,7 @@ export interface Messages {
   tabAlert: string;
   tabConnect: string;
   tabMachines: string;
+  tabCallMe: string;
   tabHooks: string;
   tabGuide: string;
   tabSystem: string;
@@ -936,6 +937,54 @@ export interface Messages {
     peerHint: string;
   };
 
+  /** 「Call Me」页（自部署收信服务器，见 docs/callme.md）。 */
+  callme: {
+    hint: string;
+    serverTitle: string;
+    urlLabel: string;
+    urlPlaceholder: string;
+    urlHint: string;
+    tokenLabel: string;
+    tokenPlaceholder: string;
+    tokenHint: string;
+    pollLabel: string;
+    pollSeconds: (seconds: number) => string;
+    test: string;
+    testing: string;
+    /** 连通时那一行。 */
+    connected: (ms: number) => string;
+    /** 上次成功是什么时候。 */
+    lastOk: (ago: string) => string;
+    never: string;
+    unconfigured: string;
+    sourcesTitle: string;
+    sourcesEmpty: string;
+    addSource: string;
+    creating: string;
+    labelPlaceholder: string;
+    notePlaceholder: string;
+    copyLink: string;
+    copiedLink: string;
+    revoke: string;
+    revokeConfirm: string;
+    revoked: string;
+    /** 这条链接近 24 小时收到几条（与服务器配额同口径）。 */
+    todayCount: (n: number) => string;
+    totalCount: (n: number) => string;
+    createdTitle: string;
+    createdHint: string;
+    messagesTitle: string;
+    filterAll: string;
+    messagesEmptyNoServer: string;
+    messagesEmptyNoSource: string;
+    messagesEmpty: string;
+    unread: (n: number) => string;
+    markAllRead: string;
+    openSource: string;
+    copyText: string;
+    copiedText: string;
+  };
+
   inbox: {
     title: string;
     need: string;
@@ -1048,6 +1097,7 @@ export const MESSAGES: Record<Lang, Messages> = {
     tabAlert: "提醒",
     tabConnect: "接入",
     tabMachines: "多机",
+    tabCallMe: "Call Me",
     tabHooks: "转发",
     tabGuide: "指南",
     tabSystem: "系统",
@@ -1747,6 +1797,51 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       peerHint: "对端要打开「允许局域网访问」，把 token 抄过来即可 —— 对端不用升级到新版本。",
     },
 
+    callme: {
+      hint: "把一条链接贴进文章或页面：读到它的智能体会通过你自己部署的服务器给你留言，你在这里读。服务器三行命令就能跑起来，见 docs/callme.md。",
+      serverTitle: "服务器",
+      urlLabel: "服务器地址",
+      urlPlaceholder: "https://callme.example.com",
+      urlHint: "你自己部署的 Call Me 服务器地址。不写 https:// 时按 https 补。",
+      tokenLabel: "管理 Token",
+      tokenPlaceholder: "服务器上的 CALLME_ADMIN_TOKEN",
+      tokenHint: "启动服务器时设置的那个值，客户端用它来拉取留言。",
+      pollLabel: "检查间隔",
+      pollSeconds: (seconds) => `${seconds} 秒`,
+      test: "测试连接",
+      testing: "连接中…",
+      connected: (ms) => `已连接 · ${ms}ms`,
+      lastOk: (ago) => `上次成功 ${ago}`,
+      never: "还没连上过",
+      unconfigured: "未配置",
+      sourcesTitle: "链接（来源）",
+      sourcesEmpty: "还没有链接。新建一条，贴到文章里即可。",
+      addSource: "新建链接",
+      creating: "创建中…",
+      labelPlaceholder: "这条链接用在哪，如「博客：SignalHub 介绍」",
+      notePlaceholder: "备注（可选）：放在哪个文件 / 页面",
+      copyLink: "复制链接",
+      copiedLink: "已复制",
+      revoke: "吊销",
+      revokeConfirm: "吊销后这条链接立即失效（已收到的留言保留）。继续？",
+      revoked: "已吊销",
+      todayCount: (n) => `近 24h ${n} 条`,
+      totalCount: (n) => `共 ${n} 条`,
+      createdTitle: "链接已创建",
+      createdHint:
+        "复制它，贴到你希望智能体读到的地方。注意：任何读到它的人都能发消息 —— 额度用完为止，吊销即失效。",
+      messagesTitle: "留言",
+      filterAll: "全部",
+      messagesEmptyNoServer: "先在上面填好服务器地址和 token。",
+      messagesEmptyNoSource: "还没有链接 —— 智能体没有入口可发。",
+      messagesEmpty: "还没有留言。",
+      unread: (n) => `${n} 条未读`,
+      markAllRead: "全部标为已读",
+      openSource: "打开出处",
+      copyText: "复制全文",
+      copiedText: "已复制",
+    },
+
     inbox: {
       title: "收件箱",
       need: "需要你",
@@ -1839,6 +1934,7 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     tabAlert: "Alerts",
     tabConnect: "Connect",
     tabMachines: "Machines",
+    tabCallMe: "Call Me",
     tabHooks: "Forwarding",
     tabGuide: "Guide",
     tabSystem: "System",
@@ -2547,6 +2643,53 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
       note: "Remote sessions are read-only here: no approvals from the light, and no jumping to a terminal (that directory is on the other machine).",
       peerHint:
         "The peer needs “Allow LAN access” turned on and its token copied over — it does not need to be upgraded.",
+    },
+
+    callme: {
+      hint: "Put a link in an article or page: any agent that reads it can leave you a note through the server you host, and you read it here. Three commands get the server running — see docs/callme.md.",
+      serverTitle: "Server",
+      urlLabel: "Server address",
+      urlPlaceholder: "https://callme.example.com",
+      urlHint: "Your self-hosted Call Me server. https:// is assumed when omitted.",
+      tokenLabel: "Admin token",
+      tokenPlaceholder: "The server's CALLME_ADMIN_TOKEN",
+      tokenHint: "The value set when starting the server; the client uses it to fetch messages.",
+      pollLabel: "Check every",
+      pollSeconds: (seconds) =>
+        seconds < 60 ? `${seconds}s` : seconds === 60 ? "1 min" : `${seconds / 60} min`,
+      test: "Test",
+      testing: "Connecting…",
+      connected: (ms) => `Connected · ${ms}ms`,
+      lastOk: (ago) => `Last ok ${ago}`,
+      never: "Never connected",
+      unconfigured: "Not configured",
+      sourcesTitle: "Links (sources)",
+      sourcesEmpty: "No links yet. Create one and paste it into your article.",
+      addSource: "New link",
+      creating: "Creating…",
+      labelPlaceholder: "Where it goes, e.g. “Blog: intro to SignalHub”",
+      notePlaceholder: "Note (optional): which file or page",
+      copyLink: "Copy link",
+      copiedLink: "Copied",
+      revoke: "Revoke",
+      revokeConfirm:
+        "Revoking disables this link immediately (messages already received are kept). Continue?",
+      revoked: "Revoked",
+      todayCount: (n) => `${n} in 24h`,
+      totalCount: (n) => `${n} total`,
+      createdTitle: "Link created",
+      createdHint:
+        "Copy it and paste it where you want agents to find it. Anyone who reads it can post until the daily quota runs out; revoking kills it instantly.",
+      messagesTitle: "Messages",
+      filterAll: "All",
+      messagesEmptyNoServer: "Fill in the server address and token above first.",
+      messagesEmptyNoSource: "No links yet — agents have nowhere to post.",
+      messagesEmpty: "No messages yet.",
+      unread: (n) => `${n} unread`,
+      markAllRead: "Mark all read",
+      openSource: "Open source",
+      copyText: "Copy text",
+      copiedText: "Copied",
     },
 
     inbox: {

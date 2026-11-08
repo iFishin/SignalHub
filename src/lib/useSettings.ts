@@ -151,6 +151,23 @@ export interface MachineHealth {
   sessions: number;
 }
 
+/**
+ * Call Me —— 用户自部署的收信服务器（见 `docs/callme.md`）。
+ *
+ * 和 `Machine` 同一方向（**我们往外读**），但拉回来的东西不进 `Store`：
+ * 留言不是状态信号，它有自己的页面（设置面板「Call Me」）。
+ *
+ * 默认全空 = 关闭，轮询线程一个请求都不发。
+ */
+export interface CallMeConfig {
+  /** 服务器地址，例如 `https://callme.example.com`。空 = 关闭。 */
+  url: string;
+  /** 服务器上的 `CALLME_ADMIN_TOKEN`。 */
+  token: string;
+  /** 轮询间隔（毫秒，5000–300000）。留言不是实时信号，默认 15 秒。 */
+  poll_ms: number;
+}
+
 /** 展开的牌上显示哪几段内容。四段都可以单独关掉 —— 有人只要一眼颜色，
  *  有人要看清「卡在哪一步」。 */
 export interface SignFields {
@@ -371,6 +388,13 @@ export interface Settings {
    * 决定了「对端掉线后多久在灯上显形」。
    */
   machine_poll_ms: number;
+  /**
+   * Call Me：自部署的收信服务器。**默认空 = 一条请求都不发。**
+   *
+   * 留言单独成页（不进收件箱）：它在语义上是「有人在你的文章下面留了话」，
+   * 不是「哪个智能体卡住了」。
+   */
+  callme: CallMeConfig;
 }
 
 /**
@@ -420,6 +444,7 @@ export const DEFAULTS: Settings = {
   web_approve: false,
   machines: [],
   machine_poll_ms: 2000,
+  callme: { url: "", token: "", poll_ms: 15_000 },
 };
 
 const SETTINGS_EVENT = "signalhub://settings";

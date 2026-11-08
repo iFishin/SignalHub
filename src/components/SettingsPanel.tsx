@@ -14,6 +14,7 @@ import { inTauri } from "../lib/env";
 import { clearSettingsTab, readSettingsTab } from "../lib/settingsIntent";
 import { signalLabel } from "../lib/signals";
 import { DemoStage } from "./DemoStage";
+import { CallMePage } from "./CallMePage";
 import { labelOf } from "../lib/lampSort";
 import { signTextNeedsContrast, stateOverridden, lampVars, resolveShapes } from "../lib/lampStyle";
 import {
@@ -44,6 +45,9 @@ import { buildInsights, insightsMarkdown, type InsightFact } from "../lib/insigh
 import { useInsights } from "../lib/useInsights";
 import { useOutboundLog, lastAttemptFor, type Attempt } from "../lib/useOutboundLog";
 import { useNow } from "../lib/useNow";
+import { formatAge } from "../lib/age";
+import { unreadCount } from "../lib/callme";
+import { useCallMe } from "../lib/useCallMe";
 import {
   groupReceipts,
   addCustomAgent,
@@ -239,6 +243,7 @@ type Tab =
   | "hooks"
   | "connect"
   | "machines"
+  | "callme"
   | "guide"
   | "demo"
   | "system";
@@ -258,6 +263,7 @@ const TAB_ALIASES: Record<Tab, string[]> = {
   hooks: ["转发", "出站", "webhook", "slack", "ntfy", "wled", "物理灯", "hooks", "forward"],
   connect: ["接入", "智能体", "hook", "token", "局域网", "web 面板", "审批", "connect", "agent", "panel"],
   machines: ["多机", "远程", "hub", "machine", "remote"],
+  callme: ["call me", "callme", "留言", "收信", "评论", "反馈", "comment", "feedback"],
   guide: ["指南", "手册", "怎么接", "guide", "help", "faq"],
   demo: ["演示", "预览", "看看", "demo", "preview", "tour"],
   system: ["系统", "语言", "开机自启", "导入", "导出", "更新", "快捷键", "system", "language", "update", "shortcut"],
@@ -304,6 +310,10 @@ function tabGroups(m: Messages): { title: string; entries: { id: Tab; label: str
         // 紧挨着「接入」：接入管「别人怎么报给我」，多机管「我怎么看别人」——
         // 同一件事的两个方向，放在一起才找得到。
         { id: "machines", label: m.tabMachines },
+        // 「Call Me」紧跟在多机后面：接入管「别人怎么报给我」，多机管「我怎么看
+        // 别人」，Call Me 管「外面的人怎么找我」—— 三个方向同属「连接」，放在
+        // 一起才找得到。它拉回来的是留言，不进收件箱，所以不是「看」的那一页。
+        { id: "callme", label: m.tabCallMe },
         { id: "guide", label: m.tabGuide },
         // 演示放在这一组的最后：它是「还没接上、先看看」的那一条路，和指南同层。
         { id: "demo", label: m.tabDemo },
@@ -630,21 +640,6 @@ function formatDuration(seconds: number): string {
   const hours = Math.floor(minutes / 60);
   const rest = minutes % 60;
   return rest === 0 ? `${hours}h` : `${hours}h${rest}m`;
-}
-
-/**
- * 「多久以前」。与灯球的 `formatAge` 同一套算法，只是入参是 epoch 毫秒（at_ms）。
- *
- * `now` 由调用方传进来（见 `useNow`），**不在这里读 `Date.now()`** —— 那样它就只
- * 在重绘时才被求值，一个不重绘的面板会把这个数字冻在那一刻。
- */
-function formatAge(atMs: number, now: number): string {
-  const seconds = Math.max(0, Math.round((now - atMs) / 1000));
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
 }
 
 /**
@@ -1510,6 +1505,13 @@ export function SettingsPanel({ snapshot }: Props) {
   const ttlDefaults = useStateTtls();
   const update = useUpdate();
   const groups = tabGroups(m);
+  // Call Me 的拉取状态：页面上用一份，左栏页签的红点也用同一份 —— 两处各调一次
+  // hook 会挂两个监听器、拉两次 IPC，而它们看的必须是同一个数字。
+  const { state: callmeState, refresh: refreshCallMe } = useCallMe();
+  const callmeUnread = unreadCount(
+    callmeState?.messages ?? [],
+    callmeState?.read ?? {},
+  );
   const pageRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState("");
   /** 回车跳页时要顺手滚到的小节关键词。别名表里那些英文词不一定和本地化的小节
@@ -4050,6 +4052,17 @@ export function SettingsPanel({ snapshot }: Props) {
         );
       }
 
+      case "callme":
+        return (
+          <CallMePage
+            settings={settings}
+            patch={patch}
+            m={m}
+            state={callmeState}
+            refresh={refreshCallMe}
+          />
+        );
+
       case "demo":
         return (
           <div className="demo-tab">
@@ -4961,6 +4974,12 @@ export function SettingsPanel({ snapshot }: Props) {
                     onClick={() => setTab(entry.id)}
                   >
                     {entry.label}
+                    {entry.id === "callme" && callmeUnread > 0 && (
+                      <span
+                        className="rail-dot"
+                        aria-label={m.callme.unread(callmeUnread)}
+                      />
+                    )}
                   </button>
                 ))}
               </div>

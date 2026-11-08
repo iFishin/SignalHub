@@ -1825,3 +1825,174 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   }
 }
 
+/* ---- Call Me（自部署收信服务器，见 docs/callme.md） ---- */
+
+/* 左栏页签上的未读点。只有有未读时才存在，所以没有「怎么隐藏」这条规则。
+   5px、不加光晕、不占位（`display: none` 的兄弟项不挤动文字）：它是一枚
+   提示，不是装饰。 */
+.settings .rail-dot {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+}
+
+/* 服务器那一行：间隔选择 + 测试按钮 + 结果。窄窗口下允许折行。 */
+.callme-toolbar {
+  gap: 8px;
+  align-items: center;
+}
+
+.callme-poll {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 来源列表：一条一条用 1px 线分隔，不做卡片、不加底色 —— 和这一页其余部分
+   同一套层次（见文件头）。 */
+.callme-source {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.callme-source:last-of-type {
+  border-bottom: 0;
+}
+
+.callme-source-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.callme-source-title {
+  color: var(--fg);
+  font-size: 13px;
+}
+
+/* 「已吊销」标记：一个 10px 的小方框，刻意比正文轻 —— 它是状态的注脚。 */
+.callme-tag {
+  margin-left: 6px;
+  padding: 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+/* 完整链接一行截断，鼠标悬停看全（`title`）。它太长，铺开会把这一节撑乱。 */
+.callme-link {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.callme-new {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.callme-new .input {
+  flex: 1;
+  min-width: 0;
+}
+
+.callme-created {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+/* 留言：未读 = 500 字重 + 一枚小点，已读 = 常规字重浅色。和 `.chip` 的选中态
+   同一套语言，不用背景色块 —— 一屏十几条留言全铺底色会变成斑马纹。 */
+.callme-msg {
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.callme-msg:last-child {
+  border-bottom: 0;
+}
+
+.callme-msg-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.callme-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: transparent;
+  flex: none;
+}
+
+.callme-msg[data-unread="true"] .callme-dot {
+  background: var(--accent);
+}
+
+.callme-msg[data-unread="true"] .callme-msg-source {
+  color: var(--fg);
+  font-weight: 500;
+}
+
+.callme-msg-age {
+  margin-left: auto;
+}
+
+.callme-msg-title {
+  margin-top: 3px;
+  color: var(--fg);
+  font-size: 12px;
+}
+
+/* 收起时两行截断；展开时完整显示（`data-open="true"` 去掉 clamp）。
+   `pre-wrap` 保留智能体写的换行，`anywhere` 防止一长串 URL 撑破。 */
+.callme-msg-body {
+  display: -webkit-box;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.callme-msg-body[data-open="true"] {
+  display: block;
+}
+
+.callme-msg-actions {
+  gap: 6px;
+  margin-top: 4px;
+}
+
+/* 标题旁的未读数：比标题轻，不抢视线。 */
+.callme-count {
+  margin-left: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+}
