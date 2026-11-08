@@ -111,6 +111,60 @@ async fn health_is_public() {
 }
 
 #[tokio::test]
+async fn every_response_is_uncacheable() {
+    let harness = Harness::new("cache", Limits::default());
+    let (_, token) = harness.create_link("文章").await;
+
+    // 成功、校验失败、鉴权失败、404 都走同一条出口：中间任何一层代理把
+    // 留言缓存下来都是泄露，所以头不能只加在部分 handler 上。
+    let cases: Vec<(&str, String, Option<Value>, bool, &str)> = vec![
+        ("GET", "/v1/callme/health".to_string(), None, false, "10.0.0.1"),
+        ("GET", "/v1/callme/messages".to_string(), None, true, "10.0.0.1"),
+        ("GET", "/v1/callme/messages".to_string(), None, false, "10.0.0.1"),
+        (
+            "POST",
+            format!("/c/{token}"),
+            Some(json!({ "text": "看过了，第三节可以再具体些。" })),
+            false,
+            "10.0.0.2",
+        ),
+        (
+            "POST",
+            "/c/deadbeefdeadbeefdeadbeefdeadbeef".to_string(),
+            Some(json!({ "text": "x" })),
+            false,
+            "10.0.0.3",
+        ),
+        (
+            "POST",
+            "/v1/callme/sources".to_string(),
+            Some(json!({ "label": "" })),
+            true,
+            "10.0.0.1",
+        ),
+    ];
+
+    for (method, uri, body, bearer, ip) in cases {
+        let response = harness
+            .app
+            .clone()
+            .oneshot(harness.request(method, &uri, body, bearer, ip))
+            .await
+            .unwrap();
+        let cache = response
+            .headers()
+            .get("cache-control")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        assert_eq!(
+            cache.as_deref(),
+            Some("no-store"),
+            "{method} {uri} 缺 Cache-Control"
+        );
+    }
+}
+
+#[tokio::test]
 async fn admin_endpoints_require_token() {
     let harness = Harness::new("auth", Limits::default());
     for (method, uri) in [

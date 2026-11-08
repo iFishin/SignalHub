@@ -46,7 +46,19 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/callme/sources/{id}/revoke", post(revoke_source))
         .route("/v1/callme/messages", get(list_messages))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+        // 所有响应（成功与错误）一律不可缓存。放在 layer 里而不是每个 handler
+        // 手动加：这里返回的是私人留言，将来加端点时漏写就是一次泄露。
+        .layer(axum::middleware::from_fn(no_store))
         .with_state(state)
+}
+
+/// 给每个出站响应盖上 `Cache-Control: no-store`。
+async fn no_store(request: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let mut response = next.run(request).await;
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 // ---- handlers ----
@@ -103,12 +115,7 @@ async fn receive(
                 message.source_id,
                 message.text.chars().count()
             );
-            let mut response = Json(serde_json::json!({ "ok": true, "seq": message.seq }))
-                .into_response();
-            response
-                .headers_mut()
-                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-            response
+            Json(serde_json::json!({ "ok": true, "seq": message.seq })).into_response()
         }
         Err(err) => accept_error(err),
     }
@@ -325,6 +332,7 @@ fn accept_error(err: AcceptError) -> Response {
 }
 
 /// 统一错误响应。带 `Retry-After` 头（有些客户端只看头不看 body）。
+/// `Cache-Control` 由 [`no_store`] 统一加，这里不重复。
 fn fail(
     status: StatusCode,
     code: &'static str,
@@ -342,9 +350,6 @@ fn fail(
     {
         response.headers_mut().insert(header::RETRY_AFTER, value);
     }
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
 }
 
