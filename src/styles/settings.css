@@ -1684,37 +1684,78 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   font-size: 11px;
 }
 
-/* ---- 长页的「本页小节」目录 ------------------------------------------------ */
+/* ---- 页头 ---------------------------------------------------------------- */
 
-/* sticky 在 .page 这个滚动容器里。铺一层不透明底色，否则滚上来的正文会
-   从目录后面透出来；只占一行高度，短页（<3 节）根本不渲染它。 */
-.settings .page-nav {
-  position: sticky;
-  top: 0;
-  z-index: 2;
+/* 每页顶端一句话：我在哪儿、这一页能做什么。右侧留给页面级主操作（「全部已读」
+   「管理链接」）。
+   不加底色、不加阴影 —— 它和正文之间靠下面第一个 `.section` 那道细线分开，
+   和整块面板「分隔靠 1px」的纪律一致。 */
+.settings .page-header {
   display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  padding: 8px 0;
-  margin-bottom: 4px;
-  border-bottom: 1px solid var(--line);
-  background: var(--bg);
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 10px;
 }
 
-.settings .page-nav-chip {
-  padding: 2px 7px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
+.settings .page-header-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings .page-header h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* 页头这句是「这一页干什么」，比正文小半号但不抢眼 —— 它是导语，不是内容。 */
+.settings .page-header p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.settings .page-header-actions {
+  display: flex;
+  flex: none;
+  gap: 6px;
+  padding-top: 1px;
+}
+
+/* ---- 复杂页面的第二层导航 -------------------------------------------------- */
+
+/* 只给接入 / Call Me / 系统三页用，不再往下嵌一层（原因见 SettingsPage.tsx）。
+   选中态沿用 `.rail-item` / `.seg` / `.chip` 那一套：浅灰底 + 正文字色 + 500
+   字重。不给它加下划线或 accent 指示条 —— 那会和左栏的选中态打架，让人以为
+   这是两个不同层级的控件。 */
+.settings .local-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin-bottom: 12px;
+}
+
+.settings .local-tabs button {
+  padding: 3px 9px;
+  border: 0;
+  border-radius: 5px;
   background: transparent;
   color: var(--muted);
   font: inherit;
-  font-size: 11px;
+  font-size: 12.5px;
   cursor: pointer;
 }
 
-.settings .page-nav-chip:hover {
+.settings .local-tabs button:hover {
   background: var(--hover);
   color: var(--fg);
+}
+
+.settings .local-tabs button[data-active="true"] {
+  background: var(--hover);
+  color: var(--fg);
+  font-weight: 500;
 }
 
 .settings .demo-tab .hint {
@@ -1950,13 +1991,33 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   background: var(--accent);
 }
 
+/* 来源名可能很长（用户自己起的，最多 60 字），一行截断而不是把「多久以前」
+   挤出可视区；智能体名同理。时间戳自己不被压缩。 */
+.callme-msg-source {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.callme-msg-head > .muted-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .callme-msg[data-unread="true"] .callme-msg-source {
   color: var(--fg);
   font-weight: 500;
 }
 
 .callme-msg-age {
+  flex: none;
   margin-left: auto;
+  white-space: nowrap;
 }
 
 .callme-msg-title {
@@ -1995,4 +2056,38 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   color: var(--muted);
   font-size: 11px;
   font-weight: 400;
+}
+
+/* 远程部署的三步：编号自己一列、说明一列，不折成「1. xxx」那种行内文本 ——
+   步骤里常带命令，行内编号会让换行后的对齐乱掉。 */
+.deploy-steps {
+  margin: 8px 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: deploy;
+}
+
+.deploy-steps li {
+  position: relative;
+  padding-left: 20px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.deploy-steps li + li {
+  margin-top: 3px;
+}
+
+.deploy-steps li::before {
+  position: absolute;
+  left: 0;
+  counter-increment: deploy;
+  content: counter(deploy) ".";
+  color: var(--muted);
+}
+
+/* 那段命令是给人复制走的，不是给人读的：紧跟在步骤下面，别再来一层留白。 */
+.deploy-command {
+  margin-top: 6px;
 }

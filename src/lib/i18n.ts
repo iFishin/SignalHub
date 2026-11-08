@@ -275,13 +275,15 @@ export interface Messages {
   shortSignal: Record<SignalState, string>;
 
   // 页签
-  /** 左栏的分组标题。页的「轴」在这里写着（见 SettingsPanel 的 tabGroups）。 */
+  /** 左栏的分组标题。页的「轴」在这里写着（见 lib/settingsNavigation.ts）。 */
   railWatch: string;
   railLamp: string;
   railNotify: string;
   railConnect: string;
+  railHelp: string;
   tabStatus: string;
   tabHistory: string;
+  tabMessages: string;
   /** 「历史」页的正文 */
   historyTitle: string;
   historyHint: string;
@@ -298,14 +300,41 @@ export interface Messages {
   tabGuide: string;
   tabSystem: string;
   tabDemo: string;
+  /** 接入页的页内子页。 */
+  connectTabAgents: string;
+  connectTabSources: string;
+  connectTabNetwork: string;
+  /** 系统页的页内子页。 */
+  systemTabGeneral: string;
+  systemTabUpdate: string;
+  systemTabData: string;
+  /**
+   * 每个全局页签的一句任务说明（统一页头的第二行）。键集和
+   * lib/settingsNavigation.ts 的 Tab 一致，新增页签时 TS 会提醒这里补文案。
+   */
+  pageHint: Record<
+    | "status"
+    | "history"
+    | "messages"
+    | "look"
+    | "behavior"
+    | "groups"
+    | "alert"
+    | "hooks"
+    | "connect"
+    | "machines"
+    | "callme"
+    | "guide"
+    | "demo"
+    | "system",
+    string
+  >;
 
-  // 左栏搜索与本页小节目录
+  // 左栏搜索
   /** 搜索框的占位符 */
   railSearch: string;
   /** 一个页签都没匹配上 */
   railSearchEmpty: string;
-  /** 长页顶部那条「本页」小节导航的标题（给屏幕阅读器用） */
-  pageNav: string;
 
   // 首次启动引导（占位牌上那一枚）
   lampFirstRun: string;
@@ -937,9 +966,13 @@ export interface Messages {
     peerHint: string;
   };
 
-  /** 「Call Me」页（自部署收信服务器，见 docs/callme.md）。 */
+  /** 「Call Me」配置页与「留言」阅读页（自部署收信服务器，见 docs/callme.md）。 */
   callme: {
-    hint: string;
+    /** 页内子页的两个名字。 */
+    linksTab: string;
+    serverTab: string;
+    /** 「留言」页里跳去管理链接的次级入口。 */
+    manageLinks: string;
     serverTitle: string;
     urlLabel: string;
     urlPlaceholder: string;
@@ -947,6 +980,8 @@ export interface Messages {
     tokenLabel: string;
     tokenPlaceholder: string;
     tokenHint: string;
+    /** 服务器子页的一句前提说明（自部署 / TLS 归反代）。 */
+    connectionHint: string;
     pollLabel: string;
     pollSeconds: (seconds: number) => string;
     test: string;
@@ -957,6 +992,8 @@ export interface Messages {
     lastOk: (ago: string) => string;
     never: string;
     unconfigured: string;
+    /** 链接子页顶部「去服务器子页」的入口。 */
+    openServerTab: string;
     sourcesTitle: string;
     sourcesEmpty: string;
     addSource: string;
@@ -973,16 +1010,46 @@ export interface Messages {
     totalCount: (n: number) => string;
     createdTitle: string;
     createdHint: string;
-    messagesTitle: string;
     filterAll: string;
+    /** 空态的原因：没服务器 / 连不上 / 没链接 / 真没有。 */
     messagesEmptyNoServer: string;
+    messagesEmptyOffline: string;
     messagesEmptyNoSource: string;
     messagesEmpty: string;
+    /** 筛选器收窄之后一条都不剩。 */
+    filterNoResults: string;
+    /** 空态上的出路。 */
+    goConfigure: string;
+    checkServer: string;
+    goCreateLink: string;
     unread: (n: number) => string;
     markAllRead: string;
     openSource: string;
     copyText: string;
     copiedText: string;
+    /** 本机一键服务（桌面进程内跑的收信服务）。 */
+    localTitle: string;
+    localHint: string;
+    localPort: string;
+    localPortInvalid: string;
+    /** 已经填了公网地址时，点「启动」会覆盖它 —— 先问一句。 */
+    localReplaceConfirm: string;
+    localStart: string;
+    localStop: string;
+    localStarting: string;
+    localStopping: string;
+    localRunning: string;
+    localStopped: string;
+    localOnlyHint: string;
+    /** VPS 部署指引。 */
+    remoteTitle: string;
+    remoteHint: string;
+    remoteStep1: string;
+    remoteStep2: string;
+    remoteStep3: string;
+    copyCommand: string;
+    copiedCommand: string;
+    remoteSecurityHint: string;
   };
 
   inbox: {
@@ -1080,12 +1147,14 @@ export const MESSAGES: Record<Lang, Messages> = {
       off: "暂停",
     },
 
-    railWatch: "看",
+    railWatch: "工作台",
     railLamp: "灯",
     railNotify: "通知",
-    railConnect: "开始用",
+    railConnect: "连接",
+    railHelp: "帮助",
     tabStatus: "状态",
     tabHistory: "历史",
+    tabMessages: "留言",
     historyTitle: "近 7 天",
     historyHint:
       "一天一行，横条的宽度就是那天各状态占用的时间（同一天内部按状态从多到少排，鼠标停上去看某一段多久），右边是当天合计。数据每天落盘，保留 30 天。没有记录的日子不会补一行零 —— 那多半是应用没跑，而不是「灯开着但什么都没干」。",
@@ -1102,10 +1171,31 @@ export const MESSAGES: Record<Lang, Messages> = {
     tabGuide: "指南",
     tabSystem: "系统",
     tabDemo: "演示",
+    connectTabAgents: "智能体",
+    connectTabSources: "其他来源",
+    connectTabNetwork: "网络与诊断",
+    systemTabGeneral: "通用",
+    systemTabUpdate: "更新与诊断",
+    systemTabData: "数据",
+    pageHint: {
+      status: "现在怎么样：正在跑什么、最近发生了什么。",
+      history: "过去几天发生了什么：今日复盘、洞察、时长和审批记录。",
+      messages: "外面的智能体通过 Call Me 链接发来的留言，展开即已读。",
+      look: "灯长什么样：颜色、形状、大小和预设。",
+      behavior: "灯怎么表现：静默超时、安静模式和点击。",
+      groups: "会话怎么分组、每组分几盏灯。",
+      alert: "什么时候用系统通知提醒你。",
+      hooks: "状态变化时往哪里转发：webhook、ntfy、物理灯。",
+      connect: "把智能体和信号源接到 SignalHub。",
+      machines: "把其他机器的中枢接到这里，一盏灯看全部。",
+      callme: "管理 Call Me 收信链接和服务器。",
+      guide: "从零开始的接入手册和接口速查。",
+      demo: "不用真接一个智能体，先看看它长什么样。",
+      system: "这台机器上的这个应用：语言、更新、数据。",
+    },
 
     railSearch: "找设置…",
     railSearchEmpty: "没有匹配的页签",
-    pageNav: "本页小节",
     lampFirstRun: "第一次用？",
     lampFirstRunDemo: "看演示",
     lampFirstRunDemoHint: "不接智能体，先看这盏灯怎么亮（四段场景，每段 10–20 秒）",
@@ -1798,7 +1888,9 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     },
 
     callme: {
-      hint: "把一条链接贴进文章或页面：读到它的智能体会通过你自己部署的服务器给你留言，你在这里读。服务器三行命令就能跑起来，见 docs/callme.md。",
+      linksTab: "链接",
+      serverTab: "服务器",
+      manageLinks: "管理链接",
       serverTitle: "服务器",
       urlLabel: "服务器地址",
       urlPlaceholder: "https://callme.example.com",
@@ -1806,6 +1898,8 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       tokenLabel: "管理 Token",
       tokenPlaceholder: "服务器上的 CALLME_ADMIN_TOKEN",
       tokenHint: "启动服务器时设置的那个值，客户端用它来拉取留言。",
+      connectionHint:
+        "服务器要自己部署（或用上面的本机服务），TLS 由反向代理负责；地址和管理 token 只存在你这台机器上。",
       pollLabel: "检查间隔",
       pollSeconds: (seconds) => `${seconds} 秒`,
       test: "测试连接",
@@ -1814,6 +1908,7 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       lastOk: (ago) => `上次成功 ${ago}`,
       never: "还没连上过",
       unconfigured: "未配置",
+      openServerTab: "服务器设置",
       sourcesTitle: "链接（来源）",
       sourcesEmpty: "还没有链接。新建一条，贴到文章里即可。",
       addSource: "新建链接",
@@ -1830,16 +1925,43 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       createdTitle: "链接已创建",
       createdHint:
         "复制它，贴到你希望智能体读到的地方。注意：任何读到它的人都能发消息 —— 额度用完为止，吊销即失效。",
-      messagesTitle: "留言",
       filterAll: "全部",
-      messagesEmptyNoServer: "先在上面填好服务器地址和 token。",
+      messagesEmptyNoServer: "还没配置 Call Me 服务器 —— 填好地址和 token 之后才会去拉留言。",
+      messagesEmptyOffline: "连不上 Call Me 服务器，先检查地址、token 和服务是否在跑。",
       messagesEmptyNoSource: "还没有链接 —— 智能体没有入口可发。",
       messagesEmpty: "还没有留言。",
+      filterNoResults: "这个筛选下没有留言。",
+      goConfigure: "去配置 Call Me",
+      checkServer: "去检查服务器",
+      goCreateLink: "去新建链接",
       unread: (n) => `${n} 条未读`,
       markAllRead: "全部标为已读",
       openSource: "打开出处",
       copyText: "复制全文",
       copiedText: "已复制",
+      localTitle: "本机一键服务",
+      localHint: "在桌面应用里直接跑一个收信服务 —— 不用装 Docker，不用敲命令。地址和 token 会自动填好。",
+      localPort: "端口",
+      localPortInvalid: "端口要在 1024–65535 之间。",
+      localReplaceConfirm:
+        "你现在填的是一台外部服务器（可能是你的 VPS）。启动本机会把地址和 token 换成 127.0.0.1 这一份，原来的配置会被覆盖 —— 需要的话先把那两行抄下来。继续？",
+      localStart: "启动本机服务",
+      localStop: "停止",
+      localStarting: "启动中…",
+      localStopping: "停止中…",
+      localRunning: "运行中",
+      localStopped: "未运行",
+      localOnlyHint:
+        "本机服务只监听 127.0.0.1：本机测试够用，但外网访问不到。要让外面的智能体投递，用下面的 VPS 部署。它跟着应用一起退出，下次要再点一次启动 —— 不会在你不知情的时候常驻。",
+      remoteTitle: "部署到公网（VPS）",
+      remoteHint: "要让外面的智能体访问，把服务跑在一台公网机器上。三条命令，复制后在服务器上执行：",
+      remoteStep1: "在有 Docker 的公网机器上克隆仓库并构建镜像。",
+      remoteStep2: "设置 CALLME_ADMIN_TOKEN（至少 16 个字符），启动容器并挂载数据卷。",
+      remoteStep3: "用 HTTPS 反向代理把域名指向 127.0.0.1:8080，再把地址和 token 填到上面。",
+      copyCommand: "复制命令",
+      copiedCommand: "已复制",
+      remoteSecurityHint:
+        "管理 token 不要发给任何人；反代要加 TLS，并在反代场景下设置 CALLME_TRUST_PROXY=true。数据都在 /data 卷里，备份它就是备份全部。",
     },
 
     inbox: {
@@ -1917,12 +2039,14 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       off: "Paused",
     },
 
-    railWatch: "Overview",
+    railWatch: "Workspace",
     railLamp: "Lamp",
     railNotify: "Notifications",
-    railConnect: "Getting started",
+    railConnect: "Connections",
+    railHelp: "Help",
     tabStatus: "Status",
     tabHistory: "History",
+    tabMessages: "Messages",
     historyTitle: "Last 7 days",
     historyHint:
       "One row per day. A segment's width is how long that state occupied the lamp (within a day, longest first — hover one for its duration), and the number on the right is the day's total. Durations are written to disk daily and kept for 30 days. Days with no record get no zero row: that usually means the app was not running, not that the lamp was on doing nothing.",
@@ -1939,10 +2063,31 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     tabGuide: "Guide",
     tabSystem: "System",
     tabDemo: "Demo",
+    connectTabAgents: "Agents",
+    connectTabSources: "Other sources",
+    connectTabNetwork: "Network & diagnostics",
+    systemTabGeneral: "General",
+    systemTabUpdate: "Update & diagnostics",
+    systemTabData: "Data",
+    pageHint: {
+      status: "What's happening right now: running sessions and recent events.",
+      history: "The past few days: today's recap, insights, durations and approvals.",
+      messages: "Notes from outside agents via your Call Me links. Expanding marks them read.",
+      look: "What the lamp looks like: color, shape, size and presets.",
+      behavior: "How the lamp behaves: quiet timeout, calm mode and clicks.",
+      groups: "How sessions map to lamps.",
+      alert: "When to notify you through the system.",
+      hooks: "Where to forward state changes: webhooks, ntfy, physical lamps.",
+      connect: "Hook agents and signal sources up to SignalHub.",
+      machines: "Link other machines' hubs and see them all on one lamp.",
+      callme: "Manage Call Me links and the receiving server.",
+      guide: "The handbook: getting started and the API cheat sheet.",
+      demo: "See it work without wiring up a real agent.",
+      system: "This app on this machine: language, updates and data.",
+    },
 
     railSearch: "Find a setting…",
     railSearchEmpty: "No matching page",
-    pageNav: "On this page",
     lampFirstRun: "New here?",
     lampFirstRunDemo: "See a demo",
     lampFirstRunDemoHint:
@@ -2646,7 +2791,9 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     },
 
     callme: {
-      hint: "Put a link in an article or page: any agent that reads it can leave you a note through the server you host, and you read it here. Three commands get the server running — see docs/callme.md.",
+      linksTab: "Links",
+      serverTab: "Server",
+      manageLinks: "Manage links",
       serverTitle: "Server",
       urlLabel: "Server address",
       urlPlaceholder: "https://callme.example.com",
@@ -2654,6 +2801,8 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
       tokenLabel: "Admin token",
       tokenPlaceholder: "The server's CALLME_ADMIN_TOKEN",
       tokenHint: "The value set when starting the server; the client uses it to fetch messages.",
+      connectionHint:
+        "The server is self-hosted (or use the local server above); TLS is handled by your reverse proxy. The address and token stay on this machine only.",
       pollLabel: "Check every",
       pollSeconds: (seconds) =>
         seconds < 60 ? `${seconds}s` : seconds === 60 ? "1 min" : `${seconds / 60} min`,
@@ -2663,6 +2812,7 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
       lastOk: (ago) => `Last ok ${ago}`,
       never: "Never connected",
       unconfigured: "Not configured",
+      openServerTab: "Server settings",
       sourcesTitle: "Links (sources)",
       sourcesEmpty: "No links yet. Create one and paste it into your article.",
       addSource: "New link",
@@ -2680,16 +2830,45 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
       createdTitle: "Link created",
       createdHint:
         "Copy it and paste it where you want agents to find it. Anyone who reads it can post until the daily quota runs out; revoking kills it instantly.",
-      messagesTitle: "Messages",
       filterAll: "All",
-      messagesEmptyNoServer: "Fill in the server address and token above first.",
+      messagesEmptyNoServer:
+        "No Call Me server yet — messages are only fetched once the address and token are filled in.",
+      messagesEmptyOffline:
+        "Can't reach the Call Me server — check the address, the token and whether the server is running.",
       messagesEmptyNoSource: "No links yet — agents have nowhere to post.",
       messagesEmpty: "No messages yet.",
+      filterNoResults: "No messages under this filter.",
+      goConfigure: "Set up Call Me",
+      checkServer: "Check the server",
+      goCreateLink: "Create a link",
       unread: (n) => `${n} unread`,
       markAllRead: "Mark all read",
       openSource: "Open source",
       copyText: "Copy text",
       copiedText: "Copied",
+      localTitle: "Local one-click server",
+      localHint: "Run a receiving server right inside the desktop app — no Docker, no commands. The address and token get filled in for you.",
+      localPort: "Port",
+      localPortInvalid: "Port must be between 1024 and 65535.",
+      localReplaceConfirm:
+        "You currently point at an external server (your VPS, probably). Starting the local one replaces the address and token with the 127.0.0.1 pair and overwrites that configuration — copy those two fields first if you need them. Continue?",
+      localStart: "Start local server",
+      localStop: "Stop",
+      localStarting: "Starting…",
+      localStopping: "Stopping…",
+      localRunning: "Running",
+      localStopped: "Not running",
+      localOnlyHint:
+        "The local server listens on 127.0.0.1 only: fine for testing, unreachable from the internet. For outside agents, use the VPS deployment below. It stops with the app, so you start it again next session — nothing keeps listening behind your back.",
+      remoteTitle: "Deploy to the public internet (VPS)",
+      remoteHint: "To let outside agents in, run the server on a public machine. Three commands — copy and run them on your server:",
+      remoteStep1: "Clone the repo and build the image on a Docker-capable public machine.",
+      remoteStep2: "Set CALLME_ADMIN_TOKEN (16+ characters), start the container with a data volume.",
+      remoteStep3: "Point an HTTPS reverse proxy at 127.0.0.1:8080, then fill in the address and token above.",
+      copyCommand: "Copy commands",
+      copiedCommand: "Copied",
+      remoteSecurityHint:
+        "Never share the admin token. Terminate TLS at the proxy and set CALLME_TRUST_PROXY=true behind one. All data lives in the /data volume — back that up and you've backed up everything.",
     },
 
     inbox: {

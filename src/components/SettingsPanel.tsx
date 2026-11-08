@@ -12,9 +12,17 @@ import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { inTauri } from "../lib/env";
 import { clearSettingsTab, readSettingsTab } from "../lib/settingsIntent";
+import {
+  matchesTab,
+  tabGroups,
+  tabIds,
+  type Tab,
+} from "../lib/settingsNavigation";
 import { signalLabel } from "../lib/signals";
 import { DemoStage } from "./DemoStage";
 import { CallMePage } from "./CallMePage";
+import { CallMeMessages } from "./CallMeMessages";
+import { LocalPanel, LocalTabs, PageHeader } from "./settings/SettingsPage";
 import { labelOf } from "../lib/lampSort";
 import { signTextNeedsContrast, stateOverridden, lampVars, resolveShapes } from "../lib/lampStyle";
 import {
@@ -216,195 +224,11 @@ function alertDelayOptions(m: Messages): { label: string; value: number }[] {
 }
 
 /**
- * 页签：**三组 + 一个沉底的「系统」**。
+ * 页签结构住在 `lib/settingsNavigation.ts`（五组 + 沉底的「系统」），这里只消费。
  *
- * 分组不是为了好看，是因为原来那八个平铺按钮之间的**轴不一致**：「安静模式」
- * 「贴边吸附」在【外观】，而同层概念的「点击穿透」却在【系统】；「语言」也在
- * 【系统】。于是「这个开关在哪儿」的答案取决于它当初加进哪个文件，而不是它在
- * 讲什么 —— 用户只能一页一页找（而改动本身是三个人三次加的，谁都不是故意）。
- *
- * 现在的轴是**这一页在回答什么问题**：
- *
- * - 看：只读的观察（现在 / 这几天）
- * - 灯：它长什么样（外观）、怎么动（行为）、每个组怎么显示（分组）
- * - 通知：怎么告诉你（提醒 = 系统通知，转发 = 发出站钩子）
- * - 开始用：怎么把它接上（接入 + 那份手册）
- *
- * 「系统」不属于上面任何一类 —— 语言、开机自启、导入导出是**这台机器上的这个
- * 应用**，所以由左栏单独渲染在最下面（常见的「齿轮位」）。
+ * 复杂页面（接入 / Call Me / 系统）再往里分**一层**局部子页（LocalTabs），不再加
+ * 第三层，也不把子页升级成全局页签 —— 页签数已经到了搜索有价值的规模。
  */
-type Tab =
-  | "status"
-  | "history"
-  | "look"
-  | "behavior"
-  | "groups"
-  | "alert"
-  | "hooks"
-  | "connect"
-  | "machines"
-  | "callme"
-  | "guide"
-  | "demo"
-  | "system";
-
-/**
- * 页签搜索用的关键词。**不是界面文案**，所以两种语言混着放：搜「勿扰」「token」
- * 「dnd」都要能落到同一页。按页签列，而不是做全文索引 —— 11 页的规模下，
- * 一张手写的别名表比一个会漏掉动态内容的索引更可靠，也不会把人送进某一段。
- */
-const TAB_ALIASES: Record<Tab, string[]> = {
-  status: ["状态", "现在", "时间线", "status", "now", "timeline"],
-  history: ["历史", "近 7 天", "统计", "history", "stats", "week"],
-  look: ["外观", "颜色", "形状", "大小", "透明度", "预设", "灵动", "柔光", "呼吸", "光晕", "look", "color", "size", "preset", "lively", "glow"],
-  behavior: ["行为", "静默超时", "超时", "安静模式", "点击穿透", "behavior", "ttl", "timeout"],
-  groups: ["分组", "置顶", "多灯", "每组分灯", "group", "pin", "lamp count"],
-  alert: ["提醒", "通知", "勿扰", "提示音", "声音", "alert", "notify", "dnd", "sound"],
-  hooks: ["转发", "出站", "webhook", "slack", "ntfy", "wled", "物理灯", "hooks", "forward"],
-  connect: ["接入", "智能体", "hook", "token", "局域网", "web 面板", "审批", "connect", "agent", "panel"],
-  machines: ["多机", "远程", "hub", "machine", "remote"],
-  callme: ["call me", "callme", "留言", "收信", "评论", "反馈", "comment", "feedback"],
-  guide: ["指南", "手册", "怎么接", "guide", "help", "faq"],
-  demo: ["演示", "预览", "看看", "demo", "preview", "tour"],
-  system: ["系统", "语言", "开机自启", "导入", "导出", "更新", "快捷键", "system", "language", "update", "shortcut"],
-};
-
-function tabGroups(m: Messages): { title: string; entries: { id: Tab; label: string }[] }[] {
-  return [
-    {
-      title: m.railWatch,
-      entries: [
-        { id: "status", label: m.tabStatus },
-        // 紧挨着「状态」：一个是「现在怎么样」，一个是「这几天怎么样」，同一件事的
-        // 两个时间尺度，分开只是因为合在一页会把「现在」淹掉（那一页自己写着
-        // 「只回答现在发生了什么」）。
-        { id: "history", label: m.tabHistory },
-      ],
-    },
-    {
-      title: m.railLamp,
-      entries: [
-        { id: "look", label: m.tabLook },
-        // 「行为」是这一轮从「外观」和「系统」里切出来的：那两页各拿着一半同层的
-        // 东西（安静模式 / 贴边吸附 ↔ 点击穿透 / 保持在最前 / 托盘跟随）。
-        { id: "behavior", label: m.tabBehavior },
-        // 「分组」原先挂在「外观」的末尾，是那一页唯一**会随会话数变长**的一节 ——
-        // 而「灯长什么样」是固定的九行。搬走之后两边都回到各自的量级。
-        //
-        // 页名就叫「分组」，所以「怎么分组」「摆成几盏灯」这两项也归这一页（它们
-        // 原先挂在「接入」页，用户找不到 —— 导航里明明有一页叫分组）。
-        { id: "groups", label: m.tabGroups },
-      ],
-    },
-    {
-      title: m.railNotify,
-      entries: [
-        { id: "alert", label: m.tabAlert },
-        { id: "hooks", label: m.tabHooks },
-      ],
-    },
-    {
-      title: m.railConnect,
-      entries: [
-        { id: "connect", label: m.tabConnect },
-        // 紧挨着「接入」：接入管「别人怎么报给我」，多机管「我怎么看别人」——
-        // 同一件事的两个方向，放在一起才找得到。
-        { id: "machines", label: m.tabMachines },
-        // 「Call Me」紧跟在多机后面：接入管「别人怎么报给我」，多机管「我怎么看
-        // 别人」，Call Me 管「外面的人怎么找我」—— 三个方向同属「连接」，放在
-        // 一起才找得到。它拉回来的是留言，不进收件箱，所以不是「看」的那一页。
-        { id: "callme", label: m.tabCallMe },
-        { id: "guide", label: m.tabGuide },
-        // 演示放在这一组的最后：它是「还没接上、先看看」的那一条路，和指南同层。
-        { id: "demo", label: m.tabDemo },
-      ],
-    },
-  ];
-}
-
-/**
- * 全部页签 id（左栏四组 + 系统）。
- *
- * 单独一个函数而不是在组件里手写一遍：初始化「上次那页 / 纸条要翻的那页」和
- * 窗口显形时重读纸条都要判「这个 id 认不认识」，两处各写一份的话，加一页就
- * 只改了其中一处 —— 表现成「纸条指向一个不存在的页，整页空白」。
- */
-function tabIds(m: Messages): Tab[] {
-  return [...tabGroups(m).flatMap((group) => group.entries.map((entry) => entry.id)), "system"];
-}
-
-interface SectionLink {
-  /** 在 .page 里第几个 .section —— 点击时按这个下标滚，不靠文本反查。 */
-  index: number;
-  text: string;
-}
-
-/**
- * 长页顶部的「本页小节」目录。
- *
- * 目录**从渲染出来的 DOM 里读**（`.section > .section-title`），而不是给 11 个
- * case 各手写一份清单 —— 清单会和页面一起腐化，DOM 不会。异步填进来的内容由
- * MutationObserver 补扫；扫完先比一次签名，内容没变就不 setState，免得自己
- * 改自己的 DOM 触发观察器、再触发一次渲染，绕成循环。
- *
- * 少于 3 节不显示：短页加一条目录比没有目录更吵。
- */
-function PageSectionsNav({
-  containerRef,
-  label,
-}: {
-  containerRef: React.RefObject<HTMLDivElement | null>;
-  label: string;
-}) {
-  const [links, setLinks] = useState<SectionLink[]>([]);
-
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-    let signature = "";
-
-    const scan = () => {
-      const sections = Array.from(container.querySelectorAll<HTMLElement>(".section"));
-      const next: SectionLink[] = [];
-      sections.forEach((section, index) => {
-        const text = section.querySelector<HTMLElement>(".section-title")?.textContent?.trim();
-        if (text) next.push({ index, text });
-      });
-      const sig = next.map((link) => `${link.index}:${link.text}`).join("|");
-      if (sig === signature) return;
-      signature = sig;
-      setLinks(next);
-    };
-
-    scan();
-    const observer = new MutationObserver(scan);
-    observer.observe(container, { childList: true, subtree: true, characterData: true });
-    return () => observer.disconnect();
-  }, [containerRef]);
-
-  if (links.length < 3) return null;
-
-  return (
-    <nav className="page-nav" aria-label={label}>
-      {links.map((link) => (
-        <button
-          key={`${link.index}:${link.text}`}
-          type="button"
-          className="page-nav-chip"
-          onClick={() => {
-            const sections = containerRef.current?.querySelectorAll<HTMLElement>(".section");
-            const target = sections?.[link.index];
-            if (!target) return;
-            const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-            target.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
-          }}
-        >
-          {link.text}
-        </button>
-      ))}
-    </nav>
-  );
-}
 
 interface Endpoint {
   port: number | null;
@@ -1514,10 +1338,7 @@ export function SettingsPanel({ snapshot }: Props) {
   );
   const pageRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState("");
-  /** 回车跳页时要顺手滚到的小节关键词。别名表里那些英文词不一定和本地化的小节
-      标题对得上，匹配不上就只跳页 —— 搜索的语义始终是「去哪一页」。 */
-  const [scrollToQuery, setScrollToQuery] = useState<string | null>(null);
-  // 记住上次翻到哪一页。11 个页签里找东西，重开设置又被送回「状态」最烦人。
+  // 记住上次翻到哪一页。页签里找东西，重开设置又被送回「状态」最烦人。
   // 存页签 id 而不是下标 —— 以后插一页也不会把人送错地方；认不出来就退回默认。
   // 「打开设置并翻到某页」的纸条（收件箱空态的「接入」、灯上引导的「看演示」）
   // 优先级高于「上次那页」：那是用户刚刚明确要去的方向。
@@ -1532,6 +1353,12 @@ export function SettingsPanel({ snapshot }: Props) {
       return "status";
     }
   });
+  // 复杂页面的局部子页（接入 / Call Me / 系统）。挂在壳上而不是各页里，是因为
+  // 「留言」页的空态按钮要能跳进 Call Me 的指定子页；也顺带做到「应用运行期间
+  // 记住、重开回主子页」—— 不写 localStorage，重启自然回默认。
+  const [connectSub, setConnectSub] = useState<"agents" | "sources" | "network">("agents");
+  const [callmeSub, setCallmeSub] = useState<"links" | "server">("links");
+  const [systemSub, setSystemSub] = useState<"general" | "update" | "data">("general");
   // 纸条要在**每次窗口显形时**重读。设置窗启动就以 `visible: false` 建好、之后
   // 只是 `show()`（见 `lib.rs` 的 `reveal_settings`），组件不会重新挂载 —— 只在
   // 初始化时读一次的话，用户点「接入」时写下的纸条永远不会被看到。
@@ -1556,16 +1383,10 @@ export function SettingsPanel({ snapshot }: Props) {
     }
   }, [tab]);
 
-  // 页签搜索：标签 + 一张中英别名表。不做全文索引（11 页的规模不值得，
-  // 而且动态内容会漏）；搜到的是「去哪一页」，不是「页面里哪一行」。
-  const matches = (id: Tab, label: string) => {
-    const q = query.trim().toLowerCase();
-    if (!q) return true;
-    return (
-      label.toLowerCase().includes(q) ||
-      TAB_ALIASES[id].some((alias) => alias.toLowerCase().includes(q))
-    );
-  };
+  // 页签搜索：标签 + 一张中英别名表（都在 settingsNavigation 里）。不做全文
+  // 索引（这个规模不值得，而且动态内容会漏）；搜到的是「去哪一页」，不是
+  // 「页面里哪一行」—— 回车跳第一个匹配页。
+  const matches = (id: Tab, label: string) => matchesTab(id, label, query);
   const visibleGroups = groups
     .map((group) => ({
       ...group,
@@ -1582,35 +1403,10 @@ export function SettingsPanel({ snapshot }: Props) {
     if (event.key !== "Enter") return;
     const first = visibleGroups[0]?.entries[0]?.id ?? (showSystem ? "system" : null);
     if (first) {
-      setScrollToQuery(query.trim());
       setTab(first);
       setQuery("");
     }
   };
-  // 跳到那一页之后，顺手滚到名字对得上的小节。标题从**渲染出来的 DOM** 里读
-  // （和 `PageSectionsNav` 同一套做法），不另写一份会腐化的清单。`key={tab}` 会
-  // 重挂内容，所以等一帧再找；找不到就安静地停在页顶。
-  useEffect(() => {
-    if (!scrollToQuery) return;
-    const q = scrollToQuery.toLowerCase();
-    const frame = window.requestAnimationFrame(() => {
-      const sections = Array.from(
-        pageRef.current?.querySelectorAll<HTMLElement>(".section") ?? [],
-      );
-      const target = sections.find((section) =>
-        section
-          .querySelector<HTMLElement>(".section-title")
-          ?.textContent?.toLowerCase()
-          .includes(q),
-      );
-      if (target) {
-        const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-        target.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
-      }
-      setScrollToQuery(null);
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [tab, scrollToQuery]);
 
   // 审批历史（`docs/plan-approval.md` A1）：只在「历史」页打开时读盘
   const { records: approvalLog, refresh: refreshApprovalLog } = useApprovalLog(
@@ -1626,12 +1422,18 @@ export function SettingsPanel({ snapshot }: Props) {
   const perStateCount = SIGNALS.filter((state) => stateOverridden(settings.styles[state])).length;
 
   // 「多久以前」要跟着时间走。**只在真的显示这几段的页签上开钟**（消息流在
-  // 「状态」、出站结果在「转发」、回执在「接入」），其它几页一个定时器都不起 ——
-  // 这块面板一秒重绘一次不便宜，没显示的东西不值得为它重绘。
+  // 「状态」、出站结果在「转发」、回执在「接入」、留言和连接摘要在
+  // 「留言」/「Call Me」），其它几页一个定时器都不起 —— 这块面板一秒重绘一次
+  // 不便宜，没显示的东西不值得为它重绘。
   const visible = useVisible();
   const now = useNow(
     visible &&
-      (tab === "status" || tab === "hooks" || tab === "connect" || tab === "machines"),
+      (tab === "status" ||
+        tab === "hooks" ||
+        tab === "connect" ||
+        tab === "machines" ||
+        tab === "messages" ||
+        tab === "callme"),
   );
 
   const [endpoint, setEndpoint] = useState<Endpoint | null>(null);
@@ -2438,6 +2240,19 @@ export function SettingsPanel({ snapshot }: Props) {
       case "history":
         return (
           <>
+            <PageHeader title={m.tabHistory} hint={m.pageHint.history} />
+
+            {/* 「今日各状态时长」从全局顶部搬来这一页：它是回顾数据，不该在
+                每页都占一行（见 docs/settings-redesign-plan.md 4.2）。 */}
+            {stats.length > 0 && (
+              <p className="stats">
+                {m.today}{" "}
+                {stats
+                  .map((row) => `${row.label} ${formatDuration(row.seconds)}`)
+                  .join(" · ")}
+              </p>
+            )}
+
             {/* 先给一句「今天发生了什么」，再让人去翻条形图和审批流水。
                 两张表都在，但回来的人第一眼要的不是表。 */}
             <DigestCard
@@ -2497,6 +2312,7 @@ export function SettingsPanel({ snapshot }: Props) {
       case "status":
         return (
           <>
+            <PageHeader title={m.tabStatus} hint={m.pageHint.status} />
             <TimelineStrip segments={timeline} m={m} lang={lang} />
 
             {/* 这一页只回答「现在发生了什么」。改显示名、置顶、隐藏、静音这些都是
@@ -2621,6 +2437,7 @@ export function SettingsPanel({ snapshot }: Props) {
       case "behavior":
         return (
           <>
+            <PageHeader title={m.tabBehavior} hint={m.pageHint.behavior} />
             {/* 静默超时：用户最先抱怨的两件事 —— 完成后很快消失、长任务被误判
                 成沉默 —— 都在这里。完整表在「外观 → 逐个状态覆盖」，这里只放
                 最常用的三项，免得这一页也变成第二张十行表。 */}
@@ -2737,6 +2554,7 @@ export function SettingsPanel({ snapshot }: Props) {
       case "look":
         return (
           <>
+            <PageHeader title={m.tabLook} hint={m.pageHint.look} />
             {/* 预览放最上面：这一页改的就是它。放在最底下的话，调完「牌宽」
                 还得往下滚一次才知道改成了什么。 */}
             <div className="section-title">{m.previewTitle}</div>
@@ -2932,6 +2750,7 @@ export function SettingsPanel({ snapshot }: Props) {
       case "groups":
         return (
           <>
+            <PageHeader title={m.tabGroups} hint={m.pageHint.groups} />
             {/* ---- 怎么分组、怎么摆 ----
                 这两项原先挂在「接入」页，理由是「它管的是上报进来之后怎么解读」。
                 但**用户找不到它们**：左侧导航明明有一页就叫「分组」，而这两项一个
@@ -3115,6 +2934,7 @@ export function SettingsPanel({ snapshot }: Props) {
 
         return (
           <>
+            <PageHeader title={m.tabAlert} hint={m.pageHint.alert} />
             <Row label={m.notifyWhenNeeded} onReset={resetFor(settings, "notify", patch)}>
               <Switch on={settings.notify} onChange={(on) => patch({ notify: on })} />
             </Row>
@@ -3273,588 +3093,614 @@ export function SettingsPanel({ snapshot }: Props) {
 
         return (
           <>
-            {/* ---- 智能体接入 ----
-                这一页现在只做一件事：把智能体接上。接口速查、状态词表那些「查
-                细节」的内容搬去了「指南」—— 它们是给已经接好的人读的，混在这里
-                会把「点哪个按钮」淹没掉（原来这一页有两倍于可视区的内容）。 */}
-            <div className="section">
-              <div className="section-title">{m.agentsTitle}</div>
-              <p className="hint">{m.agentsHint}</p>
-              {/* 审批开关只在 Claude Code 那张卡片里出现，别家（尤其 WorkBuddy）
-                  的用户翻遍这一页也找不到。把适用范围写在页首，省得以为功能坏了。 */}
-              <p className="hint">{m.approveScopeHint}</p>
-              {sortedAgents.map((agent) => {
-                const busy = busyAgent === agent.id;
-                const change = agentChanges[agent.id];
-                const receipt = receiptFor(agent.id);
-                const status = agent.installed
-                  ? m.agentInstalled
-                  : agent.detected
-                    ? m.agentDetected
-                    : m.agentMissing;
-                return (
-                  <div className="agent" key={agent.id}>
-                    <div className="agent-info">
-                      <div className="agent-line">
-                        <span className="agent-name">{agent.name}</span>
-                        {/* 「自定义」这枚说的是「不在我们维护的清单里」—— 它同时
-                            解释了为什么下面没有 HTTP / 审批那两个按钮。 */}
-                        {agent.custom && <span className="tag">{m.agentCustom}</span>}
-                        <span className="badge" data-on={agent.installed}>
-                          {status}
-                        </span>
-                      </div>
-                      {/* 路径就是「要写哪儿」，摆出来这条操作才可信 */}
-                      {agent.config && (
-                        <span className="agent-config mono">{agent.config}</span>
-                      )}
-                      {/* 装了、但配置里那条命令现在跑不起来了 —— 最该主动指出来的
-                          一种「装了却没反应」：智能体执行一个不存在的程序**不会报错**，
-                          灯也不会亮，两边都很安静。命令原文也摆出来，用户能自己看出
-                          它指向哪（多半是个已经被挪走的旧路径）。 */}
-                      {agent.installed && !agent.command_ok && agent.http !== true && (
-                        <span className="agent-broken">
-                          {m.agentCommandBroken}
-                          {agent.command && <code className="mono">{agent.command}</code>}
-                        </span>
-                      )}
-                      {/* 装的是**旧版本**写的命令 —— 界面和正常的「已接入」一模一样，
-                          行为却停在上一版（典型：Claude Code 的 `SIGNALHUB_PID` 前缀）。
-                          只提示、不自动改：写入仍然由「重新接入」按钮触发。 */}
-                      {agent.installed && agent.stale && (
-                        <span className="agent-result">
-                          {m.agentUpdateAvailable}
-                          {agent.command && <code className="mono">{agent.command}</code>}
-                        </span>
-                      )}
-                      {change && (
-                        <span className="agent-result muted-text">
-                          {/* 插件式接入：说「写到哪个文件」而不是「几个事件」——
-                              插件没有事件清单，那个数字对不上任何东西。 */}
-                          {change.plugin
-                            ? agent.installed
-                              ? m.hookPluginWritten(change.plugin)
-                              : m.hookPluginRemoved(change.plugin)
-                            : m.hookResult({
-                                added: change.added.length,
-                                updated: change.updated.length,
-                                already: change.already.length,
-                                removed: change.removed_handlers,
-                              })}
-                        </span>
-                      )}
-                      {/* **「它到底有没有在报」—— 这一页此前唯一缺的东西。**
-                          装好和装坏以前长得一模一样（都只是「配置里写着我们的
-                          命令」），而智能体执行一条不存在的命令是**不会报错**的。
-                          有回执才是真的通了。 */}
-                      {agent.installed && (
-                        <span className="agent-receipt" data-on={!!receipt}>
-                          {receipt
-                            ? `${m.agentReceiptAgo(formatAge(receipt.last_epoch_ms, now), signalText(m, receipt.state))} · ${m.agentReceiptCount(receipt.count)}`
-                            : m.agentReceiptNever}
-                        </span>
-                      )}
-                      {/* **在跑哪条路。** 两种模式写进同一个配置文件，而它们的行为
-                          不同（HTTP 式不怕 PATH 问题、但开局域网时会关掉）—— 用户
-                          看得见才谈得上换一种。只有 Claude Code 有两种可选。 */}
-                      {agent.id === "claude-code" && agent.installed && (
-                        <span className="agent-result muted-text">
-                          {agent.http ? m.agentModeHttp : m.agentModeCommand}
-                        </span>
-                      )}
-                      {/* **从灯上审批**（C3）。只在**已经用 HTTP 方式接入**时出现：
-                          审批就是 HTTP hook 回一个决定，命令式那条路上没有这个东西
-                          —— 摆一个拨了没反应的开关比不摆更坏。
-                          默认关，而且它改的是**智能体自己的配置**（不只是 SignalHub
-                          的行为），所以代价写在 hint 里，见 i18n 的 approveToolsHint。 */}
-                      {agent.id === "claude-code" && agent.installed && agent.http && (
-                        <>
-                          <div className="row">
-                            <span>{m.approveTools}</span>
-                            <Switch
-                              on={settings.approve_tools}
-                              onChange={(on) => toggleApproval(agent, on)}
-                            />
+            <PageHeader title={m.tabConnect} hint={m.pageHint.connect} />
+            <LocalTabs
+              label={m.tabConnect}
+              value={connectSub}
+              onChange={setConnectSub}
+              items={[
+                { id: "agents" as const, label: m.connectTabAgents },
+                { id: "sources" as const, label: m.connectTabSources },
+                { id: "network" as const, label: m.connectTabNetwork },
+              ]}
+            />
+
+            {connectSub === "agents" && (
+              <LocalPanel id="agents">
+                {/* ---- 智能体接入 ----
+                    这一页现在只做一件事：把智能体接上。接口速查、状态词表那些「查
+                    细节」的内容搬去了「指南」—— 它们是给已经接好的人读的，混在这里
+                    会把「点哪个按钮」淹没掉（原来这一页有两倍于可视区的内容）。 */}
+                <div className="section">
+                  <div className="section-title">{m.agentsTitle}</div>
+                  <p className="hint">{m.agentsHint}</p>
+                  {/* 审批开关只在 Claude Code 那张卡片里出现，别家（尤其 WorkBuddy）
+                      的用户翻遍这一页也找不到。把适用范围写在页首，省得以为功能坏了。 */}
+                  <p className="hint">{m.approveScopeHint}</p>
+                  {sortedAgents.map((agent) => {
+                    const busy = busyAgent === agent.id;
+                    const change = agentChanges[agent.id];
+                    const receipt = receiptFor(agent.id);
+                    const status = agent.installed
+                      ? m.agentInstalled
+                      : agent.detected
+                        ? m.agentDetected
+                        : m.agentMissing;
+                    return (
+                      <div className="agent" key={agent.id}>
+                        <div className="agent-info">
+                          <div className="agent-line">
+                            <span className="agent-name">{agent.name}</span>
+                            {/* 「自定义」这枚说的是「不在我们维护的清单里」—— 它同时
+                                解释了为什么下面没有 HTTP / 审批那两个按钮。 */}
+                            {agent.custom && <span className="tag">{m.agentCustom}</span>}
+                            <span className="badge" data-on={agent.installed}>
+                              {status}
+                            </span>
                           </div>
-                          <p className="hint">{m.approveToolsHint}</p>
-                        </>
-                      )}
-                      {/* 「试一下」的结果：和回执是两个问题 —— 回执问「最近有没有在报」，
-                          这一行答「现在这条链路还通不通」。 */}
-                      {probeResults[agent.id] && (
-                        <span
-                          className="agent-result"
-                          data-on={probeResults[agent.id].ran}
-                        >
-                          {probeLine(m, probeResults[agent.id])}
-                        </span>
-                      )}
-                    </div>
-                    <div className="agent-buttons">
-                      {/* 「试一下」只在已接入时有意义：没接入就没有那条命令可跑。 */}
-                      {agent.installed && (
-                        <button
-                          type="button"
-                          className="btn btn-tiny"
-                          disabled={busy}
-                          onClick={() => tryAgent(agent)}
-                        >
-                          {busy ? m.agentTryBusy : m.agentTry}
-                        </button>
-                      )}
-                      {/* 旧版本写的命令：单独给一个「重新接入」，不用先卸载。
-                          安装本身是幂等的（同一条事件原地更新），所以这一步只改
-                          命令原文，不动事件清单。 */}
-                      {agent.installed && agent.stale && (
-                        <button
-                          type="button"
-                          className="btn btn-tiny"
-                          disabled={busy}
-                          onClick={() => changeAgent(agent, true)}
-                        >
-                          {m.agentReinstall}
-                        </button>
-                      )}
-                      {/* **HTTP 方式**（只有 Claude Code）。放在「接入」左边：
-                          它是同一个动作的另一条路，而不是另一个功能。已接入时它
-                          变成「换一种写法」—— 两种模式共用一个配置，换过去是原地
-                          改写，不需要先卸载。 */}
-                      {agent.id === "claude-code" && (
-                        <button
-                          type="button"
-                          className="btn btn-tiny"
-                          disabled={busy}
-                          onClick={() =>
-                            !agent.installed || !agent.http
-                              ? changeAgentHttp(agent)
-                              : changeAgent(agent, true)
-                          }
-                        >
-                          {!agent.installed
-                            ? m.agentConnectHttp
-                            : agent.http
-                              ? m.agentSwitchCommand
-                              : m.agentSwitchHttp}
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        className="btn btn-tiny"
-                        disabled={busy}
-                        onClick={() => changeAgent(agent, !agent.installed)}
-                      >
-                        {agent.installed ? m.agentDisconnect : m.agentConnect}
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* ---- 自定义智能体 ----
-                 `Agent` 是一张编译期写死的表，而「冷门智能体」的长尾极长 —— 但它们
-                里的大多数是 Claude Code 的同构克隆，差异只有配置路径和名字。那种
-                情况不该等我们发一版：写进配置文件就出现在上面那张表里。
-
-                **这一节必须自己说清能力边界**：格式真不一样的还是得加代码。否则
-                用户会以为「写个配置就能接任何东西」，然后在事件名对不上的地方
-                卡住，而且不知道卡在哪儿。 */}
-            <div className="section">
-              <div className="section-title">{m.customAgentsTitle}</div>
-
-              {/* ---- 让智能体自己来配 ----
-                   「打开配置文件」是给已经懂的人准备的：得知道 agents.json 长什么样、
-                   知道自己跟哪一家同构。第一次用的人恰恰卡在这一步，而他手上就有
-                   一个最清楚答案的东西 —— 他正在用的那个智能体。把说明反过来写给
-                   agent，人只做复制 + 粘贴。放在这一节最前面：手写 JSON 退成第二条路。 */}
-              <div className="setup-prompt">
-                <div className="setup-prompt-title">{m.setupPromptTitle}</div>
-                <p className="hint">{m.setupPromptHint}</p>
-                <div className="row">{setupPromptButton()}</div>
-              </div>
-
-              <p className="hint">{m.customAgentsHint((custom?.families ?? []).join(" / "))}</p>
-              <p className="hint">{m.customAgentsLimit}</p>
-              {custom?.path && <span className="agent-config mono">{custom.path}</span>}
-              {/* 读不懂的地方**必须摆出来**：配置文件最坏的失败方式是被静默忽略 ——
-                  用户改了文件、点了接入、什么都没发生，也没有任何提示。 */}
-              {(custom?.problems ?? []).map((problem) => (
-                <span className="agent-broken" key={problem}>
-                  {problem}
-                </span>
-              ))}
-              <div className="agent-buttons">
-                <button
-                  type="button"
-                  className="btn btn-tiny"
-                  onClick={() => {
-                    openCustomAgents()
-                      // 建完 / 打开之后补拉一次：文件可能是这一步才创建的
-                      .then(() => {
-                        refreshCustom();
-                        refreshAgents();
-                      })
-                      .catch((err) => console.error("open_custom_agents 失败", err));
-                  }}
-                >
-                  {m.customAgentsOpen}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-tiny"
-                  onClick={() => {
-                    setShowAgentForm((open) => !open);
-                    setAgentFormError(null);
-                    setAgentFormNotice(null);
-                  }}
-                >
-                  {m.customAgentAddToggle}
-                </button>
-              </div>
-
-              {/* 字段顺序和 Rust 的 AddRequest 一致。family 的选项取自运行时的
-                  `custom_agents_info`，不另抄一份清单 —— 加一家适配只改 Rust 一处。 */}
-              {showAgentForm && (
-                <div className="custom-agent-form">
-                  <div className="custom-agent-form-title">{m.customAgentAddTitle}</div>
-                  <p className="hint">{m.customAgentAddHint}</p>
-                  <div className="custom-agent-grid">
-                    {(
-                      [
-                        ["id", m.customAgentFieldId],
-                        ["name", m.customAgentFieldName],
-                        ["family", m.customAgentFieldFamily],
-                        ["config", m.customAgentFieldConfig],
-                        ["marker", m.customAgentFieldMarker],
-                        ["command", m.customAgentFieldCommand],
-                      ] as const
-                    ).map(([key, label]) => (
-                      <label className="custom-agent-field" key={key}>
-                        <span>{label}</span>
-                        {key === "family" ? (
-                          <select
-                            className="select custom-agent-select"
-                            value={agentDraft.family}
-                            onChange={(event) => setDraft("family", event.target.value)}
+                          {/* 路径就是「要写哪儿」，摆出来这条操作才可信 */}
+                          {agent.config && (
+                            <span className="agent-config mono">{agent.config}</span>
+                          )}
+                          {/* 装了、但配置里那条命令现在跑不起来了 —— 最该主动指出来的
+                              一种「装了却没反应」：智能体执行一个不存在的程序**不会报错**，
+                              灯也不会亮，两边都很安静。命令原文也摆出来，用户能自己看出
+                              它指向哪（多半是个已经被挪走的旧路径）。 */}
+                          {agent.installed && !agent.command_ok && agent.http !== true && (
+                            <span className="agent-broken">
+                              {m.agentCommandBroken}
+                              {agent.command && <code className="mono">{agent.command}</code>}
+                            </span>
+                          )}
+                          {/* 装的是**旧版本**写的命令 —— 界面和正常的「已接入」一模一样，
+                              行为却停在上一版（典型：Claude Code 的 `SIGNALHUB_PID` 前缀）。
+                              只提示、不自动改：写入仍然由「重新接入」按钮触发。 */}
+                          {agent.installed && agent.stale && (
+                            <span className="agent-result">
+                              {m.agentUpdateAvailable}
+                              {agent.command && <code className="mono">{agent.command}</code>}
+                            </span>
+                          )}
+                          {change && (
+                            <span className="agent-result muted-text">
+                              {/* 插件式接入：说「写到哪个文件」而不是「几个事件」——
+                                  插件没有事件清单，那个数字对不上任何东西。 */}
+                              {change.plugin
+                                ? agent.installed
+                                  ? m.hookPluginWritten(change.plugin)
+                                  : m.hookPluginRemoved(change.plugin)
+                                : m.hookResult({
+                                    added: change.added.length,
+                                    updated: change.updated.length,
+                                    already: change.already.length,
+                                    removed: change.removed_handlers,
+                                  })}
+                            </span>
+                          )}
+                          {/* **「它到底有没有在报」—— 这一页此前唯一缺的东西。**
+                              装好和装坏以前长得一模一样（都只是「配置里写着我们的
+                              命令」），而智能体执行一条不存在的命令是**不会报错**的。
+                              有回执才是真的通了。 */}
+                          {agent.installed && (
+                            <span className="agent-receipt" data-on={!!receipt}>
+                              {receipt
+                                ? `${m.agentReceiptAgo(formatAge(receipt.last_epoch_ms, now), signalText(m, receipt.state))} · ${m.agentReceiptCount(receipt.count)}`
+                                : m.agentReceiptNever}
+                            </span>
+                          )}
+                          {/* **在跑哪条路。** 两种模式写进同一个配置文件，而它们的行为
+                              不同（HTTP 式不怕 PATH 问题、但开局域网时会关掉）—— 用户
+                              看得见才谈得上换一种。只有 Claude Code 有两种可选。 */}
+                          {agent.id === "claude-code" && agent.installed && (
+                            <span className="agent-result muted-text">
+                              {agent.http ? m.agentModeHttp : m.agentModeCommand}
+                            </span>
+                          )}
+                          {/* **从灯上审批**（C3）。只在**已经用 HTTP 方式接入**时出现：
+                              审批就是 HTTP hook 回一个决定，命令式那条路上没有这个东西
+                              —— 摆一个拨了没反应的开关比不摆更坏。
+                              默认关，而且它改的是**智能体自己的配置**（不只是 SignalHub
+                              的行为），所以代价写在 hint 里，见 i18n 的 approveToolsHint。 */}
+                          {agent.id === "claude-code" && agent.installed && agent.http && (
+                            <>
+                              <div className="row">
+                                <span>{m.approveTools}</span>
+                                <Switch
+                                  on={settings.approve_tools}
+                                  onChange={(on) => toggleApproval(agent, on)}
+                                />
+                              </div>
+                              <p className="hint">{m.approveToolsHint}</p>
+                            </>
+                          )}
+                          {/* 「试一下」的结果：和回执是两个问题 —— 回执问「最近有没有在报」，
+                              这一行答「现在这条链路还通不通」。 */}
+                          {probeResults[agent.id] && (
+                            <span
+                              className="agent-result"
+                              data-on={probeResults[agent.id].ran}
+                            >
+                              {probeLine(m, probeResults[agent.id])}
+                            </span>
+                          )}
+                        </div>
+                        <div className="agent-buttons">
+                          {/* 「试一下」只在已接入时有意义：没接入就没有那条命令可跑。 */}
+                          {agent.installed && (
+                            <button
+                              type="button"
+                              className="btn btn-tiny"
+                              disabled={busy}
+                              onClick={() => tryAgent(agent)}
+                            >
+                              {busy ? m.agentTryBusy : m.agentTry}
+                            </button>
+                          )}
+                          {/* 旧版本写的命令：单独给一个「重新接入」，不用先卸载。
+                              安装本身是幂等的（同一条事件原地更新），所以这一步只改
+                              命令原文，不动事件清单。 */}
+                          {agent.installed && agent.stale && (
+                            <button
+                              type="button"
+                              className="btn btn-tiny"
+                              disabled={busy}
+                              onClick={() => changeAgent(agent, true)}
+                            >
+                              {m.agentReinstall}
+                            </button>
+                          )}
+                          {/* **HTTP 方式**（只有 Claude Code）。放在「接入」左边：
+                              它是同一个动作的另一条路，而不是另一个功能。已接入时它
+                              变成「换一种写法」—— 两种模式共用一个配置，换过去是原地
+                              改写，不需要先卸载。 */}
+                          {agent.id === "claude-code" && (
+                            <button
+                              type="button"
+                              className="btn btn-tiny"
+                              disabled={busy}
+                              onClick={() =>
+                                !agent.installed || !agent.http
+                                  ? changeAgentHttp(agent)
+                                  : changeAgent(agent, true)
+                              }
+                            >
+                              {!agent.installed
+                                ? m.agentConnectHttp
+                                : agent.http
+                                  ? m.agentSwitchCommand
+                                  : m.agentSwitchHttp}
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            className="btn btn-tiny"
+                            disabled={busy}
+                            onClick={() => changeAgent(agent, !agent.installed)}
                           >
-                            <option value="">—</option>
-                            {(custom?.families ?? []).map((family) => (
-                              <option key={family} value={family}>
-                                {family}
-                              </option>
-                            ))}
-                          </select>
-                        ) : (
-                          <input
-                            className={key === "name" ? "input" : "input mono"}
-                            value={agentDraft[key]}
-                            spellCheck={false}
-                            onChange={(event) => setDraft(key, event.target.value)}
-                          />
-                        )}
-                      </label>
-                    ))}
+                            {agent.installed ? m.agentDisconnect : m.agentConnect}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* ---- 自定义智能体 ----
+                     `Agent` 是一张编译期写死的表，而「冷门智能体」的长尾极长 —— 但它们
+                    里的大多数是 Claude Code 的同构克隆，差异只有配置路径和名字。那种
+                    情况不该等我们发一版：写进配置文件就出现在上面那张表里。
+
+                    **这一节必须自己说清能力边界**：格式真不一样的还是得加代码。否则
+                    用户会以为「写个配置就能接任何东西」，然后在事件名对不上的地方
+                    卡住，而且不知道卡在哪儿。 */}
+                <div className="section">
+                  <div className="section-title">{m.customAgentsTitle}</div>
+
+                  {/* ---- 让智能体自己来配 ----
+                       「打开配置文件」是给已经懂的人准备的：得知道 agents.json 长什么样、
+                       知道自己跟哪一家同构。第一次用的人恰恰卡在这一步，而他手上就有
+                       一个最清楚答案的东西 —— 他正在用的那个智能体。把说明反过来写给
+                       agent，人只做复制 + 粘贴。放在这一节最前面：手写 JSON 退成第二条路。 */}
+                  <div className="setup-prompt">
+                    <div className="setup-prompt-title">{m.setupPromptTitle}</div>
+                    <p className="hint">{m.setupPromptHint}</p>
+                    <div className="row">{setupPromptButton()}</div>
                   </div>
-                  <label className="custom-agent-replace">
-                    <input
-                      type="checkbox"
-                      checked={agentReplace}
-                      onChange={(event) => setAgentReplace(event.target.checked)}
-                    />
-                    {m.customAgentReplace}
-                  </label>
-                  <div className="row-start">
+
+                  <p className="hint">{m.customAgentsHint((custom?.families ?? []).join(" / "))}</p>
+                  <p className="hint">{m.customAgentsLimit}</p>
+                  {custom?.path && <span className="agent-config mono">{custom.path}</span>}
+                  {/* 读不懂的地方**必须摆出来**：配置文件最坏的失败方式是被静默忽略 ——
+                      用户改了文件、点了接入、什么都没发生，也没有任何提示。 */}
+                  {(custom?.problems ?? []).map((problem) => (
+                    <span className="agent-broken" key={problem}>
+                      {problem}
+                    </span>
+                  ))}
+                  <div className="agent-buttons">
                     <button
                       type="button"
-                      className="btn"
-                      disabled={agentFormBusy}
-                      onClick={submitCustomAgent}
+                      className="btn btn-tiny"
+                      onClick={() => {
+                        openCustomAgents()
+                          // 建完 / 打开之后补拉一次：文件可能是这一步才创建的
+                          .then(() => {
+                            refreshCustom();
+                            refreshAgents();
+                          })
+                          .catch((err) => console.error("open_custom_agents 失败", err));
+                      }}
                     >
-                      {m.customAgentSubmit}
+                      {m.customAgentsOpen}
                     </button>
                     <button
                       type="button"
                       className="btn btn-tiny"
                       onClick={() => {
-                        setShowAgentForm(false);
-                        setAgentDraft(EMPTY_AGENT_DRAFT);
+                        setShowAgentForm((open) => !open);
                         setAgentFormError(null);
+                        setAgentFormNotice(null);
                       }}
                     >
-                      {m.customAgentCancel}
+                      {m.customAgentAddToggle}
                     </button>
                   </div>
-                  {agentFormError && <p className="agent-broken">{agentFormError}</p>}
-                  {agentFormNotice && <p className="hint">{agentFormNotice}</p>}
+
+                  {/* 字段顺序和 Rust 的 AddRequest 一致。family 的选项取自运行时的
+                      `custom_agents_info`，不另抄一份清单 —— 加一家适配只改 Rust 一处。 */}
+                  {showAgentForm && (
+                    <div className="custom-agent-form">
+                      <div className="custom-agent-form-title">{m.customAgentAddTitle}</div>
+                      <p className="hint">{m.customAgentAddHint}</p>
+                      <div className="custom-agent-grid">
+                        {(
+                          [
+                            ["id", m.customAgentFieldId],
+                            ["name", m.customAgentFieldName],
+                            ["family", m.customAgentFieldFamily],
+                            ["config", m.customAgentFieldConfig],
+                            ["marker", m.customAgentFieldMarker],
+                            ["command", m.customAgentFieldCommand],
+                          ] as const
+                        ).map(([key, label]) => (
+                          <label className="custom-agent-field" key={key}>
+                            <span>{label}</span>
+                            {key === "family" ? (
+                              <select
+                                className="select custom-agent-select"
+                                value={agentDraft.family}
+                                onChange={(event) => setDraft("family", event.target.value)}
+                              >
+                                <option value="">—</option>
+                                {(custom?.families ?? []).map((family) => (
+                                  <option key={family} value={family}>
+                                    {family}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              <input
+                                className={key === "name" ? "input" : "input mono"}
+                                value={agentDraft[key]}
+                                spellCheck={false}
+                                onChange={(event) => setDraft(key, event.target.value)}
+                              />
+                            )}
+                          </label>
+                        ))}
+                      </div>
+                      <label className="custom-agent-replace">
+                        <input
+                          type="checkbox"
+                          checked={agentReplace}
+                          onChange={(event) => setAgentReplace(event.target.checked)}
+                        />
+                        {m.customAgentReplace}
+                      </label>
+                      <div className="row-start">
+                        <button
+                          type="button"
+                          className="btn"
+                          disabled={agentFormBusy}
+                          onClick={submitCustomAgent}
+                        >
+                          {m.customAgentSubmit}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-tiny"
+                          onClick={() => {
+                            setShowAgentForm(false);
+                            setAgentDraft(EMPTY_AGENT_DRAFT);
+                            setAgentFormError(null);
+                          }}
+                        >
+                          {m.customAgentCancel}
+                        </button>
+                      </div>
+                      {agentFormError && <p className="agent-broken">{agentFormError}</p>}
+                      {agentFormNotice && <p className="hint">{agentFormNotice}</p>}
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
 
-            {/* ---- 系统信号源 ----
-                 这一节**空着也显示**：它是「信号源不只有智能体」这个概念唯一的
-                 落点，藏起来的话，用户在采集器做出来之前根本不知道有这条路。
-                 而且它顺手把用法写出来了 —— 一句话就能把自己的脚本报进来。 */}
-            <div className="section">
-              <div className="section-title">{m.systemSourcesTitle}</div>
-              <p className="hint">{m.systemSourcesHint}</p>
-              {/* ---- 内置采集器（B2）----
-                  开关放在「系统信号源」这一节里，而不是单开一节：打开之后它们的
-                  上报（source=system）就出现在下面那张表里，开关和结果在一处，
-                  「点了有没有反应」不用翻页。Rust 只回 supported 的 —— 空数组
-                  就一行都不渲染。Row 的用法和「安静模式」那些开关一致。 */}
-              {(collectors ?? []).map((collector) => (
-                <Row
-                  key={collector.id}
-                  label={collectorLabel(collector.id, m)}
-                  hint={collectorHint(collector.id, m, collector.interval_secs)}
-                >
-                  <Switch
-                    on={collector.enabled}
-                    onChange={(on) => toggleCollector(collector.id, on)}
-                  />
-                </Row>
-              ))}
-              {systemSources.length === 0 ? (
-                <p className="hint">{m.systemSourcesEmpty}</p>
-              ) : (
-                systemSources.map((source) => (
-                  <div className="agent" key={source.agent}>
-                    <div className="agent-info">
-                      <div className="agent-line">
-                        <span className="agent-name mono">{source.agent}</span>
-                      </div>
-                      <span className="agent-receipt" data-on>
-                        {m.agentReceiptAgo(
-                          formatAge(source.last_epoch_ms, now),
-                          signalText(m, source.state),
-                        )}{" "}
-                        · {m.agentReceiptCount(source.count)}
-                      </span>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-
-            {/* ---- 收到过上报、但不在清单里的信号源 ----
-                单独一节而不是并进上面的列表：那一排每一行都有「接入 / 卸载」
-                按钮，而这一类我们无从接入（它不是我们认识的智能体）——混进去
-                会让人以为按钮没渲染出来。它有它自己的价值：**它是「上报通道是通的」
-                的活证据**，用户自己写的脚本、另一台机器、手抄的一条 curl 都在这里。 */}
-            {otherSources.length > 0 && (
-              <div className="section">
-                <div className="section-title">{m.otherSourcesTitle}</div>
-                <p className="hint">{m.otherSourcesHint}</p>
-                {otherSources.map((source) => (
-                  <div className="agent" key={source.agent}>
-                    <div className="agent-info">
-                      <div className="agent-line">
-                        <span className="agent-name mono">{source.agent}</span>
-                      </div>
-                      <span className="agent-receipt" data-on>
-                        {m.agentReceiptAgo(
-                          formatAge(source.last_epoch_ms, now),
-                          signalText(m, source.state),
-                        )}{" "}
-                        · {m.agentReceiptCount(source.count)}
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
+              </LocalPanel>
             )}
 
-            {/* ---- 只用命令行的智能体 ----
-                单独一节、不混进上面那个列表：那一排每一行都有「接入 / 卸载」
-                按钮，而这一类没有能写 hook 的配置文件，也就没有可接入、可卸载的
-                东西。混进去会让人以为按钮没渲染出来。 */}
-            <div className="section">
-              <div className="section-title">{m.cliAgentsTitle}</div>
-              <p className="hint">{m.cliAgentsHint}</p>
-              {/* 「包一条命令」放在 Pi Agent 上面：它是**通用**那条，而 Pi Agent 是
-                  具体的一个例子。用户先看到「任何工具都能这么接」，再看到例子，
-                  顺序才顺。 */}
-              <div className="agent">
-                <div className="agent-info">
-                  <div className="agent-line">
-                    <span className="agent-name">{m.cliAgentsWrap}</span>
+            {connectSub === "sources" && (
+              <LocalPanel id="sources">
+                {/* ---- 系统信号源 ----
+                     这一节**空着也显示**：它是「信号源不只有智能体」这个概念唯一的
+                     落点，藏起来的话，用户在采集器做出来之前根本不知道有这条路。
+                     而且它顺手把用法写出来了 —— 一句话就能把自己的脚本报进来。 */}
+                <div className="section">
+                  <div className="section-title">{m.systemSourcesTitle}</div>
+                  <p className="hint">{m.systemSourcesHint}</p>
+                  {/* ---- 内置采集器（B2）----
+                      开关放在「系统信号源」这一节里，而不是单开一节：打开之后它们的
+                      上报（source=system）就出现在下面那张表里，开关和结果在一处，
+                      「点了有没有反应」不用翻页。Rust 只回 supported 的 —— 空数组
+                      就一行都不渲染。Row 的用法和「安静模式」那些开关一致。 */}
+                  {(collectors ?? []).map((collector) => (
+                    <Row
+                      key={collector.id}
+                      label={collectorLabel(collector.id, m)}
+                      hint={collectorHint(collector.id, m, collector.interval_secs)}
+                    >
+                      <Switch
+                        on={collector.enabled}
+                        onChange={(on) => toggleCollector(collector.id, on)}
+                      />
+                    </Row>
+                  ))}
+                  {systemSources.length === 0 ? (
+                    <p className="hint">{m.systemSourcesEmpty}</p>
+                  ) : (
+                    systemSources.map((source) => (
+                      <div className="agent" key={source.agent}>
+                        <div className="agent-info">
+                          <div className="agent-line">
+                            <span className="agent-name mono">{source.agent}</span>
+                          </div>
+                          <span className="agent-receipt" data-on>
+                            {m.agentReceiptAgo(
+                              formatAge(source.last_epoch_ms, now),
+                              signalText(m, source.state),
+                            )}{" "}
+                            · {m.agentReceiptCount(source.count)}
+                          </span>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                {/* ---- 收到过上报、但不在清单里的信号源 ----
+                    单独一节而不是并进上面的列表：那一排每一行都有「接入 / 卸载」
+                    按钮，而这一类我们无从接入（它不是我们认识的智能体）——混进去
+                    会让人以为按钮没渲染出来。它有它自己的价值：**它是「上报通道是通的」
+                    的活证据**，用户自己写的脚本、另一台机器、手抄的一条 curl 都在这里。 */}
+                {otherSources.length > 0 && (
+                  <div className="section">
+                    <div className="section-title">{m.otherSourcesTitle}</div>
+                    <p className="hint">{m.otherSourcesHint}</p>
+                    {otherSources.map((source) => (
+                      <div className="agent" key={source.agent}>
+                        <div className="agent-info">
+                          <div className="agent-line">
+                            <span className="agent-name mono">{source.agent}</span>
+                          </div>
+                          <span className="agent-receipt" data-on>
+                            {m.agentReceiptAgo(
+                              formatAge(source.last_epoch_ms, now),
+                              signalText(m, source.state),
+                            )}{" "}
+                            · {m.agentReceiptCount(source.count)}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                  <span className="agent-config mono">{WRAP_COMMAND}</span>
-                </div>
-                <button
-                  type="button"
-                  className="btn btn-tiny"
-                  onClick={() => copy("wrap", WRAP_COMMAND)}
-                >
-                  {copyLabel("wrap")}
-                </button>
-              </div>
-              {/* 第二行不点名具体的智能体：点名的那家迟早会有一键接入（Pi 就是
-                  这么从这一节毕业的），而那句代码抄过去就对不上了。 */}
-              <div className="agent">
-                <div className="agent-info">
-                  <div className="agent-line">
-                    <span className="agent-name">{m.cliAgentsHookName}</span>
+                )}
+
+                {/* ---- 只用命令行的智能体 ----
+                    单独一节、不混进上面那个列表：那一排每一行都有「接入 / 卸载」
+                    按钮，而这一类没有能写 hook 的配置文件，也就没有可接入、可卸载的
+                    东西。混进去会让人以为按钮没渲染出来。 */}
+                <div className="section">
+                  <div className="section-title">{m.cliAgentsTitle}</div>
+                  <p className="hint">{m.cliAgentsHint}</p>
+                  {/* 「包一条命令」放在 Pi Agent 上面：它是**通用**那条，而 Pi Agent 是
+                      具体的一个例子。用户先看到「任何工具都能这么接」，再看到例子，
+                      顺序才顺。 */}
+                  <div className="agent">
+                    <div className="agent-info">
+                      <div className="agent-line">
+                        <span className="agent-name">{m.cliAgentsWrap}</span>
+                      </div>
+                      <span className="agent-config mono">{WRAP_COMMAND}</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-tiny"
+                      onClick={() => copy("wrap", WRAP_COMMAND)}
+                    >
+                      {copyLabel("wrap")}
+                    </button>
                   </div>
-                  <span className="agent-config mono">{HOOK_AGENT_COMMAND}</span>
+                  {/* 第二行不点名具体的智能体：点名的那家迟早会有一键接入（Pi 就是
+                      这么从这一节毕业的），而那句代码抄过去就对不上了。 */}
+                  <div className="agent">
+                    <div className="agent-info">
+                      <div className="agent-line">
+                        <span className="agent-name">{m.cliAgentsHookName}</span>
+                      </div>
+                      <span className="agent-config mono">{HOOK_AGENT_COMMAND}</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-tiny"
+                      onClick={() => copy("hooks", HOOK_AGENT_COMMAND)}
+                    >
+                      {copyLabel("hooks")}
+                    </button>
+                  </div>
+                  <p className="hint">{m.cliAgentsHint}</p>
                 </div>
-                <button
-                  type="button"
-                  className="btn btn-tiny"
-                  onClick={() => copy("hooks", HOOK_AGENT_COMMAND)}
-                >
-                  {copyLabel("hooks")}
-                </button>
-              </div>
-              <p className="hint">{m.cliAgentsHint}</p>
-            </div>
 
-            {/* ---- 一键诊断 ----
-                放在智能体列表之后、试一下之前：上面两节是「怎么接」和「接完怎么看」，
-                这一节回答的是「接不上时拿什么去问」——把散在三个页签里的东西一次
-                拼成一段可以复制出去的文本。 */}
-            <div className="section">
-              <div className="row">
-                <span>{m.diagnoseCopy}</span>
-                <button type="button" className="btn btn-tiny" onClick={copyDiagnosis}>
-                  {copyLabel("diag")}
-                </button>
-              </div>
-              <p className="hint">{m.diagnoseHint}</p>
-            </div>
+              </LocalPanel>
+            )}
 
-            {/* ---- 试一下 ----
-                放在「配好之后怎么验证」的位置：上面是「怎么接」，下面是「接完怎么
-                分」，而这一节回答的是两者之间那个问题 —— 灯到底通没通。
-
-                它跑的是和 HTTP 上报完全相同的 Store 链路，所以看到灯亮了就说明
-                聚合、窗口尺寸、推送这几段都是活的。**但 HTTP 那一层它测不到**，
-                所以说明里明确指向「指南」页那条 curl，免得有人以为这就等于测通了。 */}
-            <div className="section">
-              <div className="section-title">{m.tryItTitle}</div>
-              <div className="row-start">
-                {TRY_STATES.map((state) => (
-                  <button
-                    key={state}
-                    type="button"
-                    className="btn btn-tiny"
-                    onClick={() => {
-                      setError(null);
-                      invoke("send_test_report", { state }).catch(reported);
-                    }}
-                  >
-                    {signalLabel(lang, state)}
-                  </button>
-                ))}
-              </div>
-              <p className="hint">{m.tryItHint}</p>
-            </div>
-
-            {/* ---- 局域网访问 ----
-                留在「接入」页：它回答的正是这一页的问题 —— 「从哪能报进来」。
-                （「怎么分组 / 摆成几盏灯」原先也挂在这一页，现在搬去了「分组」页：
-                那两项管的是上报进来之后怎么解读和怎么摆，和这一页不是一件事。）
-
-                独立一节而不再缩进一层：这是一个**改变安全模型**的开关，混在
-                别的行里会被划过去。说明分成两段也是这个原因 —— 代价那一段得
-                单独成句，不能藏在操作说明的尾巴上。
-
-                「重启才生效」只在**真的不一致**时才说：`bound_lan` 是服务实际
-                绑到哪了，无条件挂一句会让人以为一直没生效。 */}
-            <div className="section">
-              <div className="row">
-                <span>{m.lanAccess}</span>
-                <Switch
-                  on={settings.lan_access}
-                  onChange={(on) => patch({ lan_access: on })}
-                />
-              </div>
-              {endpoint !== null && endpoint.bound_lan !== settings.lan_access && (
-                <p className="hint">{m.lanRestart}</p>
-              )}
-              {settings.lan_access && endpoint?.lan_ip && (
-                <div className="kv">
-                  <span className="k">{m.lanAddress}</span>
-                  <span className="mono">{`http://${endpoint.lan_ip}:${endpoint.port ?? "—"}`}</span>
-                  <button
-                    type="button"
-                    className="btn btn-tiny kv-copy"
-                    onClick={() =>
-                      copy("lan", `http://${endpoint.lan_ip}:${endpoint.port ?? ""}`)
-                    }
-                  >
-                    {copyLabel("lan")}
-                  </button>
-                </div>
-              )}
-              <p className="hint">{m.lanAccessHint}</p>
-            </div>
-
-            {/* ---- 只读 Web 面板 ----
-                紧挨着「局域网访问」：这两个开关合起来才决定「手机上能不能看到灯」
-                —— 一个管从哪能连进来，一个管那边能看到什么。分成两节也是因为
-                它们是**两件事**：面板开着、但只绑回环时，就只有本机能看。 */}
-            <div className="section">
-              <div className="row">
-                <span>{m.webPanel}</span>
-                <Switch
-                  on={settings.web_panel}
-                  onChange={(on) => patch({ web_panel: on })}
-                />
-              </div>
-              {settings.web_panel && panelUrl && (
-                <div className="kv">
-                  <span className="k">{m.webPanelUrl}</span>
-                  <span className="mono">{panelUrl}</span>
-                  <button
-                    type="button"
-                    className="btn btn-tiny kv-copy"
-                    onClick={() => copy("panel", panelUrl)}
-                  >
-                    {copyLabel("panel")}
-                  </button>
-                </div>
-              )}
-              <p className="hint">{m.webPanelHint}</p>
-              {/* 两个开关都开着才提示代价 —— 只在面板开着时说「同一 WiFi 下
-                  任何设备都能看」会吓到只在本机看的人 */}
-              {settings.web_panel && settings.lan_access && (
-                <p className="hint">{m.webPanelLanWarning}</p>
-              )}
-
-              {/* 面板审批（A4）。**挂在面板下面**：没有面板就没有地方点。
-                  单独一个开关而不是跟着面板一起开 —— 它把命令原文送到浏览器
-                  里去了，那是一个该被单独问一次的代价。 */}
-              {settings.web_panel && (
-                <>
+            {connectSub === "network" && (
+              <LocalPanel id="network">
+                {/* ---- 一键诊断 ----
+                    放在智能体列表之后、试一下之前：上面两节是「怎么接」和「接完怎么看」，
+                    这一节回答的是「接不上时拿什么去问」——把散在三个页签里的东西一次
+                    拼成一段可以复制出去的文本。 */}
+                <div className="section">
                   <div className="row">
-                    <span>{m.webApprove}</span>
+                    <span>{m.diagnoseCopy}</span>
+                    <button type="button" className="btn btn-tiny" onClick={copyDiagnosis}>
+                      {copyLabel("diag")}
+                    </button>
+                  </div>
+                  <p className="hint">{m.diagnoseHint}</p>
+                </div>
+
+                {/* ---- 试一下 ----
+                    放在「配好之后怎么验证」的位置：上面是「怎么接」，下面是「接完怎么
+                    分」，而这一节回答的是两者之间那个问题 —— 灯到底通没通。
+
+                    它跑的是和 HTTP 上报完全相同的 Store 链路，所以看到灯亮了就说明
+                    聚合、窗口尺寸、推送这几段都是活的。**但 HTTP 那一层它测不到**，
+                    所以说明里明确指向「指南」页那条 curl，免得有人以为这就等于测通了。 */}
+                <div className="section">
+                  <div className="section-title">{m.tryItTitle}</div>
+                  <div className="row-start">
+                    {TRY_STATES.map((state) => (
+                      <button
+                        key={state}
+                        type="button"
+                        className="btn btn-tiny"
+                        onClick={() => {
+                          setError(null);
+                          invoke("send_test_report", { state }).catch(reported);
+                        }}
+                      >
+                        {signalLabel(lang, state)}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="hint">{m.tryItHint}</p>
+                </div>
+
+                {/* ---- 局域网访问 ----
+                    留在「接入」页：它回答的正是这一页的问题 —— 「从哪能报进来」。
+                    （「怎么分组 / 摆成几盏灯」原先也挂在这一页，现在搬去了「分组」页：
+                    那两项管的是上报进来之后怎么解读和怎么摆，和这一页不是一件事。）
+
+                    独立一节而不再缩进一层：这是一个**改变安全模型**的开关，混在
+                    别的行里会被划过去。说明分成两段也是这个原因 —— 代价那一段得
+                    单独成句，不能藏在操作说明的尾巴上。
+
+                    「重启才生效」只在**真的不一致**时才说：`bound_lan` 是服务实际
+                    绑到哪了，无条件挂一句会让人以为一直没生效。 */}
+                <div className="section">
+                  <div className="row">
+                    <span>{m.lanAccess}</span>
                     <Switch
-                      on={settings.web_approve}
-                      onChange={(on) => patch({ web_approve: on })}
+                      on={settings.lan_access}
+                      onChange={(on) => patch({ lan_access: on })}
                     />
                   </div>
-                  <p className="hint">{m.webApproveHint}</p>
-                  {settings.web_approve && !settings.approve_tools && (
-                    <p className="hint">{m.webApproveNeedsTools}</p>
+                  {endpoint !== null && endpoint.bound_lan !== settings.lan_access && (
+                    <p className="hint">{m.lanRestart}</p>
                   )}
-                </>
-              )}
-            </div>
+                  {settings.lan_access && endpoint?.lan_ip && (
+                    <div className="kv">
+                      <span className="k">{m.lanAddress}</span>
+                      <span className="mono">{`http://${endpoint.lan_ip}:${endpoint.port ?? "—"}`}</span>
+                      <button
+                        type="button"
+                        className="btn btn-tiny kv-copy"
+                        onClick={() =>
+                          copy("lan", `http://${endpoint.lan_ip}:${endpoint.port ?? ""}`)
+                        }
+                      >
+                        {copyLabel("lan")}
+                      </button>
+                    </div>
+                  )}
+                  <p className="hint">{m.lanAccessHint}</p>
+                </div>
 
-            {/* ---- 通知转发入口 ----
-                放在「接入」页靠上的位置、接口速查之前：想「完成后 POST 到我的
-                服务器」的人不会去翻「钩子」，得在接入流程里就看见它。 */}
-            <div className="section">
-              <div className="row">
-                <span>{m.outboundHooks}</span>
-                <button type="button" className="btn" onClick={() => setTab("hooks")}>
-                  {m.configure}
-                </button>
-              </div>
-              <p className="hint">{m.connectHookHint}</p>
-            </div>
+                {/* ---- 只读 Web 面板 ----
+                    紧挨着「局域网访问」：这两个开关合起来才决定「手机上能不能看到灯」
+                    —— 一个管从哪能连进来，一个管那边能看到什么。分成两节也是因为
+                    它们是**两件事**：面板开着、但只绑回环时，就只有本机能看。 */}
+                <div className="section">
+                  <div className="row">
+                    <span>{m.webPanel}</span>
+                    <Switch
+                      on={settings.web_panel}
+                      onChange={(on) => patch({ web_panel: on })}
+                    />
+                  </div>
+                  {settings.web_panel && panelUrl && (
+                    <div className="kv">
+                      <span className="k">{m.webPanelUrl}</span>
+                      <span className="mono">{panelUrl}</span>
+                      <button
+                        type="button"
+                        className="btn btn-tiny kv-copy"
+                        onClick={() => copy("panel", panelUrl)}
+                      >
+                        {copyLabel("panel")}
+                      </button>
+                    </div>
+                  )}
+                  <p className="hint">{m.webPanelHint}</p>
+                  {/* 两个开关都开着才提示代价 —— 只在面板开着时说「同一 WiFi 下
+                      任何设备都能看」会吓到只在本机看的人 */}
+                  {settings.web_panel && settings.lan_access && (
+                    <p className="hint">{m.webPanelLanWarning}</p>
+                  )}
 
+                  {/* 面板审批（A4）。**挂在面板下面**：没有面板就没有地方点。
+                      单独一个开关而不是跟着面板一起开 —— 它把命令原文送到浏览器
+                      里去了，那是一个该被单独问一次的代价。 */}
+                  {settings.web_panel && (
+                    <>
+                      <div className="row">
+                        <span>{m.webApprove}</span>
+                        <Switch
+                          on={settings.web_approve}
+                          onChange={(on) => patch({ web_approve: on })}
+                        />
+                      </div>
+                      <p className="hint">{m.webApproveHint}</p>
+                      {settings.web_approve && !settings.approve_tools && (
+                        <p className="hint">{m.webApproveNeedsTools}</p>
+                      )}
+                    </>
+                  )}
+                </div>
+
+                {/* ---- 通知转发入口 ----
+                    放在「接入」页靠上的位置、接口速查之前：想「完成后 POST 到我的
+                    服务器」的人不会去翻「钩子」，得在接入流程里就看见它。 */}
+                <div className="section">
+                  <div className="row">
+                    <span>{m.outboundHooks}</span>
+                    <button type="button" className="btn" onClick={() => setTab("hooks")}>
+                      {m.configure}
+                    </button>
+                  </div>
+                  <p className="hint">{m.connectHookHint}</p>
+                </div>
+
+              </LocalPanel>
+            )}
           </>
         );
       }
@@ -3866,6 +3712,7 @@ export function SettingsPanel({ snapshot }: Props) {
 
         return (
           <>
+            <PageHeader title={m.tabMachines} hint={m.pageHint.machines} />
             <p className="hint">{m.machines.hint}</p>
 
             <div className="section">
@@ -4060,12 +3907,32 @@ export function SettingsPanel({ snapshot }: Props) {
             m={m}
             state={callmeState}
             refresh={refreshCallMe}
+            sub={callmeSub}
+            setSub={setCallmeSub}
+            now={now}
+          />
+        );
+
+      // 工作台的「留言」：阅读那一半。配置（链接 / 服务器）在
+      // 「连接 → Call Me」，这页只看 + 已读 + 打开出处。
+      case "messages":
+        return (
+          <CallMeMessages
+            m={m}
+            state={callmeState}
+            refresh={refreshCallMe}
+            now={now}
+            goCallMe={(sub) => {
+              setCallmeSub(sub);
+              setTab("callme");
+            }}
           />
         );
 
       case "demo":
         return (
           <div className="demo-tab">
+            <PageHeader title={m.tabDemo} hint={m.pageHint.demo} />
             <p className="hint">{m.demoIntro}</p>
             <DemoStage compact />
           </div>
@@ -4083,6 +3950,7 @@ export function SettingsPanel({ snapshot }: Props) {
 
         return (
           <>
+            <PageHeader title={m.tabGuide} hint={m.pageHint.guide} />
             {/* 手册的顺序：先说这是什么，再说怎么接上，然后才是查细节用的速查表，
                 最后是「不工作了怎么办」。倒过来写的话，第一次用的人得先读一份
                 接口规范才知道这软件是干嘛的。 */}
@@ -4233,6 +4101,7 @@ export function SettingsPanel({ snapshot }: Props) {
 
         return (
           <>
+            <PageHeader title={m.tabHooks} hint={m.pageHint.hooks} />
             {settings.hooks.length === 0 && <p className="empty">{m.noHooks}</p>}
 
             {settings.hooks.map((hook, index) => {
@@ -4696,216 +4565,259 @@ export function SettingsPanel({ snapshot }: Props) {
           : 0;
         return (
           <>
-            {/* 发版前自检摆在最上面：这一页剩下的都是「改设置」，而体检是
-                「先看一眼有没有坏」，顺序不该倒过来。 */}
-            <HealthCard
-              m={m}
-              checks={healthChecks}
-              running={healthRunning}
-              onRun={runHealth}
-              onCopy={copyHealth}
-              copied={copied === "health"}
+            <PageHeader title={m.tabSystem} hint={m.pageHint.system} />
+            <LocalTabs
+              label={m.tabSystem}
+              value={systemSub}
+              onChange={setSystemSub}
+              items={[
+                { id: "general" as const, label: m.systemTabGeneral },
+                { id: "update" as const, label: m.systemTabUpdate },
+                { id: "data" as const, label: m.systemTabData },
+              ]}
             />
 
-            <Row label={m.launchAtLogin}>
-              <Switch
-                on={toggles.autostart}
-                onChange={(on) => {
-                  setError(null);
-                  setAutostart(on).catch(reported);
-                }}
-              />
-            </Row>
-            {/* 语言：auto 跟随系统，由前端把 navigator.language 解析成 zh / en 后推给 Rust */}
-            <Row label={m.language} onReset={resetFor(settings, "locale", patch)}>
-              <div className="seg">
-                <button
-                  type="button"
-                  data-active={settings.locale === "auto"}
-                  onClick={() => patch({ locale: "auto" })}
-                >
-                  {m.langAuto}
-                </button>
-                <button
-                  type="button"
-                  data-active={settings.locale === "zh"}
-                  onClick={() => patch({ locale: "zh" })}
-                >
-                  {m.langZh}
-                </button>
-                <button
-                  type="button"
-                  data-active={settings.locale === "en"}
-                  onClick={() => patch({ locale: "en" })}
-                >
-                  {m.langEn}
-                </button>
-              </div>
-            </Row>
-            {/* 自动更新。**只在 macOS 上真的能用**（原因见 Rust 侧 update.rs 顶部），
-                别的平台如实说「请手动下载」，而不是摆一个点了没反应的按钮。
-                另：**装永远由用户点** —— 检查可以自动，装不行。 */}
-            <div className="section">
-              <div className="row">
-                <span>{m.updateTitle}</span>
-                {/* 版本号是 Rust 那边读的运行时常量。第一帧还没回来时**不画** ——
-                    宁可暂时空着，也不要闪一个「当前版本 v」。 */}
-                <span className="mono">
-                  {update.state.current && m.updateCurrent(update.state.current)}
-                </span>
-              </div>
-              {update.state.supported ? (
-                <>
-                  {updateNote && <p className="hint">{updateNote}</p>}
-                  {update.progress && (
-                    <div
-                      className="update-line"
-                      data-installing={update.progress.installing}
-                    >
-                      <div className="update-bar" data-installing={update.progress.installing}>
-                        <span style={{ width: `${updatePercent}%` }} />
-                      </div>
-                    </div>
-                  )}
-                  <div className="row-start">
+            {systemSub === "general" && (
+              <LocalPanel id="general">
+                <Row label={m.launchAtLogin}>
+                  <Switch
+                    on={toggles.autostart}
+                    onChange={(on) => {
+                      setError(null);
+                      setAutostart(on).catch(reported);
+                    }}
+                  />
+                </Row>
+                {/* 语言：auto 跟随系统，由前端把 navigator.language 解析成 zh / en 后推给 Rust */}
+                <Row label={m.language} onReset={resetFor(settings, "locale", patch)}>
+                  <div className="seg">
                     <button
                       type="button"
-                      className="btn btn-tiny"
-                      disabled={update.checking || update.installing}
-                      onClick={update.check}
+                      data-active={settings.locale === "auto"}
+                      onClick={() => patch({ locale: "auto" })}
                     >
-                      {update.checking ? m.checkingUpdate : m.checkUpdate}
+                      {m.langAuto}
                     </button>
-                    {update.state.available && !update.installing && (
-                      <button
-                        type="button"
-                        className="btn btn-tiny"
-                        onClick={update.install}
-                      >
-                        {m.updateDownloadInstall}
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      data-active={settings.locale === "zh"}
+                      onClick={() => patch({ locale: "zh" })}
+                    >
+                      {m.langZh}
+                    </button>
+                    <button
+                      type="button"
+                      data-active={settings.locale === "en"}
+                      onClick={() => patch({ locale: "en" })}
+                    >
+                      {m.langEn}
+                    </button>
                   </div>
-                  <p className="hint">{m.updateHint}</p>
-                  {update.state.available?.notes && (
+                </Row>
+
+                <p className="hint">{m.systemHintTray}</p>
+                <p className="hint">
+                  {m.systemHintPassThrough(
+                    toggles.pass_through_shortcut || m.shortcutFallback,
+                  )}
+                </p>
+
+                {/* 全局快捷键。**抢不到的那一个必须说出来** —— 一个按了没反应的键，
+                    用户只会以为是 SignalHub 坏了（注册失败只写 stderr，从 Dock 启动
+                    的话根本没地方看）。 */}
+                <div className="section">
+                  <div className="section-title">{m.shortcutsTitle}</div>
+                  {shortcuts.map((shortcut) => (
+                    <div className="row" key={shortcut.action}>
+                      <span>
+                        {m.shortcutActions[shortcut.action] ?? shortcut.action}
+                        {/* 认不出来的动作名照原样显示：多一个动作不该让这一行消失 */}
+                        {!shortcut.ok && (
+                          <span className="hook-warn">{m.shortcutTaken}</span>
+                        )}
+                      </span>
+                      <span className="mono">{shortcut.label}</span>
+                    </div>
+                  ))}
+                  <p className="hint">{m.shortcutsHint}</p>
+                </div>
+              </LocalPanel>
+            )}
+
+            {/* 更新和体检同属「这台机器现在好不好」：体检回答「有没有坏」，
+                更新回答「是不是旧了」。放在同一子页比散在两处更容易想起来查。 */}
+            {systemSub === "update" && (
+              <LocalPanel id="update">
+                {/* 发版前自检摆在最上面：这一子页剩下的都是「改设置」，而体检是
+                    「先看一眼有没有坏」，顺序不该倒过来。 */}
+                <HealthCard
+                  m={m}
+                  checks={healthChecks}
+                  running={healthRunning}
+                  onRun={runHealth}
+                  onCopy={copyHealth}
+                  copied={copied === "health"}
+                />
+
+                {/* 自动更新。**只在 macOS 上真的能用**（原因见 Rust 侧 update.rs 顶部），
+                    别的平台如实说「请手动下载」，而不是摆一个点了没反应的按钮。
+                    另：**装永远由用户点** —— 检查可以自动，装不行。 */}
+                <div className="section">
+                  <div className="row">
+                    <span>{m.updateTitle}</span>
+                    {/* 版本号是 Rust 那边读的运行时常量。第一帧还没回来时**不画** ——
+                        宁可暂时空着，也不要闪一个「当前版本 v」。 */}
+                    <span className="mono">
+                      {update.state.current && m.updateCurrent(update.state.current)}
+                    </span>
+                  </div>
+                  {update.state.supported ? (
                     <>
-                      <button
-                        type="button"
-                        className="disclosure"
-                        aria-expanded={notesOpen}
-                        onClick={() => setNotesOpen((open) => !open)}
-                      >
-                        <span className="caret" aria-hidden="true">
-                          {notesOpen ? "▾" : "▸"}
-                        </span>
-                        <span className="disclosure-title">{m.updateNotes}</span>
-                      </button>
-                      {notesOpen && (
-                        <pre className="updatenotes mono">{update.state.available.notes}</pre>
+                      {updateNote && <p className="hint">{updateNote}</p>}
+                      {update.progress && (
+                        <div
+                          className="update-line"
+                          data-installing={update.progress.installing}
+                        >
+                          <div
+                            className="update-bar"
+                            data-installing={update.progress.installing}
+                          >
+                            <span style={{ width: `${updatePercent}%` }} />
+                          </div>
+                        </div>
+                      )}
+                      <div className="row-start">
+                        <button
+                          type="button"
+                          className="btn btn-tiny"
+                          disabled={update.checking || update.installing}
+                          onClick={update.check}
+                        >
+                          {update.checking ? m.checkingUpdate : m.checkUpdate}
+                        </button>
+                        {update.state.available && !update.installing && (
+                          <button
+                            type="button"
+                            className="btn btn-tiny"
+                            onClick={update.install}
+                          >
+                            {m.updateDownloadInstall}
+                          </button>
+                        )}
+                      </div>
+                      <p className="hint">{m.updateHint}</p>
+                      {update.state.available?.notes && (
+                        <>
+                          <button
+                            type="button"
+                            className="disclosure"
+                            aria-expanded={notesOpen}
+                            onClick={() => setNotesOpen((open) => !open)}
+                          >
+                            <span className="caret" aria-hidden="true">
+                              {notesOpen ? "▾" : "▸"}
+                            </span>
+                            <span className="disclosure-title">{m.updateNotes}</span>
+                          </button>
+                          {notesOpen && (
+                            <pre className="updatenotes mono">
+                              {update.state.available.notes}
+                            </pre>
+                          )}
+                        </>
                       )}
                     </>
+                  ) : (
+                    <>
+                      <p className="hint">{m.updateUnsupported}</p>
+                      <div className="row-start">
+                        <button
+                          type="button"
+                          className="btn btn-tiny"
+                          onClick={() => invoke("open_releases").catch(reported)}
+                        >
+                          {m.openReleases}
+                        </button>
+                      </div>
+                    </>
                   )}
-                </>
-              ) : (
-                <>
-                  <p className="hint">{m.updateUnsupported}</p>
+                </div>
+              </LocalPanel>
+            )}
+
+            {systemSub === "data" && (
+              <LocalPanel id="data">
+                {/* 这两个原先挂在顶部栏上。搬到这一子页是因为它们是**诊断入口**
+                    （看配置、看日志），而这一页本来就是「系统层面的事」——
+                    而顶部栏那个位置现在归左栏了，留在那儿等于占着每一页。
+                    用 `row-start` 而不是 `row`：后者是「标签在左、控件在右」的
+                    两端分布，两个并列按钮用它会被拆到两头。 */}
+                <div className="section section-flush">
                   <div className="row-start">
                     <button
                       type="button"
                       className="btn btn-tiny"
-                      onClick={() => invoke("open_releases").catch(reported)}
+                      onClick={() =>
+                        invoke("open_app_dir", { what: "config" }).catch(reported)
+                      }
                     >
-                      {m.openReleases}
+                      {m.openConfigDir}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-tiny"
+                      onClick={() =>
+                        invoke("open_app_dir", { what: "log" }).catch(reported)
+                      }
+                    >
+                      {m.openLogs}
                     </button>
                   </div>
-                </>
-              )}
-            </div>
-
-            <p className="hint">{m.systemHintTray}</p>
-            <p className="hint">
-              {m.systemHintPassThrough(
-                toggles.pass_through_shortcut || m.shortcutFallback,
-              )}
-            </p>
-
-            {/* 全局快捷键。**抢不到的那一个必须说出来** —— 一个按了没反应的键，
-                用户只会以为是 SignalHub 坏了（注册失败只写 stderr，从 Dock 启动
-                的话根本没地方看）。 */}
-            <div className="section">
-              <div className="section-title">{m.shortcutsTitle}</div>
-              {shortcuts.map((shortcut) => (
-                <div className="row" key={shortcut.action}>
-                  <span>
-                    {m.shortcutActions[shortcut.action] ?? shortcut.action}
-                    {/* 认不出来的动作名照原样显示：多一个动作不该让这一行消失 */}
-                    {!shortcut.ok && (
-                      <span className="hook-warn">{m.shortcutTaken}</span>
-                    )}
-                  </span>
-                  <span className="mono">{shortcut.label}</span>
+                  {/* 把日志的尾巴直接摆出来，省掉「打开文件、拉到最后、找时间」那一串。
+                      它回答的是「接了但灯不亮」里最难自己查到的那一半：**事件到底有没有
+                      从智能体那边打过来**。
+                      和「接入」页那个「试一下」是互补的 —— 那个测的是 app 内部那一段
+                      （亮得起来就说明聚合、窗口、推送都是活的），这一段测的是智能体 →
+                      HTTP 那一段。两边都通才是真的通。 */}
+                  <div className="row">
+                    <span>{m.diagLogTitle}</span>
+                    <button type="button" className="btn btn-tiny" onClick={refreshLog}>
+                      {m.diagRefresh}
+                    </button>
+                  </div>
+                  <p className="hint">{m.diagLogHint}</p>
+                  {logLines.length === 0 ? (
+                    <p className="hint">{m.diagLogEmpty}</p>
+                  ) : (
+                    <pre className="hooklog mono">{logLines.join("\n")}</pre>
+                  )}
                 </div>
-              ))}
-              <p className="hint">{m.shortcutsHint}</p>
-            </div>
 
-            {/* 这两个原先挂在顶部栏上。搬到这一页是因为它们是**诊断入口**
-                （看配置、看日志），而这一页本来就是「系统层面的事」——
-                而顶部栏那个位置现在归左栏了，留在那儿等于占着每一页。
-                用 `row-start` 而不是 `row`：后者是「标签在左、控件在右」的
-                两端分布，两个并列按钮用它会被拆到两头。 */}
-            <div className="section">
-              <div className="row-start">
-                <button
-                  type="button"
-                  className="btn btn-tiny"
-                  onClick={() => invoke("open_app_dir", { what: "config" }).catch(reported)}
-                >
-                  {m.openConfigDir}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-tiny"
-                  onClick={() => invoke("open_app_dir", { what: "log" }).catch(reported)}
-                >
-                  {m.openLogs}
-                </button>
-              </div>
-              {/* 把日志的尾巴直接摆出来，省掉「打开文件、拉到最后、找时间」那一串。
-                  它回答的是「接了但灯不亮」里最难自己查到的那一半：**事件到底有没有
-                  从智能体那边打过来**。
-                  和「接入」页那个「试一下」是互补的 —— 那个测的是 app 内部那一段
-                  （亮得起来就说明聚合、窗口、推送都是活的），这一段测的是智能体 →
-                  HTTP 那一段。两边都通才是真的通。 */}
-              <div className="row">
-                <span>{m.diagLogTitle}</span>
-                <button type="button" className="btn btn-tiny" onClick={refreshLog}>
-                  {m.diagRefresh}
-                </button>
-              </div>
-              <p className="hint">{m.diagLogHint}</p>
-              {logLines.length === 0 ? (
-                <p className="hint">{m.diagLogEmpty}</p>
-              ) : (
-                <pre className="hooklog mono">{logLines.join("\n")}</pre>
-              )}
-            </div>
-
-            {/* 配置备份。和上面那节是同一类（文件层面的事），但单独一节 ——
-                它有一句要读的说明，而上面那两个只是两个诊断入口。 */}
-            <div className="section">
-              <div className="row-start">
-                <button type="button" className="btn btn-tiny" onClick={exportConfig}>
-                  {m.exportConfig}
-                </button>
-                <button type="button" className="btn btn-tiny" onClick={importConfig}>
-                  {m.importConfig}
-                </button>
-              </div>
-              <p className="hint">{backupNotice ?? m.configBackupHint}</p>
-            </div>
+                {/* 配置备份。和上面那节是同一类（文件层面的事），但单独一节 ——
+                    它有一句要读的说明，而上面那两个只是两个诊断入口。 */}
+                <div className="section">
+                  <div className="row-start">
+                    <button type="button" className="btn btn-tiny" onClick={exportConfig}>
+                      {m.exportConfig}
+                    </button>
+                    <button type="button" className="btn btn-tiny" onClick={importConfig}>
+                      {m.importConfig}
+                    </button>
+                  </div>
+                  <p className="hint">{backupNotice ?? m.configBackupHint}</p>
+                </div>
+              </LocalPanel>
+            )}
           </>
         );
+      }
+
+      default: {
+        // 在 `settingsNavigation.ts` 里登记了页签、却忘了在这里写内容时，
+        // 这一行会编译不过 —— 比「点进去一片空白」好查得多。加页签时顺手写。
+        const missing: never = tab;
+        return missing;
       }
     }
   };
@@ -4929,16 +4841,10 @@ export function SettingsPanel({ snapshot }: Props) {
         </p>
       )}
 
-      {stats.length > 0 && (
-        <p className="stats">
-          {m.today}{" "}
-          {stats
-            .map((row) => `${row.label} ${formatDuration(row.seconds)}`)
-            .join(" · ")}
-        </p>
-      )}
+      {/* 「今日各状态时长」搬去了「历史」页顶部：它是回顾数据，不该在每页占一行
+          （见 docs/settings-redesign-plan.md 4.2）。顶部只留全局状态。 */}
 
-      {/* 两栏：左栏是「去哪儿」（三组页签 + 沉底的「系统」 + 底部的全局开关），
+      {/* 两栏：左栏是「去哪儿」（五组页签 + 沉底的「系统」 + 底部的全局开关），
           右栏是内容。
           原先页签横排在顶部、内容区写死 495px 高 —— 那个高度得手写一个「够大
           又不过分大」的数，改内容就得重新量。改成 flex 之后这条性质由结构保证。 */}
@@ -4964,24 +4870,30 @@ export function SettingsPanel({ snapshot }: Props) {
                 {/* 分组标题只是标题，不是按钮 —— 点它什么都不该发生（点一下
                     「灯」而跳到某一页会让人以为漏了一层）。 */}
                 <div className="rail-group-title">{group.title}</div>
-                {group.entries.map((entry) => (
-                  <button
-                    key={entry.id}
-                    type="button"
-                    className="rail-item"
-                    data-active={tab === entry.id}
-                    aria-current={tab === entry.id ? "page" : undefined}
-                    onClick={() => setTab(entry.id)}
-                  >
-                    {entry.label}
-                    {entry.id === "callme" && callmeUnread > 0 && (
-                      <span
-                        className="rail-dot"
-                        aria-label={m.callme.unread(callmeUnread)}
-                      />
-                    )}
-                  </button>
-                ))}
+                {group.entries.map((entry) => {
+                  // 未读只挂在「留言」上（阅读的那一页），不挂在配置页「Call Me」
+                  // 上 —— 提醒要指向用户真正要读的地方。它是一枚纯视觉提示，
+                  // 所以对读屏器不单独发音，而是并进按钮的可读名里。
+                  const unread = entry.id === "messages" ? callmeUnread : 0;
+                  return (
+                    <button
+                      key={entry.id}
+                      type="button"
+                      className="rail-item"
+                      data-active={tab === entry.id}
+                      aria-current={tab === entry.id ? "page" : undefined}
+                      aria-label={
+                        unread > 0
+                          ? `${entry.label} · ${m.callme.unread(unread)}`
+                          : undefined
+                      }
+                      onClick={() => setTab(entry.id)}
+                    >
+                      {entry.label}
+                      {unread > 0 && <span className="rail-dot" aria-hidden="true" />}
+                    </button>
+                  );
+                })}
               </div>
             ))}
 
@@ -5017,7 +4929,6 @@ export function SettingsPanel({ snapshot }: Props) {
         {/* key 让切页时重挂内容：滚动回到顶部，顺带重播 page-in 入场。
             表单都是受控的（值来自 settings / draft），重挂不会丢输入。 */}
         <div className="page" key={tab} ref={pageRef}>
-          <PageSectionsNav containerRef={pageRef} label={m.pageNav} />
           {page()}
         </div>
       </div>

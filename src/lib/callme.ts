@@ -56,6 +56,16 @@ export interface CallMeProbe {
   sources: number;
 }
 
+/** 桌面进程内的本机服务。与 Rust `callme_local::LocalStatus` 对应。 */
+export interface CallMeLocalStatus {
+  running: boolean;
+  url: string | null;
+  token: string | null;
+  port: number;
+  data_dir: string | null;
+  error: string | null;
+}
+
 /**
  * 服务器地址归一化 —— 与 Rust 侧 `callme::endpoint` 同一套规矩。
  *
