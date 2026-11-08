@@ -2,6 +2,7 @@ mod agents;
 mod alerts;
 mod approval_log;
 mod approvals;
+mod callme;
 mod collect;
 mod devices;
 mod diagnose;
@@ -484,6 +485,21 @@ fn open_docs() -> Result<(), String> {
 #[tauri::command]
 fn open_releases() -> Result<(), String> {
     open::open(RELEASES_URL).map_err(|err| format!("打开浏览器失败: {err}"))
+}
+
+/// 用系统默认浏览器打开一个 http/https 地址。
+///
+/// 目标是 Call Me 留言里智能体自报的 `context`（「我是在这个页面读到链接的」），
+/// **它是不可信输入**：只认 http/https，别的一律拒绝 —— 否则一个 `file://`、
+/// `javascript:` 或者自定义 scheme 就可能被 `open` 交给别的程序。`open::open`
+/// 本身不过 shell（argv 直传），这里再补一道 scheme 白名单。
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    let trimmed = url.trim();
+    if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
+        return Err("只支持 http / https 链接".to_string());
+    }
+    open::open(trimmed).map_err(|err| format!("打开浏览器失败: {err}"))
 }
 
 #[tauri::command]
@@ -1358,6 +1374,61 @@ async fn probe_machine(id: String, url: String, token: String) -> remote::Health
         error: Some(format!("测试没能跑起来：{err}")),
         sessions: 0,
     })
+}
+
+/// 「Call Me」页的初始 / 对账拉取。**只读**：轮询线程是唯一写入方（见 `callme.rs`）。
+#[tauri::command]
+fn get_callme(state: tauri::State<'_, callme::SharedCallMe>) -> callme::CallMeState {
+    state.lock().expect("callme state poisoned").clone()
+}
+
+/// 「测试连接」：地址和 token 由界面传进来（可能还没保存），理由同 `probe_machine`。
+#[tauri::command]
+async fn callme_probe(url: String, token: String) -> callme::Probe {
+    tauri::async_runtime::spawn_blocking(move || callme::probe(&url, &token))
+        .await
+        .unwrap_or_else(|err| callme::Probe {
+            ok: false,
+            error: Some(format!("测试没能跑起来：{err}")),
+            ..callme::Probe::default()
+        })
+}
+
+/// 新建一条来源链接。同样用界面上的地址 / token（可能还没保存）——
+/// 「点了新建，结果建到了另一个服务器上」是这个交互里最坏的表现。
+#[tauri::command]
+async fn callme_add_source(
+    url: String,
+    token: String,
+    label: String,
+    note: Option<String>,
+) -> Result<callme::SourceView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        callme::add_source(&url, &token, &label, note.as_deref())
+    })
+    .await
+    .map_err(|err| format!("调用没能跑起来：{err}"))?
+}
+
+#[tauri::command]
+async fn callme_revoke_source(url: String, token: String, id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || callme::revoke_source(&url, &token, &id))
+        .await
+        .map_err(|err| format!("调用没能跑起来：{err}"))?
+}
+
+/// 标记某个来源读到第几条。写本地文件，**不回写服务器**（见 `callme.rs` 文件头）。
+#[tauri::command]
+fn callme_mark_read(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, callme::SharedCallMe>,
+    source_id: String,
+    seq: u64,
+) -> Result<(), String> {
+    callme::mark_read(&state, &source_id, seq)?;
+    let snapshot = state.lock().expect("callme state poisoned").clone();
+    let _ = app.emit(callme::CALLME_EVENT, snapshot);
+    Ok(())
 }
 
 #[tauri::command]
@@ -2874,6 +2945,8 @@ pub fn run() {
         )))
         // 多机中枢的健康状态（轮询线程写，「多机」页读，见 remote.rs）
         .manage(remote::registry())
+        // Call Me 的拉取状态（轮询线程写，「Call Me」页读，见 callme.rs）
+        .manage(callme::state())
         .invoke_handler(tauri::generate_handler![
             get_state,
             set_state,
@@ -2887,6 +2960,7 @@ pub fn run() {
             get_endpoint,
             open_docs,
             open_releases,
+            open_url,
             open_app_dir,
             open_settings,
             toggle_inbox,
@@ -2929,6 +3003,11 @@ pub fn run() {
             set_collector,
             list_machines,
             probe_machine,
+            get_callme,
+            callme_probe,
+            callme_add_source,
+            callme_revoke_source,
+            callme_mark_read,
             uninstall_agent_hooks,
             try_agent,
             diagnose,
@@ -3075,6 +3154,14 @@ pub fn run() {
                 app.state::<SharedSettings>().inner().clone(),
                 app.state::<SharedMachines>().inner().clone(),
                 notify,
+            );
+
+            // Call Me（见 `callme.rs`）。纯出站轮询，不依赖 `notify`，所以放在
+            // remote 之后；没配置服务器时线程只是空转，一个请求都不发。
+            callme::spawn(
+                app.handle().clone(),
+                app.state::<SharedSettings>().inner().clone(),
+                app.state::<callme::SharedCallMe>().inner().clone(),
             );
 
             Ok(())

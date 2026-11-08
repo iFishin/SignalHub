@@ -698,6 +698,62 @@ fn default_true() -> bool {
 /// 而每一台都在真的发请求。
 pub const MAX_MACHINES: usize = 20;
 
+/// Call Me —— 用户自部署的收信服务器（见 `docs/callme.md`）。
+///
+/// 和 [`Machine`] 一样是**往外读**：桌面端在 NAT 后面，公网服务器推不进来，
+/// 只能由我们定时去拉。区别是拉回来的东西**不进 `Store`** —— 留言不是状态信号，
+/// 没有 TTL、不参与聚合、不该闪灯；它在设置面板的「Call Me」页里单独阅读。
+///
+/// **默认空 = 一条请求都不发**（红线：新增外发默认关）。旧版 `config.json` 里
+/// 没有这个字段时，容器级 `serde(default)` 会落到 [`CallMeConfig::default`]。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CallMeConfig {
+    /// 服务器地址，例如 `https://callme.example.com`。
+    ///
+    /// 不写 scheme 时按 **https** 补 —— 这是公网服务，http 只应该由用户显式写出。
+    /// 空着 = 功能关闭（不发任何请求）。
+    #[serde(default)]
+    pub url: String,
+    /// 服务器上的 `CALLME_ADMIN_TOKEN`。
+    ///
+    /// 明文存在 `config.json` 里，和多机中枢的 `Machine::token` 同一个待遇：
+    /// 它们本来就在同一个目录、同样的权限下。
+    #[serde(default)]
+    pub token: String,
+    /// 轮询间隔（毫秒）。留言不是实时信号，默认 15 秒。
+    #[serde(default = "default_callme_poll_ms")]
+    pub poll_ms: u64,
+}
+
+impl Default for CallMeConfig {
+    fn default() -> Self {
+        CallMeConfig {
+            url: String::new(),
+            token: String::new(),
+            poll_ms: default_callme_poll_ms(),
+        }
+    }
+}
+
+impl CallMeConfig {
+    /// 是否配置完整。**两个都填了才算开**：只有地址没有 token 时请求必然 401，
+    /// 每 15 秒打一次只会给服务器添乱，也在客户端制造一条永远消不掉的错误。
+    pub fn enabled(&self) -> bool {
+        !self.url.trim().is_empty() && !self.token.trim().is_empty()
+    }
+}
+
+fn default_callme_poll_ms() -> u64 {
+    15_000
+}
+
+/// 轮询间隔下限。比多机中枢（1 秒）宽松得多：那边是状态，掉线要在半分钟内显形；
+/// 这边是留言，15 秒一次已经算及时，再密只是白耗电。
+pub const MIN_CALLME_POLL_MS: u64 = 5_000;
+pub const MAX_CALLME_POLL_MS: u64 = 300_000;
+
+
 /// 轮询间隔的可调范围（毫秒）。
 ///
 /// 下界 1 秒：再快就只是给对端增加无意义的负载，而人眼分辨不出 1 秒以内的差别。
@@ -1222,6 +1278,10 @@ pub struct Settings {
     /// 可以忽略。
     #[serde(default = "default_machine_poll_ms")]
     pub machine_poll_ms: u64,
+    /// Call Me（自部署收信服务器）。**默认空 = 一条请求都不发**（红线：新增外发
+    /// 默认关）；不配置时桌面端的行为与没有这个功能时一致。
+    #[serde(default)]
+    pub callme: CallMeConfig,
     /// 灯上单击做什么，见 [`ClickAction`]。容器级 `serde(default)` 会让旧配置
     /// 自动落到 `Collapse`，升级不改变既有手感。
     pub click_action: ClickAction,
@@ -1471,6 +1531,8 @@ impl Default for Settings {
             // 多机中枢默认一台都不配 —— 空数组 = 一条请求都不发
             machines: Vec::new(),
             machine_poll_ms: default_machine_poll_ms(),
+            // Call Me 默认关闭：地址为空 → 轮询线程一个请求都不发
+            callme: CallMeConfig::default(),
             // 旧版配置里没有这个字段 —— 默认折叠，升级不让单击改行为
             click_action: ClickAction::default(),
         }
@@ -1584,6 +1646,14 @@ impl Settings {
         self.machine_poll_ms = self
             .machine_poll_ms
             .clamp(MIN_MACHINE_POLL_MS, MAX_MACHINE_POLL_MS);
+        // Call Me：地址和 token 都去空白（粘贴时经常带首尾空格）；空值保留 ——
+        // 那是「刚打开这一页、还没填」的中间态，轮询线程按 `enabled()` 判断。
+        self.callme.url = self.callme.url.trim().to_string();
+        self.callme.token = self.callme.token.trim().to_string();
+        self.callme.poll_ms = self
+            .callme
+            .poll_ms
+            .clamp(MIN_CALLME_POLL_MS, MAX_CALLME_POLL_MS);
         self
     }
 
@@ -2173,6 +2243,12 @@ mod tests {
                 enabled: false,
             }],
             machine_poll_ms: 3000,
+            // Call Me 同样设成非默认值（默认是「全空 = 关闭」）
+            callme: CallMeConfig {
+                url: "https://callme.example.test".into(),
+                token: "callme-token".into(),
+                poll_ms: 30_000,
+            },
             webhook_url: None,
             colors: BTreeMap::new(),
         };
@@ -2773,6 +2849,48 @@ mod tests {
         assert!(!settings.collapsed, "缺字段应退回「展开」，那是默认形态");
         assert_eq!(settings.sign_opacity, DEFAULT_SIGN_OPACITY);
         assert!(settings.hidden_groups.is_empty());
+    }
+
+    /// Call Me 的默认值必须是「关」：旧配置里没有这个字段时，升级后一条请求
+    /// 都不该发出去（红线：新增外发默认关）。
+    #[test]
+    fn callme_defaults_to_off() {
+        let settings: Settings = serde_json::from_str(r#"{"size": 30}"#).unwrap();
+        assert!(!settings.callme.enabled(), "没有地址和 token 时必须是关闭的");
+        assert_eq!(settings.callme.url, "");
+        assert_eq!(settings.callme.token, "");
+        assert_eq!(settings.callme.poll_ms, 15_000);
+    }
+
+    /// 只填一半（只有地址 / 只有 token）同样算关：那种状态下的请求必然失败，
+    /// 每 15 秒打一次只是白耗电。
+    #[test]
+    fn callme_needs_both_url_and_token() {
+        let settings: Settings =
+            serde_json::from_str(r#"{"callme": {"url": "https://callme.example.com"}}"#).unwrap();
+        assert!(!settings.callme.enabled());
+        let settings: Settings =
+            serde_json::from_str(r#"{"callme": {"token": "abcdef0123456789"}}"#).unwrap();
+        assert!(!settings.callme.enabled());
+        let settings: Settings = serde_json::from_str(
+            r#"{"callme": {"url": "https://callme.example.com", "token": "abcdef0123456789"}}"#,
+        )
+        .unwrap();
+        assert!(settings.callme.enabled());
+    }
+
+    /// 粘贴地址经常带首尾空格；轮询间隔可能被手改成 0 或者一大串数字。
+    #[test]
+    fn callme_is_trimmed_and_clamped() {
+        let raw = r#"{"callme": {"url": "  https://callme.example.com  ", "token": " abc ", "poll_ms": 1}}"#;
+        let settings = serde_json::from_str::<Settings>(raw).unwrap().clamped();
+        assert_eq!(settings.callme.url, "https://callme.example.com");
+        assert_eq!(settings.callme.token, "abc");
+        assert_eq!(settings.callme.poll_ms, MIN_CALLME_POLL_MS);
+
+        let raw = r#"{"callme": {"poll_ms": 999999999}}"#;
+        let settings = serde_json::from_str::<Settings>(raw).unwrap().clamped();
+        assert_eq!(settings.callme.poll_ms, MAX_CALLME_POLL_MS);
     }
 
     /// Rust 侧的「状态 → 颜色」只有这一个入口：只读 Web 面板和物理灯都问它。
