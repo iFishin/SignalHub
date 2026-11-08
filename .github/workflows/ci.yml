@@ -105,3 +105,22 @@ jobs:
       # 所以任何新警告都会让 CI 立刻变红，而不是等到某天有人想起来数一遍。
       - name: Clippy（警告即失败）
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+  # Call Me 自部署服务器（`server/`，独立 crate）。
+  #
+  # 为什么单独一个 job 而不是塞进上面的矩阵：它**不链接 Tauri**，所以不需要
+  # webkit2gtk / gtk 那套系统库，裸 ubuntu 就能编；唯一平台相关的代码是
+  # `main.rs` 里 SIGTERM 的 `#[cfg(unix)]` 分支，Linux 一次就覆盖了。
+  #
+  # 它和 `test` job 完全独立：那边用 `--manifest-path src-tauri/Cargo.toml`
+  # 显式指定 crate，缓存键也是 `workspaces: src-tauri`，新建目录不影响它。
+  callme-server:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+      - run: cargo test --manifest-path server/Cargo.toml
+      - run: cargo clippy --manifest-path server/Cargo.toml --all-targets -- -D warnings

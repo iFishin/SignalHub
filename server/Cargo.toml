@@ -1,0 +1,26 @@
+[package]
+name = "signalhub-callme"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+description = "SignalHub Call Me —— 自部署收信服务器：外部 AI 智能体通过链接留言，桌面客户端拉取阅读。"
+license = "MIT"
+
+# 刻意**不**放进 src-tauri 的 crate：那个 crate 链接整个 Tauri（Linux 上要
+# webkit2gtk 一堆系统库），而服务器要部署在 VPS 上。独立 crate 是唯一能让
+# `cargo build` 在裸机上跑通的组织方式。也不建根 workspace —— 那会把 target
+# 目录从 src-tauri/target 挪到仓库根，破坏 scripts/stage-cli.mjs 找 sidecar
+# 的路径（见 docs/callme.md 开头的说明）。
+
+[dependencies]
+axum = "0.8"
+# 令牌生成。与 src-tauri 同主版本，没有额外编译负担。
+getrandom = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+
+[dev-dependencies]
+http-body-util = "0.1"
+# oneshot：集成测试直接打 Router，不用真的绑端口。
+tower = { version = "0.5", features = ["util"] }
