@@ -7,14 +7,19 @@
 //! 模块：
 //! - [`config`] 环境变量 → 运行参数
 //! - [`store`] 数据与磁盘（`sources.json` + `messages.jsonl`）
+//! - [`http`] 路由、鉴权、错误形状
 //! - [`token`] 令牌与短 id
 //! - [`model`] 线上形状
+//!
+//! 拆出 `lib.rs` 是为了集成测试能直接对 `router()` 用 `oneshot`，不必真的绑端口。
 
 pub mod config;
+pub mod http;
 pub mod model;
 pub mod store;
 pub mod token;
 
 pub use config::Config;
+pub use http::{router, AppState};
 pub use model::{ErrorBody, Incoming, Message, MessagesPage, NewSource, Source, SourceView};
 pub use store::{AcceptError, Limits, Store};
