@@ -67,6 +67,18 @@
 
 ## 发布记录
 
+- **v0.6.1**（2026-11-10）：跟进版 —— 0.6.0 发布后按实际使用反馈收尾。
+  **Call Me 只点一次启动**：零字段建链接（`label` 可空，服务器给 `link-xxxx` 占位名 +
+  `auto_label`，第一条留言用 `title` / `context` 回填且不覆盖用户改名）；`GET /c/<token>`
+  返回纯文本用法、同一个 URL POST 收信，链接不变长；本机服务启动后自动填地址 / token
+  并建好第一条链接。**链接管理**：`/rename` / `/delete` / `/restore` 三个 POST 端点，
+  改名 / 吊销 / 恢复 / 彻底删除（二次确认）、已吊销进折叠区、50 条上限只数有效链接、
+  删来源保留已收留言。**设置窗** 720×690 → 1000×720，左栏五组默认只展开当前组、搜索
+  强制全展开、折叠组未读点上提，新增 `lib/icons.ts` + `components/Icon.tsx` 单色线性图标。
+  **Windows portable 通知修复（#25）**：`win_toast.rs` 启动时补 AUMID 注册表键与带
+  `System.AppUserModel.ID` 的开始菜单快捷方式（COM / STA 线程），失败在设置页与诊断报告
+  可见。没有新增状态、没动状态机、没改已有落盘格式，故按 0.6.0 的补丁发；Windows
+  真机 Toast 仍待验收。详见 `.github/release-body.md` 与 `architecture.md` §3.29 / §3.30。
 - **v0.6.0**（2026-11-09）：方向版 —— **Call Me** 与设置面板重排。
   **Call Me**：外部 AI 智能体通过用户自己的服务器给作者留言（`server/` 独立 crate，
   Docker 或裸机编译，明文 HTTP + 反代 TLS，`CALLME_ADMIN_TOKEN` 必填、每 IP / 每链接

@@ -1207,6 +1207,10 @@ Programs\SignalHub.lnk` 写入 `System.AppUserModel.ID`，最后 `SHChangeNotify
 真机验收（Windows 10/11）见 issue #25 的清单：快捷方式属性、测试通知、真实告警的
 动作按钮、搬动 portable 目录、NSIS 安装版不重复、写入被策略拦截时的提示。
 
+修复随 **v0.6.1** 发布；0.6.0 的 portable 包不含它，那个版本的用户要么改用
+`-setup.exe`，要么直接换 0.6.1 的 zip。issue #25 在上面这份真机清单跑完之前保持
+OPEN —— CI 的 windows-latest 只证明这段代码编得过，不证明 Toast 真的弹了。
+
 ## 4. 悬浮窗实现
 
 ### 4.1 窗口配置

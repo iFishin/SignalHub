@@ -3633,7 +3633,7 @@ dependencies = [
 
 [[package]]
 name = "signalhub-desktop"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "axum",
  "getrandom 0.3.4",

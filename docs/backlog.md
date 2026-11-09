@@ -111,6 +111,7 @@ D2（ntfy / Bark 预设）已作为**转发 preset** 落地（`plan-hub-round2.m
 | **B4 预设 2 / 会议蓝配色（#21）** | 真窗口视觉验收 | `plan-round5.md:94` |
 | **多 tab / tmux / VS Code 跳转** | 解析层有单测，端到端要真机逐一点过 | `plan-round5.md:45-46` |
 | **Windows 命令式 hook 的 pid** | 2026-11-06 已实现（CLI 自己向上找祖先进程），**但 Windows 真机未验** —— 见 §3 与 `win_pid.rs` 头注释 | `plan-round5.md:94` |
+| **Windows portable 版 Toast（#25）** | 2026-11-09 已修（`win_toast.rs` 补 AUMID + 开始菜单快捷方式，随 v0.6.1 发布）；CI 只保证 Windows 分支编过，**真机 Toast 弹出、动作按钮、目录搬动、NSIS 不重复均未验** | `architecture.md` §3.30；[issue #25](https://github.com/iFishin/SignalHub/issues/25) |
 
 `plan-round4.md` 里还有一串「没验证到的」小项：`:395-400` 真按键 / 辅助功能授权、
 `:442-445` 托盘菜单与 25 分钟、`:502-511` 审批气泡、`:555-557` 按住 800ms 手感、
