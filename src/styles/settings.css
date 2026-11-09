@@ -44,6 +44,9 @@ html[data-window="settings"] #root {
   height: 24px;
   padding: 0;
   border: 0;
+  border-radius: 0;
+  -webkit-appearance: none;
+  appearance: none;
   background: transparent;
   color: var(--muted);
   cursor: pointer;
@@ -222,6 +225,9 @@ html[data-window="settings"] #root {
   width: 100%;
   padding: 0 10px 1px;
   border: 0;
+  border-radius: 0;
+  -webkit-appearance: none;
+  appearance: none;
   background: transparent;
   color: var(--muted);
   font: inherit;
@@ -2002,6 +2008,9 @@ input[type="color"].style-swatch::-webkit-color-swatch {
 .callme-rename-trigger {
   padding: 0;
   border: 0;
+  border-radius: 0;
+  -webkit-appearance: none;
+  appearance: none;
   background: transparent;
   font: inherit;
   font-size: 13px;
