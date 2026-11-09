@@ -16,6 +16,11 @@ name: CI
 # clippy 只做 check，不需要 MSVC 链接器，也不必编整个项目（整包交叉编译会卡在
 # `ring` 的 C 代码）。0.5.1 那两轮 CI 连红，就是 `win_pid.rs` 的
 # `field_reassign_with_default` 一直没被本地检查覆盖到 —— 别再只跑 macOS 就推。
+#
+# 被 `#[path]` 引进来的那个文件若还用到 `tauri::AppHandle` / `Manager`，就在临时
+# crate 里加一个同名的 path 依赖当桩（定义 `AppHandle`、`Config` 和 `try_state`）。
+# §3.30 的 `win_toast.rs` 就是这么验的：只靠「临时 crate + 一个 stub crate」，
+# Windows 分支的 COM 调用与 `-D warnings` 都能在开发机上跑完。
 
 on:
   push:

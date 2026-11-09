@@ -1149,6 +1149,64 @@ token、端口、检查间隔、测试按钮、部署命令 —— 可这个功�
 `PATCH`：桌面端只有一套 `http_post` 封装，且部分反代对 `DELETE` 的默认策略不一致；它们
 语义上是命令而非资源 CRUD。`revoke` 保持原有 404 语义，旧客户端认这个。
 
+### 3.30 Windows portable 版的系统通知身份（issue #25）
+
+**症状**：macOS `.dmg` 装的版本通知正常；Windows 用 `_x64_portable.zip` 解压即用，
+点「发一条测试通知」什么都不弹，界面上却写着「已允许」和「已发出」。
+
+**根因不在通知代码，在 Windows 的应用身份。** `tauri-plugin-notification` 在非
+dev 的 Windows 上把 toast 的 `app_id` 固定设成 `tauri.conf.json` 的 `identifier`
+（`app.signalhub.desktop`）；`ToastNotificationManager::CreateToastNotifierWithId(id)`
+要求这个 AppUserModelID 由**开始菜单里带 `System.AppUserModel.ID` 属性的快捷方式**
+注册过，否则系统直接丢掉 toast。Tauri 的 NSIS 安装器会给它建的快捷方式盖章，所以
+`-setup.exe` 能弹；portable zip 没有安装器，缺的正是这一步。
+
+之所以「完全没报错」，是三层叠在一起：
+
+1. 插件在 Windows 的 `permission_state()` **恒返回 Granted** —— Windows 没有 macOS
+   那种 per-app 授权弹窗，这个值只说明「不存在需要申请的权限」。
+2. 我们注册了通知动作按钮，插件因此走 `show_tracked` 后台线程，而那条路径是
+   `let Ok(handle) = notification.show() else { return; }` —— **底层错误被吞掉**，
+   `builder.show()` 照样返回 `Ok`。
+3. GUI 子系统没有控制台，`alerts::show` 打的那行 stderr 等于没打。
+
+于是 `src-tauri/src/win_toast.rs` 在 `setup` 里、第一条通知之前补上这套身份：
+`SetCurrentProcessExplicitAppUserModelID`、写 `HKCU\Software\Classes\AppUserModelId\
+<identifier>` 的 `DisplayName` / `IconUri`（决定通知来源的名字与图标），再用 COM
+的 `IShellLinkW` + `IPropertyStore` 在 `%APPDATA%\Microsoft\Windows\Start Menu\
+Programs\SignalHub.lnk` 写入 `System.AppUserModel.ID`，最后 `SHChangeNotify
+(SHCNE_ASSOCCHANGED)` 让 shell 立刻认到。
+
+几个刻意的选择：
+
+- **只写注册表不够。** 微软 `WindowsAppSDK#6821` 里「注册成功、权限 Enabled、就是没有
+  横幅」正是这种情形，决定性的因素是快捷方式上的属性。上游
+  `tauri-winrt-notification/examples/unpackaged_app.rs` 那份只写注册表的示例不能当
+  通用解。
+- **不用 PowerShell 的 AUMID 兜底。** 那条路能弹，但通知来源会写成「Windows
+  PowerShell」，插件的动作按钮 / 点击回调也全都不走我们这套了。宁可花一次启动把
+  身份注册对。
+- **COM 放在单独的 STA 线程。** Tauri 主线程可能已经用 MTA 初始化过 COM，在那里再
+  `CoInitializeEx(STA)` 会拿到 `RPC_E_CHANGED_MODE`。
+- **幂等判据是「上次记的 exe 路径」而不是「快捷方式存在吗」。** `~/.signalhub/
+  toast-shortcut.txt` 存着路径；portable 目录被搬走、快捷方式被删、注册表键被清，
+  任一种都会触发重建。写成功了才记标记，中途失败下次启动自动重试。
+- **和 NSIS 用同一个快捷方式路径**（没配 `startMenuFolder` 时就是
+  `$SMPROGRAMS\<productName>.lnk`），安装版不会被多塞一个重复的开始菜单项。
+
+代价要说清楚：portable 版首次启动会写一个 `HKCU` 键 + 一个当前用户的开始菜单项。
+仍然不需要安装器、不需要管理员、不写 Program Files。凡是写着「不写注册表、不建
+快捷方式」的文档/注释都得跟着改，别留失效的真值。
+
+**失败要可见。** 注册失败只记进 `ToastBackend`，不阻断启动；`get_notify_permission`
+在这种情况返回 `unavailable`（界面显示「未注册」而不是假的「已允许」），旁边给
+「重新注册」按钮，具体错误原样显示并进一键诊断报告。测试通知的结果文案也不再说
+「已发出」—— 应用只能确认把通知交给了系统，看不到系统是否真的显示了它（上面第
+2 条决定了这一点在本项目里无法从返回值判断）。
+
+真机验收（Windows 10/11）见 issue #25 的清单：快捷方式属性、测试通知、真实告警的
+动作按钮、搬动 portable 目录、NSIS 安装版不重复、写入被策略拦截时的提示。
+
 ## 4. 悬浮窗实现
 
 ### 4.1 窗口配置

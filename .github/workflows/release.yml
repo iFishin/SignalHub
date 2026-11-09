@@ -229,7 +229,13 @@ jobs:
           # `bundle_args` 只有 Linux 那行有，`|| ''` 让另外两行不必写一个空字段
           args: --target ${{ matrix.target }} ${{ matrix.bundle_args || '' }}
 
-      # 免安装的 portable 包（解压即用，不写注册表、不建开始菜单项）。
+      # 免安装的 portable 包（解压即用，不需要安装器 / 管理员权限）。
+      #
+      # ⚠️ 别再写「不写注册表、不建快捷方式」：Windows 的原生通知要求应用有一个
+      # 带 AppUserModelID 的开始菜单快捷方式（NSIS 安装器会建，portable 没有），
+      # 所以应用首次启动会自己补一个 HKCU 键 + 一个当前用户开始菜单项，见
+      # `src-tauri/src/win_toast.rs` 与 architecture.md §3.30。仍是免安装，但会
+      # 在用户目录留下这两处状态。
       #
       # **必须把 CLI 一起打进去。** 应用会去找和它同目录的 `signalhub.exe`
       # （见 `hooks::resolve_hook_command` 的第二条路径），少了它「一键接入」写出来的

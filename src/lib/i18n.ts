@@ -382,8 +382,13 @@ export interface Messages {
   permDenied: string;
   permPrompt: string;
   permUnknown: string;
+  /** Windows 上 AUMID 没注册好：权限显示「已允许」也不能证明通知发得出去。 */
+  permUnavailable: string;
   permRequest: string;
+  permRetry: string;
   permHint: string;
+  permUnavailableHint: string;
+  permBackendError: (detail: string) => string;
   /** 一键测试通知：按钮、通知本身、以及发完之后的解释 */
   notifyTest: string;
   notifyTestTitle: string;
@@ -1323,21 +1328,26 @@ export const MESSAGES: Record<Lang, Messages> = {
       "灰 = 没有任何会话在上报，或者「暂停监控」开着。先看顶部那行标题写的是什么，再去「接入」页确认上报方接上了。",
     guideFaqNoNotifyQ: "通知不弹、也没有声音？",
     guideFaqNoNotifyA:
-      "多半是系统没放行 —— 没权限时通知会被静默丢弃，不弹也不报错。「提醒」页顶部能看到权限状态；显示「已被拒绝」的话，要去系统设置的「通知」里手动打开。",
+      "先看「提醒」页顶部的状态：显示「已被拒绝」要去系统设置的「通知」里手动打开；Windows 免安装版显示「未注册」的话，说明系统通知所需的开始菜单快捷方式没建好，点旁边的「重新注册」。状态是「已允许」却仍然不弹，也可能是专注模式 / 系统通知开关拦了 —— 应用只能确认把通知交给了系统，看不到系统有没有真的显示。",
 
     notifyPermission: "系统通知权限",
     permGranted: "已允许",
     permDenied: "已被拒绝",
     permPrompt: "还没申请",
     permUnknown: "读不到",
+    permUnavailable: "未注册",
     permRequest: "请求权限",
+    permRetry: "重新注册",
     permHint:
       "没有权限时通知会被静默丢弃 —— 不弹、不响，也不报错。显示「已被拒绝」的话，需要去系统设置的「通知」里手动打开 SignalHub。",
+    permUnavailableHint:
+      "Windows 的原生通知要求应用有一个带身份标识的开始菜单快捷方式，安装版由安装器创建，免安装版则由应用在首次启动时补上。这一步没成功时，通知会被系统直接丢弃；点「重新注册」再试一次，或改用 -setup.exe 安装版。",
+    permBackendError: (detail) => `注册失败的具体原因：${detail}`,
     notifyTest: "发一条测试通知",
     notifyTestTitle: "SignalHub 测试通知",
     notifyTestBody: "看到这条，就说明系统通知和提示音都通了。",
     notifyTestResult: (perm) =>
-      `已发出测试通知（权限：${perm}）。没看到的话，去系统设置 →「通知」检查 SignalHub，也看看控制中心有没有开着专注模式。`,
+      `已把测试通知交给系统（权限：${perm}）；应用看不到系统是否真的显示了它。没看到的话，去系统设置 →「通知」检查 SignalHub，看看有没有开着专注模式；Windows 免安装版还要确认上面的状态是「已允许」而不是「未注册」。`,
 
     healthTitle: "系统体检",
     healthHint:
@@ -2227,21 +2237,26 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       "Grey means no session is reporting, or Pause monitoring is on. Check what the heading at the top says, then confirm the reporter is connected on the Connect tab.",
     guideFaqNoNotifyQ: "No notification, and no sound?",
     guideFaqNoNotifyA:
-      "Most likely the system has not let it through — without permission a notification is dropped silently, with no popup and no error. The top of the Alerts tab shows the permission state; if it says Denied, turn SignalHub on by hand under Notifications in System Settings.",
+      "Check the state at the top of the Alerts tab: Denied means you need to turn SignalHub on under Notifications in System Settings; on Windows portable, Not registered means the Start-menu shortcut Windows toasts require could not be created — press Retry there. If it says Granted and nothing appears, Focus or the per-app notification switch may be blocking it: the app can only confirm it handed the notification to the OS, not that the OS displayed it.",
 
     notifyPermission: "System notification permission",
     permGranted: "Granted",
     permDenied: "Denied",
     permPrompt: "Not asked yet",
     permUnknown: "Unreadable",
+    permUnavailable: "Not registered",
     permRequest: "Request",
+    permRetry: "Retry",
     permHint:
       "Without permission a notification is dropped silently — no popup, no sound, no error. If it says Denied, you need to turn SignalHub on by hand under Notifications in System Settings.",
+    permUnavailableHint:
+      "Windows toasts require a Start-menu shortcut carrying the app identity. The installer creates one; on the portable build the app creates one on first launch. When that fails Windows drops every toast — press Retry once, or use the -setup.exe installer instead.",
+    permBackendError: (detail) => `Registration error: ${detail}`,
     notifyTest: "Send a test notification",
     notifyTestTitle: "SignalHub test notification",
     notifyTestBody: "If you can see this, notifications and the alert sound both work.",
     notifyTestResult: (perm) =>
-      `Test notification sent (permission: ${perm}). If you did not see it, check SignalHub under Notifications in System Settings, and whether Focus is on in Control Center.`,
+      `Handed a test notification to the OS (permission: ${perm}); the app cannot tell whether the OS actually displayed it. If you did not see it, check SignalHub under Notifications in System Settings, whether Focus is on, and on Windows portable make sure the state above is Granted rather than Not registered.`,
 
     healthTitle: "System check",
     healthHint:

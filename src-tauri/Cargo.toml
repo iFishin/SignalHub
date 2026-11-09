@@ -105,6 +105,20 @@ ureq = { version = "3", default-features = false, features = ["rustls"] }
 # 所以不会多编译一份 crate。
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }
+# 系统通知的身份注册（见 `win_toast.rs`）：要 IShellLinkW / IPropertyStore 这些 COM
+# **接口**，windows-sys 只有裸 FFI、没有接口封装，所以这里另用完整的 `windows`。
+# 版本与依赖树里已锁定的那份一致（0.62.2），不会多编译一个 crate；features 只开
+# 用到的六个命名空间。`windows-registry` 同样已在树里（0.6.1），拿它写 HKCU 的
+# DisplayName / IconUri，比手搓 RegCreateKeyExW 少一大截 unsafe。
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_Variant",
+  "Win32_UI_Shell",
+  "Win32_UI_Shell_PropertiesSystem",
+] }
+windows-registry = "0.6"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

@@ -1164,14 +1164,20 @@ function PerStateStyles({
  */
 function NotifyPermission({ m, enabled }: { m: Messages; enabled: boolean }) {
   const [state, setState] = useState("unknown");
+  /** Windows 通知身份的注册结果：`ok` / `n/a` / 具体错误（见 win_toast.rs）。 */
+  const [backend, setBackend] = useState("n/a");
   const [tested, setTested] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
+  const [retrying, setRetrying] = useState(false);
 
   useEffect(() => {
     if (!inTauri) return;
     invoke<string>("get_notify_permission")
       .then(setState)
       .catch(() => setState("unknown"));
+    invoke<string>("get_notify_backend")
+      .then(setBackend)
+      .catch(() => setBackend("n/a"));
   }, [enabled]);
 
   const labels: Record<string, string> = {
@@ -1179,6 +1185,9 @@ function NotifyPermission({ m, enabled }: { m: Messages; enabled: boolean }) {
     denied: m.permDenied,
     prompt: m.permPrompt,
     unknown: m.permUnknown,
+    // Windows 上「已允许」是插件恒定的返回值，证明不了 Toast 发得出去；
+    // AUMID 没注册好时 Rust 会把它换成 unavailable（issue #25）。
+    unavailable: m.permUnavailable,
   };
 
   /** 走的是真实告警同一个出口（带提示音），不改任何状态。
@@ -1197,6 +1206,22 @@ function NotifyPermission({ m, enabled }: { m: Messages; enabled: boolean }) {
       })
       .catch(() => setTested("unknown"))
       .finally(() => setTesting(false));
+  };
+
+  /** 注册失败可当场重试，不必重启应用；返回的具体错误原样显示，方便贴进 issue。 */
+  const retryRegistration = () => {
+    if (!inTauri) return;
+    setRetrying(true);
+    invoke<string>("ensure_notify_backend")
+      .then((result) => {
+        setBackend(result);
+        setState(result === "ok" || result === "n/a" ? "granted" : "unavailable");
+      })
+      .catch((err) => {
+        setBackend(String(err));
+        setState("unavailable");
+      })
+      .finally(() => setRetrying(false));
   };
 
   return (
@@ -1219,6 +1244,16 @@ function NotifyPermission({ m, enabled }: { m: Messages; enabled: boolean }) {
             {m.permRequest}
           </button>
         )}
+        {state === "unavailable" && (
+          <button
+            type="button"
+            className="btn btn-tiny"
+            disabled={retrying}
+            onClick={retryRegistration}
+          >
+            {m.permRetry}
+          </button>
+        )}
         <button
           type="button"
           className="btn btn-tiny"
@@ -1228,7 +1263,14 @@ function NotifyPermission({ m, enabled }: { m: Messages; enabled: boolean }) {
           {m.notifyTest}
         </button>
       </div>
-      {state !== "granted" && <p className="hint">{m.permHint}</p>}
+      {state !== "granted" && (
+        <p className="hint">
+          {state === "unavailable" ? m.permUnavailableHint : m.permHint}
+        </p>
+      )}
+      {state === "unavailable" && backend !== "n/a" && (
+        <p className="hint">{m.permBackendError(backend)}</p>
+      )}
       {tested && (
         <p className="hint">
           {m.notifyTestResult(labels[tested] ?? m.permUnknown)}

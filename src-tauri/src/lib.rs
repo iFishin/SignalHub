@@ -32,6 +32,7 @@ mod sweep;
 mod tray;
 mod update;
 mod watches;
+mod win_toast;
 
 // CLI (`src/bin/signalhub.rs`) 通过 #[path] 直接包含这几个模块的源码，
 // 因此它们是 lib 的公开 API，而不是只给 app 内部用的私有模块。
@@ -1056,13 +1057,42 @@ fn get_outbound_log(log: tauri::State<'_, SharedOutbound>) -> Vec<outbound::Atte
         .collect()
 }
 
-/// 系统通知权限的当前状态（`granted` / `denied` / `prompt` / `unknown`）。
+/// 系统通知权限的当前状态（`granted` / `denied` / `prompt` / `unknown` /
+/// `unavailable`）。
 ///
 /// 界面上要能回答「通知到底通没通」—— 没权限时通知是静默丢弃的，不弹也不报错，
 /// 光看界面和日志都查不出来（见 `alerts::permission_state`）。
+///
+/// **Windows 上 `unavailable` 优先**：插件的 `permission_state()` 在 Windows 恒返回
+/// `Granted`（那里没有 macOS 那种授权弹窗），所以「已允许」根本不能证明 Toast 发得
+/// 出去。AUMID 没注册成功时要如实说没注册，否则 portable 版会一直显示「已允许」
+/// 却一条都不弹（issue #25）。
 #[tauri::command]
 fn get_notify_permission(app: tauri::AppHandle) -> &'static str {
+    if win_toast::failed(&app) {
+        return "unavailable";
+    }
     alerts::permission_state(&app)
+}
+
+/// Windows 通知身份的注册结果：`ok` / `n/a`（非 Windows）/ 具体错误。
+#[tauri::command]
+fn get_notify_backend(app: tauri::AppHandle) -> String {
+    app.state::<win_toast::ToastBackend>()
+        .error()
+        .unwrap_or_else(|| {
+            if cfg!(windows) {
+                "ok".to_string()
+            } else {
+                "n/a".to_string()
+            }
+        })
+}
+
+/// 设置页的「重新注册」按钮。`ok` 之外一律是能直接贴进 issue 的失败原因。
+#[tauri::command]
+fn ensure_notify_backend(app: tauri::AppHandle) -> String {
+    win_toast::retry(&app)
 }
 
 /// 主动要一次通知权限，返回要过之后的状态。
@@ -1078,6 +1108,10 @@ fn request_notify_permission(app: tauri::AppHandle) -> &'static str {
 /// 能说清「是系统没放行，还是系统专注模式拦了」。所以这里走的是和真实告警同一个
 /// 出口（`send_timer`，跟着 `Settings::sound` 带提示音），并回报权限；标题正文由界面
 /// 给，好跟着界面语言走。它不改任何状态，也不记进统计。
+///
+/// **「已发出」不等于「已显示」**：我们注册了动作按钮，插件因此走 `show_tracked`
+/// 的后台线程，那条路径把底层 `show()` 的错误吞掉了，返回值一律是成功。Windows
+/// 上尤其如此 —— 能不能弹取决于 AUMID 有没有注册好，界面文案不能替系统打包票。
 #[tauri::command]
 fn test_notification(app: tauri::AppHandle, title: String, body: String) -> String {
     let sound = current_settings(&app).sound;
@@ -1228,13 +1262,18 @@ fn agent_receipts(receipts: tauri::State<'_, SharedReceipts>) -> Vec<receipts::R
 /// 的就是那一段，而不是八个智能体一起。
 #[tauri::command]
 fn diagnose(
+    app: tauri::AppHandle,
     receipts: tauri::State<'_, SharedReceipts>,
     agent: Option<String>,
 ) -> Result<String, String> {
     let filter = agent
         .map(|name| hooks::Agent::parse(&name))
         .transpose()?;
-    Ok(diagnose::text(&receipts, filter))
+    let mut out = diagnose::text(&receipts, filter);
+    // 通知那一段挂在报告末尾：CLI 也调 `diagnose::text`，但它没有 AppHandle，
+    // 不该为了 app 独有的一条状态去改那个共享模块的函数签名。
+    out.push_str(&format!("\n== 通知 ==\n{}\n", win_toast::status_line(&app)));
+    Ok(out)
 }
 
 /// 一次接入 / 卸载改了什么。
@@ -3004,6 +3043,9 @@ pub fn run() {
         .manage(callme::state())
         // 可选的本机收信服务。默认不开，只有用户在「Call Me → 服务器」点启动。
         .manage(callme_local::state())
+        // Windows 通知身份注册的结果。放进 manage 链而不是 setup 里，是为了让
+        // 前端抢在 setup 跑完之前调 `get_notify_permission` 也读得到一份确定的状态。
+        .manage(win_toast::ToastBackend::new(None))
         .invoke_handler(tauri::generate_handler![
             get_state,
             set_state,
@@ -3042,6 +3084,8 @@ pub fn run() {
             get_watches,
             decide_approval,
             get_notify_permission,
+            get_notify_backend,
+            ensure_notify_backend,
             request_notify_permission,
             test_notification,
             detect_agents,
@@ -3130,6 +3174,16 @@ pub fn run() {
             // 托盘图标、系统通知、出站钩子、推事件这几件事一起管起来。
             let notify: Notifier = notify::compose(app.handle().clone());
             app.manage(notify.clone());
+
+            // Windows 的通知身份必须在**第一条通知之前**注册好：插件会把通知发给
+            // `tauri.conf.json` 的 identifier，而这个 AUMID 只有开始菜单快捷方式
+            // 带着它时系统才肯投递。portable zip 没有安装器，缺的正是这一步
+            // （见 win_toast.rs 与 issue #25）。失败不阻断启动，记进状态让设置页
+            // 说清楚，并提供「重新注册」。
+            if let Err(err) = win_toast::ensure(&app.config().identifier) {
+                eprintln!("[signalhub] Windows 通知身份注册失败：{err}");
+                app.state::<win_toast::ToastBackend>().set(Some(err));
+            }
 
             alerts::ensure_permission(app.handle(), &settings);
             // 通知上的动作按钮（打开项目目录 / 静音该组）。注册类型和挂处理函数

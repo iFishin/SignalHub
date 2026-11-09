@@ -78,7 +78,12 @@ xattr -dr com.apple.quarantine /Applications/SignalHub.app
 
 - `-setup.exe`（NSIS 安装器）—— 装进 Program Files，带开始菜单和卸载项。
 - `_x64_portable.zip` —— **免安装**：解压到任意目录，双击里面的
-  `signalhub-app.exe` 就跑。不写注册表、不建快捷方式。
+  `signalhub-app.exe` 就跑。不需要安装器、不需要管理员权限；但**首次启动会为了
+  Windows 原生通知**在自己名下写一个注册表键（`HKCU\Software\Classes\AppUserModelId\`
+  下）和一个当前用户的开始菜单项 —— Windows 要求 Toast 必须有带应用身份的快捷方式，
+  安装版由 NSIS 建，免安装版只能由应用补上（见 issue #25）。不做这一步，通知会
+  被系统静默丢弃。**这一段是修复后的行为**：已经发布的 0.6.0 portable 包还没有它，
+  用那个版本的话请改用 `-setup.exe`，或等下一个版本。
 
 两种都**没有签名**，第一次运行会被 SmartScreen 拦一道：点「更多信息」→「仍要运行」。
 

@@ -3651,6 +3651,8 @@ dependencies = [
  "tauri-plugin-window-state",
  "tokio",
  "ureq",
+ "windows",
+ "windows-registry",
  "windows-sys 0.61.2",
 ]
 
