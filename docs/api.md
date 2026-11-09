@@ -1507,10 +1507,16 @@ AI 智能体 `POST` 一条留言；桌面端在「工作台 → 留言」页显�
 | GET | `/v1/callme/health` | 无 | 健康检查 |
 | GET | `/v1/callme/sources` | `Authorization: Bearer <CALLME_ADMIN_TOKEN>` | 来源列表 + 统计 |
 | POST | `/v1/callme/sources` | 同上 | 新建来源 `{label?, note?}` |
-| POST | `/v1/callme/sources/{id}/revoke` | 同上 | 吊销（幂等） |
+| POST | `/v1/callme/sources/{id}/revoke` | 同上 | 吊销（幂等，仍占一条来源记录） |
+| POST | `/v1/callme/sources/{id}/rename` | 同上 | 改名 `{label}` |
+| POST | `/v1/callme/sources/{id}/delete` | 同上 | 彻底删除（幂等，让出位置） |
+| POST | `/v1/callme/sources/{id}/restore` | 同上 | 撤销吊销（幂等，受 50 条上限约束） |
 | GET | `/v1/callme/messages` | 同上 | 拉留言（seq 游标分页） |
 
 所有响应带 `Cache-Control: no-store`；错误一律 JSON（GET 用法说明除外，它是纯文本）。
+三个新增动作走 POST 子路径而非 `DELETE` / `PATCH`：客户端只有一套 POST 封装，且部分
+反代对 `DELETE` 的默认策略不一致；它们语义上是命令，不是资源 CRUD。校验失败与「没有这个
+来源」都返回 400 `bad_request`，客户端拿到错误刷新一次列表即可。
 
 ### 9.2 公开收信
 
@@ -1593,10 +1599,21 @@ POST /v1/callme/sources
 手工填 `label` 时 ≤60 字符；有效（未吊销）来源最多 50 条。返回同上单个对象。
 
 ```
-POST /v1/callme/sources/{id}/revoke
+POST /v1/callme/sources/{id}/revoke      // 停用：令牌立即 404，记录还在
+POST /v1/callme/sources/{id}/restore     // 恢复：误吊销可以撤回
+POST /v1/callme/sources/{id}/rename      // { "label": "我起的名字" }
+POST /v1/callme/sources/{id}/delete      // 彻底删除：记录从 sources.json 移走
 ```
 
-吊销后该令牌的收信立即 404，**已收的留言保留可拉**；幂等。不可恢复 —— 要新的就再建一条。
+四个动作都幂等（找不到来源时 `delete` 也算成功，`restore` 对未吊销的也算成功）。
+- **吊销与删除是两件事**：吊销只是让它不再收信，记录仍在列表里占一行；删除才把
+  位置让出来。`50 条` 上限只数未吊销的，所以删除后能立刻再建一条。
+- `restore` 会检查有效链接数 —— 否则「吊销 → 恢复」能绕开上限，一直堆对外可写的入口。
+- `rename` 会清掉 `auto_label`：用户手改过的名字不该被后续第一条留言的标题覆盖。
+  `label` 去空白后不能为空，≤60 字符。备注 `note` 不提供手工编辑入口，那是智能体
+  通过 `context` 回填的（见上）。
+- **删除不删留言**。`messages.jsonl` 是 append-only，删掉来源后旧留言仍可拉、仍可读，
+  只是客户端找不到名字时显示「已删除的链接」。`revoke` / `delete` 后公开端点一律 404。
 
 ### 9.4 拉留言（admin）
 

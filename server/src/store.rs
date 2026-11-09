@@ -138,7 +138,7 @@ impl Store {
             return Err(format!("名称最多 {MAX_LABEL_CHARS} 个字"));
         }
         if self.sources.iter().filter(|s| !s.revoked).count() >= MAX_SOURCES {
-            return Err(format!("最多 {MAX_SOURCES} 条有效链接，先吊销几条再建"));
+            return Err(format!("最多 {MAX_SOURCES} 条有效链接，先彻底删除几条不用的"));
         }
 
         let id = token::short_id();
@@ -183,6 +183,55 @@ impl Store {
                 .map_err(|err| format!("保存失败：{err}"))?;
         }
         Ok(())
+    }
+
+    /// 改名。用户手改过就把 `auto_label` 清掉 —— 否则第一条带标题的留言会
+    /// 把他刚写的名字覆盖掉（回填只在服务器给的占位名上生效）。
+    pub fn rename(&mut self, id: &str, label: &str) -> Result<(), String> {
+        let label = label.trim();
+        if label.is_empty() {
+            return Err("名称不能为空".to_string());
+        }
+        if label.chars().count() > MAX_LABEL_CHARS {
+            return Err(format!("名称最多 {MAX_LABEL_CHARS} 个字"));
+        }
+        let Some(source) = self.sources.iter_mut().find(|s| s.id == id) else {
+            return Err(format!("没有这个来源：{id}"));
+        };
+        if source.label == label && !source.auto_label {
+            return Ok(());
+        }
+        source.label = label.to_string();
+        source.auto_label = false;
+        self.save_sources().map_err(|err| format!("保存失败：{err}"))
+    }
+
+    /// 彻底删除。链接立刻 404，位置也让出来了；**已收到的留言保留**（append-only，
+    /// 删来源不该顺手毁掉别人写的内容，见 §3.27）。幂等：界面上连点两下不该报错。
+    pub fn delete(&mut self, id: &str) -> Result<(), String> {
+        let before = self.sources.len();
+        self.sources.retain(|s| s.id != id);
+        if self.sources.len() == before {
+            return Ok(());
+        }
+        self.save_sources().map_err(|err| format!("保存失败：{err}"))
+    }
+
+    /// 恢复误吊销的链接。受同一条 `MAX_SOURCES` 约束 —— 否则「吊销 → 恢复」就能
+    /// 绕过有效链接上界，一直堆对外可写的入口。
+    pub fn restore(&mut self, id: &str) -> Result<(), String> {
+        let active = self.sources.iter().filter(|s| !s.revoked).count();
+        let Some(source) = self.sources.iter_mut().find(|s| s.id == id) else {
+            return Err(format!("没有这个来源：{id}"));
+        };
+        if !source.revoked {
+            return Ok(());
+        }
+        if active >= MAX_SOURCES {
+            return Err(format!("最多 {MAX_SOURCES} 条有效链接，先删掉几条再恢复"));
+        }
+        source.revoked = false;
+        self.save_sources().map_err(|err| format!("保存失败：{err}"))
     }
 
     /// 来源列表 + 统计（给客户端用）。
@@ -888,5 +937,66 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+    }
+
+    #[test]
+    fn rename_stops_auto_label_backfill() {
+        let (dir, mut store) = store("rename");
+        let source = store.create_source("", None, 1_000).unwrap();
+        assert!(source.auto_label);
+        store.rename(&source.id, "我自己起的名字").unwrap();
+
+        // 第一条带标题的留言只该给服务器生成的占位名命名，不该覆盖用户手改的。
+        let mut note = incoming("建议");
+        note.title = Some("文章标题".to_string());
+        store.accept(&source.token, ip(1), 2_000, note).unwrap();
+        let view = store.sources_view(2_000);
+        assert_eq!(view[0].label, "我自己起的名字");
+        assert!(!view[0].auto_label);
+
+        // 改名落盘，重开后仍是用户起的名字。
+        let reopened = Store::open(dir.0.clone(), Limits::default()).unwrap();
+        assert_eq!(reopened.sources_view(2_000)[0].label, "我自己起的名字");
+        assert!(store.rename(&source.id, "   ").is_err());
+        assert!(store.rename(&source.id, &"字".repeat(MAX_LABEL_CHARS + 1)).is_err());
+    }
+
+    #[test]
+    fn delete_frees_the_slot_but_keeps_received_messages() {
+        let (_dir, mut store) = store("delete");
+        let source = store.create_source("", None, 1_000).unwrap();
+        store
+            .accept(&source.token, ip(1), 2_000, incoming("hi"))
+            .unwrap();
+
+        store.delete(&source.id).unwrap();
+        assert_eq!(store.source_count(), 0, "位置要让出来，不能靠吊销占位");
+        assert_eq!(store.message_count(), 1, "删来源不该顺手删掉别人写的留言");
+        assert!(store.source_for_token(&source.token).is_none(), "链接应立即失效");
+        // 幂等：界面上连点两下不该报错。
+        store.delete(&source.id).unwrap();
+    }
+
+    #[test]
+    fn restore_cannot_bypass_the_active_limit() {
+        let (_dir, mut store) = store("restore-limit");
+        let target = store.create_source("被误吊销的", None, 1_000).unwrap();
+        store.revoke(&target.id).unwrap();
+        for i in 0..MAX_SOURCES {
+            store
+                .create_source(&format!("第 {i} 条"), None, 1_000)
+                .unwrap();
+        }
+        assert!(
+            store.restore(&target.id).is_err(),
+            "有效链接已满时恢复会变成第 {} 条，必须拒绝",
+            MAX_SOURCES + 1
+        );
+        let victim = store.sources_view(1_000)[1].id.clone();
+        store.delete(&victim).unwrap();
+        store.restore(&target.id).unwrap();
+        assert!(!store.sources_view(1_000)[0].revoked);
+        // 恢复幂等
+        store.restore(&target.id).unwrap();
     }
 }

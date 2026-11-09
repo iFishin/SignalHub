@@ -1,3 +1,4 @@
+import type { IconName } from "./icons";
 import type { Messages } from "./i18n";
 
 /** 全局页签。新增功能先在这里登记，搜索、持久化和深链才会一起认识它。 */
@@ -17,14 +18,47 @@ export type Tab =
   | "demo"
   | "system";
 
+/** 左栏的五个折叠组。id 与语言无关：切语言不该让展开状态认不出自己。 */
+export type GroupId = "watch" | "lamp" | "notify" | "connect" | "help";
+
 export interface TabEntry {
   id: Tab;
   label: string;
+  /** 图标只是扫读用的锚点，不参与选中态（选中态靠字重，见 settings.css）。 */
+  icon: IconName;
 }
 
 export interface TabGroup {
+  id: GroupId;
   title: string;
   entries: TabEntry[];
+}
+
+/**
+ * 每个页签属于哪一组。`system` 沉底、不属于任何组，所以是 null。
+ *
+ * 这是折叠导航的唯一真值；`tabGroups` 里每条记录的归属由
+ * `settingsNavigation.test.ts` 盯着，加页签忘了登记会直接测试失败。
+ */
+export const TAB_GROUP: Record<Tab, GroupId | null> = {
+  status: "watch",
+  history: "watch",
+  messages: "watch",
+  look: "lamp",
+  behavior: "lamp",
+  groups: "lamp",
+  alert: "notify",
+  hooks: "notify",
+  connect: "connect",
+  machines: "connect",
+  callme: "connect",
+  guide: "help",
+  demo: "help",
+  system: null,
+};
+
+export function groupForTab(tab: Tab): GroupId | null {
+  return TAB_GROUP[tab];
 }
 
 /** 搜索别名是导航数据，不是界面全文索引。中英混放是有意的。 */
@@ -49,41 +83,46 @@ export const TAB_ALIASES: Record<Tab, string[]> = {
 export function tabGroups(m: Messages): TabGroup[] {
   return [
     {
+      id: "watch",
       title: m.railWatch,
       entries: [
-        { id: "status", label: m.tabStatus },
-        { id: "history", label: m.tabHistory },
-        { id: "messages", label: m.tabMessages },
+        { id: "status", label: m.tabStatus, icon: "pulse" },
+        { id: "history", label: m.tabHistory, icon: "clock" },
+        { id: "messages", label: m.tabMessages, icon: "mail" },
       ],
     },
     {
+      id: "lamp",
       title: m.railLamp,
       entries: [
-        { id: "look", label: m.tabLook },
-        { id: "behavior", label: m.tabBehavior },
-        { id: "groups", label: m.tabGroups },
+        { id: "look", label: m.tabLook, icon: "eye" },
+        { id: "behavior", label: m.tabBehavior, icon: "sliders" },
+        { id: "groups", label: m.tabGroups, icon: "layers" },
       ],
     },
     {
+      id: "notify",
       title: m.railNotify,
       entries: [
-        { id: "alert", label: m.tabAlert },
-        { id: "hooks", label: m.tabHooks },
+        { id: "alert", label: m.tabAlert, icon: "bell" },
+        { id: "hooks", label: m.tabHooks, icon: "forward" },
       ],
     },
     {
+      id: "connect",
       title: m.railConnect,
       entries: [
-        { id: "connect", label: m.tabConnect },
-        { id: "machines", label: m.tabMachines },
-        { id: "callme", label: m.tabCallMe },
+        { id: "connect", label: m.tabConnect, icon: "plug" },
+        { id: "machines", label: m.tabMachines, icon: "monitors" },
+        { id: "callme", label: m.tabCallMe, icon: "link" },
       ],
     },
     {
+      id: "help",
       title: m.railHelp,
       entries: [
-        { id: "guide", label: m.tabGuide },
-        { id: "demo", label: m.tabDemo },
+        { id: "guide", label: m.tabGuide, icon: "book" },
+        { id: "demo", label: m.tabDemo, icon: "play" },
       ],
     },
   ];

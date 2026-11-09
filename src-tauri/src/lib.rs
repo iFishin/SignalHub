@@ -1418,6 +1418,36 @@ async fn callme_revoke_source(url: String, token: String, id: String) -> Result<
         .map_err(|err| format!("调用没能跑起来：{err}"))?
 }
 
+/// 来源管理的三个动作。和 `add_source` / `revoke_source` 一样用界面当前的
+/// 地址 / token（可能还没保存），避免「改到了另一台服务器上」。
+#[tauri::command]
+async fn callme_rename_source(
+    url: String,
+    token: String,
+    id: String,
+    label: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        callme::rename_source(&url, &token, &id, &label)
+    })
+    .await
+    .map_err(|err| format!("调用没能跑起来：{err}"))?
+}
+
+#[tauri::command]
+async fn callme_delete_source(url: String, token: String, id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || callme::delete_source(&url, &token, &id))
+        .await
+        .map_err(|err| format!("调用没能跑起来：{err}"))?
+}
+
+#[tauri::command]
+async fn callme_restore_source(url: String, token: String, id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || callme::restore_source(&url, &token, &id))
+        .await
+        .map_err(|err| format!("调用没能跑起来：{err}"))?
+}
+
 /// 本机 Call Me 服务的状态。只监听回环地址；公网部署仍走 `server/` 独立服务。
 #[tauri::command]
 fn callme_local_status(
@@ -3034,6 +3064,9 @@ pub fn run() {
             callme_probe,
             callme_add_source,
             callme_revoke_source,
+            callme_rename_source,
+            callme_delete_source,
+            callme_restore_source,
             callme_local_status,
             callme_local_start,
             callme_local_stop,

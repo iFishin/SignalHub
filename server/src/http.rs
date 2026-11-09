@@ -8,7 +8,7 @@
 //! 2. **公开端点只认路径里的令牌**，不带 Bearer —— 用户在文章里贴的是一条裸链接，
 //!    让智能体额外带 header 会显著降低被正确使用的概率。
 
-use crate::model::{ErrorBody, Incoming, MessagesPage, NewSource, SourceView};
+use crate::model::{ErrorBody, Incoming, MessagesPage, NewSource, RenameSource, SourceView};
 use crate::store::{now_ms, AcceptError, Store};
 use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, Query, State};
@@ -45,7 +45,13 @@ pub fn router(state: AppState) -> Router {
         .route("/c/{token}", post(receive).get(describe))
         .route("/v1/callme/health", get(health))
         .route("/v1/callme/sources", get(list_sources).post(create_source))
+        // 三个来源管理动作都是 POST 子路径，不用 DELETE/PATCH：客户端只有一套
+        // POST 封装（src-tauri/src/callme.rs 的 `http_post`），而部分反代对
+        // DELETE 的默认策略不一致。它们语义上是命令而不是资源 CRUD。
         .route("/v1/callme/sources/{id}/revoke", post(revoke_source))
+        .route("/v1/callme/sources/{id}/rename", post(rename_source))
+        .route("/v1/callme/sources/{id}/delete", post(delete_source))
+        .route("/v1/callme/sources/{id}/restore", post(restore_source))
         .route("/v1/callme/messages", get(list_messages))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         // 所有响应（成功与错误）一律不可缓存。放在 layer 里而不是每个 handler
@@ -248,6 +254,61 @@ async fn revoke_source(
         Ok(()) => Json(serde_json::json!({ "ok": true })).into_response(),
         Err(message) => fail(StatusCode::NOT_FOUND, "not_found", message, None),
     }
+}
+
+/// 三个新增的来源管理动作共用锁与错误包装。校验失败和「没有这个来源」都归
+/// 400：客户端拿到错误就会刷新列表，不必靠状态码细分，错误形状只有一套
+/// （见文件头第一条纪律）。`revoke` 保持它原有的 404 语义，旧客户端认这个。
+fn mutate_source(
+    state: &AppState,
+    action: impl FnOnce(&mut Store) -> Result<(), String>,
+) -> Response {
+    let result = {
+        let mut store = state.store.lock().expect("store poisoned");
+        action(&mut store)
+    };
+    match result {
+        Ok(()) => Json(serde_json::json!({ "ok": true })).into_response(),
+        Err(message) => fail(StatusCode::BAD_REQUEST, "bad_request", message, None),
+    }
+}
+
+async fn rename_source(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    body: Result<Json<RenameSource>, JsonRejection>,
+) -> Response {
+    if let Some(response) = unauthorized(&state, &headers) {
+        return response;
+    }
+    let Json(new) = match body {
+        Ok(body) => body,
+        Err(rejection) => return rejection_response(rejection),
+    };
+    mutate_source(&state, |store| store.rename(&id, &new.label))
+}
+
+async fn delete_source(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if let Some(response) = unauthorized(&state, &headers) {
+        return response;
+    }
+    mutate_source(&state, |store| store.delete(&id))
+}
+
+async fn restore_source(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if let Some(response) = unauthorized(&state, &headers) {
+        return response;
+    }
+    mutate_source(&state, |store| store.restore(&id))
 }
 
 #[derive(Debug, Deserialize)]

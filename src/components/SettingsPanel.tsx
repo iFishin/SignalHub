@@ -13,11 +13,15 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { inTauri } from "../lib/env";
 import { clearSettingsTab, readSettingsTab } from "../lib/settingsIntent";
 import {
+  groupForTab,
   matchesTab,
   tabGroups,
   tabIds,
+  type GroupId,
   type Tab,
+  type TabGroup,
 } from "../lib/settingsNavigation";
+import { Icon } from "./Icon";
 import { signalLabel } from "../lib/signals";
 import { DemoStage } from "./DemoStage";
 import { CallMePage } from "./CallMePage";
@@ -1382,6 +1386,31 @@ export function SettingsPanel({ snapshot }: Props) {
       // 写不进去就当没记住，不弹错
     }
   }, [tab]);
+
+  // 左栏默认折叠：只展开「在用的」那一组，其余组收成一行标题。切页时自动
+  // 归位 —— 手动展开过别的组也不该让十几个页签又摊成一长列。不持久化：
+  // 每次打开设置按当前页展开最自然，记一堆展开状态反而要用户自己收拾。
+  // 搜索时强制全展开，否则命中的页签会藏在折叠里，搜索就白做了。
+  const [expanded, setExpanded] = useState<GroupId[]>(() => {
+    const group = groupForTab(tab);
+    return group ? [group] : [];
+  });
+  useEffect(() => {
+    const group = groupForTab(tab);
+    setExpanded(group ? [group] : []);
+  }, [tab]);
+  const searching = query.trim() !== "";
+  const isOpen = (id: GroupId) => searching || expanded.includes(id);
+  const toggleGroup = (id: GroupId) =>
+    setExpanded((prev) =>
+      prev.includes(id) ? prev.filter((group) => group !== id) : [...prev, id],
+    );
+  // 折叠后组里那条「留言」的未读不能跟着一起消失：把红点提到组标题上。
+  const unreadInGroup = (group: TabGroup) =>
+    group.entries.reduce(
+      (total, entry) => total + (entry.id === "messages" ? callmeUnread : 0),
+      0,
+    );
 
   // 页签搜索：标签 + 一张中英别名表（都在 settingsNavigation 里）。不做全文
   // 索引（这个规模不值得，而且动态内容会漏）；搜到的是「去哪一页」，不是
@@ -4844,13 +4873,13 @@ export function SettingsPanel({ snapshot }: Props) {
       {/* 「今日各状态时长」搬去了「历史」页顶部：它是回顾数据，不该在每页占一行
           （见 docs/settings-redesign-plan.md 4.2）。顶部只留全局状态。 */}
 
-      {/* 两栏：左栏是「去哪儿」（五组页签 + 沉底的「系统」 + 底部的全局开关），
-          右栏是内容。
+      {/* 两栏：左栏是「去哪儿」（五组默认折叠的页签 + 沉底的「系统」 + 底部的
+          全局开关），右栏是内容。
           原先页签横排在顶部、内容区写死 495px 高 —— 那个高度得手写一个「够大
           又不过分大」的数，改内容就得重新量。改成 flex 之后这条性质由结构保证。 */}
       <div className="settings-body">
         <nav className="rail">
-          {/* 11 个页签里找东西，靠肉眼扫太慢。搜索只过滤左栏，回车跳第一个
+          {/* 十几个页签里找东西，靠肉眼扫太慢。搜索只过滤左栏，回车跳第一个
               匹配项，Esc 清空 —— 不抢焦点、不改右栏内容。
               它放在 `.rail-nav` **外面**：页签再多，搜索框也钉在顶上，
               不会跟着列表一起被滚走。 */}
@@ -4865,37 +4894,63 @@ export function SettingsPanel({ snapshot }: Props) {
           />
           <div className="rail-nav">
             {noMatches && <p className="rail-empty">{m.railSearchEmpty}</p>}
-            {visibleGroups.map((group) => (
-              <div className="rail-group" key={group.title}>
-                {/* 分组标题只是标题，不是按钮 —— 点它什么都不该发生（点一下
-                    「灯」而跳到某一页会让人以为漏了一层）。 */}
-                <div className="rail-group-title">{group.title}</div>
-                {group.entries.map((entry) => {
-                  // 未读只挂在「留言」上（阅读的那一页），不挂在配置页「Call Me」
-                  // 上 —— 提醒要指向用户真正要读的地方。它是一枚纯视觉提示，
-                  // 所以对读屏器不单独发音，而是并进按钮的可读名里。
-                  const unread = entry.id === "messages" ? callmeUnread : 0;
-                  return (
-                    <button
-                      key={entry.id}
-                      type="button"
-                      className="rail-item"
-                      data-active={tab === entry.id}
-                      aria-current={tab === entry.id ? "page" : undefined}
-                      aria-label={
-                        unread > 0
-                          ? `${entry.label} · ${m.callme.unread(unread)}`
-                          : undefined
-                      }
-                      onClick={() => setTab(entry.id)}
-                    >
-                      {entry.label}
-                      {unread > 0 && <span className="rail-dot" aria-hidden="true" />}
-                    </button>
-                  );
-                })}
-              </div>
-            ))}
+            {visibleGroups.map((group) => {
+              const open = isOpen(group.id);
+              const unread = unreadInGroup(group);
+              return (
+                <div className="rail-group" key={group.id}>
+                  {/* 组标题现在**是按钮**，但只做一件事：展开 / 收起自己那几页。
+                      它仍然不导航 —— 点一下「灯」直接跳到某一页会让人以为漏了
+                      一层。折叠时组里的未读点提到标题上，免得提醒一起被收走。 */}
+                  <button
+                    type="button"
+                    className="rail-group-toggle"
+                    aria-expanded={open}
+                    aria-controls={open ? `rail-group-${group.id}` : undefined}
+                    onClick={() => {
+                      if (!searching) toggleGroup(group.id);
+                    }}
+                  >
+                    <Icon name="chevron" size={11} className="rail-chevron" />
+                    <span>{group.title}</span>
+                    {!open && unread > 0 && (
+                      <span className="rail-dot" aria-hidden="true" />
+                    )}
+                  </button>
+                  {open && (
+                    <div className="rail-group-items" id={`rail-group-${group.id}`}>
+                      {group.entries.map((entry) => {
+                        // 未读只挂在「留言」上（阅读的那一页），不挂在配置页
+                        // 「Call Me」上 —— 提醒要指向用户真正要读的地方。它是
+                        // 纯视觉提示，所以并进按钮的可读名里，不单独发音。
+                        const itemUnread = entry.id === "messages" ? callmeUnread : 0;
+                        return (
+                          <button
+                            key={entry.id}
+                            type="button"
+                            className="rail-item"
+                            data-active={tab === entry.id}
+                            aria-current={tab === entry.id ? "page" : undefined}
+                            aria-label={
+                              itemUnread > 0
+                                ? `${entry.label} · ${m.callme.unread(itemUnread)}`
+                                : undefined
+                            }
+                            onClick={() => setTab(entry.id)}
+                          >
+                            <Icon name={entry.icon} size={13} />
+                            <span>{entry.label}</span>
+                            {itemUnread > 0 && (
+                              <span className="rail-dot" aria-hidden="true" />
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
 
           </div>
 
@@ -4911,7 +4966,8 @@ export function SettingsPanel({ snapshot }: Props) {
                 aria-current={tab === "system" ? "page" : undefined}
                 onClick={() => setTab("system")}
               >
-                {m.tabSystem}
+                <Icon name="sliders" size={13} />
+                <span>{m.tabSystem}</span>
               </button>
             </div>
           )}

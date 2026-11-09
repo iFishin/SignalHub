@@ -73,6 +73,13 @@ pub struct NewSource {
     pub note: Option<String>,
 }
 
+/// 给已有来源改名的请求体。备注（出处）由智能体回填，不给用户开第二个输入框。
+#[derive(Debug, Deserialize)]
+pub struct RenameSource {
+    #[serde(default)]
+    pub label: String,
+}
+
 /// 来源 + 统计。给客户端「来源管理」列表用。
 #[derive(Debug, Clone, Serialize)]
 pub struct SourceView {

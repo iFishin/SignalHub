@@ -566,3 +566,122 @@ async fn the_same_link_explains_itself_on_get() {
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+/// 链接管理：改名、彻底删除、误吊销后恢复。三个动作都要求 admin token。
+#[tokio::test]
+async fn source_management_rename_and_delete() {
+    let harness = Harness::new("manage", Limits::default());
+    let (id, token) = harness.create_link("").await;
+    let link = format!("/c/{token}");
+
+    // 没带 token 的管理动作一律 401
+    for action in ["rename", "delete", "restore"] {
+        let (status, _) = harness
+            .call(harness.request(
+                "POST",
+                &format!("/v1/callme/sources/{id}/{action}"),
+                Some(json!({ "label": "x" })),
+                false,
+                "10.0.0.1",
+            ))
+            .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{action} 不该匿名可调用");
+    }
+
+    // 占位名可以改成用户自己的名字
+    let (status, body) = harness
+        .call(harness.request(
+            "POST",
+            &format!("/v1/callme/sources/{id}/rename"),
+            Some(json!({ "label": "我起的名字" })),
+            true,
+            "10.0.0.1",
+        ))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = harness
+        .call(harness.request("GET", "/v1/callme/sources", None, true, "10.0.0.1"))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["sources"][0]["label"], "我起的名字");
+    assert_eq!(body["sources"][0]["auto_label"], false);
+
+    // 空名 / 超长名被拒，原来的名字不变
+    let (status, _) = harness
+        .call(harness.request(
+            "POST",
+            &format!("/v1/callme/sources/{id}/rename"),
+            Some(json!({ "label": "  " })),
+            true,
+            "10.0.0.1",
+        ))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // 收一条再删：链接失效、位置空出来、留言仍在
+    let (status, _) = harness
+        .call(harness.request("POST", &link, Some(json!({ "text": "hi" })), false, "10.0.0.2"))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = harness
+        .call(harness.request(
+            "POST",
+            &format!("/v1/callme/sources/{id}/delete"),
+            None,
+            true,
+            "10.0.0.1",
+        ))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = harness
+        .call(harness.request("GET", "/v1/callme/sources", None, true, "10.0.0.1"))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["sources"].as_array().unwrap().len(), 0);
+    let (status, _) = harness
+        .call(harness.request("POST", &link, Some(json!({ "text": "hi" })), false, "10.0.0.2"))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "删掉的链接必须立刻 404");
+    let (status, body) = harness
+        .call(harness.request("GET", "/v1/callme/messages", None, true, "10.0.0.1"))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["messages"].as_array().unwrap().len(), 1, "留言要留着");
+}
+
+#[tokio::test]
+async fn revoked_link_can_be_restored() {
+    let harness = Harness::new("restore", Limits::default());
+    let (id, token) = harness.create_link("文章").await;
+    let link = format!("/c/{token}");
+
+    let (status, _) = harness
+        .call(harness.request(
+            "POST",
+            &format!("/v1/callme/sources/{id}/revoke"),
+            None,
+            true,
+            "10.0.0.1",
+        ))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = harness
+        .call(harness.request("POST", &link, Some(json!({ "text": "hi" })), false, "10.0.0.2"))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, body) = harness
+        .call(harness.request(
+            "POST",
+            &format!("/v1/callme/sources/{id}/restore"),
+            None,
+            true,
+            "10.0.0.1",
+        ))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, _) = harness
+        .call(harness.request("POST", &link, Some(json!({ "text": "hi" })), false, "10.0.0.3"))
+        .await;
+    assert_eq!(status, StatusCode::OK, "恢复后又该能收信");
+}

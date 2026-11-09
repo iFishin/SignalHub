@@ -48,8 +48,10 @@ export function CallMeMessages({ m, state, refresh, goCallMe, now }: Props) {
   const shown = filterBySource(messages, filter);
   const unread = unreadBySource(messages, read);
   const totalUnread = unreadCount(messages, read);
+  // 来源被彻底删除后旧留言仍在（服务器保留 append-only 的消息），但名字找不到
+  // 了。显示「已删除的链接」比把 8 位内部 id 摊给用户好。
   const labelOf = (sourceId: string) =>
-    sources.find((source) => source.id === sourceId)?.label ?? sourceId;
+    sources.find((source) => source.id === sourceId)?.label ?? c.deletedSource;
 
   const copy = (what: string, text: string) => {
     navigator.clipboard

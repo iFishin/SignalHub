@@ -2,12 +2,15 @@ import { describe, expect, it } from "vitest";
 import { MESSAGES } from "./i18n";
 import {
   TAB_ALIASES,
+  TAB_GROUP,
+  groupForTab,
   matchesTab,
   tabGroups,
   tabIds,
   tabLabel,
   type Tab,
 } from "./settingsNavigation";
+import { ICONS } from "./icons";
 
 const zh = MESSAGES.zh;
 const en = MESSAGES.en;
@@ -72,6 +75,35 @@ describe("设置页签导航", () => {
       zh.railConnect,
       zh.railHelp,
     ]);
+  });
+
+  // 左栏默认折叠靠 TAB_GROUP 决定「展开哪一组」。加页签忘了登记、或把一页
+  // 放进了另一组，表现是「切过去之后左栏展开错组」，界面上不容易一眼看出。
+  it("每组有稳定 id，组内每一页的归属都和 TAB_GROUP 一致", () => {
+    const groups = tabGroups(zh);
+    expect(new Set(groups.map((group) => group.id)).size).toBe(groups.length);
+    for (const group of groups) {
+      expect(group.entries.length).toBeGreaterThan(0);
+      for (const entry of group.entries) {
+        expect(TAB_GROUP[entry.id]).toBe(group.id);
+        expect(groupForTab(entry.id)).toBe(group.id);
+      }
+    }
+    expect(TAB_GROUP.system).toBeNull();
+    expect(groupForTab("system")).toBeNull();
+  });
+
+  it("TAB_GROUP 覆盖全部页签，每个页签都有一枚真图标", () => {
+    const ids = tabIds(zh);
+    expect(Object.keys(TAB_GROUP).sort()).toEqual([...ids].sort());
+    for (const id of ids) {
+      expect(TAB_GROUP[id]).not.toBeUndefined();
+    }
+    for (const group of tabGroups(zh)) {
+      for (const entry of group.entries) {
+        expect(ICONS[entry.icon]?.length).toBeGreaterThan(0);
+      }
+    }
   });
 
   it("搜索：空串全通过，标签和别名都能命中，大小写与首尾空格无关", () => {

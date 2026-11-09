@@ -25,6 +25,44 @@ html[data-window="settings"] #root {
   outline-offset: 2px;
 }
 
+/* ---- 图标（通用） ---------------------------------------------------------- */
+
+/* 线性图标一律 `currentColor`，所以选中 / hover / 禁用时自动跟着外层文字走，
+   不需要第二套配色。尺寸由调用处给，这里只固定「不参与 flex 伸缩」。 */
+.icon {
+  display: block;
+  flex: none;
+}
+
+/* 图标按钮只给次要动作：透明底、无边框、无圆角色块。hover 那层浅灰和
+   `.rail-item:hover` 是同一个变量 —— 不另起一套视觉语言。 */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.icon-btn:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.icon-btn[data-danger]:hover {
+  color: var(--danger);
+}
+
+.icon-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .settings {
   height: 100vh;
   box-sizing: border-box;
@@ -105,7 +143,8 @@ html[data-window="settings"] #root {
 }
 
 /* 定宽 140px。宽度按最长的页签名（英文 Forwarding / Guide）量出来，
-   再宽就是白占地方 —— 横向的每一像素都是从那块逐状态表身上拿的。
+   加上 13px 图标 + 7px 间距 + 20px 内边距仍在 140px 内；再宽就是白占地方
+   —— 横向的每一像素都是从那块逐状态表身上拿的。
 
    `min-height: 0` 和下面 `.rail-nav` 的那一对，修的是 0.4.4 里的一处重叠：
    左栏是「搜索 / 页签 / 系统 / 暂停」四段，页签那段 `flex: 1` 却没有收缩下限，
@@ -161,11 +200,11 @@ html[data-window="settings"] #root {
   background: transparent;
 }
 
-/* 「看 / 灯 / 通知 / 开始用」四组。
-   组标题是**标题不是按钮**：它只负责把「这一页在回答什么问题」写在页签上面，
-   点了不该有任何反应（点一下「灯」却跳到某一页，会让人以为漏了一层）。
-   样式和 `.section-title` 同一套（11px / 灰 / 加字距），但这里没有
-   `text-transform: uppercase` —— 中文没有大小写，套上去只是白设。 */
+/* 五组导航默认折叠，只展开当前页那一组（逻辑在 SettingsPanel 的 `expanded`）。
+   组标题是**按钮但不是导航**：点它只展开 / 收起自己那几页，跳到某一页会让
+   人以为漏了一层。样式仍和 `.section-title` 同一套（11px / 灰 / 加字距），
+   但这里没有 `text-transform: uppercase` —— 中文没有大小写，套上去只是白设。
+   折叠后组里若有未读，红点会提到标题上，提醒不会一起被收走。 */
 .settings .rail-group {
   display: flex;
   flex-direction: column;
@@ -176,12 +215,41 @@ html[data-window="settings"] #root {
   margin-top: 8px;
 }
 
-.settings .rail-group-title {
+.settings .rail-group-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
   padding: 0 10px 1px;
+  border: 0;
+  background: transparent;
   color: var(--muted);
+  font: inherit;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.08em;
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings .rail-group-toggle:hover {
+  color: var(--fg);
+}
+
+/* 一枚 11px 的尖角就够指示状态，不叠底色块也不加圆角。展开时顺时针转 90°。 */
+.settings .rail-group-toggle .rail-chevron {
+  transition: transform 120ms ease;
+}
+
+.settings .rail-group-toggle[aria-expanded="true"] .rail-chevron {
+  transform: rotate(90deg);
+}
+
+.settings .rail-group-items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 2px;
 }
 
 /* 「系统」沉在底部：它不属于上面任何一组。和 `.rail-foot` 一样用一道细线分开，
@@ -199,11 +267,14 @@ html[data-window="settings"] #root {
 
 /* 左栏是**一份目录**，不是一排卡片。选中态和 `.seg button` / `.chip` 同一套：
    浅灰底 + 正文字色 + 中等字重（见 architecture.md「控件只有两种选法」）。
-   刻意不加圆角、不加 accent 竖线 —— 140px 的窄栏里，圆角色块配一条高亮边
-   会把每一行都打扮成一枚待点的按钮，整列看着像一排卡片；而这里要说的只是
-   「你现在在这一页」。没有边框就没有占位，文字位置一个像素都不动。 */
+   刻意不加圆角、不加 accent 竖线 —— 窄栏里圆角色块配高亮边会把每行打扮成
+   待点的按钮，整列看着像一排卡片；而这里要说的只是「你现在在这一页」。
+   图标用 currentColor，于是 hover / 选中时它跟着文字一起变深，不用另写规则。 */
 .settings .rail-item {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
   padding: 3px 10px;
   border: 0;
   background: transparent;
@@ -1864,18 +1935,22 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   .settings .page {
     animation: none;
   }
+
+  .settings .rail-group-toggle .rail-chevron {
+    transition: none;
+  }
 }
 
 /* ---- Call Me（自部署收信服务器，见 docs/callme.md） ---- */
 
-/* 左栏页签上的未读点。只有有未读时才存在，所以没有「怎么隐藏」这条规则。
-   5px、不加光晕、不占位（`display: none` 的兄弟项不挤动文字）：它是一枚
-   提示，不是装饰。 */
+/* 左栏页签（以及折叠组标题）上的未读点。只有有未读时才存在，所以没有
+   「怎么隐藏」这条规则。5px、不加光晕：它是一枚提示，不是装饰。
+   在 flex 行里间距由 gap 给，不再需要旧的 margin-left。 */
 .settings .rail-dot {
   display: inline-block;
+  flex: none;
   width: 5px;
   height: 5px;
-  margin-left: 6px;
   border-radius: 50%;
   background: var(--accent);
   vertical-align: middle;
@@ -1900,7 +1975,10 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   border-bottom: 1px solid var(--line);
 }
 
-.callme-source:last-of-type {
+/* 列表单独包一层容器，最后一条才认得自己是最后一条 —— 后面还跟着折叠区和
+   新建按钮，用 `:last-of-type` 会落空。折叠区里同理。 */
+.callme-source-list .callme-source:last-child,
+.callme-revoked .callme-source:last-child {
   border-bottom: 0;
 }
 
@@ -1911,9 +1989,75 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   flex-wrap: wrap;
 }
 
+/* 名称点一下就能改。它平时看起来仍是普通文字，只在 hover 时浮出一枚小铅笔
+   和一道下划线 —— 做成按钮会让一列链接变成一排待点的控件。 */
 .callme-source-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   color: var(--fg);
   font-size: 13px;
+}
+
+.callme-rename-trigger {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.callme-rename-trigger .icon {
+  color: var(--muted);
+  opacity: 0;
+}
+
+.callme-rename-trigger:hover .icon,
+.callme-rename-trigger:focus-visible .icon {
+  opacity: 1;
+}
+
+.callme-rename-trigger:hover span:not(.callme-tag) {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.callme-rename-input {
+  width: 220px;
+  max-width: 100%;
+  font-size: 13px;
+}
+
+/* 一条链接的次要动作收在行尾：复制仍是文字（最高频），其余是图标按钮。 */
+.callme-source-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
+/* 吊销过的链接默认收起，不再占主列表的位置。用原生 `<details>`，指示三角
+   不加圆角色块 / 高亮条，和上面「低频参数」那处折叠同一套语言。 */
+.callme-revoked {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.callme-revoked > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.callme-revoked .callme-source-revoked .callme-source-title {
+  color: var(--muted);
+}
+
+.callme-revoked .hint {
+  margin: 6px 0 0;
 }
 
 /* 「已吊销」标记：一个 10px 的小方框，刻意比正文轻 —— 它是状态的注脚。 */
@@ -1944,6 +2088,12 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   align-items: center;
   flex-wrap: wrap;
   margin-top: 8px;
+}
+
+.callme-new .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
 }
 
 /* 低频参数（地址 / token / 端口 / 检查间隔、VPS 部署命令）默认收起。

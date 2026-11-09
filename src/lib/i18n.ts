@@ -1003,9 +1003,25 @@ export interface Messages {
     pendingName: string;
     copyLink: string;
     copiedLink: string;
+    /** 点标题改名；回车 / 失焦提交，Esc 取消。 */
+    renameLink: string;
+    renamePlaceholder: string;
+    /** 在系统浏览器打开这条链接 —— 智能体看到的就是 GET 返回的用法说明。 */
+    openUsage: string;
     revoke: string;
     revokeConfirm: string;
     revoked: string;
+    /** 彻底删除（不是吊销）：位置让出来，已收到的留言保留。 */
+    deleteLink: string;
+    deleteConfirm: string;
+    restoreLink: string;
+    /** 吊销的链接默认收在这个折叠区里，不再占主列表。 */
+    revokedTitle: (n: number) => string;
+    revokedHint: string;
+    /** 有效链接一条不剩、但还有吊销着的时候，主列表给的出路。 */
+    activeEmpty: string;
+    /** 删掉来源后，旧留言找不到来源名时的兜底。 */
+    deletedSource: string;
     /** 这条链接近 24 小时收到几条（与服务器配额同口径）。 */
     todayCount: (n: number) => string;
     totalCount: (n: number) => string;
@@ -1919,14 +1935,25 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       pendingName: "等第一条留言命名",
       copyLink: "复制链接",
       copiedLink: "已复制",
+      renameLink: "改名",
+      renamePlaceholder: "给这条链接起个名字",
+      openUsage: "打开链接看用法",
       revoke: "吊销",
-      revokeConfirm: "吊销后这条链接立即失效（已收到的留言保留）。继续？",
+      revokeConfirm: "吊销后这条链接立即失效（已收到的留言保留）。它会收进下面的「已吊销」，随时能恢复或彻底删除。继续？",
       revoked: "已吊销",
+      deleteLink: "彻底删除",
+      deleteConfirm:
+        "删除后这条链接立即失效并从列表移除，位置也让出来。已经收到的留言会保留，但会失去来源名称。这个动作不能撤销，继续？",
+      restoreLink: "恢复",
+      revokedTitle: (n) => `已吊销 (${n})`,
+      revokedHint: "这些链接不再收信。恢复可以继续用，删除则彻底清掉 —— 已收到的留言两种情况下都保留。",
+      activeEmpty: "没有在用的链接。新建一条，或在下面恢复一条已吊销的。",
+      deletedSource: "已删除的链接",
       todayCount: (n) => `近 24h ${n} 条`,
       totalCount: (n) => `共 ${n} 条`,
       createdTitle: "链接已创建",
       createdHint:
-        "复制它，贴到你希望智能体读到的地方。智能体打开这条链接就会看到怎么留言（同一条链接，GET 是用法、POST 是留言），不用你再附一段说明。任何读到它的人都能发消息 —— 额度用完为止，吊销即失效。",
+        "复制它，贴到你希望智能体读到的地方。智能体打开这条链接就会看到怎么留言（同一条链接，GET 是用法、POST 是留言），不用你再附一段说明。任何读到它的人都能发消息 —— 额度用完为止，不想再收时可以吊销（可恢复）或彻底删除。",
       filterAll: "全部",
       messagesEmptyNoServer: "还没配置 Call Me 服务器 —— 填好地址和 token 之后才会去拉留言。",
       messagesEmptyOffline: "连不上 Call Me 服务器，先检查地址、token 和服务是否在跑。",
@@ -2823,15 +2850,27 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
       pendingName: "Named by the first note",
       copyLink: "Copy link",
       copiedLink: "Copied",
+      renameLink: "Rename",
+      renamePlaceholder: "Name this link",
+      openUsage: "Open link to read the instructions",
       revoke: "Revoke",
       revokeConfirm:
-        "Revoking disables this link immediately (messages already received are kept). Continue?",
+        "Revoking disables this link immediately (messages already received are kept). It moves into the Revoked section below, where you can restore or delete it. Continue?",
       revoked: "Revoked",
+      deleteLink: "Delete permanently",
+      deleteConfirm:
+        "Deleting disables this link, removes it from the list and frees its slot. Messages already received are kept but lose this link's name. This cannot be undone. Continue?",
+      restoreLink: "Restore",
+      revokedTitle: (n) => `Revoked (${n})`,
+      revokedHint:
+        "These links no longer accept notes. Restore to use one again, or delete to clear it out. Received messages are kept either way.",
+      activeEmpty: "No active links. Create a new one, or restore a revoked one below.",
+      deletedSource: "Deleted link",
       todayCount: (n) => `${n} in 24h`,
       totalCount: (n) => `${n} total`,
       createdTitle: "Link created",
       createdHint:
-        "Copy it and paste it where you want agents to find it. Opening the link shows an agent how to post (GET explains, POST leaves the note), so you don't have to paste instructions alongside it. Anyone who reads it can post until the daily quota runs out; revoking kills it instantly.",
+        "Copy it and paste it where you want agents to find it. Opening the link shows an agent how to post (GET explains, POST leaves the note), so you don't have to paste instructions alongside it. Anyone who reads it can post until the daily quota runs out; revoke it (reversible) or delete it for good whenever you want.",
       filterAll: "All",
       messagesEmptyNoServer:
         "No Call Me server yet — messages are only fetched once the address and token are filled in.",

@@ -380,14 +380,44 @@ pub fn add_source(
         .map_err(|err| format!("服务器没有返回新链接：{}", short_error(&err.to_string())))
 }
 
-pub fn revoke_source(url: &str, token: &str, id: &str) -> Result<(), String> {
+/// 来源管理动作共用一个 POST 子路径（服务器为什么不用 DELETE/PATCH，见
+/// `server/src/http.rs` 的路由注释）。桌面端也就只需要一套 `http_post`。
+fn source_action(
+    url: &str,
+    token: &str,
+    id: &str,
+    action: &str,
+    body: Option<&str>,
+) -> Result<(), String> {
     let base = endpoint(url);
     http_post(
-        &format!("{base}/v1/callme/sources/{id}/revoke"),
+        &format!("{base}/v1/callme/sources/{id}/{action}"),
         token,
-        None,
+        body,
     )
     .map(|_| ())
+}
+
+pub fn revoke_source(url: &str, token: &str, id: &str) -> Result<(), String> {
+    source_action(url, token, id, "revoke", None)
+}
+
+/// 改名。用户手改过的名字不再被第一条留言的标题覆盖（服务器 `rename` 会清
+/// `auto_label`），所以这里只发 `label`，备注仍留给智能体回填。
+pub fn rename_source(url: &str, token: &str, id: &str, label: &str) -> Result<(), String> {
+    let body = serde_json::to_string(&serde_json::json!({ "label": label }))
+        .map_err(|err| err.to_string())?;
+    source_action(url, token, id, "rename", Some(&body))
+}
+
+/// 彻底删除：链接立刻失效，位置也让出来；已收留言由服务器保留。
+pub fn delete_source(url: &str, token: &str, id: &str) -> Result<(), String> {
+    source_action(url, token, id, "delete", None)
+}
+
+/// 撤销误吊销。有效链接已达上限时服务器会拒绝。
+pub fn restore_source(url: &str, token: &str, id: &str) -> Result<(), String> {
+    source_action(url, token, id, "restore", None)
 }
 
 // ---- 已读 ----
