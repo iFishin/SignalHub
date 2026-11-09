@@ -9,9 +9,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Source {
     pub id: String,
-    /// 给人看的名字，例如「博客：SignalHub 介绍」。
+    /// 给人看的名字，例如「博客：SignalHub 介绍」。**可以不填** —— 见 `auto_label`。
     pub label: String,
     /// 备注：放在哪个文件 / 哪个位置。只出现在客户端来源列表里。
+    /// 用户没填时，由第一条带 `context` 的留言回填。
     #[serde(default)]
     pub note: Option<String>,
     /// URL 里的令牌。**是凭证**：`sources.json` 权限 0600。
@@ -20,6 +21,11 @@ pub struct Source {
     /// 吊销后公开端点立即 404；已收的留言保留可拉。
     #[serde(default)]
     pub revoked: bool,
+    /// 名字是不是服务器生成的占位（`link-xxxx`）。是的话，第一条带标题的留言
+    /// 会把它换成真正的标题 —— 用户只点「新建链接」，并不知道智能体从哪篇
+    /// 文章过来。回填一次就置回 false，免得名字随每条留言变。
+    #[serde(default)]
+    pub auto_label: bool,
 }
 
 /// 一条留言。append-only —— 收进来就不再改。
@@ -79,6 +85,8 @@ pub struct SourceView {
     pub link: String,
     pub created_ms: u64,
     pub revoked: bool,
+    /// 名字仍是占位（还没被留言回填）。客户端据此显示「等第一条留言命名」。
+    pub auto_label: bool,
     pub total: usize,
     /// 近 24 小时收到几条。和防滥用配额同口径（滚动窗口，不按自然日）。
     pub today: usize,

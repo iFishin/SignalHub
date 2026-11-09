@@ -37,9 +37,17 @@ interface Props {
   state: CallMeState | null;
   /** 「上次成功 X 分钟前」用的钟，由 CallMePage 传入（面板壳控制走不走）。 */
   now: number;
+  /** 本机服务启动成功后回传新地址与 token：父组件据此自动建第一条链接。 */
+  onLocalStarted: (started: { url: string; token: string }) => void;
 }
 
-/** Call Me 的连接参数、本机一键服务和 VPS 部署入口。 */
+/**
+ * Call Me 的服务器页。
+ *
+ * **常态只做一件事：把服务开起来。** 地址、token、端口、检查间隔和 VPS 部署命令
+ * 都在折叠里 —— 这个功能的使用者是智能体，用户不该为了贴一条链接去配四个字段。
+ * 折起来而不是删掉：连自己 VPS、换端口、调轮询是真实需求，只是低频。
+ */
 export function CallMeServer({
   settings,
   url,
@@ -50,6 +58,7 @@ export function CallMeServer({
   m,
   state,
   now,
+  onLocalStarted,
 }: Props) {
   const c = m.callme;
   const [probe, setProbe] = useState<CallMeProbe | "testing" | null>(null);
@@ -103,6 +112,8 @@ export function CallMeServer({
           setToken(status.token);
           commit({ url: status.url, token: status.token });
           setProbe(null);
+          // 地址是刚生成的，父组件那一帧还拿着旧值，所以显式回传。
+          onLocalStarted({ url: status.url, token: status.token });
         }
       })
       .catch(reported)
@@ -150,17 +161,6 @@ export function CallMeServer({
         <div className="section-title">{c.localTitle}</div>
         <p className="hint">{c.localHint}</p>
         <div className="row-start callme-toolbar">
-          <label className="callme-poll">
-            <span className="muted-text">{c.localPort}</span>
-            <input
-              className="input input-tiny mono"
-              inputMode="numeric"
-              aria-label={c.localPort}
-              value={port}
-              disabled={local?.running || localBusy !== null}
-              onChange={(event) => setPort(event.target.value)}
-            />
-          </label>
           {local?.running ? (
             <button
               type="button"
@@ -183,6 +183,9 @@ export function CallMeServer({
           <span className="hook-result mono" data-ok={local?.running ?? false}>
             {local?.running ? c.localRunning : c.localStopped}
           </span>
+          <span className="hook-result mono" data-ok={statusOk}>
+            {statusText}
+          </span>
         </div>
         {local?.url && <div className="callme-link mono">{local.url}</div>}
         {local?.data_dir && <div className="hint mono">{local.data_dir}</div>}
@@ -190,87 +193,99 @@ export function CallMeServer({
         {local?.error && <p className="hook-warn">{local.error}</p>}
       </div>
 
-      <div className="section">
-        <div className="section-title">{c.serverTitle}</div>
-        <p className="hint">{c.connectionHint}</p>
-        <input
-          className="input mono"
-          spellCheck={false}
-          placeholder={c.urlPlaceholder}
-          aria-label={c.urlLabel}
-          title={c.urlHint}
-          value={url}
-          onChange={(event) => setUrl(event.target.value)}
-          onBlur={() => {
-            const next = url.trim();
-            setUrl(next);
-            if (next !== settings.callme.url) commit({ url: next });
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") event.currentTarget.blur();
-          }}
-        />
-        <input
-          className="input mono"
-          spellCheck={false}
-          type="password"
-          placeholder={c.tokenPlaceholder}
-          aria-label={c.tokenLabel}
-          title={c.tokenHint}
-          value={token}
-          onChange={(event) => setToken(event.target.value)}
-          onBlur={() => {
-            const next = token.trim();
-            setToken(next);
-            if (next !== settings.callme.token) commit({ token: next });
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") event.currentTarget.blur();
-          }}
-        />
-        <div className="row-start callme-toolbar">
+      <details className="callme-advanced">
+        <summary>{c.advancedTitle}</summary>
+        <div className="section">
+          <p className="hint">{c.connectionHint}</p>
           <label className="callme-poll">
-            <span className="muted-text">{c.pollLabel}</span>
-            <select
-              className="select"
-              value={settings.callme.poll_ms}
-              onChange={(event) => commit({ poll_ms: Number(event.target.value) })}
-            >
-              {POLL_CHOICES.map((seconds) => (
-                <option key={seconds} value={seconds * 1000}>
-                  {c.pollSeconds(seconds)}
-                </option>
-              ))}
-            </select>
+            <span className="muted-text">{c.localPort}</span>
+            <input
+              className="input input-tiny mono"
+              inputMode="numeric"
+              aria-label={c.localPort}
+              value={port}
+              disabled={local?.running || localBusy !== null}
+              onChange={(event) => setPort(event.target.value)}
+            />
           </label>
-          <button
-            type="button"
-            className="btn btn-tiny"
-            disabled={!url.trim() || !token.trim() || probe === "testing"}
-            onClick={runProbe}
-          >
-            {probe === "testing" ? c.testing : c.test}
-          </button>
-          <span className="hook-result mono" data-ok={statusOk}>
-            {statusText}
-          </span>
+          <input
+            className="input mono"
+            spellCheck={false}
+            placeholder={c.urlPlaceholder}
+            aria-label={c.urlLabel}
+            title={c.urlHint}
+            value={url}
+            onChange={(event) => setUrl(event.target.value)}
+            onBlur={() => {
+              const next = url.trim();
+              setUrl(next);
+              if (next !== settings.callme.url) commit({ url: next });
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") event.currentTarget.blur();
+            }}
+          />
+          <input
+            className="input mono"
+            spellCheck={false}
+            type="password"
+            placeholder={c.tokenPlaceholder}
+            aria-label={c.tokenLabel}
+            title={c.tokenHint}
+            value={token}
+            onChange={(event) => setToken(event.target.value)}
+            onBlur={() => {
+              const next = token.trim();
+              setToken(next);
+              if (next !== settings.callme.token) commit({ token: next });
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") event.currentTarget.blur();
+            }}
+          />
+          <div className="row-start callme-toolbar">
+            <label className="callme-poll">
+              <span className="muted-text">{c.pollLabel}</span>
+              <select
+                className="select"
+                value={settings.callme.poll_ms}
+                onChange={(event) => commit({ poll_ms: Number(event.target.value) })}
+              >
+                {POLL_CHOICES.map((seconds) => (
+                  <option key={seconds} value={seconds * 1000}>
+                    {c.pollSeconds(seconds)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="button"
+              className="btn btn-tiny"
+              disabled={!url.trim() || !token.trim() || probe === "testing"}
+              onClick={runProbe}
+            >
+              {probe === "testing" ? c.testing : c.test}
+            </button>
+          </div>
         </div>
-      </div>
+      </details>
 
-      <div className="section">
-        <div className="section-title">{c.remoteTitle}</div>
-        <p className="hint">{c.remoteHint}</p>
-        <ol className="deploy-steps">
-          <li>{c.remoteStep1}</li>
-          <li>{c.remoteStep2}</li>
-          <li>{c.remoteStep3}</li>
-        </ol>
-        <pre className="code deploy-command mono">{REMOTE_COMMAND}</pre>
-        <button type="button" className="btn btn-tiny" onClick={copyRemote}>
-          {copied ? c.copiedCommand : c.copyCommand}
-        </button>
-        <p className="hint">{c.remoteSecurityHint}</p>
-      </div>
+      <details className="callme-advanced">
+        <summary>{c.remoteTitle}</summary>
+        <div className="section">
+          <p className="hint">{c.remoteHint}</p>
+          <ol className="deploy-steps">
+            <li>{c.remoteStep1}</li>
+            <li>{c.remoteStep2}</li>
+            <li>{c.remoteStep3}</li>
+          </ol>
+          <pre className="code deploy-command mono">{REMOTE_COMMAND}</pre>
+          <button type="button" className="btn btn-tiny" onClick={copyRemote}>
+            {copied ? c.copiedCommand : c.copyCommand}
+          </button>
+          <p className="hint">{c.remoteSecurityHint}</p>
+        </div>
+      </details>
 
       {error && <p className="hook-warn">{error}</p>}
     </>

@@ -16,6 +16,8 @@ export interface CallMeSource {
   link: string;
   created_ms: number;
   revoked: boolean;
+  /** 名字还是服务器给的占位，等第一条带标题的留言来命名。旧服务器没这个字段。 */
+  auto_label?: boolean;
   total: number;
   /** 近 24 小时收到几条（与服务器配额同口径）。 */
   today: number;

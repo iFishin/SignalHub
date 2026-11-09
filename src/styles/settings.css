@@ -110,7 +110,7 @@ html[data-window="settings"] #root {
    `min-height: 0` 和下面 `.rail-nav` 的那一对，修的是 0.4.4 里的一处重叠：
    左栏是「搜索 / 页签 / 系统 / 暂停」四段，页签那段 `flex: 1` 却没有收缩下限，
    内容一多就把自己撑到比 `.rail` 还高，溢出部分直接压在「暂停监控」和底部
-   「退出」按钮上。窗口是固定 690（含标题栏，内容区更少），迟早会撞上。 */
+   「退出」按钮上。默认窗口高 720（含标题栏，内容区更少），页签一多迟早会撞上。 */
 .settings .rail {
   display: flex;
   flex: none;
@@ -136,7 +136,7 @@ html[data-window="settings"] #root {
 }
 
 /* 两处滚动条用同一套：6px 细条、`--line` 颜色。
-   左栏是 140px 的窄栏，右栏在 720px 窗口里也要留出正文的右边距 —— 默认那条
+   左栏是 140px 的窄栏，右栏在默认 1000px 窗口里也要留出正文的右边距 —— 默认那条
    15px 的滚动槽在两处都太抢眼。`scrollbar-width` 给 Firefox，webkit 那组给
    其余平台（macOS 默认是 overlay，只在滚动时出现）。 */
 .settings .rail-nav,
@@ -565,7 +565,7 @@ html[data-window="settings"] #root {
 }
 
 /* 「在面板里添加」：沿用 `.section` 那条 1px 细线分层，不做卡片、不加底色。
-   两列是 720px 设置窗里最省纵向空间的排法，窄窗自动塌成一列。 */
+   两列是默认 1000px 设置窗里最省纵向空间的排法，窄窗自动塌成一列。 */
 .custom-agent-form {
   margin-top: 12px;
   padding-top: 10px;
@@ -1936,15 +1936,36 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   white-space: nowrap;
 }
 
+/* 新建链接这一行现在只有一个按钮 + 一句说明：建链接不用填任何字段，
+   名称与出处由第一条留言带过来（见 server/src/store.rs 的回填）。 */
 .callme-new {
   display: flex;
-  gap: 6px;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
   margin-top: 8px;
 }
 
-.callme-new .input {
-  flex: 1;
-  min-width: 0;
+/* 低频参数（地址 / token / 端口 / 检查间隔、VPS 部署命令）默认收起。
+   `<details>` 用自己的原生三角做展开指示 —— 不加圆角色块、不加高亮条，
+   和 settings.css 文件头那套「扁平、只靠 1px 细线分隔」保持一致。 */
+.callme-advanced {
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.callme-advanced > summary {
+  padding: 10px 0;
+  cursor: pointer;
+  color: var(--fg);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+/* 折叠里那一节自带上边框，和 summary 上方那道会叠成两条线。 */
+.callme-advanced > .section {
+  padding-top: 10px;
+  border-top: 0;
 }
 
 .callme-created {

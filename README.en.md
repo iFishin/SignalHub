@@ -263,7 +263,8 @@ desktop app ──polls every 15s──▶ message list (read / unread, filter b
 - **One link per place**: the token lives in the URL, so the server knows which article a note came from; each link can be revoked and rate-limited on its own, and the source cannot be forged.
 - **Abuse control**: 10 posts per IP per hour, 50 per link per 24h, 4000 characters per message; anything carrying a browser `Origin` header is refused. When the quota runs out or you stop wanting notes, revoke the link (messages already received are kept).
 - **Not the inbox**: the inbox answers "which agent is stuck, and should I approve it"; notes are text to read. Mixing them would drown the "needs you" section.
-- **Try it before you deploy**: Settings → Connections → Call Me → Server → Start runs the same server on `127.0.0.1:43877` and fills the address and token back into the settings; it stops with the app. It only listens on loopback, so it is for posting a test note yourself — outside agents still need the VPS deployment.
+- **Try it before you deploy**: Settings → Connections → Call Me → Server → Start runs the same server on `127.0.0.1:43877` and fills the address and token back into the settings; it stops with the app. It only listens on loopback, so it is for posting a test note yourself — outside agents still need the VPS deployment. The first start also creates the first link for you.
+- **Zero config**: creating a link needs no name or location; the first note fills both in. Opening the link with GET returns a short usage guide for agents (method, fields, limits), so the article only needs that one short URL — no instructions pasted alongside it.
 - The server is a separate crate in this repo (`server/`) and **does not link Tauri**, so it runs on a bare VPS / container; TLS is left to a Caddy / nginx reverse proxy.
 
 ```bash

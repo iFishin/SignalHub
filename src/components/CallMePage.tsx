@@ -50,8 +50,6 @@ export function CallMePage({
   const [token, setToken] = useState(settings.callme.token);
   const [error, setError] = useState<string | null>(null);
 
-  const [newLabel, setNewLabel] = useState("");
-  const [newNote, setNewNote] = useState("");
   const [creating, setCreating] = useState(false);
   const [created, setCreated] = useState<CallMeSource | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
@@ -71,20 +69,21 @@ export function CallMePage({
       .catch(reported);
   };
 
-  const createSource = () => {
-    if (!newLabel.trim() || creating) return;
+  // 建链接不需要用户填任何东西：名称 / 出处由第一条留言带过来（见 server 的
+  // `create_source` 与 `accept`），用户只该点一下按钮。`override` 是给「刚启动
+  // 本机服务」用的 —— 那时父组件的 url / token 还是上一帧的值。
+  const createSource = (override?: { url: string; token: string }) => {
+    if (creating) return;
     setError(null);
     setCreating(true);
     invoke<CallMeSource>("callme_add_source", {
-      url,
-      token,
-      label: newLabel.trim(),
-      note: newNote.trim() || null,
+      url: override?.url ?? url,
+      token: override?.token ?? token,
+      label: "",
+      note: null,
     })
       .then((source) => {
         setCreated(source);
-        setNewLabel("");
-        setNewNote("");
         refresh();
       })
       .catch(reported)
@@ -97,6 +96,17 @@ export function CallMePage({
     invoke("callme_revoke_source", { url, token, id: source.id })
       .then(() => refresh())
       .catch(reported);
+  };
+
+  /**
+   * 启动本机服务之后：一条链接都还没有的话，顺手建好第一条并切回「链接」子页。
+   * 配置这个功能的动作因此只剩「点一下启动」—— 服务、地址、token、链接一次到位。
+   * 已经有链接就不动：重启服务不该每次都新建一条。
+   */
+  const onLocalStarted = (started: { url: string; token: string }) => {
+    if ((state?.sources.length ?? 0) > 0 || created) return;
+    createSource(started);
+    setSub("links");
   };
 
   const sources = state?.sources ?? [];
@@ -160,6 +170,9 @@ export function CallMePage({
                   <div className="callme-source-head">
                     <span className="callme-source-title">
                       {source.label}
+                      {source.auto_label && !source.revoked && (
+                        <span className="callme-tag">{c.pendingName}</span>
+                      )}
                       {source.revoked && <span className="callme-tag">{c.revoked}</span>}
                     </span>
                     <span className="muted-text mono">
@@ -191,36 +204,15 @@ export function CallMePage({
             })}
 
             <div className="callme-new">
-              <input
-                className="input"
-                spellCheck={false}
-                placeholder={c.labelPlaceholder}
-                aria-label={c.labelPlaceholder}
-                value={newLabel}
-                onChange={(event) => setNewLabel(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") createSource();
-                }}
-              />
-              <input
-                className="input"
-                spellCheck={false}
-                placeholder={c.notePlaceholder}
-                aria-label={c.notePlaceholder}
-                value={newNote}
-                onChange={(event) => setNewNote(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") createSource();
-                }}
-              />
               <button
                 type="button"
                 className="btn btn-tiny"
-                disabled={!newLabel.trim() || creating || !url.trim() || !token.trim()}
-                onClick={createSource}
+                disabled={creating || !url.trim() || !token.trim()}
+                onClick={() => createSource()}
               >
                 {creating ? c.creating : c.addSource}
               </button>
+              <span className="hint">{c.autoNameHint}</span>
             </div>
 
             {created && (
@@ -257,6 +249,7 @@ export function CallMePage({
             m={m}
             state={state}
             now={now}
+            onLocalStarted={onLocalStarted}
           />
         </LocalPanel>
       )}

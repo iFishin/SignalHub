@@ -86,6 +86,14 @@ impl Harness {
         (status, value)
     }
 
+    /// 给非 JSON 端点用（`GET /c/<token>` 的用法说明）。
+    async fn call_text(&self, request: Request<Body>) -> (StatusCode, String) {
+        let response = self.app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (status, String::from_utf8_lossy(&bytes).to_string())
+    }
+
     /// 建一条链接，返回 (id, token)。
     async fn create_link(&self, label: &str) -> (String, String) {
         let (status, body) = self
@@ -500,7 +508,7 @@ async fn cursor_pagination_and_source_filter() {
 }
 
 #[tokio::test]
-async fn link_creation_validates_label() {
+async fn a_link_can_be_created_without_a_name() {
     let harness = Harness::new("label", Limits::default());
     let (status, body) = harness
         .call(harness.request(
@@ -511,6 +519,50 @@ async fn link_creation_validates_label() {
             "10.0.0.1",
         ))
         .await;
+    // 名字可以不填：用户只点「新建」，名字等第一条留言带过来
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["auto_label"], true);
+    assert!(body["label"].as_str().unwrap().starts_with("link-"));
+
+    // 但超长的名字仍然拒绝
+    let (status, body) = harness
+        .call(harness.request(
+            "POST",
+            "/v1/callme/sources",
+            Some(json!({ "label": "字".repeat(61) })),
+            true,
+            "10.0.0.1",
+        ))
+        .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["error"], "bad_request");
+}
+
+#[tokio::test]
+async fn the_same_link_explains_itself_on_get() {
+    let harness = Harness::new("describe", Limits::default());
+    let (_, token) = harness.create_link("文章").await;
+    let link = format!("/c/{token}");
+
+    let (status, text) = harness
+        .call_text(harness.request("GET", &link, None, false, "10.0.0.2"))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    // 纯文本：智能体直接读，人在浏览器里也能看。要包含方法、字段、限额。
+    assert!(text.contains("POST"), "{text}");
+    assert!(text.contains("\"text\""), "{text}");
+    assert!(text.contains("4000"), "{text}");
+    assert!(text.contains("curl"), "{text}");
+
+    // 不存在的令牌与吊销后的链接，GET 和 POST 一样是 404
+    let (status, _) = harness
+        .call_text(harness.request(
+            "GET",
+            "/c/deadbeefdeadbeefdeadbeefdeadbeef",
+            None,
+            false,
+            "10.0.0.2",
+        ))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }

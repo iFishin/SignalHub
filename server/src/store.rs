@@ -123,7 +123,10 @@ impl Store {
 
     // ---- 来源管理 ----
 
-    /// 新建一条链接。`label` 必填；`note` 超长会被截断而不是拒绝（它只是备注）。
+    /// 新建一条链接。**名称可以不填**：这个功能的日常使用者是智能体，用户只该
+    /// 点一下「新建」。空名称生成占位名并标记 `auto_label`，第一条带标题的留言
+    /// 到达时换成真正的标题（见 `accept` 末尾的回填）。
+    /// `note` 超长会被截断而不是拒绝（它只是备注）。
     pub fn create_source(
         &mut self,
         label: &str,
@@ -131,9 +134,6 @@ impl Store {
         now: u64,
     ) -> Result<Source, String> {
         let label = label.trim();
-        if label.is_empty() {
-            return Err("名称不能为空".to_string());
-        }
         if label.chars().count() > MAX_LABEL_CHARS {
             return Err(format!("名称最多 {MAX_LABEL_CHARS} 个字"));
         }
@@ -141,19 +141,35 @@ impl Store {
             return Err(format!("最多 {MAX_SOURCES} 条有效链接，先吊销几条再建"));
         }
 
+        let id = token::short_id();
+        let auto_label = label.is_empty();
         let source = Source {
-            id: token::short_id(),
-            label: label.to_string(),
+            label: if auto_label {
+                format!("link-{id}")
+            } else {
+                label.to_string()
+            },
+            id,
             note: note
                 .map(|n| cut(n.trim(), MAX_NOTE_CHARS))
                 .filter(|n| !n.is_empty()),
             token: token::token(),
             created_ms: now,
             revoked: false,
+            auto_label,
         };
         self.sources.push(source.clone());
         self.save_sources().map_err(|err| format!("保存失败：{err}"))?;
         Ok(source)
+    }
+
+    /// 公开端点（收信 / 用法说明）按令牌找来源。**吊销和不存在都返回 None**，
+    /// 两种情形对外是同一个 404，不给探测者区分。
+    pub fn source_for_token(&self, token: &str) -> Option<Source> {
+        self.sources
+            .iter()
+            .find(|s| s.token == token && !s.revoked)
+            .cloned()
     }
 
     /// 吊销。幂等：已经吊销的再调一次也返回成功（界面上连点两下不该报错）。
@@ -195,6 +211,7 @@ impl Store {
                     link: format!("/c/{}", source.token),
                     created_ms: source.created_ms,
                     revoked: source.revoked,
+                    auto_label: source.auto_label,
                     total,
                     today,
                     last_received_ms,
@@ -262,6 +279,31 @@ impl Store {
             .map_err(AcceptError::Storage)?;
         self.messages.push(message.clone());
         self.bump_ip(ip);
+
+        // 来源名与出处由**第一条留言**回填：用户只点「新建链接」，并不知道智能体
+        // 会从哪篇文章过来，所以标题（`title`）和出处（`context`）由留言带过来。
+        // 各只填一次，免得名字随每条留言变。这一步失败**不让留言失败** —— 它只是
+        // 列表上的显示信息，留言本身已经落盘了。
+        let mut touched = false;
+        if let Some(slot) = self
+            .sources
+            .iter_mut()
+            .find(|s| s.id == message.source_id)
+        {
+            if slot.auto_label && let Some(title) = message.title.as_deref() {
+                slot.label = cut(title, MAX_LABEL_CHARS).to_string();
+                slot.auto_label = false;
+                touched = true;
+            }
+            if slot.note.is_none() && let Some(context) = message.context.as_deref() {
+                slot.note = Some(cut(context, MAX_NOTE_CHARS).to_string());
+                touched = true;
+            }
+        }
+        if touched && let Err(err) = self.save_sources() {
+            eprintln!("回填来源信息失败：{err}");
+        }
+
         Ok(message)
     }
 
@@ -680,14 +722,62 @@ mod tests {
     #[test]
     fn source_limits() {
         let (_dir, mut store) = store("limits");
-        assert!(store.create_source("   ", None, 1_000).is_err());
+        // 名称可以不填：占位名 + auto_label，等第一条留言来命名
+        let blank = store.create_source("   ", None, 1_000).unwrap();
+        assert!(blank.auto_label);
+        assert!(blank.label.starts_with("link-"));
         assert!(store.create_source(&"字".repeat(61), None, 1_000).is_err());
-        for i in 0..MAX_SOURCES {
+        // 上面那条占了一个名额
+        for i in 0..MAX_SOURCES - 1 {
             store
                 .create_source(&format!("第 {i} 条"), None, 1_000)
                 .unwrap();
         }
         assert!(store.create_source("再来一条", None, 1_000).is_err());
+    }
+
+    #[test]
+    fn the_first_message_names_an_unnamed_link() {
+        let (dir, mut store) = store("autolabel");
+        let source = store.create_source("", None, 0).unwrap();
+        assert!(source.auto_label);
+
+        let mut first = incoming("这段建议改一下");
+        first.title = Some(" SignalHub 介绍 ".into());
+        first.context = Some("https://example.com/post".into());
+        store.accept(&source.token, ip(1), 1_000, first).unwrap();
+
+        let view = store.sources_view(2_000);
+        assert_eq!(view[0].label, "SignalHub 介绍");
+        assert_eq!(view[0].note.as_deref(), Some("https://example.com/post"));
+        assert!(!view[0].auto_label);
+
+        // 之后的留言不再改名字，也不覆盖已有的出处
+        let mut second = incoming("又来一条");
+        second.title = Some("另一个标题".into());
+        second.context = Some("https://example.com/other".into());
+        store.accept(&source.token, ip(2), 2_000, second).unwrap();
+        let view = store.sources_view(3_000);
+        assert_eq!(view[0].label, "SignalHub 介绍");
+        assert_eq!(view[0].note.as_deref(), Some("https://example.com/post"));
+
+        // 回填也落盘了：重开之后名字还在
+        let reopened = Store::open(dir.0.clone(), Limits::default()).unwrap();
+        assert_eq!(reopened.sources_view(3_000)[0].label, "SignalHub 介绍");
+    }
+
+    #[test]
+    fn a_named_link_keeps_its_name() {
+        let (_dir, mut store) = store("named");
+        let source = store.create_source("我的博客", None, 0).unwrap();
+        let mut message = incoming("hi");
+        message.title = Some("别的标题".into());
+        message.context = Some("https://example.com/x".into());
+        store.accept(&source.token, ip(1), 1_000, message).unwrap();
+        let view = store.sources_view(2_000);
+        // 用户起过的名字不动；空着的备注仍可由留言补上
+        assert_eq!(view[0].label, "我的博客");
+        assert_eq!(view[0].note.as_deref(), Some("https://example.com/x"));
     }
 
     #[test]

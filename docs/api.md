@@ -1493,22 +1493,24 @@ Phase 1–2 阶段还没有 HTTP 和 CLI，前端内置了调试快捷键：灯�
 怎么发消息。
 
 场景：用户把一条链接贴进文章 / 页面（`https://callme.example.com/c/<token>`），读到它的
-AI 智能体 `POST` 一条留言；桌面端在设置面板「Call Me」页显示，用户据此回去修改。服务器
+AI 智能体 `POST` 一条留言；桌面端在「工作台 → 留言」页显示，用户据此回去修改。服务器
 不知道自己被哪个域名访问，所以它给的链接一律是**相对路径**（`/c/<token>`），完整 URL 由
-客户端拼自己配的域名。
+客户端拼自己配的域名。**贴进文章的只有这一条短链接**：同一个 URL 用 GET 打开会返回一段
+用法说明（方法、字段、示例、限额），智能体不必事先知道请求体，用户也不必在文章里附提示词。
 
 ### 9.1 端点总表
 
 | 方法 | 路径 | 鉴权 | 用途 |
 |---|---|---|---|
+| GET | `/c/{token}` | 路径里的令牌 | 用法说明（给外部智能体 / 人看） |
 | POST | `/c/{token}` | 路径里的令牌 | 公开收信（给外部智能体） |
 | GET | `/v1/callme/health` | 无 | 健康检查 |
 | GET | `/v1/callme/sources` | `Authorization: Bearer <CALLME_ADMIN_TOKEN>` | 来源列表 + 统计 |
-| POST | `/v1/callme/sources` | 同上 | 新建来源 `{label, note?}` |
+| POST | `/v1/callme/sources` | 同上 | 新建来源 `{label?, note?}` |
 | POST | `/v1/callme/sources/{id}/revoke` | 同上 | 吊销（幂等） |
 | GET | `/v1/callme/messages` | 同上 | 拉留言（seq 游标分页） |
 
-所有响应带 `Cache-Control: no-store`；错误一律 JSON。
+所有响应带 `Cache-Control: no-store`；错误一律 JSON（GET 用法说明除外，它是纯文本）。
 
 ### 9.2 公开收信
 
@@ -1536,13 +1538,21 @@ Content-Type: application/json
 
 `title` / `agent` / `context` 超长会被**截断**而不是拒绝：它们只是提示信息，为它们丢掉
 一整条留言不值得。`text` 超长则拒绝 —— 那是用户要读的正文，截断等于篡改。
+`title` 与 `context` 还用来给「零字段新建」的链接补上名字和出处（见 §9.3）。
 
-给智能体的一段提示词模板（贴进文章末尾即可）：
+**不用在文章里贴提示词。** 对同一个 URL 发 GET，返回 `text/plain; charset=utf-8` 的
+用法说明：POST 方法、`Content-Type`、四个字段（哪个必填）、curl 示例、限额、响应与错误码。
+令牌不存在或已吊销时 GET 也是 404（与 POST 同码，不给探测者区分）。浏览器里打开同样能读；
+带 `Origin` 的 **POST** 仍一律 403（见下）。
 
 ```
-如果你对这篇内容有建议，可以 POST 到 <链接>：
-{ "text": "你的建议", "agent": "你的名字", "context": "你正在读的页面" }
-不需要 token，一天最多 50 条，正文 4000 字以内。
+GET /c/{token}
+→ 200 text/plain
+
+Call Me — 给这个页面的作者留个言 / leave a note for the author.
+用法：对「你刚刚 GET 的这个 URL」发一个 POST，正文是 JSON。
+How: POST to the exact URL you just fetched, with a JSON body.
+...（字段说明、curl 示例、限额、错误码）
 ```
 
 ### 9.3 来源管理（admin）
@@ -1562,6 +1572,7 @@ Authorization: Bearer <token>
     "link": "/c/32a389685869e03089b98c7555c6c88e",
     "created_ms": 1794151144000,
     "revoked": false,
+    "auto_label": false,
     "total": 12,
     "today": 3,
     "last_received_ms": 1794151144647
@@ -1573,10 +1584,13 @@ Authorization: Bearer <token>
 
 ```
 POST /v1/callme/sources
-{ "label": "博客：SignalHub 介绍", "note": "放在文末" }
+{ }                                    // 零字段：用户只点「新建链接」
 ```
 
-`label` 必填、≤60 字符；有效（未吊销）来源最多 50 条。返回同上单个对象。
+`label` **可以省略**（也允许空白）：服务器生成占位名 `link-<id>` 并置 `auto_label: true`；
+第一条带 `title` 的留言到达时把名字换成那个标题，第一条带 `context` 且备注为空的留言把
+出处填进 `note`。各只回填一次 —— 名字不会随每条留言变，用户自己起过的名字不会被覆盖。
+手工填 `label` 时 ≤60 字符；有效（未吊销）来源最多 50 条。返回同上单个对象。
 
 ```
 POST /v1/callme/sources/{id}/revoke

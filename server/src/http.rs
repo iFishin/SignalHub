@@ -40,7 +40,9 @@ pub struct AppState {
 pub fn router(state: AppState) -> Router {
     Router::new()
         // 公开收信。**短路径**：这条链接会被贴进文章里，越短越好。
-        .route("/c/{token}", post(receive))
+        // 同一路径的 GET 返回用法说明（见 `describe`）—— 链接保持短，但拿到它的
+        // 智能体先 GET 一次就知道该 POST 什么。
+        .route("/c/{token}", post(receive).get(describe))
         .route("/v1/callme/health", get(health))
         .route("/v1/callme/sources", get(list_sources).post(create_source))
         .route("/v1/callme/sources/{id}/revoke", post(revoke_source))
@@ -119,6 +121,69 @@ async fn receive(
         }
         Err(err) => accept_error(err),
     }
+}
+
+/// 同一条短链接的 **GET**：返回一段纯文本的用法说明。
+///
+/// 为什么需要它：贴进文章里的链接必须短，但拿到链接的智能体并不知道该 POST
+/// 什么、带什么字段。让它对**同一个 URL** 先 GET 一次就有全部答案，链接不用
+/// 变长，用户也不用额外复制一段提示词贴在文章里。人在浏览器里打开同样能读。
+async fn describe(State(state): State<AppState>, Path(token): Path<String>) -> Response {
+    let (found, limits) = {
+        let store = state.store.lock().expect("store poisoned");
+        (store.source_for_token(&token).is_some(), store.limits())
+    };
+    if !found {
+        // 和 POST 一样：不存在与已吊销同一个 404。
+        return fail(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "没有这个链接（或已吊销）",
+            None,
+        );
+    }
+
+    let body = format!(
+        "Call Me — 给这个页面的作者留个言 / leave a note for the author.\n\
+         \n\
+         用法：对「你刚刚 GET 的这个 URL」发一个 POST，正文是 JSON。\n\
+         How: POST to the exact URL you just fetched, with a JSON body.\n\
+         \n\
+         Content-Type: application/json\n\
+         \n\
+         {{\n\
+         \x20 \"text\":    \"your note (REQUIRED, 1-{max_text} characters)\",\n\
+         \x20 \"title\":   \"short subject (optional; also names this link)\",\n\
+         \x20 \"agent\":   \"your agent name, e.g. claude-code (optional)\",\n\
+         \x20 \"context\": \"the page URL or file you are commenting on (optional)\"\n\
+         }}\n\
+         \n\
+         Example (replace $URL with this link):\n\
+         \x20 curl -X POST \"$URL\" -H 'Content-Type: application/json' \\\n\
+         \x20   -d '{{\"text\":\"...\",\"title\":\"...\",\"context\":\"https://...\"}}'\n\
+         \n\
+         Limits / 限额：{ip_hourly} notes per IP per hour, {source_daily} per link per 24h,\n\
+         \x20 {max_text} characters per note.\n\
+         \n\
+         Success / 成功：200 {{\"ok\":true,\"seq\":N}}\n\
+         Errors / 失败：JSON {{\"error\",\"message\",\"retry_after_secs\"}} —\n\
+         \x20 bad_request (missing/empty text), too_long, rate_limited, quota_exceeded,\n\
+         \x20 not_found (link revoked or unknown). On rate_limited / quota_exceeded wait\n\
+         \x20 retry_after_secs before retrying.\n\
+         \n\
+         No auth header needed: the token in this URL is the credential.\n\
+         不需要额外的鉴权头；POST 时不要带浏览器 Origin 头（带了一律 403）。\n",
+        max_text = limits.max_text_chars,
+        ip_hourly = limits.ip_hourly,
+        source_daily = limits.source_daily,
+    );
+
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        body,
+    )
+        .into_response()
 }
 
 async fn list_sources(State(state): State<AppState>, headers: HeaderMap) -> Response {

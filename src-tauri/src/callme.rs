@@ -45,6 +45,9 @@ pub struct SourceView {
     pub link: String,
     pub created_ms: u64,
     pub revoked: bool,
+    /// 名字还是服务器给的占位，等第一条带标题的留言来命名。
+    /// 旧服务器没有这个字段，`#[serde(default)]` 会落成 false。
+    pub auto_label: bool,
     pub total: usize,
     /// 近 24 小时收到几条（与服务器配额同口径）。
     pub today: usize,

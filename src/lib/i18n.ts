@@ -973,7 +973,6 @@ export interface Messages {
     serverTab: string;
     /** 「留言」页里跳去管理链接的次级入口。 */
     manageLinks: string;
-    serverTitle: string;
     urlLabel: string;
     urlPlaceholder: string;
     urlHint: string;
@@ -998,8 +997,10 @@ export interface Messages {
     sourcesEmpty: string;
     addSource: string;
     creating: string;
-    labelPlaceholder: string;
-    notePlaceholder: string;
+    /** 新建按钮旁边：为什么不用填名字。 */
+    autoNameHint: string;
+    /** 来源列表里占位名旁边的灰字。 */
+    pendingName: string;
     copyLink: string;
     copiedLink: string;
     revoke: string;
@@ -1041,6 +1042,8 @@ export interface Messages {
     localRunning: string;
     localStopped: string;
     localOnlyHint: string;
+    /** 服务器子页里收起来的那部分：地址 / token / 轮询 / 端口。 */
+    advancedTitle: string;
     /** VPS 部署指引。 */
     remoteTitle: string;
     remoteHint: string;
@@ -1891,7 +1894,6 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       linksTab: "链接",
       serverTab: "服务器",
       manageLinks: "管理链接",
-      serverTitle: "服务器",
       urlLabel: "服务器地址",
       urlPlaceholder: "https://callme.example.com",
       urlHint: "你自己部署的 Call Me 服务器地址。不写 https:// 时按 https 补。",
@@ -1910,11 +1912,11 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       unconfigured: "未配置",
       openServerTab: "服务器设置",
       sourcesTitle: "链接（来源）",
-      sourcesEmpty: "还没有链接。新建一条，贴到文章里即可。",
+      sourcesEmpty: "还没有链接。点一下「新建链接」，把链接贴到文章里即可 —— 名字和出处不用填。",
       addSource: "新建链接",
       creating: "创建中…",
-      labelPlaceholder: "这条链接用在哪，如「博客：SignalHub 介绍」",
-      notePlaceholder: "备注（可选）：放在哪个文件 / 页面",
+      autoNameHint: "不用填名字：第一条留言会把标题和出处自动填上。",
+      pendingName: "等第一条留言命名",
       copyLink: "复制链接",
       copiedLink: "已复制",
       revoke: "吊销",
@@ -1924,7 +1926,7 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       totalCount: (n) => `共 ${n} 条`,
       createdTitle: "链接已创建",
       createdHint:
-        "复制它，贴到你希望智能体读到的地方。注意：任何读到它的人都能发消息 —— 额度用完为止，吊销即失效。",
+        "复制它，贴到你希望智能体读到的地方。智能体打开这条链接就会看到怎么留言（同一条链接，GET 是用法、POST 是留言），不用你再附一段说明。任何读到它的人都能发消息 —— 额度用完为止，吊销即失效。",
       filterAll: "全部",
       messagesEmptyNoServer: "还没配置 Call Me 服务器 —— 填好地址和 token 之后才会去拉留言。",
       messagesEmptyOffline: "连不上 Call Me 服务器，先检查地址、token 和服务是否在跑。",
@@ -1940,7 +1942,7 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       copyText: "复制全文",
       copiedText: "已复制",
       localTitle: "本机一键服务",
-      localHint: "在桌面应用里直接跑一个收信服务 —— 不用装 Docker，不用敲命令。地址和 token 会自动填好。",
+      localHint: "在桌面应用里直接跑一个收信服务 —— 不用装 Docker，不用敲命令。地址和 token 会自动填好；第一次启动还会顺手建好第一条链接，切回「链接」子页复制即可。",
       localPort: "端口",
       localPortInvalid: "端口要在 1024–65535 之间。",
       localReplaceConfirm:
@@ -1952,7 +1954,8 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       localRunning: "运行中",
       localStopped: "未运行",
       localOnlyHint:
-        "本机服务只监听 127.0.0.1：本机测试够用，但外网访问不到。要让外面的智能体投递，用下面的 VPS 部署。它跟着应用一起退出，下次要再点一次启动 —— 不会在你不知情的时候常驻。",
+        "本机服务只监听 127.0.0.1：本机测试够用，但外网访问不到。要让外面的智能体投递，展开下面的「部署到公网」。它跟着应用一起退出，下次要再点一次启动 —— 不会在你不知情的时候常驻。",
+      advancedTitle: "高级：手动连接、端口与检查间隔",
       remoteTitle: "部署到公网（VPS）",
       remoteHint: "要让外面的智能体访问，把服务跑在一台公网机器上。三条命令，复制后在服务器上执行：",
       remoteStep1: "在有 Docker 的公网机器上克隆仓库并构建镜像。",
@@ -2794,7 +2797,6 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
       linksTab: "Links",
       serverTab: "Server",
       manageLinks: "Manage links",
-      serverTitle: "Server",
       urlLabel: "Server address",
       urlPlaceholder: "https://callme.example.com",
       urlHint: "Your self-hosted Call Me server. https:// is assumed when omitted.",
@@ -2814,11 +2816,11 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
       unconfigured: "Not configured",
       openServerTab: "Server settings",
       sourcesTitle: "Links (sources)",
-      sourcesEmpty: "No links yet. Create one and paste it into your article.",
+      sourcesEmpty: "No links yet. Hit “New link” and paste it into your article — no name or location needed.",
       addSource: "New link",
       creating: "Creating…",
-      labelPlaceholder: "Where it goes, e.g. “Blog: intro to SignalHub”",
-      notePlaceholder: "Note (optional): which file or page",
+      autoNameHint: "No name needed: the first note fills in its title and where it came from.",
+      pendingName: "Named by the first note",
       copyLink: "Copy link",
       copiedLink: "Copied",
       revoke: "Revoke",
@@ -2829,7 +2831,7 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
       totalCount: (n) => `${n} total`,
       createdTitle: "Link created",
       createdHint:
-        "Copy it and paste it where you want agents to find it. Anyone who reads it can post until the daily quota runs out; revoking kills it instantly.",
+        "Copy it and paste it where you want agents to find it. Opening the link shows an agent how to post (GET explains, POST leaves the note), so you don't have to paste instructions alongside it. Anyone who reads it can post until the daily quota runs out; revoking kills it instantly.",
       filterAll: "All",
       messagesEmptyNoServer:
         "No Call Me server yet — messages are only fetched once the address and token are filled in.",
@@ -2847,7 +2849,7 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
       copyText: "Copy text",
       copiedText: "Copied",
       localTitle: "Local one-click server",
-      localHint: "Run a receiving server right inside the desktop app — no Docker, no commands. The address and token get filled in for you.",
+      localHint: "Run a receiving server right inside the desktop app — no Docker, no commands. The address and token get filled in for you; the first start also creates the first link and takes you to the Links tab to copy it.",
       localPort: "Port",
       localPortInvalid: "Port must be between 1024 and 65535.",
       localReplaceConfirm:
@@ -2859,7 +2861,8 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
       localRunning: "Running",
       localStopped: "Not running",
       localOnlyHint:
-        "The local server listens on 127.0.0.1 only: fine for testing, unreachable from the internet. For outside agents, use the VPS deployment below. It stops with the app, so you start it again next session — nothing keeps listening behind your back.",
+        "The local server listens on 127.0.0.1 only: fine for testing, unreachable from the internet. For outside agents, expand “Deploy to the public internet” below. It stops with the app, so you start it again next session — nothing keeps listening behind your back.",
+      advancedTitle: "Advanced: manual connection, port and polling",
       remoteTitle: "Deploy to the public internet (VPS)",
       remoteHint: "To let outside agents in, run the server on a public machine. Three commands — copy and run them on your server:",
       remoteStep1: "Clone the repo and build the image on a Docker-capable public machine.",
