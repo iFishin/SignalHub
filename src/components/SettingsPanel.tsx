@@ -35,7 +35,7 @@ import {
   MAX_HOOK_HEADERS,
 } from "../lib/hookHeaders";
 import { useLang, useMessages, type Lang, type Messages } from "../lib/i18n";
-import { useSettings, updateSettings, DEFAULTS, HTTP_PRESETS, type Settings, type Shape, type Palette, type SignRadius, type SignBorder, type SignTint, type SignText, type SignEmphasis, type HttpPreset, type Hook, type Device, type Machine, type MachineHealth, type StateStyle, type GroupMeta } from "../lib/useSettings";
+import { useSettings, updateSettings, DEFAULTS, HTTP_PRESETS, type Settings, type Shape, type Palette, type SignRadius, type SignBorder, type SignTint, type SignText, type SignFont, type SignGap, type SignEmphasis, type HttpPreset, type Hook, type Device, type Machine, type MachineHealth, type StateStyle, type GroupMeta } from "../lib/useSettings";
 import {
   useToggles,
   setAutostart,
@@ -208,9 +208,30 @@ function emphasisOptions(m: Messages): { label: string; value: SignEmphasis }[] 
   ];
 }
 
-/** 牌上可以单独关掉的四段内容。顺序就是它们在牌上出现的顺序。 */
+/** 牌内字体。两档：系统无衬线 / 整块等宽。 */
+function fontOptions(m: Messages): { label: string; value: SignFont }[] {
+  return [
+    { label: m.fontSystem, value: "system" },
+    { label: m.fontMono, value: "mono" },
+  ];
+}
+
+/**
+ * 牌间距。三档而不是滑杆 —— 它影响窗口高度（牌竖着叠），
+ * 而 `config.rs::SignGap` 也只能存三个倍率。见 `lampStyle.ts::SIGN_GAP_MULT`。
+ */
+function gapOptions(m: Messages): { label: string; value: SignGap }[] {
+  return [
+    { label: m.gapTight, value: "tight" },
+    { label: m.gapStandard, value: "standard" },
+    { label: m.gapLoose, value: "loose" },
+  ];
+}
+
+/** 牌上可以单独关掉的五段内容。顺序就是它们在牌上出现的顺序。 */
 function fieldOptions(m: Messages): { key: keyof Settings["show"]; label: string }[] {
   return [
+    { key: "dot", label: m.fieldDot },
     { key: "name", label: m.fieldName },
     { key: "state", label: m.fieldState },
     { key: "age", label: m.fieldAge },
@@ -398,6 +419,8 @@ function LampPreview({ settings }: { settings: Settings }) {
         data-sign-tint={settings.sign_tint}
         data-sign-text={settings.sign_text}
         data-sign-emphasis={settings.sign_emphasis}
+        /* 字体也跟 —— 等宽档换的是整块牌的字形，预览不跟就看不出区别。 */
+        data-sign-font={settings.sign_font}
       >
         {cards.map((card) => (
           <div
@@ -405,7 +428,11 @@ function LampPreview({ settings }: { settings: Settings }) {
             className="sign"
             data-has-message={settings.show.message && card.message ? "true" : "false"}
           >
-            <span className="dot" data-state={card.state} data-shape={shapes[card.state]} />
+            {/* 和真灯同一处判断：关掉圆点之后预览也必须是纯文字卡，
+                否则「关掉了却还在」会被当成开关没生效。 */}
+            {settings.show.dot && (
+              <span className="dot" data-state={card.state} data-shape={shapes[card.state]} />
+            )}
             <div className="sign-body">
               <div className="sign-line">
                 {settings.show.name && <span className="sign-name">{m.previewGroup}</span>}
@@ -1435,6 +1462,8 @@ export function SettingsPanel({ snapshot }: Props) {
   const tintChoices = tintOptions(m);
   const textSizeChoices = textSizeOptions(m);
   const emphasisChoices = emphasisOptions(m);
+  const fontChoices = fontOptions(m);
+  const gapChoices = gapOptions(m);
   const blinkChoices = blinkOptions(m);
   const alertChoices = alertDelayOptions(m);
   const ttlDefaults = useStateTtls();
@@ -2840,6 +2869,27 @@ export function SettingsPanel({ snapshot }: Props) {
                     format={(value) => `×${value.toFixed(1)}`}
                   />
                 </Row>
+                {/* 间距放在两个倍率下面，因为它们是一类东西：都在改牌本身的几何。
+                    区别是这一项**会改窗口高度**（牌竖着叠），所以只能给三档 ——
+                    Rust 的 `SignGap` 也只认三个倍率，两边必须同一个数。 */}
+                <Row
+                  label={m.signGap}
+                  hint={m.signGapHint}
+                  onReset={resetFor(settings, "sign_gap", patch)}
+                >
+                  <div className="seg">
+                    {gapChoices.map((choice) => (
+                      <button
+                        key={choice.value}
+                        type="button"
+                        data-active={settings.sign_gap === choice.value}
+                        onClick={() => patch({ sign_gap: choice.value })}
+                      >
+                        {choice.label}
+                      </button>
+                    ))}
+                  </div>
+                </Row>
                 <Row label={m.blinkSpeed} onReset={resetFor(settings, "blink_speed", patch)}>
                   <Slider
                     value={settings.blink_speed}
@@ -2972,6 +3022,26 @@ export function SettingsPanel({ snapshot }: Props) {
                         type="button"
                         data-active={settings.sign_text === choice.value}
                         onClick={() => patch({ sign_text: choice.value })}
+                      >
+                        {choice.label}
+                      </button>
+                    ))}
+                  </div>
+                </Row>
+
+                {/* 字体紧跟字号：两样都在决定「字长什么样」，一个大小一个字形。 */}
+                <Row
+                  label={m.signFont}
+                  hint={m.signFontHint}
+                  onReset={resetFor(settings, "sign_font", patch)}
+                >
+                  <div className="seg">
+                    {fontChoices.map((choice) => (
+                      <button
+                        key={choice.value}
+                        type="button"
+                        data-active={settings.sign_font === choice.value}
+                        onClick={() => patch({ sign_font: choice.value })}
                       >
                         {choice.label}
                       </button>

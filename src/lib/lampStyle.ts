@@ -1,4 +1,4 @@
-import type { Settings, Shape, StateStyle } from "./useSettings";
+import type { Settings, Shape, StateStyle, SignGap } from "./useSettings";
 import { SIGNALS, type SignalState } from "./types";
 import { colorVars } from "./palettes";
 
@@ -226,6 +226,20 @@ export const CALM_ALPHA_FACTOR = 0.72;
 export const CALM_ALPHA_FLOOR = 0.6;
 
 /**
+ * 多块牌之间的间距档位 → 相对 `size / 2` 的倍率。
+ *
+ * **外观里唯一影响窗口几何的一项**：牌竖着叠，间距变大窗口就变高，所以
+ * `config.rs::window_size` 必须用同一个倍率算总高（那边是 `SignGap::px`）。
+ * 两处真值：这里给 CSS 的 `--sign-gap`（`lamp.css` 的 `.lamp-signs { gap }`），
+ * Rust 那边给窗口尺寸。`standard` 是 1.0 = 恒等，默认档不许改变任何现有几何。
+ */
+export const SIGN_GAP_MULT: Record<SignGap, number> = {
+  tight: 0.5,
+  standard: 1,
+  loose: 2,
+};
+
+/**
  * 这个状态有没有被单独设过。
  *
  * 「设过」= 表里至少有一个字段不是 null。**判据必须和 `PerStateStyles` 里
@@ -264,6 +278,9 @@ export function lampVars(settings: Settings): React.CSSProperties {
     // 1.0（默认）时是恒等，不改变任何现有几何。
     "--sign-w-mult": String(settings.sign_w_mult),
     "--sign-h-mult": String(settings.sign_h_mult),
+    // 牌间距倍率。**唯一会影响窗口高度的一项** —— 倍率在 `SIGN_GAP_MULT`，
+    // Rust 的 `SignGap::px` 是同一套数字（两处真值，见 lamp.css 文件头）。
+    "--sign-gap": String(SIGN_GAP_MULT[settings.sign_gap] ?? 1),
     // 背景透明度：CSS 里当 `--sign-bg` 的 alpha 用（0 = 全透明，1 = 不透明）
     "--sign-alpha": String(alpha),
     "--sign-alpha-calm": String(Math.max(alpha * CALM_ALPHA_FACTOR, CALM_ALPHA_FLOOR)),

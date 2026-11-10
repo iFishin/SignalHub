@@ -699,6 +699,10 @@ export function SignalLamp({
       data-sign-tint={settings.sign_tint}
       data-sign-text={settings.sign_text}
       data-sign-emphasis={settings.sign_emphasis}
+      /* 字体也走属性：整块牌换字形，倍率 / 字体栈都只住在 `lamp.css` 一处。
+         间距（`--sign-gap`）不在这里 —— 它影响窗口几何，得和 Rust 的
+         `window_size` 用同一个倍率，所以和宽高倍率一起走 `lampVars`。 */
+      data-sign-font={settings.sign_font}
       data-paused={(!preview && paused) || undefined}
       // 有气泡时窗口要高出一块（Rust 算的），CSS 按同一个数把内容区收上去
       data-approvals={pending || undefined}
@@ -792,13 +796,18 @@ export function SignalLamp({
             data-pulse={pulses.includes(group.name) || undefined}
             onContextMenu={(event) => handleGroupMenu(event, group.name)}
           >
-            <motion.span
-              className="dot"
-              data-state={group.aggregate}
-              data-shape={shapes[group.aggregate]}
-              style={dotStyle}
-              {...dotMotion}
-            />
+            {/* 圆点也可以关掉（「牌上显示」里的第五个 chip）：有人只想要一块
+                纯文字卡。关掉后文字自然左移，牌宽高一个像素都不变 —— 点本来
+                就在 flex 行里，不参与 `sign_width` / `sign_height`。 */}
+            {show.dot && (
+              <motion.span
+                className="dot"
+                data-state={group.aggregate}
+                data-shape={shapes[group.aggregate]}
+                style={dotStyle}
+                {...dotMotion}
+              />
+            )}
             <div className="sign-body">
               <div className="sign-line">
                 {show.name && group.name && renaming?.group === group.name ? (

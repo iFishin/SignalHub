@@ -15,7 +15,10 @@ import type { Settings, SignFields, StateStyle } from "./useSettings";
  *
  * **同理不含牌面底色（`sign_tint`）和分层（`sign_emphasis`）**：底色要和桌面
  * 协调，换预设时突变会很突兀；分层是「谁在叫我」的语义机制，不是装饰。圆角、
- * 描边、字号可以被预设接管，正因为它们只是形态 —— 不承载任何含义。
+ * 描边、字号、字体可以被预设接管，正因为它们只是形态 —— 不承载任何含义。
+ *
+ * **牌间距（`sign_gap`）也不在预设里**：它是唯一影响窗口高度的一项，而预设
+ * 的承诺是「换风格不改窗口大小」。用户手动调过间距，也不该被一次换风格重置。
  */
 export interface Preset {
   id: string;
@@ -32,6 +35,7 @@ export interface Preset {
     | "sign_radius"
     | "sign_border"
     | "sign_text"
+    | "sign_font"
   >;
 }
 
@@ -40,6 +44,7 @@ const ALL_FIELDS: SignFields = {
   state: true,
   age: true,
   message: true,
+  dot: true,
 };
 
 /** 与 Rust 侧 config.rs 的 MIN_SIZE / MAX_SIZE 对齐 —— 32 是允许的最大值。 */
@@ -60,6 +65,7 @@ export function presets(m: Messages): Preset[] {
         sign_radius: "standard",
         sign_border: "hairline",
         sign_text: "standard",
+        sign_font: "system",
       },
     },
     {
@@ -69,7 +75,7 @@ export function presets(m: Messages): Preset[] {
       apply: {
         size: 16,
         collapsed: false,
-        show: { name: true, state: true, age: true, message: false },
+        show: { name: true, state: true, age: true, message: false, dot: true },
         sign_opacity: 80,
         blink_speed: 100,
         // 小牌配小圆角：0.32×16 只有 5px，但 0.18 更利落。字号收到紧凑档，
@@ -77,6 +83,7 @@ export function presets(m: Messages): Preset[] {
         sign_radius: "soft",
         sign_border: "hairline",
         sign_text: "compact",
+        sign_font: "system",
       },
     },
     {
@@ -92,6 +99,7 @@ export function presets(m: Messages): Preset[] {
         sign_radius: "standard",
         sign_border: "hairline",
         sign_text: "standard",
+        sign_font: "system",
       },
     },
     {
@@ -109,6 +117,7 @@ export function presets(m: Messages): Preset[] {
         sign_radius: "soft",
         sign_border: "strong",
         sign_text: "large",
+        sign_font: "system",
       },
     },
   ];
@@ -118,7 +127,7 @@ export function presets(m: Messages): Preset[] {
  * 当前外观是不是正好等于这套预设（用来高亮选中的那一个）。
  *
  * 逐字段比而不是比对象引用：设置一路经过 JSON 序列化往返，引用早就变了。
- * 四个显示字段也要逐个比 —— 只比 `show` 的引用会让「只关掉消息」被误判成
+ * 五个显示字段也要逐个比 —— 只比 `show` 的引用会让「只关掉消息」被误判成
  * 还停留在预设上。
  */
 export function isActivePreset(preset: Preset, settings: Settings): boolean {
@@ -131,6 +140,7 @@ export function isActivePreset(preset: Preset, settings: Settings): boolean {
     sign_radius,
     sign_border,
     sign_text,
+    sign_font,
   } = preset.apply;
   return (
     settings.size === size &&
@@ -140,7 +150,8 @@ export function isActivePreset(preset: Preset, settings: Settings): boolean {
     settings.sign_radius === sign_radius &&
     settings.sign_border === sign_border &&
     settings.sign_text === sign_text &&
-    (["name", "state", "age", "message"] as const).every(
+    settings.sign_font === sign_font &&
+    (["name", "state", "age", "message", "dot"] as const).every(
       (field) => settings.show[field] === show[field],
     )
   );

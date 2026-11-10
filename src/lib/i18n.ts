@@ -517,11 +517,23 @@ export interface Messages {
   textCompact: string;
   textStandard: string;
   textLarge: string;
+  /** 牌内字体：系统无衬线 / 整块等宽。 */
+  signFont: string;
+  signFontHint: string;
+  fontSystem: string;
+  fontMono: string;
+  /** 牌间距。三档 —— 它会影响窗口高度。 */
+  signGap: string;
+  signGapHint: string;
+  gapTight: string;
+  gapStandard: string;
+  gapLoose: string;
   /** 「谁在叫我」那套压淡的强度。 */
   signEmphasis: string;
   emphasisAuto: string;
   emphasisFlat: string;
   emphasisHint: string;
+  fieldDot: string;
   fieldName: string;
   fieldState: string;
   fieldAge: string;
@@ -1510,11 +1522,23 @@ export const MESSAGES: Record<Lang, Messages> = {
     textCompact: "紧凑",
     textStandard: "标准",
     textLarge: "大",
+    signFont: "字体",
+    signFontHint:
+      "「等宽」把整块牌换成终端字形 —— 组名、状态、消息一起换，读起来像一段日志。",
+    fontSystem: "系统",
+    fontMono: "等宽",
+    signGap: "牌间距",
+    signGapHint:
+      "牌竖着叠，这一项只管它们之间留多宽。它会让窗口跟着变高，所以只有三档。",
+    gapTight: "紧凑",
+    gapStandard: "标准",
+    gapLoose: "宽松",
     signEmphasis: "分层",
     emphasisAuto: "区分",
     emphasisFlat: "一致",
     emphasisHint:
       "选「区分」时，需要你动手的那几块牌更实、灯珠更大，其余退后一档，好让人一眼知道先看谁。觉得这个差异莫名其妙就选「一致」，所有牌同等分量。",
+    fieldDot: "圆点",
     fieldName: "组名",
     fieldState: "状态",
     fieldAge: "已持续",
@@ -2458,11 +2482,23 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     textCompact: "Compact",
     textStandard: "Standard",
     textLarge: "Large",
+    signFont: "Typeface",
+    signFontHint:
+      'Pick "Mono" for a terminal face across the whole sign — group, state and message alike.',
+    fontSystem: "System",
+    fontMono: "Mono",
+    signGap: "Spacing",
+    signGapHint:
+      "Signs stack vertically; this only sets the gap between them. It changes the window height, so there are just three steps.",
+    gapTight: "Tight",
+    gapStandard: "Standard",
+    gapLoose: "Loose",
     signEmphasis: "Emphasis",
     emphasisAuto: "Tiered",
     emphasisFlat: "Uniform",
     emphasisHint:
       'With "Tiered", the signs that need you are solider and their dots larger while the rest step back, so it is obvious what to look at first. If that difference feels arbitrary, pick "Uniform" — every sign carries the same weight.',
+    fieldDot: "Dot",
     fieldName: "Group",
     fieldState: "State",
     fieldAge: "Age",

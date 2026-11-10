@@ -36,7 +36,7 @@
  *   牌宽     = size × 7 × 宽倍率         (sign_width)
  *   牌高     = size × 3/2 × 高倍率（一行）(sign_height(size, false, h))
  *            = size × 5/2 × 高倍率（两行）(sign_height(size, true, h))
- *   牌间距   = size / 2                (window_size 里的 gap)
+ *   牌间距   = size / 2 × 间距倍率      (window_size 里的 gap；1.0 = 原样)
  *   折叠点径 = size                    (collapsed_window_size)
  *   折叠点距 = size / 3
  *   折叠点数 = 组数 + `+N` 角标数       (collapsed_window_size 的 dots + badges)
@@ -93,6 +93,12 @@ body,
   --sign-radius: 0.32; /* × size */
   --sign-text: 1; /* × 字号 */
 
+  /* 牌内字体。默认是系统无衬线；`[data-sign-font="mono"]` 把整块牌换成等宽
+     —— 组名、状态词、消息、时长一起换，牌读起来像一段终端日志。
+     用变量而不是给每个元素写一条规则：牌里有五六个文字元素，漏一个就会得到
+     「组名等宽、状态还是无衬线」这种半吊子牌。 */
+  --sign-font: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+
   /* 角标 / 审批气泡都绝对定位在这儿。加 relative 只是把它们的包含块明确成
      这层全尺寸的盒子（和之前相对 viewport 等价），不是改布局。 */
   position: relative;
@@ -104,7 +110,10 @@ body,
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: calc(var(--size) / 2);
+  /* 牌间距 = size / 2 × 间距档位（`lampStyle.ts::SIGN_GAP_MULT`）。
+     **和 Rust 的 `window_size` 是两处真值**：那边用 `SignGap::px` 算同一个值，
+     默认档 1.0 逐字等于旧公式 `size / 2`（见文件头）。 */
+  gap: calc(var(--size) / 2 * var(--sign-gap, 1));
   cursor: grab;
   /* 拖窗口时不要顺手选中文本，也不要触发原生文本拖拽 */
   user-select: none;
@@ -122,7 +131,10 @@ body,
   cursor: grabbing;
 }
 
-/* 折叠态：一组一颗点，横着排。间距和 vertical 模式一起对齐 config.rs */
+/* 折叠态：一组一颗点，横着排。间距和 vertical 模式一起对齐 config.rs。
+   **点距不吃「牌间距」档位**：那是牌与牌之间的事，折叠态没有牌；而
+   `collapsed_window_size` 也只认 `size / 3` 这一套几何 —— 跟着变的话，
+   折叠态就会和 Rust 算的窗口对不上。 */
 .lamp-root[data-collapsed="true"] {
   flex-direction: row;
   gap: calc(var(--size) / 3);
@@ -345,7 +357,7 @@ body,
   border-radius: calc(var(--size) * var(--sign-radius, 0.32));
   background: var(--sign-bg);
   color: var(--sign-fg);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-family: var(--sign-font, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif);
   font-size: calc(var(--size) * 0.5 * var(--sign-text, 1));
   line-height: 1.15;
   overflow: hidden;
@@ -405,6 +417,14 @@ body,
   --sign-text: 1.12;
 }
 
+/* 字体。`system` 不写规则：根上的 `--sign-font` 就是它。
+   整块牌一起换（组名 / 状态词 / 消息 / 时长 / `+N` 都继承 `.sign` 的
+   font-family），所以只需要这一条 —— 牌里五六个文字元素各写一遍的话，
+   漏一个就是「组名等宽、状态还是无衬线」的半吊子牌。 */
+.lamp-root[data-sign-font="mono"] {
+  --sign-font: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
 /* 有消息就多一行 —— 那块牌变高，正好是个「有东西可读」的提示。
    注意这个属性必须和 Rust 的 sign_heights 算出同一个真假值：用户把「消息」
    那段关掉之后牌永远是单行，两边不一致就会裁掉最后一块牌。 */
@@ -441,7 +461,7 @@ body,
 }
 
 .sign[data-tone="calm"] {
-  /* 用 `--sign-alpha-calm`（lampStyle 算好的「用户值 × 0.72，托底 0.45」），
+  /* 用 `--sign-alpha-calm`（lampStyle 算好的「用户值 × 0.72，托底 0.6」），
      **不在这里做乘法**：乘数只有 `CALM_ALPHA_FACTOR` 一份真值，托底值也只有
      一处 —— 两边各算一遍的话，改一个忘了另一个，表现是「牌忽然又看不清了」。
      基色取 `--sign-rgb`：牌面的深色只有那一处真值。 */

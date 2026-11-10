@@ -135,12 +135,29 @@ describe("外观预设", () => {
     expect(isActivePreset(standard, { ...apply(standard), sign_text: "large" })).toBe(false);
   });
 
-  it("不碰牌底色和分层 —— 它们不是风格，是材质和语义", () => {
-    // 关掉分层会改变「谁在叫我」的可读性，换底色会跟桌面打架；
-    // 换个预设顺手把这两样改掉，正是这套预设最该避免的那种意外
+  it("字体也参与判断：换成等宽就不再是这一套", () => {
+    const standard = presets(m).find((preset) => preset.id === "standard")!;
+    expect(isActivePreset(standard, { ...apply(standard), sign_font: "mono" })).toBe(false);
+  });
+
+  it("关掉圆点就不再是这一套", () => {
+    const standard = presets(m).find((preset) => preset.id === "standard")!;
+    expect(
+      isActivePreset(standard, {
+        ...apply(standard),
+        show: { ...standard.apply.show, dot: false },
+      }),
+    ).toBe(false);
+  });
+
+  it("不碰牌底色、分层和间距 —— 材质、语义和几何", () => {
+    // 关掉分层会改变「谁在叫我」的可读性，换底色会跟桌面打架，
+    // 而间距是唯一影响窗口高度的一项（预设的承诺是「换风格不改窗口大小」）；
+    // 换个预设顺手把这三样改掉，正是这套预设最该避免的那种意外
     for (const preset of presets(m)) {
       expect(preset.apply).not.toHaveProperty("sign_tint");
       expect(preset.apply).not.toHaveProperty("sign_emphasis");
+      expect(preset.apply).not.toHaveProperty("sign_gap");
     }
   });
 

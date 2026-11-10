@@ -23,6 +23,14 @@ export type SignTint = "graphite" | "black" | "warm" | "slate";
 export type SignText = "compact" | "standard" | "large";
 /** `auto` = 需要你动手的那几块牌更实、其余退后一档；`flat` = 所有牌同等分量。 */
 export type SignEmphasis = "auto" | "flat";
+/** 牌内字体：`system` = 系统无衬线（现状）；`mono` = 整块牌换成等宽。 */
+export type SignFont = "system" | "mono";
+/**
+ * 多块牌之间的间距档位。**唯一影响窗口几何的外观项** —— 牌竖着叠，间距大了
+ * 窗口就变高，所以只能是三个离散档（倍率见 `lampStyle.ts::SIGN_GAP_MULT`，
+ * Rust 侧 `config::SignGap::px` 是同一个数）。
+ */
+export type SignGap = "tight" | "standard" | "loose";
 
 /**
  * HTTP 转发的**服务预设**：决定 content-type 和 body 形状。
@@ -183,8 +191,8 @@ export interface CallMeConfig {
   poll_ms: number;
 }
 
-/** 展开的牌上显示哪几段内容。四段都可以单独关掉 —— 有人只要一眼颜色，
- *  有人要看清「卡在哪一步」。 */
+/** 展开的牌上显示哪几段内容。五段都可以单独关掉 —— 有人只要一眼颜色，
+ *  有人要看清「卡在哪一步」，也有人只想要一块纯文字卡。 */
 export interface SignFields {
   /** 组名 */
   name: boolean;
@@ -194,6 +202,8 @@ export interface SignFields {
   age: boolean;
   /** 消息 —— 关掉之后牌永远是单行高（窗口高度也跟着少一行） */
   message: boolean;
+  /** 状态圆点 —— 关掉之后牌就是一块纯文字卡。不影响牌宽高 */
+  dot: boolean;
 }
 
 /**
@@ -324,6 +334,13 @@ export interface Settings {
   sign_tint: SignTint;
   sign_text: SignText;
   sign_emphasis: SignEmphasis;
+  /** 牌内字体。只改字形，不改牌宽高（截断位置会跟着变）。 */
+  sign_font: SignFont;
+  /**
+   * 多块牌之间的间距。**唯一影响窗口高度的一项** —— 它和 Rust 的
+   * `config::SignGap::px` 是两处同名真值，改档位要一起改。
+   */
+  sign_gap: SignGap;
   /** 逐个状态的外观覆盖（颜色 / 形状 / 节奏）。没写的项跟随全局。 */
   styles: Record<string, StateStyle>;
   /** 折叠成一颗单纯的灯（只剩灯，没有牌面）。**默认 false = 展开成牌。** */
@@ -477,10 +494,13 @@ export const DEFAULTS: Settings = {
   sign_tint: "graphite",
   sign_text: "standard",
   sign_emphasis: "auto",
+  // 字体 / 间距同样等于「加这两个字段之前」的样子
+  sign_font: "system",
+  sign_gap: "standard",
   styles: {},
   collapsed: false,
   click_action: "collapse",
-  show: { name: true, state: true, age: true, message: true },
+  show: { name: true, state: true, age: true, message: true, dot: true },
   sign_opacity: 86,
   hidden_groups: [],
   muted_groups: [],

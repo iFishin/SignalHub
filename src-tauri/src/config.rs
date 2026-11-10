@@ -468,6 +468,68 @@ pub enum SignEmphasis {
     Flat,
 }
 
+/// 牌内字体。
+///
+/// 牌的宽高是固定公式算出来的，字体的意义全在「读起来像什么」：
+///
+/// - `System`（默认）：系统无衬线 —— 现状。
+/// - `Mono`：整块牌换成等宽（组名、状态词、消息、时长一起换），读起来像一段
+///   终端日志，和「看智能体在做什么」这件事更合。
+///
+/// **不影响牌宽高**（固定 `size × 7`），只影响字形和省略号出现的位置。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SignFont {
+    /// 系统无衬线（现状）。
+    #[default]
+    System,
+    /// 整块牌都用等宽。
+    Mono,
+}
+
+/// 多块牌之间的间距。
+///
+/// 这是外观里**唯一会影响窗口几何**的一档：牌竖着叠，间距变大窗口就变高，
+/// 所以只能给三个离散档 —— `window_size` 必须把同一个倍率算进总高，CSS 的
+/// `gap` 与这里的 `gaps` 要逐像素一致（见 [`SignGap::px`]）。
+///
+/// 默认 `Standard` = 现状 `size / 2`（红线 3：升级不改观感）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SignGap {
+    /// 0.5×：多组时更紧凑，一屏能多摆两块牌。
+    Tight,
+    /// 现状：`size / 2`。
+    #[default]
+    Standard,
+    /// 2×：牌与牌之间留出呼吸，一块一块分得开。
+    Loose,
+}
+
+impl SignGap {
+    /// 相对 `size / 2` 的倍率。`Standard` 是 1.0 —— 恒等，不能是别的值。
+    pub fn mult(self) -> f32 {
+        match self {
+            SignGap::Tight => 0.5,
+            SignGap::Standard => 1.0,
+            SignGap::Loose => 2.0,
+        }
+    }
+
+    /// 这个档位实际的间距（px）。
+    ///
+    /// **先取整再乘、乘完向上取整**：`Standard` 必须逐字等于旧公式 `size / 2`
+    /// 的整数结果，否则默认设置下窗口就比牌多一像素。向上取整的方向和
+    /// `sign_width` 一致 —— 窗口只许多留，不许裁。
+    ///
+    /// CSS 那边是 `calc(size / 2 * var(--sign-gap))`（小数）。`Tight` 在
+    /// 偶数尺寸下会差半个像素（11 × 0.5 = 5.5 vs 这里 6）—— 窗口比内容高 0.5px，
+    /// 那是留白，不会裁到牌。
+    pub fn px(self, size: u16) -> u16 {
+        ((size / 2) as f32 * self.mult()).ceil() as u16
+    }
+}
+
 /// 一条出站钩子：聚合变成 `when` 里的某个状态时，执行 `action`。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hook {
@@ -909,8 +971,8 @@ fn normalize_headers(headers: BTreeMap<String, String>) -> BTreeMap<String, Stri
         .collect()
 }
 
-/// 展开的牌上显示哪几段内容。四段都可以单独关掉 —— 有人只要一眼颜色，
-/// 有人要看清「卡在哪一步」。
+/// 展开的牌上显示哪几段内容。五段都可以单独关掉 —— 有人只要一眼颜色，
+/// 有人要看清「卡在哪一步」，也有人只想要一块纯文字卡。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SignFields {
@@ -922,12 +984,17 @@ pub struct SignFields {
     pub age: bool,
     /// 消息 —— 关掉之后牌永远是单行高
     pub message: bool,
+    /// 状态圆点。关掉之后牌就是一块纯文字卡，状态只剩文字（和牌底的粗细分层）。
+    ///
+    /// **不影响几何**：圆点本来就在牌的 flex 行里，关掉它只是让文字往左挪 ——
+    /// 牌宽高仍由 `sign_width` / `sign_height` 算。默认开（红线 3）。
+    pub dot: bool,
 }
 
 impl Default for SignFields {
     fn default() -> Self {
         // 默认全开：牌的信息量就是它存在的理由
-        Self { name: true, state: true, age: true, message: true }
+        Self { name: true, state: true, age: true, message: true, dot: true }
     }
 }
 
@@ -1269,6 +1336,10 @@ pub struct Settings {
     pub sign_tint: SignTint,
     pub sign_text: SignText,
     pub sign_emphasis: SignEmphasis,
+    /// 牌内字体：系统无衬线 / 整块等宽。只改字形，不改几何。
+    pub sign_font: SignFont,
+    /// 多块牌之间的间距档位。**唯一会影响窗口高度的外观项**（见 [`SignGap`]）。
+    pub sign_gap: SignGap,
     /// 界面语言偏好。`Auto` 由**前端**解析成具体语言 —— Rust 不知道系统语言。
     pub locale: Locale,
     /// 设置窗口的亮 / 深色偏好。`Auto` = 跟随系统，解析见前端 `lib/theme.ts`。
@@ -1721,6 +1792,9 @@ impl Default for Settings {
             sign_tint: SignTint::default(),
             sign_text: SignText::default(),
             sign_emphasis: SignEmphasis::default(),
+            // 字体和间距同理：默认 == 加这两个字段之前的样子
+            sign_font: SignFont::default(),
+            sign_gap: SignGap::default(),
             locale: Locale::default(),
             // 跟随系统：升级上来的旧配置没有这个字段，行为必须和加开关之前一致
             theme: Theme::default(),
@@ -2012,7 +2086,9 @@ impl Settings {
     ///
     /// 一块牌时窗口就是「牌 + 留白」；多块竖着叠，高度逐块累加。
     pub fn window_size(&self, signs: &[u16]) -> (u16, u16) {
-        let gap = self.size / 2;
+        // 间距档位（`SignGap`）是外观里唯一影响几何的一项 —— 牌竖着叠，
+        // 它直接进窗口总高。默认档必须逐字等于原来的 `size / 2`。
+        let gap = self.sign_gap.px(self.size);
         let count = signs.len().clamp(1, MAX_SIGNS) as u16;
         let stacked: u16 = signs.iter().take(count as usize).sum();
         let gaps = gap * count.saturating_sub(1);
@@ -2427,6 +2503,9 @@ mod tests {
             sign_tint: SignTint::Warm,
             sign_text: SignText::Large,
             sign_emphasis: SignEmphasis::Flat,
+            // 字体与间距同理：都取非默认值，漏字段才验得出来
+            sign_font: SignFont::Mono,
+            sign_gap: SignGap::Loose,
             locale: Locale::En,
             // 同理：`Theme` 默认是 `Auto`，这里用 `Dark` 才验得出「漏了这个字段」
             theme: Theme::Dark,
@@ -2459,6 +2538,8 @@ mod tests {
                 state: true,
                 age: false,
                 message: true,
+                // 非默认（默认是 true）：漏了这个字段，往返里看得出来
+                dot: false,
             },
             // 非默认、且在合法区间内（50 以下已经低于下限了 —— 样本必须是「真可能出现的」）
             sign_opacity: 72,
@@ -3172,7 +3253,7 @@ mod tests {
         assert!(!settings.collapsed, "默认应是展开的牌面");
         assert_eq!(
             settings.show,
-            SignFields { name: true, state: true, age: true, message: true },
+            SignFields { name: true, state: true, age: true, message: true, dot: true },
             "默认每段都显示"
         );
         assert!(settings.hidden_groups.is_empty(), "默认不藏任何组");
@@ -3193,14 +3274,19 @@ mod tests {
         assert_eq!(settings.sign_tint, SignTint::Graphite, "默认还是偏冷的深灰");
         assert_eq!(settings.sign_text, SignText::Standard, "默认字号不动");
         assert_eq!(settings.sign_emphasis, SignEmphasis::Auto, "默认保留 need / calm 分层");
+        assert_eq!(settings.sign_font, SignFont::System, "默认还是系统无衬线 + 等宽消息");
+        assert_eq!(settings.sign_gap, SignGap::Standard, "默认间距还是 size / 2");
 
         // 旧配置里一个字段都没有，也不能因此让整份设置失效
         let old: Settings = serde_json::from_str(r#"{"size": 22}"#).unwrap();
         assert_eq!(old.sign_radius, SignRadius::Standard);
         assert_eq!(old.sign_emphasis, SignEmphasis::Auto);
+        assert_eq!(old.sign_font, SignFont::System);
+        assert_eq!(old.sign_gap, SignGap::Standard);
+        assert!(old.show.dot, "旧配置缺 dot：牌上的圆点必须还在（红线 3）");
     }
 
-    /// 五项都存字符串枚举，改一个值要能原样存回去 —— 序列化往返丢值会让设置
+    /// 两项都存字符串枚举，改一个值要能原样存回去 —— 序列化往返丢值会让设置
     /// 「点了没反应」，而那种 bug 在界面上看不出任何线索。
     #[test]
     fn the_sign_texture_roundtrips_through_json() {
@@ -3209,7 +3295,9 @@ mod tests {
             "sign_border": "none",
             "sign_tint": "slate",
             "sign_text": "compact",
-            "sign_emphasis": "flat"
+            "sign_emphasis": "flat",
+            "sign_font": "mono",
+            "sign_gap": "loose"
         }"#;
         let settings = serde_json::from_str::<Settings>(raw).unwrap();
         assert_eq!(settings.sign_radius, SignRadius::Round);
@@ -3217,11 +3305,15 @@ mod tests {
         assert_eq!(settings.sign_tint, SignTint::Slate);
         assert_eq!(settings.sign_text, SignText::Compact);
         assert_eq!(settings.sign_emphasis, SignEmphasis::Flat);
+        assert_eq!(settings.sign_font, SignFont::Mono);
+        assert_eq!(settings.sign_gap, SignGap::Loose);
 
         let back = serde_json::to_string(&settings).unwrap();
         assert!(back.contains(r#""sign_radius":"round""#));
         assert!(back.contains(r#""sign_tint":"slate""#));
         assert!(back.contains(r#""sign_emphasis":"flat""#));
+        assert!(back.contains(r#""sign_font":"mono""#));
+        assert!(back.contains(r#""sign_gap":"loose""#));
     }
 
     /// 隐藏的组名来自右键菜单、也会被用户手改进配置文件，所以要规整：
@@ -3625,6 +3717,37 @@ mod tests {
         let many = vec![one_line; MAX_SIGNS + 3];
         let capped = vec![one_line; MAX_SIGNS];
         assert_eq!(settings.window_size(&many), settings.window_size(&capped));
+    }
+
+    /// 间距档位是外观里**唯一影响几何**的一项：默认档必须逐字等于旧公式
+    /// `size / 2`，另外两档要真的改变间距、并且把窗口一起推高。
+    ///
+    /// CSS 那边是另一处真值（`lamp.css` 的 `.lamp-signs { gap }` 用
+    /// `calc(size / 2 * var(--sign-gap))`，`--sign-gap` 由 `lampStyle.ts` 从同一个
+    /// 枚举推过来）。这里钉的是 Rust 这一侧的口径：先取整再乘、乘完向上取整。
+    #[test]
+    fn the_sign_gap_is_identity_at_standard_and_moves_the_window() {
+        for size in [16u16, 22, 32] {
+            assert_eq!(
+                SignGap::Standard.px(size),
+                size / 2,
+                "默认档必须逐字等于旧公式：{size}"
+            );
+        }
+        assert!(SignGap::Tight.px(22) < SignGap::Standard.px(22), "紧凑档更窄");
+        assert!(SignGap::Loose.px(22) > SignGap::Standard.px(22), "宽松档更宽");
+
+        let one_line = sign_height(22, false, 1.0);
+        let base = Settings::default().window_size(&[one_line, one_line]);
+        let loose = Settings { sign_gap: SignGap::Loose, ..Settings::default() }
+            .window_size(&[one_line, one_line]);
+        let tight = Settings { sign_gap: SignGap::Tight, ..Settings::default() }
+            .window_size(&[one_line, one_line]);
+        assert!(loose.1 > base.1, "宽松档的窗口更高");
+        assert!(tight.1 < base.1, "紧凑档的窗口更矮");
+        // 牌是竖着叠的：间距只影响高度，宽度一分都不该变
+        assert_eq!(loose.0, base.0);
+        assert_eq!(tight.0, base.0);
     }
 
     #[test]

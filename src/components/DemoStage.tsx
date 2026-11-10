@@ -74,9 +74,12 @@ export function DemoStage({ compact = false }: Props) {
       shape: frame.shape ?? settings.shape,
       size: compact ? 22 : 30,
       sign_opacity: 100,
-      show: { name: true, state: true, age: true, message: true },
+      show: { name: true, state: true, age: true, message: true, dot: true },
       // 不继承用户的个性化：组名、隐藏的组、逐状态的颜色 / 形状覆盖。
       // 演示讲的是产品默认语义，不是「你把这盏灯调成了什么样」。
+      // 字体和间距同理 —— 换过等宽 / 宽松间距的人，看演示时该看到默认那张牌。
+      sign_font: "system",
+      sign_gap: "standard",
       group_meta: {},
       hidden_groups: [],
       styles: {},

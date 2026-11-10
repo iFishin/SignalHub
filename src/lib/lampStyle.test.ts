@@ -250,6 +250,22 @@ describe("lampVars", () => {
     // 默认档的 calm 必须仍明显淡于 need —— 托底不能吃掉日常的分层
     expect(0.86 * CALM_ALPHA_FACTOR).toBeGreaterThan(CALM_ALPHA_FLOOR);
   });
+
+  /**
+   * 牌间距倍率推给 CSS。**它是外观里唯一影响窗口几何的一项**：Rust 的
+   * `window_size` 用 `SignGap::px` 算同一个值，两边倍率必须一致（见 `SIGN_GAP_MULT`）。
+   *
+   * 默认必须是 1 —— 写成别的值，升级上来的人灯就变高 / 变矮了。
+   */
+  it("carries the sign gap multiplier and defaults to identity", () => {
+    const vars = (gap: Settings["sign_gap"]) =>
+      lampVars(withSettings({ sign_gap: gap })) as Record<string, string>;
+    expect(vars("standard")["--sign-gap"]).toBe("1");
+    expect(vars("tight")["--sign-gap"]).toBe("0.5");
+    expect(vars("loose")["--sign-gap"]).toBe("2");
+    // 三档必须互不相同，否则换了看不出变化
+    expect(new Set([vars("tight")["--sign-gap"], vars("standard")["--sign-gap"], vars("loose")["--sign-gap"]]).size).toBe(3);
+  });
 });
 
 describe("stateOverridden", () => {
