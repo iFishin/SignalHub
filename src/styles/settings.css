@@ -1091,7 +1091,10 @@ input[type="color"].style-swatch::-webkit-color-swatch {
 /* 挤在一行里的 chips（「牌上显示」哪几段）。
    默认那份是给「通知转发」页的过滤条件用的，会折成两三行并留出下边距；这里两种都不想要。 */
 .chips-tight {
-  flex-wrap: nowrap;
+  /* 「牌上显示」那五个 chip（圆点 / 组名 / 状态 / 已持续 / 消息）。
+     原来是 `nowrap`（四个时一行放得下），加到五个之后窄一点的窗口会溢出，
+     所以改成允许换行 —— 宽度够的时候仍然是一行，放不下才折。 */
+  flex-wrap: wrap;
   margin-bottom: 0;
 }
 
