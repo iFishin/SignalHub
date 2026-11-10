@@ -26,11 +26,12 @@ export type SignEmphasis = "auto" | "flat";
 /** 牌内字体：`system` = 系统无衬线（现状）；`mono` = 整块牌换成等宽。 */
 export type SignFont = "system" | "mono";
 /**
- * 边灯：状态色铺到牌的边缘上。
+ * 边框光轨：状态色铺到牌的边上。
  *
- * `off` = 现状；`top` = 顶边一道渐隐的光；`frame` = 四边一圈细线；`glow` = 细线
- * 加牌外一圈柔光。**四档都只改画法**，牌宽高和窗口尺寸一个像素都不动 —— 边灯
- * 由 `::before` 和 `box-shadow` 画，两者都不改盒。
+ * `off` = 现状；`top` / `frame` / `glow` 是**同一条线**的覆盖范围（只走上边 /
+ * 四边 / 四边再加牌外柔光），不是三种画法。开边灯时中性描边让位。
+ * **四档都只改画法**，牌宽高和窗口尺寸一个像素都不动 —— 边灯由 `::before`
+ * 和 `box-shadow` 画，两者都不改盒。
  */
 export type SignEdge = "off" | "top" | "frame" | "glow";
 /**
@@ -50,6 +51,21 @@ export interface SignCorners {
   br: SignCorner;
   bl: SignCorner;
 }
+
+/**
+ * 边框光**什么时候亮**。边灯和角灯各一份，放在「行为」页。
+ *
+ * `always` = 条件成立就一直亮（加这个字段之前的样子）；`attention` = 只在
+ * 「需要你动手」的三种状态亮；`active` = 空闲 / 完成 / 沉默 / 离线时不亮；
+ * `quiet` = 安静模式压暗时一起熄。判定在 `lampStyle.ts::lightOn`，有单测。
+ */
+export type LightTrigger = "always" | "attention" | "active" | "quiet";
+/** 边框光的粗细：线宽和角灯直径共用（分开调会调出「粗线配小芝麻」）。 */
+export type LightScale = "thin" | "normal" | "thick";
+/** 边框光的明暗。与粗细分开，浅色桌面常用「细而亮」，深色桌面常用「粗而淡」。 */
+export type LightAlpha = "soft" | "normal" | "strong";
+/** 边框光取状态色还是近白。取值在 `.sign` 那层完成，不能从窗口根上往下传。 */
+export type LightColor = "state" | "neutral";
 /**
  * 多块牌之间的间距档位。**唯一影响窗口几何的外观项** —— 牌竖着叠，间距大了
  * 窗口就变高，所以只能是三个离散档（倍率见 `lampStyle.ts::SIGN_GAP_MULT`，
@@ -370,6 +386,13 @@ export interface Settings {
   sign_edge: SignEdge;
   /** 牌面四角的小灯：四角各选一个来源，用来挂「塞不进 154px 的那几件事」。 */
   sign_corners: SignCorners;
+  /** 边灯 / 角灯什么时候亮（「行为」页）。默认 `always` = 常亮。 */
+  sign_edge_trigger: LightTrigger;
+  sign_corner_trigger: LightTrigger;
+  /** 边框光三把尺子（「外观」页）：粗细、明暗、颜色来源。边灯与角灯共用。 */
+  sign_light_scale: LightScale;
+  sign_light_alpha: LightAlpha;
+  sign_light_color: LightColor;
   /** 逐个状态的外观覆盖（颜色 / 形状 / 节奏）。没写的项跟随全局。 */
   styles: Record<string, StateStyle>;
   /** 折叠成一颗单纯的灯（只剩灯，没有牌面）。**默认 false = 展开成牌。** */
@@ -526,9 +549,15 @@ export const DEFAULTS: Settings = {
   // 字体 / 间距同样等于「加这两个字段之前」的样子
   sign_font: "system",
   sign_gap: "standard",
-  // 边灯 / 角灯默认全关，理由同上：加这两项之前牌的四边四角都是空的
+  // 边灯 / 角灯默认全关，理由同上：加这两项之前牌的四边四角都是空的。
+  // 触发方式与三把尺子全部取默认档，五个字段合起来等于「没加过」
   sign_edge: "off",
   sign_corners: { tl: "empty", tr: "empty", br: "empty", bl: "empty" },
+  sign_edge_trigger: "always",
+  sign_corner_trigger: "always",
+  sign_light_scale: "normal",
+  sign_light_alpha: "normal",
+  sign_light_color: "state",
   styles: {},
   collapsed: false,
   click_action: "collapse",

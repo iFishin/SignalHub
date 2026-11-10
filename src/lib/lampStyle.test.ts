@@ -7,6 +7,7 @@ import {
   resolveShapes,
   stateOverridden,
   toneOf,
+  lightOn,
   CALM_ALPHA_FACTOR,
   CALM_ALPHA_FLOOR,
   SIGN_OPACITY_MIN,
@@ -417,5 +418,53 @@ describe("cornerLights", () => {
       { pinned: false, muted: false, staleProgress: null },
     );
     expect(lit.map((corner) => corner.pos)).toEqual(["tl", "tr", "br", "bl"]);
+  });
+
+  /** 触发方式说不亮的时候，连无条件亮的 `state` 那枚也得消失。 */
+  it("lets the behavior gate silence every corner, including the state one", () => {
+    const facts = { pinned: true, muted: true, staleProgress: 0.8 };
+    expect(cornerLights(corners({ bl: "state", tl: "pinned" }), facts, false)).toEqual([]);
+    // 不传 gate = 旧的常亮行为，DEFAULTS 里两个 trigger 都是 always
+    expect(cornerLights(corners({ bl: "state" }), facts)).toEqual([
+      { pos: "bl", kind: "state" },
+    ]);
+  });
+});
+
+describe("lightOn", () => {
+  const ctx = (state: Parameters<typeof toneOf>[0], quiet = false) => ({ state, quiet });
+
+  it("always keeps the rail on", () => {
+    for (const state of SIGNALS) {
+      expect(lightOn("always", ctx(state, true))).toBe(true);
+    }
+  });
+
+  it("lights attention only for the three actionable states", () => {
+    for (const state of ["permission", "attention", "error"] as const) {
+      expect(lightOn("attention", ctx(state))).toBe(true);
+    }
+    for (const state of ["thinking", "working", "done", "idle", "stale", "offline", "off"] as const) {
+      expect(lightOn("attention", ctx(state))).toBe(false);
+    }
+  });
+
+  it("treats done as inactive, unlike the quiet-mode dimming list", () => {
+    expect(lightOn("active", ctx("working"))).toBe(true);
+    expect(lightOn("active", ctx("permission"))).toBe(true);
+    expect(lightOn("active", ctx("done"))).toBe(false);
+    expect(lightOn("active", ctx("idle"))).toBe(false);
+    expect(lightOn("active", ctx("offline"))).toBe(false);
+  });
+
+  it("follows quiet mode only when the lamp is actually dimmed", () => {
+    expect(lightOn("quiet", ctx("working", false))).toBe(true);
+    expect(lightOn("quiet", ctx("idle", true))).toBe(false);
+  });
+
+  it("defaults to always so an upgraded config looks unchanged", () => {
+    expect(DEFAULTS.sign_edge_trigger).toBe("always");
+    expect(DEFAULTS.sign_corner_trigger).toBe("always");
+    expect(lightOn(DEFAULTS.sign_edge_trigger, ctx("offline", true))).toBe(true);
   });
 });

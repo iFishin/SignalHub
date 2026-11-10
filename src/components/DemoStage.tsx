@@ -85,6 +85,15 @@ export function DemoStage({ compact = false }: Props) {
       // 那一场讲的就是这两项，跟着用户设置走等于什么都没讲。
       sign_edge: frame.edge ?? settings.sign_edge,
       sign_corners: frame.corners ?? settings.sign_corners,
+      // 触发方式与三把尺子全用默认档，理由和字体 / 间距一样：演示讲的是产品
+      // 默认语义。尤其触发 —— 用户要是在「行为」页设成「只在要你处理时亮」，
+      // 跟着设置走会让「用光说话」那场大半时间什么都不亮。最后一步由剧本自己
+      // 把 `edgeTrigger` 换成 attention，专门演示这一项。
+      sign_edge_trigger: frame.edgeTrigger ?? "always",
+      sign_corner_trigger: "always",
+      sign_light_scale: "normal",
+      sign_light_alpha: "normal",
+      sign_light_color: "state",
       // 角灯里 `pinned` / `muted` 两枚要靠这两个事实才亮。喂的是**组 id**，
       // 出处只有 `demo.ts::DEMO_CORNER_GROUP` 一处。
       group_meta: frame.pinned ? { [DEMO_CORNER_GROUP]: { order: 0 } } : {},
@@ -103,6 +112,7 @@ export function DemoStage({ compact = false }: Props) {
       frame.corners,
       frame.pinned,
       frame.muted,
+      frame.edgeTrigger,
     ],
   );
 

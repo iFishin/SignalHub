@@ -45,7 +45,9 @@ describe("样式表", () => {
     for (const needle of [
       "white-space: nowrap", // 组名 / 消息不换行（靠省略号截断）
       ".sign-corner", // 四角小灯
-      '[data-sign-edge="frame"]', // 边灯
+      '.sign[data-edge="frame"]', // 边灯那条轨（按牌挂，不是挂在窗口根上）
+      "--corner-arc", // 角灯落点跟着圆角算，写死就又会缩回牌内
+      "data-sign-light-scale", // 粗细尺子
       "overflow: hidden", // 裁掉超出牌面的内容
     ]) {
       expect(lampCss.includes(needle), `lamp.css 里找不到 ${needle}`).toBe(true);

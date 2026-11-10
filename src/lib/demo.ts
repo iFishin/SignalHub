@@ -23,7 +23,7 @@
  *   只为演示编出来的。
  */
 import type { GroupView, SignalState } from "./types";
-import type { Shape, SignCorners, SignEdge } from "./useSettings";
+import type { Shape, SignCorners, SignEdge, LightTrigger } from "./useSettings";
 
 /** 演示里出现的组。名字是稳定的 id，显示名走 i18n（中英各一份）。 */
 export type DemoGroupId = "build" | "api" | "review";
@@ -86,6 +86,13 @@ export interface DemoStep {
   pinned?: boolean;
   /** 这一步把那块牌当成「被静音」（角灯的 `muted` 判据）。 */
   muted?: boolean;
+  /**
+   * 这一步把边灯的触发方式换成哪一档。不填 = 常亮。
+   *
+   * 只有「用光说话」最后那一步会填：让两块状态不同的牌并排，只有需要你动手的
+   * 那块亮边 —— 触发方式这种「什么时候亮」的事，光靠一行设置说明讲不清楚。
+   */
+  edgeTrigger?: LightTrigger;
 }
 
 export interface DemoScenario {
@@ -321,6 +328,20 @@ export const DEMO_SCENARIOS: DemoScenario[] = [
         pinned: true,
         muted: true,
       },
+      {
+        // 两块牌状态不同，只有「等你批准」那块亮边 —— 行为页的触发方式用一张图
+        // 就能说清，光靠一行说明讲不明白。这一步不挂角灯，免得两件事抢注意力。
+        id: "lightTrigger",
+        durationMs: DEMO_STEP_MS + 1200,
+        aggregate: "permission",
+        rows: [
+          { id: "review", state: "permission" },
+          { id: "build", state: "working" },
+        ],
+        edge: "frame",
+        corners: { tl: "empty", tr: "empty", br: "empty", bl: "empty" },
+        edgeTrigger: "attention",
+      },
     ],
   },
 ];
@@ -427,6 +448,8 @@ export function demoSnapshot(
   /** 这一步是否把 [`DEMO_CORNER_GROUP`] 当作置顶 / 静音。 */
   pinned: boolean;
   muted: boolean;
+  /** 边灯这一刻的触发方式；`undefined` = 常亮。 */
+  edgeTrigger: LightTrigger | undefined;
 } {
   const step = DEMO_STEPS[index];
   const groups: GroupView[] = step.rows.map((row) => ({
@@ -450,5 +473,6 @@ export function demoSnapshot(
     corners: step.corners,
     pinned: step.pinned === true,
     muted: step.muted === true,
+    edgeTrigger: step.edgeTrigger,
   };
 }

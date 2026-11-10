@@ -1,4 +1,4 @@
-import type { Settings, Shape, StateStyle, SignGap, SignCorner, SignCorners } from "./useSettings";
+import type { Settings, Shape, StateStyle, SignGap, SignCorner, SignCorners, LightTrigger } from "./useSettings";
 import { SIGNALS, type SignalState } from "./types";
 import { colorVars } from "./palettes";
 
@@ -66,6 +66,45 @@ const NEEDS_YOU: readonly SignalState[] = ["permission", "attention", "error"];
 
 export function toneOf(state: SignalState): SignTone {
   return NEEDS_YOU.includes(state) ? "need" : "calm";
+}
+
+/**
+ * 「只在有活动时亮」的反面：这些状态下牌上已经没什么在发生了。
+ *
+ * 和「安静模式」压暗的那张表（lamp.css `[data-quiet][data-aggregate]`）**不是同一份**：
+ * 那边刻意不含 `done`（完成值得看一眼），这边含它（完成不是「还在活动」）。
+ * 两个问题各自一张表，别为了省一行把它们合并。
+ */
+const INACTIVE_STATES: readonly SignalState[] = ["idle", "done", "stale", "offline", "off"];
+
+/** 边框光触发判定的输入。`quiet` = **此刻整盏灯是否被安静模式压暗**（不是开关本身）。 */
+export interface LightContext {
+  state: SignalState;
+  quiet: boolean;
+}
+
+/**
+ * 这盏边框光现在该不该亮。
+ *
+ * 「外观」决定亮起来长什么样，「行为」决定凭什么现在亮 —— 这条纯函数就是后者，
+ * 边灯和四角角灯共用它（各传各的 trigger）。抽成纯函数是因为灯的每一帧都在
+ * 重渲染，判定藏在 JSX 里的话四档只能靠真机盯着灯等状态切换来验证。
+ *
+ * 注意 `quiet` 传进来的是**已经算好的**「此刻被压暗了吗」：安静模式看的是整灯
+ * 聚合状态，而边灯/角灯是逐块牌画的，两处的粒度不一样，混在这里算就会得到
+ * 「红灯被压暗了、绿灯却没有」这种自相矛盾的画面。
+ */
+export function lightOn(trigger: LightTrigger, ctx: LightContext): boolean {
+  switch (trigger) {
+    case "always":
+      return true;
+    case "attention":
+      return toneOf(ctx.state) === "need";
+    case "active":
+      return !INACTIVE_STATES.includes(ctx.state);
+    case "quiet":
+      return !ctx.quiet;
+  }
 }
 
 /**
@@ -278,10 +317,19 @@ export interface CornerLight {
  * 唯一的例外是 `state`：它没有条件，配了就一直在 —— 那正是「关掉圆点之后仍然
  * 要有颜色」的用法。
  *
+ * `gate` 是「行为」页那道触发开关的结果（`lightOn`）。**它排在一切条件之前**：
+ * 触发方式说「现在别亮」的时候，连无条件亮的 `state` 那枚也得消失 —— 否则用户
+ * 设了「只在需要我处理时亮」，空闲的牌上却还挂着一枚常亮的状态点，等于没设。
+ *
  * 纯函数，有单测（`lampStyle.test.ts`）：卡片组件每帧都在重渲染，判定逻辑藏在
  * JSX 里的话，五种情况只能靠肉眼看灯验，而这盏灯不是所有机器上都摆得出来。
  */
-export function cornerLights(corners: SignCorners, facts: CornerFacts): CornerLight[] {
+export function cornerLights(
+  corners: SignCorners,
+  facts: CornerFacts,
+  gate = true,
+): CornerLight[] {
+  if (!gate) return [];
   const out: CornerLight[] = [];
   for (const pos of CORNER_POSITIONS) {
     const kind = corners[pos];

@@ -6,7 +6,7 @@ import { inTauri } from "../lib/env";
 import { requestSettingsTab } from "../lib/settingsIntent";
 import { signalLabel, justFinishedLabel } from "../lib/signals";
 import { useLang, useMessages, type Messages, type Lang } from "../lib/i18n";
-import { lampVars, resolveShapes, resolveHaloAnimations, toneOf, cornerLights } from "../lib/lampStyle";
+import { lampVars, resolveShapes, resolveHaloAnimations, toneOf, cornerLights, lightOn } from "../lib/lampStyle";
 import { transitions, type AggregateMap } from "../lib/lampTransitions";
 import { labelOf, orderVisible } from "../lib/lampSort";
 import { useNow } from "../lib/useNow";
@@ -636,6 +636,16 @@ export function SignalLamp({
     );
   }
 
+  // 边框光「跟随安静模式」那一档要判的是**此刻整盏灯有没有被压暗**，不是开关
+  // 本身。CSS 的 `[data-quiet][data-aggregate]` 压暗的是 idle / stale / offline /
+  // off 四种聚合（done 刻意不在内，它值得看一眼）—— 判据必须和那边一致，否则
+  // 会看到「牌压暗了、边框光还亮着」这种自相矛盾的画面。
+  const quietDim =
+    quiet &&
+    !passThrough &&
+    !guide.show &&
+    ["idle", "stale", "offline", "off"].includes(aggregate);
+
   return (
     <div
       className="lamp-root"
@@ -662,9 +672,15 @@ export function SignalLamp({
          间距（`--sign-gap`）不在这里 —— 它影响窗口几何，得和 Rust 的
          `window_size` 用同一个倍率，所以和宽高倍率一起走 `lampVars`。 */
       data-sign-font={settings.sign_font}
-      /* 边灯：状态色铺到牌的边缘（见 lamp.css 的「边灯 / 角灯」一节）。
-         和上面几个 `data-sign-*` 同一个道理 —— 画法只住在 CSS 一处。 */
-      data-sign-edge={settings.sign_edge}
+      /* 边框光的三把尺子（粗细 / 明暗 / 颜色来源）。和上面几个 `data-sign-*`
+         同一个道理 —— 倍数与取色只住在 `lamp.css` 一处。
+
+         **边灯档位本身不挂在这里**：触发方式是逐块牌判定的（只在要你处理时
+         亮 / 只在活跃时亮），所以那条轨由每块 `.sign` 自己带 `data-edge`。
+         根上挂一个全局值会让整盏灯一起亮灭，等于没有触发开关。 */
+      data-sign-light-scale={settings.sign_light_scale}
+      data-sign-light-alpha={settings.sign_light_alpha}
+      data-sign-light-color={settings.sign_light_color}
       data-paused={(!preview && paused) || undefined}
       // 有气泡时窗口要高出一块（Rust 算的），CSS 按同一个数把内容区收上去
       data-approvals={pending || undefined}
@@ -714,19 +730,32 @@ export function SignalLamp({
               transition: { type: "spring" as const, stiffness: 300, damping: 18, duration: 0.42 },
             }
           : {};
+        // 边框光现在该不该亮：行为页那两个触发开关，边灯与角灯各判各的。
+        // 判据在 `lampStyle.ts::lightOn`（纯函数、有单测），同一份 ctx 传给两边，
+        // 不会出现「轨亮着、四枚灯却熄了」这种半套画面。
+        const lightCtx = { state: group.aggregate, quiet: quietDim };
+        const edgeOn = lightOn(settings.sign_edge_trigger, lightCtx);
+        const cornerOn = lightOn(settings.sign_corner_trigger, lightCtx);
+
         // 四角小灯：哪几枚该亮。判据在 `lampStyle.ts::cornerLights`（纯函数、有单测）
         // —— 它只返回**该亮**的那些，「不亮」是根本不画，而不是画一个暗点。
+        // 第三参是触发门控，排在一切条件之前：说「现在别亮」时连无条件亮的
+        // `state` 那枚也得消失。
         //
         // **占位牌（`name` 为空）不挂**：它不对应任何真实的组，也就没有「置顶 /
         // 静音 / 沉默多久」可言 —— 挂上去的每一枚都会是假的。
         const corners =
           group.name === ""
             ? []
-            : cornerLights(settings.sign_corners, {
-                pinned: settings.group_meta[group.name]?.order != null,
-                muted: settings.muted_groups.includes(group.name),
-                staleProgress: group.stale_progress,
-              });
+            : cornerLights(
+                settings.sign_corners,
+                {
+                  pinned: settings.group_meta[group.name]?.order != null,
+                  muted: settings.muted_groups.includes(group.name),
+                  staleProgress: group.stale_progress,
+                },
+                cornerOn,
+              );
         return !expanded ? (
           <motion.span
             // 折叠后只有点，没有可读的文字，所以 key 用下标；组名可能为空（占位那块）
@@ -763,6 +792,10 @@ export function SignalLamp({
                的 `edge-flash`）。边灯和四角小灯都从这个 `--state` 取色，所以它必须
                挂在牌上，而不是只挂在灯珠上。 */
             data-state={group.aggregate}
+            /* 边框那条轨**逐块牌**判定：同一盏灯里可以有的牌亮边、有的不亮。
+               `off` 时仍然挂属性（而不是不挂），CSS 的「中性描边让位」那条
+               `:not([data-edge="off"])` 才不会误伤没开边灯的牌。 */
+            data-edge={edgeOn ? settings.sign_edge : "off"}
             /* `--progress` 也挂到牌上：沉默进度那枚角灯要用它，而它原来只挂在
                灯珠的 style 里。同一个变量、同一个来源，两者不会给出不同的答案。 */
             style={progressStyle(group)}

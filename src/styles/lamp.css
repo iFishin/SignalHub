@@ -26,9 +26,11 @@
  * （Rust 枚举 / TS 联合类型 / 这里的 `[data-sign-*]` 选择器），对不上的表现是
  * 「点了没反应」，界面上没有任何报错可循。
  *
- * **边灯（`[data-sign-edge]`）和四角小灯（`.sign-corner`）是同一类东西**：只画在
+ * **边框光（`[data-edge]` 那条轨 + `.sign-corner` 四枚灯位）是同一类东西**：只画在
  * 已经存在的那块牌上，一个用伪元素、一个用绝对定位的子元素，都不参与 flex 布局，
- * 也都不改盒 —— 所以窗口尺寸同样不必为它们加一个像素（见「边灯 / 角灯」一节）。
+ * 也都不改盒 —— 所以窗口尺寸同样不必为它们加一个像素（见「边框光」一节）。
+ * 三把尺子（`data-sign-light-scale` / `-alpha` / `-color`）同样只改画法，
+ * 「什么时候亮」由逐块牌的 `data-edge` 和角灯的门控决定，判据在 `lightOn()`。
  *
  * 两条硬性约束：
  * 1) html/body/#root 必须完全透明，否则 webview 会画出白底，透明窗口就白做了。
@@ -100,13 +102,29 @@ body,
   --sign-radius: 0.32; /* × size */
   --sign-text: 1; /* × 字号 */
 
-  /* 角灯的两把尺子：直径和离牌边的距离。都按 size 派生，所以大小档位一换，
-     四角的小点跟着缩放 —— 写死像素的话，16px 的牌上那枚点会显得比牌还重。
-     **4.4 / 5.3 这两个数是算出来的，不是估的**：牌高只有 `1.5 × size`，"角"其实
-     离中心很近；`inset ≥ 0.24 × size` 才能让 3.5px 的点在**最大圆角**（0.72 × size，
-     接近胶囊）时仍然落在圆角弧线内侧、不被 `overflow: hidden` 切掉一块。 */
+  /* ---- 边框光：一根轨、四枚灯位，共用三把尺子 ----------------------------
+   *
+   * 边灯的**线宽**和角灯的**直径**共用 `--light-w` / `--corner-d`，取色和明暗
+   * 共用 `--light-c` / `--light-a`。两样分开调，用户十有八九会调出「一条粗线配
+   * 四颗小芝麻」，而它们本来就是同一条轨上的东西 —— 这也是 0.6.3 之前「灯看起来
+   * 不协调」的根因：边灯画在边框上、角灯却缩在牌内，各画各的。
+   *
+   * 默认档写在下面，三档覆盖在文件后面的 `[data-sign-light-*]` 一段里。
+   * **没有一档参与窗口几何**：边灯是 `::before` 伪元素，角灯绝对定位。
+   */
+  --light-w: calc(var(--size) * 0.068);
+  --light-a: 0.72;
   --corner-d: calc(var(--size) * 0.16);
-  --corner-inset: calc(var(--size) * 0.24);
+
+  /* 角灯的落点**跟着圆角算**，这是「角灯应该在边框的四角」的关键。
+     圆角弧上 45° 那个点到牌角的距离是 r·(1 − 1/√2) ≈ 0.293r；圆点左上角只要
+     不比它更靠内，整颗就落在圆角弧内侧、不会被 `.sign` 的 `overflow: hidden`
+     切掉一块。
+     旧版写死 `0.24 × size`，那是为了迁就最大圆角（0.72 × size）取的**上界**：
+     默认圆角只有 0.32 × size，于是角灯离边框足有 5px，读起来是「牌内四个散点」
+     而不是「边框四角的灯」。跟着 r 算之后，四档圆角里它都紧贴边框。 */
+  --corner-arc: calc(var(--size) * var(--sign-radius, 0.32) * 0.293);
+  --corner-inset: calc(var(--corner-arc) + 1px);
 
   /* 牌内字体。默认是系统无衬线；`[data-sign-font="mono"]` 把整块牌换成等宽
      —— 组名、状态词、消息、时长一起换，牌读起来像一段终端日志。
@@ -585,74 +603,107 @@ body,
   font-variant-numeric: tabular-nums;
 }
 
-/* ---- 边灯 / 角灯：用光说话，而不是多写一行字 -----------------------------
+/* ---- 边框光：一条轨 + 四枚灯位 ---------------------------------------------
  *
- * 这两样是同一件事的两半，所以放在一起，也共用一条约束：
- * **不多写一个字、不动一个像素的几何**。牌宽高仍由 `config.rs::sign_width` /
- * `sign_height` 算，留白仍是 `--lamp-inset`，窗口尺寸完全不受影响。
+ * 0.6.3 之前边灯和角灯是**三套画法**（中性描边、顶边绿雾、四边细线）加**牌内
+ * 四个散点**，各画各的，所以整块牌看着不协调。现在它们合成一套东西：
  *
- *   边灯（`data-sign-edge`）—— 状态色的**面积化**。灯珠只有 0.55 × size 大，
- *     而一块牌在余光里最先被读到的不是字，是「一块有颜色的面」。
- *   角灯（四枚 `.sign-corner`）—— 一块牌有四个角一直是空的，而「置顶了吗 /
- *     静音了吗 / 还有多久变沉默」这类是 / 否信息正好只有一枚小点那么大。
+ *   `.sign::before` = 边框那条**轨**（top 只走上边 / frame 走四边 / glow 再加
+ *     牌外一圈同色柔光）；
+ *   `.sign-corner` = 轨上四个转角处的**灯位**（落点跟着圆角算，见上面
+ *     `--corner-arc`）。
  *
- * 两者都只表达**已经有的事实**（状态色、置顶、静音、沉默进度），不引入新语义：
- * 灯上多出来的每一处亮色都得回答一个用户本来就知道去哪儿查的问题，否则它只是
- * 装饰 —— 而装饰会让真正要紧的那点亮色失去分量。
+ * 两者共用 `--light-w` / `--light-a` / `--light-c` 三把尺子，开边灯时中性描边让位，
+ * 于是牌边永远只有一层线。仍然**不多写一个字、不动一个像素的几何**：牌宽高仍由
+ * `config.rs::sign_width` / `sign_height` 算，窗口尺寸完全不受影响。
+ *
+ * 两者都只表达**已经有的事实**（状态色、置顶、静音、沉默进度），不引入新语义。
+ * 「什么时候亮」交给 `data-edge` / `cornerLights` 的 gate，判据在
+ * `lampStyle.ts::lightOn`（行为页的两个触发开关），这一段只管亮起来长什么样。
  */
 
+/* `--light-c` 必须**在 `.sign` 这一层**取值，不能从 `.lamp-root` 往下传：状态色是
+   逐块牌的（`--state` 挂在 `.sign` 上），自定义属性里的 `var()` 在声明它的元素上
+   就求值完了，根上写 `--light-c: var(--state)` 拿到的是根上的空值。 */
+.sign {
+  --light-c: var(--state, transparent);
+}
+
+/* 中性档：让边框只负责「形状」，不抢灯珠那点颜色。取次级灰而不是正文字色，
+   是为了和 `pinned` 那枚近白实心点还留一档差距。 */
+.lamp-root[data-sign-light-color="neutral"] .sign {
+  --light-c: var(--sign-muted);
+}
+
+/* 粗细与明暗的三档。默认档写在 `.lamp-root` 里（见文件头），这里只写两端。 */
+.lamp-root[data-sign-light-scale="thin"] {
+  --light-w: calc(var(--size) * 0.045);
+  --corner-d: calc(var(--size) * 0.12);
+}
+
+.lamp-root[data-sign-light-scale="thick"] {
+  --light-w: calc(var(--size) * 0.1);
+  --corner-d: calc(var(--size) * 0.22);
+}
+
+.lamp-root[data-sign-light-alpha="soft"] {
+  --light-a: 0.45;
+}
+
+.lamp-root[data-sign-light-alpha="strong"] {
+  --light-a: 0.95;
+}
+
 /* 边灯的载体是 `.sign::before`：绝对定位的伪元素，不参与 flex 布局、也不改盒。
-   `inset: 0` 相对**内边距盒**定位，所以它天然落在描边里面；圆角跟 `inherit`
-   走（比内圆角大 1px，肉眼看不出来）。`.sign` 自带 `overflow: hidden`，于是
-   顶边那道渐变会被圆角切出干净的弧，不需要额外 mask。
-   `pointer-events: none`：它盖在整块牌上，绝不能抢走拖拽和右键。 */
-.lamp-root[data-sign-edge="top"] .sign::before,
-.lamp-root[data-sign-edge="frame"] .sign::before,
-.lamp-root[data-sign-edge="glow"] .sign::before {
+   `inset: 0` 相对**内边距盒**定位，所以它天然落在牌自己的描边里面；圆角跟
+   `inherit` 走（比内圆角大 1px，肉眼看不出来）。`pointer-events: none`：
+   它盖在整块牌上，绝不能抢走拖拽和右键。
+
+   **`data-edge` 挂在每块 `.sign` 上，不是 `.lamp-root`**：行为页的触发方式是
+   「这块牌现在该不该亮」（只在要你处理时 / 只在活跃时），而一盏灯里好几块牌
+   状态不同。挂在根上就只能整盏一起亮灭，等于没有触发开关。 */
+.sign[data-edge="top"]::before,
+.sign[data-edge="frame"]::before,
+.sign[data-edge="glow"]::before {
   content: "";
   position: absolute;
   inset: 0;
   border-radius: inherit;
+  /* 三档是**同一条轨**的覆盖范围，不是三种画法。旧版 `top` 用渐变绿雾、
+     `frame` 用 1px 细线，切档时像换了块牌 —— 那正是「不协调」的来源。 */
+  border: 0 solid var(--light-c, transparent);
+  opacity: var(--light-a);
   pointer-events: none;
 }
 
-/* 顶边：**一道细亮线 + 一小段向下的余晖**，像一根灯管照亮牌的上沿。
-   早先只画渐隐、没有那道线，结果整块牌的上半截被染成一片绿雾 —— 读起来是
-   「这块牌变绿了」，而不是「顶边亮着」。线只有 1.5px，靠 `inset` 阴影画在
-   内边距盒里，所以不会被牌自己的描边挤歪。
-   余晖的长度按 `size × 0.5` 算而不是百分比：`size` 32 的牌高 80px，`24%` 就是
-   19px，那一截看着像牌上盖了一块绿色的盖 —— 换个固定的 16px 才在三个大小档上
-   都是同一件事。 */
-.lamp-root[data-sign-edge="top"] .sign::before {
-  box-shadow: inset 0 1.5px 0 var(--state, transparent);
-  background: linear-gradient(
-    to bottom,
-    var(--state, transparent),
-    transparent calc(var(--size) * 0.5)
-  );
-  opacity: 0.6;
+.sign[data-edge="top"]::before {
+  border-top-width: var(--light-w);
 }
 
-/* 四边：整块牌被状态色框住，像一台仪表的边框。
-   用不透明度而不是 `color-mix` 压暗 —— 状态色本身是个变量，混色要多赌一次
-   `color-mix` 的支持（见 `.dot` 那段同样的顾虑）。 */
-.lamp-root[data-sign-edge="frame"] .sign::before,
-.lamp-root[data-sign-edge="glow"] .sign::before {
-  border: 1px solid var(--state, transparent);
-  opacity: 0.7;
+.sign[data-edge="frame"]::before,
+.sign[data-edge="glow"]::before {
+  border-width: var(--light-w);
+}
+
+/* 开边灯时中性描边让位：否则沿牌边会同时有一条中性线和一条状态线，
+   两条线差 1px、谁也看不清。描边档（`data-sign-border`）只是被盖住，
+   关掉边灯立刻原样回来，不必让设置面板去同步两个开关。 */
+.sign[data-edge]:not([data-edge="off"]) {
+  border-color: transparent;
 }
 
 /* 辉光：在四边细线之上，再从牌**外面**散一圈同色柔光。
    阴影画在 `.sign` 自己身上而不是伪元素上 —— 伪元素会被父级的
    `overflow: hidden` 裁掉，光就散不出去。窗口每边有 14px 留白，
    `size` 32 时 0.45 × size ≈ 14px 的模糊半径刚好用满、又不出窗。 */
-.lamp-root[data-sign-edge="glow"] .sign {
+.sign[data-edge="glow"] {
   box-shadow: 0 0 calc(var(--size) * 0.45) calc(var(--size) * -0.12)
-    var(--state, transparent);
+    var(--light-c, transparent);
 }
 
-/* 角灯：四枚绝对定位的小点。**常亮、不闪** —— 节奏是灯珠的活，四角再闪就是
-   一处画面里好几个东西在动，而它们说的还都是同一件事。
+/* 角灯：边框四个转角上的**灯位**，不是牌内散点。落点 `--corner-inset` 跟着
+   圆角半径算（见文件头），所以四档圆角里它都紧贴边灯那条线。
+   **常亮、不闪** —— 节奏是灯珠的活，四角再闪就是一处画面里好几个东西在动。
    用 `data-pos` 定位而不是四套类名：位置只有四个，值只有五个，两个维度分开写
    才不会有 20 条规则。 */
 .sign-corner {
@@ -660,6 +711,7 @@ body,
   width: var(--corner-d);
   height: var(--corner-d);
   border-radius: 50%;
+  opacity: var(--light-a);
   /* 它只负责「看」：牌上按下要能拖窗口，右键要能弹组菜单 */
   pointer-events: none;
 }
@@ -684,18 +736,17 @@ body,
   bottom: var(--corner-inset);
 }
 
-/* 状态色：和灯珠、和细环同一个 `--state`。关掉牌上那颗圆点之后，这是唯一的
-   颜色来源 —— 「我只要一块纯文字卡，但还得一眼看出颜色」就靠它。 */
+/* 状态色：和边灯那条轨、和灯珠细环取同一个 `--light-c`。关掉牌上那颗圆点之后，
+   这是唯一的颜色来源 —— 「我只要一块纯文字卡，但还得一眼看出颜色」就靠它。 */
 .sign-corner[data-kind="state"] {
-  background: var(--state);
-  opacity: 0.9;
+  background: var(--light-c, transparent);
 }
 
-/* 置顶：近白实心点。**不用状态色** —— 它是「我把它钉在最前面了」的记号，
-   和状态无关；用状态色会和 `state` 那枚混淆。 */
+/* 置顶：正文字色实心点。**不取 `--light-c`** —— 它是「我把它钉在最前面了」的
+   记号，和状态无关；取同一路颜色会和 `state` 那枚混淆。中性档下 `--light-c` 是
+   次级灰，和这里的近白仍差一档，不会糊成一枚。 */
 .sign-corner[data-kind="pinned"] {
   background: var(--sign-fg);
-  opacity: 0.8;
 }
 
 /* 静音：**空心环**。实心 / 空心是这两种角灯唯一能在一枚 3.5px 的点上分辨出来的
@@ -706,15 +757,19 @@ body,
   box-sizing: border-box;
   border: 1px solid var(--sign-fg);
   background: transparent;
-  opacity: 0.55;
+  opacity: calc(var(--light-a) * 0.78);
 }
 
 /* 沉默进度：越接近过期越淡。`--progress` 和灯珠那个细环是**同一个变量**
    （`SignalLamp` 把它挂在 `.sign` 上），所以两者永远不会给出不同的答案。
-   不沉默时不画（由 `lampStyle.ts::cornerLights` 过滤），所以这里不必判状态。 */
+   不沉默时不画（由 `lampStyle.ts::cornerLights` 过滤），所以这里不必判状态。
+   展开乘式而不是写 `calc(var(--light-a) * (...))` —— 括号在 calc 里的支持面
+   比想象中窄，乘开之后每个浏览器都一样。 */
 .sign-corner[data-kind="stale"] {
-  background: var(--state);
-  opacity: calc(0.2 + 0.7 * var(--progress, 1));
+  background: var(--light-c, transparent);
+  opacity: calc(
+    var(--light-a) * 0.2 + var(--light-a) * 0.7 * var(--progress, 1)
+  );
 }
 
 /* 四角小灯曾经要给右上角那枚悬停出现的「清除该组」按钮让路（当时的判断是

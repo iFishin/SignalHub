@@ -544,6 +544,35 @@ export interface Messages {
   /** 收起时那一行摘要：「挂了 2 枚」/「四角都空着」 */
   cornersNone: string;
   cornersSome: (n: number) => string;
+  /** 外观页「边框光」这一节：边灯和角灯是同一条轨，所以放一起。 */
+  frameLight: string;
+  frameLightHint: string;
+  /** 粗细：边灯线宽与角灯直径共用一档。 */
+  lightScale: string;
+  lightScaleHint: string;
+  scaleThin: string;
+  scaleNormal: string;
+  scaleThick: string;
+  /** 明暗。 */
+  lightAlpha: string;
+  alphaSoft: string;
+  alphaNormal: string;
+  alphaStrong: string;
+  /** 边框光的颜色来源：状态色 / 中性。
+   *  别和逐状态表里的 `lightColor`（灯珠颜色）混了 —— 那是另一列。 */
+  frameColor: string;
+  frameColorHint: string;
+  frameColorState: string;
+  frameColorNeutral: string;
+  /** 行为页「边框光什么时候亮」这一节。 */
+  lightBehavior: string;
+  lightBehaviorHint: string;
+  edgeTrigger: string;
+  cornerTrigger: string;
+  triggerAlways: string;
+  triggerAttention: string;
+  triggerActive: string;
+  triggerQuiet: string;
   /** 「谁在叫我」那套压淡的强度。 */
   signEmphasis: string;
   emphasisAuto: string;
@@ -1368,7 +1397,7 @@ export const MESSAGES: Record<Lang, Messages> = {
       },
       edgeFrame: {
         title: "整圈描边",
-        body: "同一件事铺到四条边上：1px 的轮廓用状态色。字一个都没多，读起来却是「这一块整体在报警」。",
+        body: "同一条轨从顶边铺到四条边：轮廓用状态色，粗细和明暗在「外观 → 边框光」里一起调。字一个都没多，读起来却是「这一块整体在报警」。",
       },
       edgeGlow: {
         title: "辉光：最张扬的一档",
@@ -1376,11 +1405,15 @@ export const MESSAGES: Record<Lang, Messages> = {
       },
       cornersState: {
         title: "四个角，四个是非题",
-        body: "每块牌的四角各能挂一枚小灯，分别回答：有状态 / 置顶 / 静音 / 将过期。这里四枚都设成「状态色」，先让你看见它们站在哪。",
+        body: "四枚小灯就落在边框的四个转角上，跟着圆角走，不占牌面。分别回答：有状态 / 置顶 / 静音 / 将过期。这里四枚都设成「状态色」，先让你看见它们站在哪。",
       },
       cornersMeaning: {
         title: "条件不成立，就根本不画",
-        body: "这一块牌同时满足四条 —— 有状态、被置顶、被静音、正在沉默，所以四枚都亮。任何一条不成立，那枚角灯就整个消失，而不是留一个暗点：暗点会让人以为「这个位置本来就有东西，只是没亮」，于是永远不会去设置里找。都在外观 → 质感里。",
+        body: "这一块牌同时满足四条 —— 有状态、被置顶、被静音、正在沉默，所以四枚都亮。任何一条不成立，那枚角灯就整个消失，而不是留一个暗点：暗点会让人以为「这个位置本来就有东西，只是没亮」，于是永远不会去设置里找。都能在「外观 → 边框光」里配。",
+      },
+      lightTrigger: {
+        title: "什么时候亮，是另一回事",
+        body: "两块牌并排：这块被设成「只在要你处理时亮」，于是等批准的那块亮边、正在跑的那块不亮。外观管亮起来长什么样，行为管凭什么现在亮 —— 边灯和角灯各有自己的一档。",
       },
     },
     demoStepCount: (index, total) => `${index} / ${total}`,
@@ -1567,14 +1600,14 @@ export const MESSAGES: Record<Lang, Messages> = {
     gapLoose: "宽松",
     signEdge: "边灯",
     signEdgeHint:
-      "让状态色铺到牌的边上 —— 牌宽高不变，只是多一块有颜色的面，余光里比一颗小圆点早得多被看到。四条边说的是同一件事：这个状态是什么颜色。",
+      "把状态色铺到牌边的那条轨上：顶边只走上边，四边围一整圈，辉光再往牌外散一圈。三档是同一条轨的覆盖范围，切档不会像换了块牌。开了边灯，原来那圈中性描边会让位 —— 牌边永远只有一层线。",
     edgeOff: "不亮",
     edgeTop: "顶边",
     edgeFrame: "四边",
     edgeGlow: "辉光",
     signCorners: "角灯",
     signCornersHint:
-      "牌有四个角一直空着。每个角可以挂一枚小灯，只回答一个是 / 否：置顶了、静音了、离沉默还有多久。条件不成立时那枚灯根本不出现 —— 不会画一个暗点。四枚都挂上也不占牌面，字一个都不会少。",
+      "四枚小灯就落在边框的四个转角上，跟着圆角走，不占牌面也不压字。每个角只回答一个是 / 否：置顶了、静音了、离沉默还有多久。条件不成立时那枚灯根本不出现 —— 不会画一个暗点。",
     cornerPos: { tl: "左上", tr: "右上", br: "右下", bl: "左下" },
     cornerKind: {
       empty: "不挂",
@@ -1585,6 +1618,33 @@ export const MESSAGES: Record<Lang, Messages> = {
     },
     cornersNone: "四角都空着",
     cornersSome: (n) => `挂了 ${n} 枚`,
+    frameLight: "边框光",
+    frameLightHint:
+      "边灯是牌边那条轨，角灯是这条轨四个转角上的灯位 —— 两者共用同一套粗细、明暗和颜色，怎么调都是一整套。上面两块预览牌始终按常亮画；「什么时候亮」在「行为」页设。",
+    lightScale: "粗细",
+    lightScaleHint:
+      "边灯的线宽和角灯的大小一起变。分开调很容易调出「一条粗线配四颗小芝麻」 —— 它们本来就是同一条轨上的东西。",
+    scaleThin: "细",
+    scaleNormal: "标准",
+    scaleThick: "粗",
+    lightAlpha: "明暗",
+    alphaSoft: "淡",
+    alphaNormal: "标准",
+    alphaStrong: "亮",
+    frameColor: "颜色",
+    frameColorHint:
+      "「状态色」跟着每块牌自己的状态走；「中性」让边框只负责形状，不抢灯珠那点颜色。",
+    frameColorState: "状态色",
+    frameColorNeutral: "中性",
+    lightBehavior: "边框光什么时候亮",
+    lightBehaviorHint:
+      "「外观」那节管亮起来长什么样，这两行管凭什么现在亮。边灯面积大，适合只在要你处理时才亮；角灯是余光级的小记号，多数人愿意让它一直挂着。",
+    edgeTrigger: "边灯",
+    cornerTrigger: "角灯",
+    triggerAlways: "常亮",
+    triggerAttention: "只在要你处理时",
+    triggerActive: "只在有活动时",
+    triggerQuiet: "跟随安静模式",
     signEmphasis: "分层",
     emphasisAuto: "区分",
     emphasisFlat: "一致",
@@ -2363,7 +2423,7 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       },
       edgeFrame: {
         title: "The whole outline",
-        body: "The same idea on all four sides: a 1px outline in the state colour. Not one extra word, yet the whole card reads as “this one needs attention”.",
+        body: "The same rail now runs along all four sides in the state colour; its weight and brightness are set together under Appearance → Frame light. Not one extra word, yet the whole card reads as “this one needs attention”.",
       },
       edgeGlow: {
         title: "Glow — the loudest setting",
@@ -2371,11 +2431,15 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       },
       cornersState: {
         title: "Four corners, four yes/no questions",
-        body: "Each corner can carry its own small light, answering: has a state / pinned / muted / about to go stale. Here all four are set to “state colour” so you can see where they sit.",
+        body: "The four little lights sit on the rail's corners and follow the corner radius, so they take no space from the text. Each answers: has a state / pinned / muted / about to go stale. Here all four are set to “state colour” so you can see where they sit.",
       },
       cornersMeaning: {
         title: "If the condition does not hold, nothing is drawn",
-        body: "This card satisfies all four — it has a state, it is pinned, it is muted, and it is going quiet — so all four lights show. Let any one of those fail and that light disappears entirely rather than becoming a dim dot: a dim dot would suggest “there is something here, it is just not lit”, which is exactly why nobody would ever look for the setting. All four live under Appearance → Texture.",
+        body: "This card satisfies all four — it has a state, it is pinned, it is muted, and it is going quiet — so all four lights show. Let any one of those fail and that light disappears entirely rather than becoming a dim dot: a dim dot would suggest “there is something here, it is just not lit”, which is exactly why nobody would ever look for the setting. Configure them under Appearance → Frame light.",
+      },
+      lightTrigger: {
+        title: "When it lights up is a separate question",
+        body: "Two signs side by side with the trigger set to “when you're needed”: the one waiting for approval has a lit outline, the one still working does not. Appearance decides what it looks like lit; Behavior decides why it is lit now — edge and corner lights each have their own setting.",
       },
     },
     demoStepCount: (index, total) => `${index} / ${total}`,
@@ -2565,14 +2629,14 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     gapLoose: "Loose",
     signEdge: "Edge light",
     signEdgeHint:
-      "Spreads the state colour onto the sign's edges — the sign keeps its size, it just gains an area of colour that reads from much further away than an 8px dot. All four edges say the same thing: what colour this state is.",
+      "Puts the state colour on the rail around the sign: Top lights the upper edge, Frame goes all the way round, Glow adds a halo outside it. All three are the same rail at different extents, so switching never feels like a different card. With an edge light on, the neutral border steps aside — there is only ever one line around a sign.",
     edgeOff: "Off",
     edgeTop: "Top",
     edgeFrame: "Frame",
     edgeGlow: "Glow",
     signCorners: "Corner lights",
     signCornersHint:
-      "A sign has four corners doing nothing. Each can hold one small light answering a yes/no: pinned, muted, how long until it goes quiet. When the answer is no the light is simply absent — it never draws a dimmed dot. Four of them cost no sign space, so no text is lost.",
+      "Four little lights sit on the rail's corners and follow the corner radius, so they take no space from the text. Each answers one yes/no: pinned, muted, or how long until it goes quiet. When the answer is no the light is simply absent — it never draws a dimmed dot.",
     cornerPos: { tl: "Top left", tr: "Top right", br: "Bottom right", bl: "Bottom left" },
     cornerKind: {
       empty: "None",
@@ -2583,6 +2647,33 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     },
     cornersNone: "All four corners empty",
     cornersSome: (n) => `${n} in use`,
+    frameLight: "Frame light",
+    frameLightHint:
+      "The edge light is the rail around the sign; the corner lights are four sockets on that rail's corners. They share one width, one brightness and one colour, so any change moves as a set. The two preview signs above are always drawn lit; when they light up is set under Behavior.",
+    lightScale: "Weight",
+    lightScaleHint:
+      "The rail's line width and the corner lights' size move together. Set separately they drift into a thick line with four tiny dots — and they are the same rail.",
+    scaleThin: "Thin",
+    scaleNormal: "Normal",
+    scaleThick: "Thick",
+    lightAlpha: "Brightness",
+    alphaSoft: "Soft",
+    alphaNormal: "Normal",
+    alphaStrong: "Strong",
+    frameColor: "Colour",
+    frameColorHint:
+      '"State" follows each sign\'s own state; "Neutral" lets the outline carry only the shape and leaves the colour to the dot.',
+    frameColorState: "State",
+    frameColorNeutral: "Neutral",
+    lightBehavior: "When the frame light comes on",
+    lightBehaviorHint:
+      "Appearance sets what it looks like when lit; these two set why it is lit now. The edge is a large area and suits lighting only when you are needed; corner lights are periphery-level marks that most people keep on all the time.",
+    edgeTrigger: "Edge light",
+    cornerTrigger: "Corner lights",
+    triggerAlways: "Always",
+    triggerAttention: "When you're needed",
+    triggerActive: "While active",
+    triggerQuiet: "Follow quiet mode",
     signEmphasis: "Emphasis",
     emphasisAuto: "Tiered",
     emphasisFlat: "Uniform",

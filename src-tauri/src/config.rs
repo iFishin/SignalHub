@@ -491,33 +491,42 @@ pub enum SignFont {
     Mono,
 }
 
-/// 牌面的**边灯**：把状态色从一颗 8px 的点扩展到牌的四个边上。
+/// 牌边的**边框光轨**：把状态色从一颗 8px 的点扩展到牌的轮廓上。
 ///
 /// 它不承载新的信息 —— 颜色仍然只表示状态，和灯珠、和细环说的是同一件事。它
 /// 买的是**面积**：一块牌在余光里最先被读到的不是文字，而是一块有颜色的面。
 /// 灯珠再大也只占 `0.55 × size`（22px 档上不到 13px），而一条顶边有整块牌宽。
 /// 这就是「不增加文字也能让灯表达得更多」的第一条路。
 ///
-/// 默认 `Off`（红线 3：升级不改观感）。四档从「完全没有」到「牌外还带一圈光」，
-/// 差别只在画法，**没有一档参与窗口几何**（`::before` 是绝对定位的伪元素，
-/// `box-shadow` 也不改盒）。
+/// **四档是同一条轨的覆盖范围，不是四种画法**（0.6.3 返工）：第一版 `Top` 画渐变
+/// 绿雾、`Frame` 画 1px 细线、`Glow` 又叠外发光，切档像换了一块牌，而且和
+/// `SignBorder` 的中性描边叠成两层线。现在三者都是 `.sign::before` 上同一条
+/// `border`，只是 `border-top-width` / 四边 / 再加 `box-shadow` 的区别。
+/// 开边灯时中性描边让位，牌边永远只有一层线。
+///
+/// 默认 `Off`（红线 3：升级不改观感）。**没有一档参与窗口几何**（`::before` 是
+/// 绝对定位的伪元素，`box-shadow` 也不改盒）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SignEdge {
     /// 现状：牌面只有那圈中性描边。
     #[default]
     Off,
-    /// 顶边一道从状态色向下渐隐的光 —— 最克制的一档，近看是「牌在发光」，
-    /// 远看只是一条更亮的边。
+    /// 轨只走上边 —— 最克制的一档，远看只是一条更亮的边。
     Top,
-    /// 四边一圈 1px 状态色细线：整块牌被状态色框住，像一台仪表的边框。
+    /// 轨走四边：整块牌被状态色框住，像一台仪表的边框。
     Frame,
-    /// 四边细线 + 牌外一圈同色柔光。隔着一米也看得出这块牌是什么颜色，
+    /// 四边 + 牌外一圈同色柔光。隔着一米也看得出这块牌是什么颜色，
     /// 代价是在深色桌面上它比别的东西都亮。
     Glow,
 }
 
-/// 牌面四角里一枚小灯表达什么。
+/// 边框四个转角上「灯位」里的一枚小灯表达什么。
+///
+/// **灯位落在边框上，不是牌内**：落点按圆角半径算（`0.293 × r`），四档圆角里
+/// 都紧贴边灯那条轨（见 `lamp.css` 的 `--corner-arc`）。0.6.3 之前写死内缩
+/// `0.24 × size`，在默认圆角下离边框 5px，读起来是「牌内四个散点」，和边灯
+/// 不成一套 —— 这是「灯看起来不协调」的一条主因。
 ///
 /// 四个角是**独立**的（见 [`SignCorners`]），每一枚只回答一个是 / 否 —— 它是
 /// 「不写字的第二个信息通道」，用来把那些「说得出但塞不进 154px」的事挂上去：
@@ -568,6 +577,69 @@ impl SignCorners {
             .filter(|corner| **corner != SignCorner::Empty)
             .count()
     }
+}
+
+/// 边框光**什么时候亮**。
+///
+/// 0.6.3 之前边灯和角灯都是「配了就一直亮」，于是「要不要亮」和「长什么样」
+/// 被绑死在外观页里。但这两件事回答的是不同问题：**外观**管的是「亮起来长什么样」，
+/// **行为**管的是「凭什么现在亮」。拆开之后，「平时不吵、只有要我动手时才把整块牌
+/// 框成红的」这类用法才有地方放。
+///
+/// 边灯和角灯各有一份，是因为它们常常想要不同的节奏：边灯面积大，适合只在
+/// 「要你处理」时亮；角灯是余光级的小记号，多数人愿意让它一直挂着。
+///
+/// 判定在前端 `lampStyle.ts::lightOn`（纯函数、有单测）—— Rust 不参与逐帧渲染，
+/// 这里只负责把用户的偏好存下来。默认 `Always` = 加这些字段之前的样子（红线 3）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LightTrigger {
+    /// 条件成立就一直亮（角灯的「条件」指它自己那枚的语义，见 [`SignCorner`]）。
+    #[default]
+    Always,
+    /// 只在「需要你动手」的三种状态亮：授权 / 关注 / 出错（`toneOf` 的 `need`）。
+    Attention,
+    /// 只在还有活动的时候亮；空闲 / 完成 / 沉默 / 离线 / 暂停时整条轨熄掉。
+    Active,
+    /// 跟随「安静模式」：安静时熄，鼠标一碰灯就回来。
+    Quiet,
+}
+
+/// 边框光的粗细。**边灯的线宽和角灯的直径共用这一档** —— 两样分开调，用户
+/// 十有八九会调出「一条粗线配四颗小芝麻」，而它们本来就是同一条轨上的东西。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LightScale {
+    Thin,
+    #[default]
+    Normal,
+    Thick,
+}
+
+/// 边框光的明暗。和 [`LightScale`] 分开，是因为「细而亮」和「粗而淡」是两种
+/// 正当的口味：前者适合浅色桌面，后者适合深色桌面。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LightAlpha {
+    Soft,
+    #[default]
+    Normal,
+    Strong,
+}
+
+/// 边框光取哪个颜色。`State` = 每块牌自己的状态色（和灯珠同源）；`Neutral` =
+/// 近白，让边框只负责「形状」、不抢灯珠那点颜色。
+///
+/// **不能把它做成 CSS 变量从窗口根上往下传**：状态色是**逐块牌**的（`--state`
+/// 挂在 `.sign` 上），自定义属性里的 `var()` 在声明它的那个元素上就求值完了，
+/// 根上写 `--light-c: var(--state)` 拿到的是根上的空值。所以这里存的是「取哪一路」，
+/// 真正的取值在 `.sign` 那一层完成（见 lamp.css）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LightColor {
+    #[default]
+    State,
+    Neutral,
 }
 
 /// 多块牌之间的间距。
@@ -1430,6 +1502,17 @@ pub struct Settings {
     /// **不参与「哪几块牌可见」的判断**：角灯挂不挂，和牌数、窗口尺寸无关 ——
     /// 它只画在已经存在的那块牌上，而且绝对定位。
     pub sign_corners: SignCorners,
+    /// 边灯 / 角灯**什么时候亮**（见 [`LightTrigger`]）。放在「行为」页。
+    /// 默认 `Always`：加这两个字段之前两样都是常亮的。
+    pub sign_edge_trigger: LightTrigger,
+    pub sign_corner_trigger: LightTrigger,
+    /// 边框光的三把尺子：粗细、明暗、取哪一路颜色。放在「外观」页。
+    ///
+    /// 三者都**不是**窗口几何：只画在 `.sign::before` 和四枚绝对定位的角灯上，
+    /// 牌宽高仍由 `sign_width` / `sign_height` 算。
+    pub sign_light_scale: LightScale,
+    pub sign_light_alpha: LightAlpha,
+    pub sign_light_color: LightColor,
     /// 界面语言偏好。`Auto` 由**前端**解析成具体语言 —— Rust 不知道系统语言。
     pub locale: Locale,
     /// 设置窗口的亮 / 深色偏好。`Auto` = 跟随系统，解析见前端 `lib/theme.ts`。
@@ -1885,9 +1968,16 @@ impl Default for Settings {
             // 字体和间距同理：默认 == 加这两个字段之前的样子
             sign_font: SignFont::default(),
             sign_gap: SignGap::default(),
-            // 边灯 / 角灯默认全关：加这两项之前，牌的四面和四角都是空的
+            // 边灯 / 角灯默认全关：加这两项之前，牌的四面和四角都是空的。
+            // 触发方式与三把尺子同样取默认档 —— 五个字段全部等价于「没加过」，
+            // 所以旧配置读进来观感一点不变（红线 3）
             sign_edge: SignEdge::default(),
             sign_corners: SignCorners::default(),
+            sign_edge_trigger: LightTrigger::default(),
+            sign_corner_trigger: LightTrigger::default(),
+            sign_light_scale: LightScale::default(),
+            sign_light_alpha: LightAlpha::default(),
+            sign_light_color: LightColor::default(),
             locale: Locale::default(),
             // 跟随系统：升级上来的旧配置没有这个字段，行为必须和加开关之前一致
             theme: Theme::default(),
@@ -2607,6 +2697,12 @@ mod tests {
                 br: SignCorner::Stale,
                 bl: SignCorner::Muted,
             },
+            // 触发与三把尺子全取非默认，漏哪个字段往返测试都看得出来
+            sign_edge_trigger: LightTrigger::Attention,
+            sign_corner_trigger: LightTrigger::Active,
+            sign_light_scale: LightScale::Thick,
+            sign_light_alpha: LightAlpha::Soft,
+            sign_light_color: LightColor::Neutral,
             locale: Locale::En,
             // 同理：`Theme` 默认是 `Auto`，这里用 `Dark` 才验得出「漏了这个字段」
             theme: Theme::Dark,
@@ -3427,11 +3523,22 @@ mod tests {
         assert_eq!(settings.sign_edge, SignEdge::Off, "默认不点亮边缘");
         assert_eq!(settings.sign_corners, SignCorners::default(), "默认四角全空");
         assert_eq!(settings.sign_corners.count(), 0);
+        assert_eq!(settings.sign_edge_trigger, LightTrigger::Always);
+        assert_eq!(settings.sign_corner_trigger, LightTrigger::Always);
+        assert_eq!(settings.sign_light_scale, LightScale::Normal);
+        assert_eq!(settings.sign_light_alpha, LightAlpha::Normal);
+        assert_eq!(settings.sign_light_color, LightColor::State);
 
-        // 旧配置里两个字段都没有，不能因此让整份设置失效
+        // 旧配置里这些字段一个都没有，不能因此让整份设置失效 —— 尤其触发方式
+        // 和尺子是后加的，0.6.2 写出来的 config.json 里根本没有它们
         let old: Settings = serde_json::from_str(r#"{"size": 22}"#).unwrap();
         assert_eq!(old.sign_edge, SignEdge::Off);
         assert_eq!(old.sign_corners.count(), 0);
+        assert_eq!(old.sign_edge_trigger, LightTrigger::Always);
+        assert_eq!(old.sign_corner_trigger, LightTrigger::Always);
+        assert_eq!(old.sign_light_scale, LightScale::Normal);
+        assert_eq!(old.sign_light_alpha, LightAlpha::Normal);
+        assert_eq!(old.sign_light_color, LightColor::State);
     }
 
     /// 四角可以只写一个 —— `SignCorners` 自己有 `serde(default)`，缺的角退回「空」。
@@ -3466,6 +3573,39 @@ mod tests {
         assert!(back.contains(r#""sign_edge":"glow""#), "{back}");
         assert!(back.contains(r#""br":"stale""#), "{back}");
         assert!(back.contains(r#""bl":"muted""#), "{back}");
+    }
+
+    /// 触发方式与三把尺子的取值也要能原样存回去。
+    ///
+    /// 这五个字段散落在两个页里（外观 / 行为），而 `set_settings` 是**整份替换**：
+    /// 任何一处只发自己那页的字段，另一页设过的东西就会悄悄回到默认值 —— 表现是
+    /// 「行为页调完，回外观页看一眼，触发方式自己变了」。往返测试钉住序列化，
+    /// 前端那侧则由 `useSettings.ts` 的整份 patch 保证。
+    #[test]
+    fn the_light_trigger_and_scale_roundtrip_through_json() {
+        let raw = r#"{
+            "sign_edge_trigger": "attention",
+            "sign_corner_trigger": "quiet",
+            "sign_light_scale": "thick",
+            "sign_light_alpha": "soft",
+            "sign_light_color": "neutral"
+        }"#;
+        let settings = serde_json::from_str::<Settings>(raw).unwrap();
+        assert_eq!(settings.sign_edge_trigger, LightTrigger::Attention);
+        assert_eq!(settings.sign_corner_trigger, LightTrigger::Quiet);
+        assert_eq!(settings.sign_light_scale, LightScale::Thick);
+        assert_eq!(settings.sign_light_alpha, LightAlpha::Soft);
+        assert_eq!(settings.sign_light_color, LightColor::Neutral);
+
+        let back = serde_json::to_string(&settings).unwrap();
+        assert!(
+            back.contains(r#""sign_edge_trigger":"attention""#),
+            "{back}"
+        );
+        assert!(back.contains(r#""sign_corner_trigger":"quiet""#), "{back}");
+        assert!(back.contains(r#""sign_light_scale":"thick""#), "{back}");
+        assert!(back.contains(r#""sign_light_alpha":"soft""#), "{back}");
+        assert!(back.contains(r#""sign_light_color":"neutral""#), "{back}");
     }
 
     /// 隐藏的组名来自右键菜单、也会被用户手改进配置文件，所以要规整：

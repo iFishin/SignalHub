@@ -36,7 +36,7 @@ import {
   MAX_HOOK_HEADERS,
 } from "../lib/hookHeaders";
 import { useLang, useMessages, type Lang, type Messages } from "../lib/i18n";
-import { useSettings, updateSettings, DEFAULTS, HTTP_PRESETS, type Settings, type Shape, type Palette, type SignRadius, type SignBorder, type SignTint, type SignText, type SignFont, type SignGap, type SignEmphasis, type SignEdge, type SignCorner, type HttpPreset, type Hook, type Device, type Machine, type MachineHealth, type StateStyle, type GroupMeta } from "../lib/useSettings";
+import { useSettings, updateSettings, DEFAULTS, HTTP_PRESETS, type Settings, type Shape, type Palette, type SignRadius, type SignBorder, type SignTint, type SignText, type SignFont, type SignGap, type SignEmphasis, type SignEdge, type SignCorner, type LightTrigger, type LightScale, type LightAlpha, type LightColor, type HttpPreset, type Hook, type Device, type Machine, type MachineHealth, type StateStyle, type GroupMeta } from "../lib/useSettings";
 import {
   useToggles,
   setAutostart,
@@ -258,6 +258,43 @@ function cornerOptions(m: Messages): { label: string; value: SignCorner }[] {
   ];
 }
 
+/**
+ * 边框光「什么时候亮」。两行（边灯 / 角灯）共用这张表，所以放在「行为」页。
+ * 顺序就是由静到动：常亮 → 只在要你处理时 → 只在有活动时 → 跟随安静模式。
+ */
+function triggerOptions(m: Messages): { label: string; value: LightTrigger }[] {
+  return [
+    { label: m.triggerAlways, value: "always" },
+    { label: m.triggerAttention, value: "attention" },
+    { label: m.triggerActive, value: "active" },
+    { label: m.triggerQuiet, value: "quiet" },
+  ];
+}
+
+/** 边框光的三把尺子，全部放在「外观」页。边灯与角灯共用，不各给一套。 */
+function scaleOptions(m: Messages): { label: string; value: LightScale }[] {
+  return [
+    { label: m.scaleThin, value: "thin" },
+    { label: m.scaleNormal, value: "normal" },
+    { label: m.scaleThick, value: "thick" },
+  ];
+}
+
+function alphaOptions(m: Messages): { label: string; value: LightAlpha }[] {
+  return [
+    { label: m.alphaSoft, value: "soft" },
+    { label: m.alphaNormal, value: "normal" },
+    { label: m.alphaStrong, value: "strong" },
+  ];
+}
+
+function lightColorOptions(m: Messages): { label: string; value: LightColor }[] {
+  return [
+    { label: m.frameColorState, value: "state" },
+    { label: m.frameColorNeutral, value: "neutral" },
+  ];
+}
+
 /** 牌上可以单独关掉的五段内容。顺序就是它们在牌上出现的顺序。 */
 function fieldOptions(m: Messages): { key: keyof Settings["show"]; label: string }[] {
   return [
@@ -461,8 +498,10 @@ function LampPreview({ settings }: { settings: Settings }) {
         data-sign-emphasis={settings.sign_emphasis}
         /* 字体也跟 —— 等宽档换的是整块牌的字形，预览不跟就看不出区别。 */
         data-sign-font={settings.sign_font}
-        /* 边灯同理：它也是「这一页调到的一项」。 */
-        data-sign-edge={settings.sign_edge}
+        /* 边框光三把尺子同理：它们都是「这一页调到的一项」。 */
+        data-sign-light-scale={settings.sign_light_scale}
+        data-sign-light-alpha={settings.sign_light_alpha}
+        data-sign-light-color={settings.sign_light_color}
       >
         {cards.map((card) => (
           <div
@@ -472,6 +511,11 @@ function LampPreview({ settings }: { settings: Settings }) {
                预览以前只在 `.dot` 上挂它，于是这两样在预览里会取到透明兜底 ——
                表现是「调了没反应」，而真灯上是好的。 */
             data-state={card.state}
+            /* 预览**不套用行为页的触发开关**：那两行管的是「什么时候亮」，而预览
+               是一张静态样机，跟着触发走的话设成「只在要你处理时亮」就有一块牌
+               什么都不画，会被当成开关没生效。预览始终按常亮画，什么时候亮去
+               「行为」页看。 */
+            data-edge={settings.sign_edge}
             data-has-message={settings.show.message && card.message ? "true" : "false"}
           >
             {/* 和真灯同一处判断：关掉圆点之后预览也必须是纯文字卡，
@@ -1521,6 +1565,10 @@ export function SettingsPanel({ snapshot }: Props) {
   const gapChoices = gapOptions(m);
   const edgeChoices = edgeOptions(m);
   const cornerChoices = cornerOptions(m);
+  const triggerChoices = triggerOptions(m);
+  const scaleChoices = scaleOptions(m);
+  const alphaChoices = alphaOptions(m);
+  const lightColorChoices = lightColorOptions(m);
   const blinkChoices = blinkOptions(m);
   const alertChoices = alertDelayOptions(m);
   const ttlDefaults = useStateTtls();
@@ -1663,9 +1711,10 @@ export function SettingsPanel({ snapshot }: Props) {
   // 逐状态那张表默认收起（十行表和上面九行不是一个量级）。它记的是**用户**的
   // 展开意图，所以放在 state 里；切走再切回来会保留（组件没卸载）。
   const [perStateOpen, setPerStateOpen] = useState(false);
-  // 四角小灯同样是「四行控件」，默认收起 —— 它回答的是「还能不能再塞点信息」，
-  // 而大多数人是来看圆角和字号的。收起时那行摘要会说挂了几个角。
-  const [cornersOpen, setCornersOpen] = useState(false);
+  // 四角挂什么**默认展开**。它原先收起在「质感」子页末尾，结果是用户根本找不到
+  // 角灯在哪儿（「外观里无法设置和查看」）；现在整节搬到外观页首屏，四行下拉也就
+  // 没有再藏起来的理由。仍留一个可收起的按钮：不调角灯的人可以折起来省一屏。
+  const [cornersOpen, setCornersOpen] = useState(true);
   // 摘要用：四角挂了几枚。和灯上用的是同一份判定（`lampStyle.cornerLights` 只在
   // **画**的时候按条件过滤，这里只数「配了几个」——「置顶」角灯配了就算配了，
   // 即使这一组没置顶，它仍然是用户的选择）。
@@ -2756,6 +2805,51 @@ export function SettingsPanel({ snapshot }: Props) {
             })}
             <p className="hint">{m.silenceTimeoutsMore}</p>
 
+            {/* ---- 边框光什么时候亮 ----------------------------------------------
+                这两行和「外观」页那节是同一套灯的两半：那边管「亮起来长什么样」
+                （档位 / 四角挂什么 / 粗细明暗颜色），这边管「凭什么现在亮」。
+                拆开是刻意的 —— 想调「平时别亮、要我批准时整块牌框成红的」的人，
+                不该去外观页里翻；而只想换个颜色的人也不该被触发条件拦住。
+                判定在 `lampStyle.ts::lightOn`，边灯与角灯各传各的 trigger。
+                **放在静默超时之后、窗口交互之前**：上一轮「外观里无法设置和查看」
+                的教训是藏太深，这一节只有两行，没必要让它沉到页尾。 */}
+            <div className="section-title">{m.lightBehavior}</div>
+            <p className="hint">{m.lightBehaviorHint}</p>
+            <Row
+              label={m.edgeTrigger}
+              onReset={resetFor(settings, "sign_edge_trigger", patch)}
+            >
+              <div className="seg">
+                {triggerChoices.map((choice) => (
+                  <button
+                    key={choice.value}
+                    type="button"
+                    data-active={settings.sign_edge_trigger === choice.value}
+                    onClick={() => patch({ sign_edge_trigger: choice.value })}
+                  >
+                    {choice.label}
+                  </button>
+                ))}
+              </div>
+            </Row>
+            <Row
+              label={m.cornerTrigger}
+              onReset={resetFor(settings, "sign_corner_trigger", patch)}
+            >
+              <div className="seg">
+                {triggerChoices.map((choice) => (
+                  <button
+                    key={choice.value}
+                    type="button"
+                    data-active={settings.sign_corner_trigger === choice.value}
+                    onClick={() => patch({ sign_corner_trigger: choice.value })}
+                  >
+                    {choice.label}
+                  </button>
+                ))}
+              </div>
+            </Row>
+
             <div className="section-title">{m.behaviorWindowTitle}</div>
             {/* 单击是灯上最便宜的手势。v0.5.0 把它给了折叠，收件箱被挤进
                 「长按 → 圆环 → 点图标」三步；这里让用户自己把主操作换回来。
@@ -2806,6 +2900,7 @@ export function SettingsPanel({ snapshot }: Props) {
                 onChange={(on) => patch({ tray_follows_state: on })}
               />
             </Row>
+
           </>
         );
 
@@ -2819,6 +2914,134 @@ export function SettingsPanel({ snapshot }: Props) {
             <div className="section-title">{m.previewTitle}</div>
             <LampPreview settings={settings} />
             <p className="hint">{m.previewHint}</p>
+
+            {/* ---- 边框光：边灯与角灯是同一条轨，所以放同一节 ------------------
+                原先这堆控件散在「质感」子页里，角灯还默认折叠 —— 用户进「外观」
+                根本看不见。现在整节提到预览下面：改的就是预览里那两块牌的边，
+                控件和效果必须在同一屏里对得上。「什么时候亮」不在这儿，在
+                「行为」页 —— 那是另一类问题（见那边的注释）。 */}
+            <div className="section-title">{m.frameLight}</div>
+            <p className="hint">{m.frameLightHint}</p>
+
+            <Row
+              label={m.signEdge}
+              hint={m.signEdgeHint}
+              onReset={resetFor(settings, "sign_edge", patch)}
+            >
+              <div className="seg">
+                {edgeChoices.map((choice) => (
+                  <button
+                    key={choice.value}
+                    type="button"
+                    data-active={settings.sign_edge === choice.value}
+                    onClick={() => patch({ sign_edge: choice.value })}
+                  >
+                    {choice.label}
+                  </button>
+                ))}
+              </div>
+            </Row>
+
+            {/* 四角挂什么。默认展开（理由见 `cornersOpen` 那条 state 注释）。 */}
+            <button
+              type="button"
+              className="disclosure"
+              aria-expanded={cornersOpen}
+              onClick={() => setCornersOpen((open) => !open)}
+            >
+              <span className="caret" aria-hidden="true">
+                {cornersOpen ? "▾" : "▸"}
+              </span>
+              <span className="disclosure-title">{m.signCorners}</span>
+              <span className="disclosure-note">
+                {cornersSet > 0 ? m.cornersSome(cornersSet) : m.cornersNone}
+              </span>
+            </button>
+            {cornersOpen && (
+              <>
+                <p className="hint">{m.signCornersHint}</p>
+                {CORNER_POSITIONS.map((pos) => (
+                  <Row key={pos} label={m.cornerPos[pos]}>
+                    <select
+                      className="select"
+                      value={settings.sign_corners[pos]}
+                      onChange={(event) =>
+                        patch({
+                          sign_corners: {
+                            ...settings.sign_corners,
+                            [pos]: event.target.value as SignCorner,
+                          },
+                        })
+                      }
+                    >
+                      {cornerChoices.map((choice) => (
+                        <option key={choice.value} value={choice.value}>
+                          {choice.label}
+                        </option>
+                      ))}
+                    </select>
+                  </Row>
+                ))}
+              </>
+            )}
+
+            {/* 三把尺子：边灯的线宽和角灯的直径**共用一档**，取色和明暗也共用。
+                分开设四行只会让人调出「一条粗线配四颗小芝麻」。 */}
+            <Row
+              label={m.lightScale}
+              hint={m.lightScaleHint}
+              onReset={resetFor(settings, "sign_light_scale", patch)}
+            >
+              <div className="seg">
+                {scaleChoices.map((choice) => (
+                  <button
+                    key={choice.value}
+                    type="button"
+                    data-active={settings.sign_light_scale === choice.value}
+                    onClick={() => patch({ sign_light_scale: choice.value })}
+                  >
+                    {choice.label}
+                  </button>
+                ))}
+              </div>
+            </Row>
+
+            <Row
+              label={m.lightAlpha}
+              onReset={resetFor(settings, "sign_light_alpha", patch)}
+            >
+              <div className="seg">
+                {alphaChoices.map((choice) => (
+                  <button
+                    key={choice.value}
+                    type="button"
+                    data-active={settings.sign_light_alpha === choice.value}
+                    onClick={() => patch({ sign_light_alpha: choice.value })}
+                  >
+                    {choice.label}
+                  </button>
+                ))}
+              </div>
+            </Row>
+
+            <Row
+              label={m.frameColor}
+              hint={m.frameColorHint}
+              onReset={resetFor(settings, "sign_light_color", patch)}
+            >
+              <div className="seg">
+                {lightColorChoices.map((choice) => (
+                  <button
+                    key={choice.value}
+                    type="button"
+                    data-active={settings.sign_light_color === choice.value}
+                    onClick={() => patch({ sign_light_color: choice.value })}
+                  >
+                    {choice.label}
+                  </button>
+                ))}
+              </div>
+            </Row>
 
             {/* 拆子页的理由：这一页原本九行控件 + 一张十行的逐状态表，再加五项会
                 把「预设」和「预览」推出首屏，而那两样才是它的入口。
@@ -3081,27 +3304,9 @@ export function SettingsPanel({ snapshot }: Props) {
                   </div>
                 </Row>
 
-                {/* 边灯紧跟描边：两者都在画牌的「边」，一个用中性线、一个用状态色。
-                    它也是这一页里唯一「用光代替字」的一项 —— 所以说明写得更长一点，
-                    否则很容易被当成纯装饰。 */}
-                <Row
-                  label={m.signEdge}
-                  hint={m.signEdgeHint}
-                  onReset={resetFor(settings, "sign_edge", patch)}
-                >
-                  <div className="seg">
-                    {edgeChoices.map((choice) => (
-                      <button
-                        key={choice.value}
-                        type="button"
-                        data-active={settings.sign_edge === choice.value}
-                        onClick={() => patch({ sign_edge: choice.value })}
-                      >
-                        {choice.label}
-                      </button>
-                    ))}
-                  </div>
-                </Row>
+                {/* 边灯原先挤在这儿（紧跟「描边」），角灯还折叠在本页末尾。
+                    两者现在都搬到了上面的「边框光」小节 —— 它们画的是牌边那条轨，
+                    和圆角 / 描边 / 牌底不是一层东西，混在「质感」里既找不到也说不清。 */}
 
                 <Row label={m.signTint} onReset={resetFor(settings, "sign_tint", patch)}>
                   <div className="seg">
@@ -3175,51 +3380,7 @@ export function SettingsPanel({ snapshot }: Props) {
                   </div>
                 </Row>
 
-                {/* 角灯：四行「哪个角挂什么」。默认收起 —— 它是这一页唯一**要你先
-                    想清楚**再动的项（另外几项都是「看起来变好看了没有」），摊在
-                    首屏会让人以为这也是一项必调的参数。收起时摘要说挂了几个角，
-                    于是「我配过它」这件事不会随收起而消失。 */}
-                <button
-                  type="button"
-                  className="disclosure"
-                  aria-expanded={cornersOpen}
-                  onClick={() => setCornersOpen((open) => !open)}
-                >
-                  <span className="caret" aria-hidden="true">
-                    {cornersOpen ? "▾" : "▸"}
-                  </span>
-                  <span className="disclosure-title">{m.signCorners}</span>
-                  <span className="disclosure-note">
-                    {cornersSet > 0 ? m.cornersSome(cornersSet) : m.cornersNone}
-                  </span>
-                </button>
-                {cornersOpen && (
-                  <>
-                    <p className="hint">{m.signCornersHint}</p>
-                    {CORNER_POSITIONS.map((pos) => (
-                      <Row key={pos} label={m.cornerPos[pos]}>
-                        <select
-                          className="select"
-                          value={settings.sign_corners[pos]}
-                          onChange={(event) =>
-                            patch({
-                              sign_corners: {
-                                ...settings.sign_corners,
-                                [pos]: event.target.value as SignCorner,
-                              },
-                            })
-                          }
-                        >
-                          {cornerChoices.map((choice) => (
-                            <option key={choice.value} value={choice.value}>
-                              {choice.label}
-                            </option>
-                          ))}
-                        </select>
-                      </Row>
-                    ))}
-                  </>
-                )}
+                {/* 「角灯」也搬走了，理由同上。这一子页现在只管牌面本身的质感。 */}
               </LocalPanel>
             )}
           </>
