@@ -32,6 +32,7 @@ export type IconName =
   | "undo"
   | "plus"
   | "power"
+  | "pause"
   | "stop";
 
 /** 每项是一组 `<path d>`。圆一律用 arc 写，避免再引入 `<circle>` 这种第二种形状。 */
@@ -116,5 +117,7 @@ export const ICONS: Record<IconName, string[]> = {
 
   // 本机服务开关
   power: ["M8 2v6", "M4.6 4.2a5.2 5.2 0 1 0 6.8 0"],
+  // 灯上那枚角标的「暂停监控」。两道竖线，比 `stop` 的方块更像「暂停」而不是「停掉」。
+  pause: ["M6.2 3.6v8.8", "M9.8 3.6v8.8"],
   stop: ["M4.2 4.2h7.6v7.6H4.2z"],
 };

@@ -13,6 +13,7 @@ import { nameChanged, withGroupName } from "../lib/groupMeta";
 import { useNow } from "../lib/useNow";
 import { useToggles } from "../lib/useToggles";
 import { ApprovalBubble, MAX_APPROVAL_BUBBLES } from "./ApprovalBubble";
+import { Icon } from "./Icon";
 import { LampMenu } from "./LampMenu";
 import type { Approval } from "../lib/useApprovals";
 import { updateSettings, type GroupMeta, type Settings } from "../lib/useSettings";
@@ -973,14 +974,16 @@ export function SignalLamp({
       {pending > 0 && onDecide && (
         <ApprovalBubble approvals={approvals ?? []} onDecide={onDecide} />
       )}
-      {/* 暂停 / 穿透的角标。**两种形态共用一枚**：它绝对定位在灯体内部的最上沿
-          （`top: --lamp-inset`，即内容区开始的那条边，见 CSS 的 `.lamp-flag`），
-          既不吃牌身宽度，也不在折叠态占一个点距 —— 所以 Rust 的窗口尺寸
-          完全不用为它变化。挂在灯内而不是窗口顶部留白里，才不会像飘在灯外面。
+      {/* 暂停 / 穿透的角标。**两种形态共用一枚**：它绝对定位在窗口右上角那一圈
+          留白里（`top` / `right` = 1px，见 CSS 的 `.lamp-flag`），既不吃牌身宽度，
+          也不在折叠态占一个点距 —— 所以 Rust 的窗口尺寸完全不用为它变化。
+          图标用线性的 `Icon` 而不是 `⇥` / `⏸` 这种字符：那些字形在 7px 下只是一团
+          墨，而 svg 在 9px 上笔画仍然干净。穿透取 `ban`（圆环 + 斜杠 = 「点不进去」），
+          暂停取两道竖线 —— 两个状态的图标形状差得足够远，不用靠颜色分辨。
           挂 `data-state` 才能从 state.css 拿到 `--state`（穿透时描边取状态色）。 */}
       {flag && (
         <span className="lamp-flag" data-state={aggregate} title={flagTitle}>
-          {passThrough ? "⇥" : "⏸"}
+          <Icon name={passThrough ? "ban" : "pause"} size={9} />
         </span>
       )}
       {/* 展开态那条同样的提示挂在最后一块牌上；折叠态看不到牌面，**不留这一枚

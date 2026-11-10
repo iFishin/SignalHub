@@ -40,10 +40,12 @@
  *   折叠点径 = size                    (collapsed_window_size)
  *   折叠点距 = size / 3
  *   折叠点数 = 组数 + `+N` 角标数       (collapsed_window_size 的 dots + badges)
- *   留白     = 10px 一侧                (LAMP_MARGIN 总量 20，--lamp-inset)
- *   暂停 / 穿透那枚角标不参与上面任何一条几何：它绝对定位在**灯体内部最上沿**
- *   （`.lamp-flag`，top = --lamp-inset），不吃牌身宽度、不占点距，也不让 Rust
- *   加宽窗口。以前挂在窗口顶部留白里，看着像飘在灯外面。
+ *   留白     = 14px 一侧                (LAMP_MARGIN 总量 28，--lamp-inset)
+ *   暂停 / 穿透那枚角标不参与上面任何一条几何：它绝对定位在**牌的右上角外侧**
+ *   （`.lamp-flag`，top = 1px、right = --lamp-inset，右边缘与牌右边缘齐平），
+ *   不吃牌身宽度、不占点距，也不让 Rust 加宽窗口。留白从 10 加到 14 就是为了
+ *   给它腾出这 12×12 —— 之前它在顶部正中当一枚 9px 的小圆点，太小、也太像
+ *   「灯上的一个脏点」。
  * 任何一处改了都要同步改那边，否则窗口会裁掉最后一块牌、或者底下留一条缝。
  * 两个倍率（`--sign-w-mult` / `--sign-h-mult`）由前端 lampVars 推过来；Rust 那边
  * 是**向上取整**的，所以窗口只会比牌略大、绝不会裁到 —— 别把取整方向改反。
@@ -62,10 +64,11 @@ body,
 
 .lamp-root {
   --size: 22px;
-  /* 窗口四周的留白，和 Rust 的 `config::LAMP_MARGIN`（总量 20）是一处真值。
-     内容区正好从这条边开始 —— `.lamp-flag` 放在灯体最上面时也用它定位，
-     于是「角标在灯内」不依赖另写一个魔数。 */
-  --lamp-inset: 10px;
+  /* 窗口四周的留白，和 Rust 的 `config::LAMP_MARGIN`（总量 28）是一处真值。
+     内容区正好从这条边开始 —— 右上角那枚角标（`.lamp-flag`）就贴着这条边定位，
+     所以「角标在牌外、又不压牌上的字」不依赖另写一个魔数。
+     **14 不是随便取的**：12px 的角标 + 上下各留 1px，正好是 14。 */
+  --lamp-inset: 14px;
 
   /* 深色牌面，和图标同一套语言。不透明度由用户调（外观页），默认 0.86、**下限
      0.65**（`lampStyle.ts::SIGN_OPACITY_MIN`）—— 够看清内容、又能透出一点桌面，
@@ -666,39 +669,45 @@ body,
    ⚠️ **绝不能参与布局**。它原来是牌里的一个 flex 子项，硬挤掉 `.sign-body`
    的组名 / 状态；折叠态还要单独占一个点距，Rust 得为它把窗口加宽一截，
    整排灯珠于是被重新居中、看着像「被箭头挤了出去」。
-   现在两种形态共用这一枚，绝对定位在**灯体内部的最上沿**：`top` 取
-   `--lamp-inset`，也就是内容区（牌 / 灯珠）开始的那一条边；9px 高整个落在
-   主体里，不再悬在窗口顶部留白中、也不再像飘在灯外面。水平居中，是因为
-   两种形态的内容都是水平居中的 —— 不论几块牌、几颗点，它始终在同一处。
-   早先放在左上角 (1,1) 时和主体只在一点上相接；后来挪到顶部留白正中
-   （`top: 1px`），仍然是一枚「灯外的小圆点」，这一版才真正收进灯体。
-   牌宽、点距、窗口尺寸全都不为它变，Rust 的 `collapsed_window_size` 也不再
-   替它留点位。9×9 是刻意的：不遮牌里的字，也不遮灯珠的中心。 */
+
+   **位置：牌的右上角外侧那一圈留白里**。`right` 取 `--lamp-inset`（14px），
+   让它的**右边缘与牌的右边缘齐平**；`top: 1px` 让它贴在窗口顶、下沿与牌的上边缘
+   只差 1px。于是它看起来是**挂在这块牌右上角的一枚角标** —— 而不是浮在窗口角落的
+   一颗独立小点（贴窗口最右角、`right: 1px` 那版就是这样，和牌之间空出 13px，
+   看着没关系）。**不能压到牌里的字**：牌的右端是时长（`12s` 那一列），所以角标
+   必须待在牌外，这也是它不能用「叠在牌角上」那种做法（像未读小红点）的原因。
+   牌宽、点距、窗口尺寸全都不为它变，Rust 的 `collapsed_window_size` 也不替它留点位。
+
+   历史：最早是左上角 (1,1) 一枚 9px 小圆点（和主体只在一点上相接），后来挪到
+   顶部正中、收进灯体（9×9），仍然太小 —— 小到像渲染残留，而且「⇥」在 7px 下
+   只是一团墨。这一版改成 12px 的圆角方块 + 真正的线性图标（`Icon`，9px），
+   并把留白从 10 加到 14 把这枚放得下。 */
 .lamp-flag {
   position: absolute;
-  top: var(--lamp-inset);
-  left: 50%;
-  /* 静态定位偏移，不是动画 —— 文件头那条「动画只动 opacity」约束不涉及它。
-     用 translateX 而不是 `calc(50% - 4.5px)`：后者得跟着 9px 的宽度一起改，
-     又多一处会漂移的真值。 */
-  transform: translateX(-50%);
+  top: 1px;
+  /* 右边缘与牌右边缘齐平（牌从 `--lamp-inset` 处开始）—— 见上面那段说明：
+     贴窗口最右角会离牌 13px，读起来是「窗角上的一颗点」，不是「牌上的角标」。 */
+  right: var(--lamp-inset);
   box-sizing: border-box;
-  width: 9px;
-  height: 9px;
+  width: 12px;
+  height: 12px;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 0;
   border: 1px solid var(--sign-line);
-  border-radius: 50%;
+  /* 4px 圆角：和缩到 12px 的牌面同一族的「圆角方块」，不是胶囊也不是正圆 ——
+     正圆里放一个圆形图标（`ban` 本身就是圆环）会变成同心双环。 */
+  border-radius: 4px;
   background: var(--sign-bg);
   color: var(--sign-fg);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  font-size: 7px;
-  line-height: 1;
-  white-space: nowrap;
   /* 它只负责「看」，不抢指针 —— 穿透下窗口本来也收不到指针事件 */
   pointer-events: none;
+}
+
+/* 图标本身不带内外边距；`display: block` 是为了干掉 inline svg 的基线空隙 ——
+   那一两像素在 12px 的盒子里就是「图标偏上」。 */
+.lamp-flag svg {
+  display: block;
 }
 
 /* 穿透那枚更显眼一点：那个状态下窗口点不动、拖不动，用户得先知道自己在里面 */
