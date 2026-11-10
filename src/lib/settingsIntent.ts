@@ -19,6 +19,19 @@
 /** 纸条的键。值是设置面板的页签 id（`connect` / `demo` / `history` …）。 */
 export const OPEN_TAB_KEY = "signalhub.settings.openTab";
 
+/**
+ * 「翻到某一页」的**第二条通道**：Tauri 事件。
+ *
+ * 纸条只能由前端的另一个窗口写，而有些入口在 **Rust** 那边 —— 灯上右键菜单的
+ * 「重命名…」就是（菜单是原生的，见 `menu.rs`）。那边写不了 localStorage，只好
+ * 由它 `emit` 一个事件，设置窗在这里收。
+ *
+ * 两条通道并存而不是二选一：纸条是「同源窗口之间递东西」的做法（灯窗 → 设置窗
+ * 都在前端），事件是「Rust → 前端」的做法。用事件去做前者要多绕一层 IPC，
+ * 用纸条去做后者根本做不到。
+ */
+export const OPEN_TAB_EVENT = "signalhub://settings-tab";
+
 /** 写纸条。存储被禁用时安静失败 —— 设置照常打开，只是停在「上次那页」。 */
 export function requestSettingsTab(tab: string) {
   try {

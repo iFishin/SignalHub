@@ -1,4 +1,4 @@
-import type { Settings, Shape, StateStyle, SignGap } from "./useSettings";
+import type { Settings, Shape, StateStyle, SignGap, SignCorner, SignCorners } from "./useSettings";
 import { SIGNALS, type SignalState } from "./types";
 import { colorVars } from "./palettes";
 
@@ -238,6 +238,61 @@ export const SIGN_GAP_MULT: Record<SignGap, number> = {
   standard: 1,
   loose: 2,
 };
+
+/**
+ * 牌面四角的顺序：顺时针，从左上开始。
+ *
+ * 顺序**只影响设置面板里四行控件的排列**，不影响灯 —— 每枚角灯的位置由 `pos`
+ * 决定，和这个数组的次序无关。写在这里是为了让「设置里第一行 = 左上角」有唯一
+ * 出处，而不是两处各写一遍 `["tl","tr","br","bl"]`。
+ */
+export const CORNER_POSITIONS = ["tl", "tr", "br", "bl"] as const;
+
+/** 这一块牌的四角要挂什么（[`cornerLights`] 的输入）。 */
+export interface CornerFacts {
+  /** 这一组被置顶了（`group_meta[组].order` 有值）。 */
+  pinned: boolean;
+  /** 这一组被静音了（`muted_groups` 里有它）。 */
+  muted: boolean;
+  /**
+   * 沉默进度：`null` = 没在沉默。
+   *
+   * 只有 `stale` 的组才有值，语义和灯珠 `--progress` 完全一样（1 = 刚开始沉默，
+   * 0 = 马上就要消失）。复用它而不是另算一份，两边才不会给出不同的答案。
+   */
+  staleProgress: number | null;
+}
+
+export interface CornerLight {
+  pos: (typeof CORNER_POSITIONS)[number];
+  kind: SignCorner;
+}
+
+/**
+ * 四角最终画哪几枚 —— 只返回**该亮**的那些，不亮的不返回。
+ *
+ * **不亮 ≠ 画一个暗点**：一枚「置顶」角灯在没置顶的组上必须整个消失。画暗的话，
+ * 用户看到的是一枚「快灭了」的灯，而它其实在说反话。所以这里做的是过滤，
+ * 不是给 `data-on` 之类的东西。
+ *
+ * 唯一的例外是 `state`：它没有条件，配了就一直在 —— 那正是「关掉圆点之后仍然
+ * 要有颜色」的用法。
+ *
+ * 纯函数，有单测（`lampStyle.test.ts`）：卡片组件每帧都在重渲染，判定逻辑藏在
+ * JSX 里的话，五种情况只能靠肉眼看灯验，而这盏灯不是所有机器上都摆得出来。
+ */
+export function cornerLights(corners: SignCorners, facts: CornerFacts): CornerLight[] {
+  const out: CornerLight[] = [];
+  for (const pos of CORNER_POSITIONS) {
+    const kind = corners[pos];
+    if (kind === "empty") continue;
+    if (kind === "pinned" && !facts.pinned) continue;
+    if (kind === "muted" && !facts.muted) continue;
+    if (kind === "stale" && facts.staleProgress === null) continue;
+    out.push({ pos, kind });
+  }
+  return out;
+}
 
 /**
  * 这个状态有没有被单独设过。

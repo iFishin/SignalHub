@@ -491,6 +491,85 @@ pub enum SignFont {
     Mono,
 }
 
+/// 牌面的**边灯**：把状态色从一颗 8px 的点扩展到牌的四个边上。
+///
+/// 它不承载新的信息 —— 颜色仍然只表示状态，和灯珠、和细环说的是同一件事。它
+/// 买的是**面积**：一块牌在余光里最先被读到的不是文字，而是一块有颜色的面。
+/// 灯珠再大也只占 `0.55 × size`（22px 档上不到 13px），而一条顶边有整块牌宽。
+/// 这就是「不增加文字也能让灯表达得更多」的第一条路。
+///
+/// 默认 `Off`（红线 3：升级不改观感）。四档从「完全没有」到「牌外还带一圈光」，
+/// 差别只在画法，**没有一档参与窗口几何**（`::before` 是绝对定位的伪元素，
+/// `box-shadow` 也不改盒）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SignEdge {
+    /// 现状：牌面只有那圈中性描边。
+    #[default]
+    Off,
+    /// 顶边一道从状态色向下渐隐的光 —— 最克制的一档，近看是「牌在发光」，
+    /// 远看只是一条更亮的边。
+    Top,
+    /// 四边一圈 1px 状态色细线：整块牌被状态色框住，像一台仪表的边框。
+    Frame,
+    /// 四边细线 + 牌外一圈同色柔光。隔着一米也看得出这块牌是什么颜色，
+    /// 代价是在深色桌面上它比别的东西都亮。
+    Glow,
+}
+
+/// 牌面四角里一枚小灯表达什么。
+///
+/// 四个角是**独立**的（见 [`SignCorners`]），每一枚只回答一个是 / 否 —— 它是
+/// 「不写字的第二个信息通道」，用来把那些「说得出但塞不进 154px」的事挂上去：
+/// 这一组被置顶了没有、被静音了没有、还剩多少时间要沉默。
+///
+/// 都用**常亮**的小点，不跟状态闪：节奏是灯珠的活，四角再闪就是四处都在动。
+///
+/// 除 `State` 外都是**条件色**：条件不成立时那枚角灯根本不画（不是画暗）。
+/// 「有一枚暗点」和「没有这枚点」是两种意思，混起来等于说谎。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SignCorner {
+    /// 不画。
+    #[default]
+    Empty,
+    /// 状态色的实心点。**关掉牌上那颗圆点（`show.dot`）之后，这是唯一的颜色来源** ——
+    /// 「不想要圆点、但还想一眼看出颜色」的人用它。
+    State,
+    /// 置顶（`group_meta[组].order` 有值）。近白实心点。
+    Pinned,
+    /// 静音（`muted_groups` 里有它）。**空心环** —— 和实心区分开，不必读字。
+    Muted,
+    /// 沉默进度：`stale` 时那圈剩余时间，越接近过期越淡。不沉默就不画。
+    Stale,
+}
+
+/// 四角上的四枚小灯。
+///
+/// 每个角独立选（[`SignCorner`]），默认全空 —— 也就是「加这个功能之前的样子」。
+///
+/// **为什么不预设一套固定语义**（左上=置顶、右上=静音）：固定布局要求用户记住
+/// 一张对照表，而这张表不会出现在灯上。让用户自己挂，他挂上去的每一枚都是他
+/// 想要的那个意思；四个角的顺序（`tl` / `tr` / `br` / `bl`）只是屏幕上的位置。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SignCorners {
+    pub tl: SignCorner,
+    pub tr: SignCorner,
+    pub br: SignCorner,
+    pub bl: SignCorner,
+}
+
+impl SignCorners {
+    /// 挂了几枚。设置页那一行摘要用（收起时只说「挂了 2 枚」）。
+    pub fn count(self) -> usize {
+        [self.tl, self.tr, self.br, self.bl]
+            .iter()
+            .filter(|corner| **corner != SignCorner::Empty)
+            .count()
+    }
+}
+
 /// 多块牌之间的间距。
 ///
 /// 这是外观里**唯一会影响窗口几何**的一档：牌竖着叠，间距变大窗口就变高，
@@ -1344,6 +1423,13 @@ pub struct Settings {
     pub sign_font: SignFont,
     /// 多块牌之间的间距档位。**唯一会影响窗口高度的外观项**（见 [`SignGap`]）。
     pub sign_gap: SignGap,
+    /// 牌面边灯：状态色铺到牌的边缘上（见 [`SignEdge`]）。只改画法，不改几何。
+    pub sign_edge: SignEdge,
+    /// 牌面四角的小灯（见 [`SignCorners`]）。同样是纯 CSS，不参与几何。
+    ///
+    /// **不参与「哪几块牌可见」的判断**：角灯挂不挂，和牌数、窗口尺寸无关 ——
+    /// 它只画在已经存在的那块牌上，而且绝对定位。
+    pub sign_corners: SignCorners,
     /// 界面语言偏好。`Auto` 由**前端**解析成具体语言 —— Rust 不知道系统语言。
     pub locale: Locale,
     /// 设置窗口的亮 / 深色偏好。`Auto` = 跟随系统，解析见前端 `lib/theme.ts`。
@@ -1799,6 +1885,9 @@ impl Default for Settings {
             // 字体和间距同理：默认 == 加这两个字段之前的样子
             sign_font: SignFont::default(),
             sign_gap: SignGap::default(),
+            // 边灯 / 角灯默认全关：加这两项之前，牌的四面和四角都是空的
+            sign_edge: SignEdge::default(),
+            sign_corners: SignCorners::default(),
             locale: Locale::default(),
             // 跟随系统：升级上来的旧配置没有这个字段，行为必须和加开关之前一致
             theme: Theme::default(),
@@ -2510,6 +2599,14 @@ mod tests {
             // 字体与间距同理：都取非默认值，漏字段才验得出来
             sign_font: SignFont::Mono,
             sign_gap: SignGap::Loose,
+            // 边灯与角灯同理：四角挂满且各不相同，漏一个字段这里就看得出来
+            sign_edge: SignEdge::Glow,
+            sign_corners: SignCorners {
+                tl: SignCorner::State,
+                tr: SignCorner::Pinned,
+                br: SignCorner::Stale,
+                bl: SignCorner::Muted,
+            },
             locale: Locale::En,
             // 同理：`Theme` 默认是 `Auto`，这里用 `Dark` 才验得出「漏了这个字段」
             theme: Theme::Dark,
@@ -3318,6 +3415,57 @@ mod tests {
         assert!(back.contains(r#""sign_emphasis":"flat""#));
         assert!(back.contains(r#""sign_font":"mono""#));
         assert!(back.contains(r#""sign_gap":"loose""#));
+    }
+
+    /// 边灯 / 角灯默认全关：加这两项之前，牌的四面和四角本来就是空的（红线 3）。
+    ///
+    /// 两条都要钉住，因为它们是**观感**的默认值而不是行为的：改错了不会有任何
+    /// 测试失败，只会让升级上来的用户看到一盏忽然发光、四角冒点的灯。
+    #[test]
+    fn the_edge_and_corner_lights_default_to_off() {
+        let settings = Settings::default();
+        assert_eq!(settings.sign_edge, SignEdge::Off, "默认不点亮边缘");
+        assert_eq!(settings.sign_corners, SignCorners::default(), "默认四角全空");
+        assert_eq!(settings.sign_corners.count(), 0);
+
+        // 旧配置里两个字段都没有，不能因此让整份设置失效
+        let old: Settings = serde_json::from_str(r#"{"size": 22}"#).unwrap();
+        assert_eq!(old.sign_edge, SignEdge::Off);
+        assert_eq!(old.sign_corners.count(), 0);
+    }
+
+    /// 四角可以只写一个 —— `SignCorners` 自己有 `serde(default)`，缺的角退回「空」。
+    ///
+    /// 这条不是洁癖：前端每次 `set_settings` 都发整份设置，但**手改 config.json 的
+    /// 人是按需写的**，只写 `{"br": "muted"}` 是很自然的动作。没有字段级默认的话，
+    /// 那份文件会让整份设置解析失败，然后被当成损坏重置 —— 一句话丢掉他所有配置。
+    #[test]
+    fn a_half_written_corner_set_still_parses() {
+        let settings: Settings =
+            serde_json::from_str(r#"{"sign_corners": {"br": "muted"}, "sign_edge": "top"}"#)
+                .unwrap();
+        assert_eq!(settings.sign_edge, SignEdge::Top);
+        assert_eq!(settings.sign_corners.br, SignCorner::Muted);
+        assert_eq!(settings.sign_corners.tl, SignCorner::Empty, "没写的角是空");
+        assert_eq!(settings.sign_corners.count(), 1);
+    }
+
+    /// 边灯 / 角灯取值要能原样存回去 —— 存不回去的表现是「设置点了没反应」，
+    /// 而那种 bug 在界面上没有任何线索。
+    #[test]
+    fn the_edge_and_corner_lights_roundtrip_through_json() {
+        let raw = r#"{
+            "sign_edge": "glow",
+            "sign_corners": {"tl": "state", "tr": "pinned", "br": "stale", "bl": "muted"}
+        }"#;
+        let settings = serde_json::from_str::<Settings>(raw).unwrap();
+        assert_eq!(settings.sign_edge, SignEdge::Glow);
+        assert_eq!(settings.sign_corners.count(), 4);
+
+        let back = serde_json::to_string(&settings).unwrap();
+        assert!(back.contains(r#""sign_edge":"glow""#), "{back}");
+        assert!(back.contains(r#""br":"stale""#), "{back}");
+        assert!(back.contains(r#""bl":"muted""#), "{back}");
     }
 
     /// 隐藏的组名来自右键菜单、也会被用户手改进配置文件，所以要规整：

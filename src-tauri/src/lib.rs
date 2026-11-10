@@ -2767,6 +2767,27 @@ fn snap_to_edges(
     }
 }
 
+/// 「打开设置，并且翻到某一页」那个事件的 id。
+///
+/// **与前端 `src/lib/settingsIntent.ts::OPEN_TAB_EVENT` 逐字一致** —— 两边各写
+/// 一份字符串是刻意的（Rust 读不到 TS 常量），改名要一起改，否则表现是「点了
+/// 重命名，设置窗开了但停在原来那页」，没有任何报错。
+const SETTINGS_TAB_EVENT: &str = "signalhub://settings-tab";
+
+/// 打开设置并翻到某一页。
+///
+/// 为什么要事件：`reveal_settings` 只是 `show()` —— 设置窗启动时就以
+/// `visible: false` 建好了（组件只挂载一次），翻页只能靠「窗口显形之后再告诉它」。
+/// 前端自己的入口走 localStorage 那张纸条（同源两窗口共享），而灯上的原生右键
+/// 菜单在 Rust 这边，写不了 localStorage，只能走事件。
+///
+/// **先 show 再 emit**：事件是发给那个窗口的，窗口还没显示时它照样收得到（webview
+/// 已经加载完），但先显示更符合「用户点了什么就立刻看到什么」的顺序。
+pub(crate) fn reveal_settings_tab(app: &tauri::AppHandle, tab: &str) {
+    reveal_settings(app);
+    let _ = app.emit(SETTINGS_TAB_EVENT, tab);
+}
+
 /// 由命令和托盘菜单共用。
 pub(crate) fn reveal_settings(app: &tauri::AppHandle) {
     let Some(window) = app.get_webview_window("settings") else {

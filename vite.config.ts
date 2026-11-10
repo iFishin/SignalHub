@@ -37,5 +37,6 @@ export default defineConfig(() => ({
     // Character`。`.gitignore` 里的 `._*` 拦得住 git，拦不住 glob —— 所以这里
     // 再排除一次。
     exclude: ["**/node_modules/**", "**/dist/**", "**/._*"],
+    css: true,
   },
 }));

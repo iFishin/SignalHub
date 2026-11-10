@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  cornerLights,
   lampVars,
   resolveAnimations,
   resolveHaloAnimations,
@@ -10,7 +11,7 @@ import {
   CALM_ALPHA_FLOOR,
   SIGN_OPACITY_MIN,
 } from "./lampStyle";
-import { DEFAULTS, type Settings } from "./useSettings";
+import { DEFAULTS, type SignCorners, type Settings } from "./useSettings";
 import { SIGNALS } from "./types";
 
 const withSettings = (patch: Partial<Settings>): Settings => ({ ...DEFAULTS, ...patch });
@@ -347,5 +348,74 @@ describe("resolveHaloAnimations", () => {
 
     const slow = resolveHaloAnimations(withSettings({ blink_speed: 50 }));
     expect(slow.thinking).toBe("halo-breathe 2560ms ease-in-out infinite");
+  });
+});
+
+describe("cornerLights", () => {
+  const corners = (patch: Partial<SignCorners>): SignCorners => ({
+    tl: "empty",
+    tr: "empty",
+    br: "empty",
+    bl: "empty",
+    ...patch,
+  });
+
+  /**
+   * 条件不成立时那枚角灯**根本不出现**，而不是画一个暗点。
+   *
+   * 「有一枚暗点」和「没有这枚点」是两种意思：画暗的话用户看到的是一枚「快灭了」
+   * 的灯，而它其实在说反话。这条是整个角灯设计的地基。
+   */
+  it("drops the conditional corners when the condition is false", () => {
+    const lit = cornerLights(corners({ tl: "pinned", tr: "muted", br: "stale" }), {
+      pinned: false,
+      muted: false,
+      staleProgress: null,
+    });
+    expect(lit).toEqual([]);
+  });
+
+  it("keeps them when the condition is true", () => {
+    const lit = cornerLights(corners({ tl: "pinned", tr: "muted", br: "stale" }), {
+      pinned: true,
+      muted: true,
+      staleProgress: 0.4,
+    });
+    expect(lit).toEqual([
+      { pos: "tl", kind: "pinned" },
+      { pos: "tr", kind: "muted" },
+      { pos: "br", kind: "stale" },
+    ]);
+  });
+
+  /**
+   * `state` 是唯一没有条件的 —— 它存在的意义就是「关掉牌上那颗圆点之后，仍然
+   * 一眼看得出这是什么颜色」。所以哪怕其他条件全假，它照样亮。
+   */
+  it("always lights the state corner", () => {
+    const lit = cornerLights(corners({ bl: "state" }), {
+      pinned: false,
+      muted: false,
+      staleProgress: null,
+    });
+    expect(lit).toEqual([{ pos: "bl", kind: "state" }]);
+  });
+
+  /** 默认设置一枚都不挂 —— 加这个功能之前，四角是空的。 */
+  it("draws nothing with the default settings", () => {
+    expect(cornerLights(DEFAULTS.sign_corners, {
+      pinned: true,
+      muted: true,
+      staleProgress: 0.9,
+    })).toEqual([]);
+  });
+
+  /** 返回顺序固定按「顺时针从左上」—— 面板里的排列和灯上的位置用同一套。 */
+  it("returns the corners in clockwise order", () => {
+    const lit = cornerLights(
+      corners({ bl: "state", br: "state", tr: "state", tl: "state" }),
+      { pinned: false, muted: false, staleProgress: null },
+    );
+    expect(lit.map((corner) => corner.pos)).toEqual(["tl", "tr", "br", "bl"]);
   });
 });

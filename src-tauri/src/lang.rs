@@ -126,6 +126,8 @@ pub struct NativeText {
 
     // ---- 灯上的右键菜单 ----
     pub menu_hide: &'static str,
+    /// 「重命名…」—— 它不开输入框，只是把设置窗翻到「分组」页（见 `menu.rs`）。
+    pub menu_rename: &'static str,
     pub menu_mute: &'static str,
     pub menu_unmute: &'static str,
     pub menu_clear: &'static str,
@@ -262,6 +264,7 @@ static ZH: NativeText = NativeText {
     tray_quit: "退出 SignalHub",
 
     menu_hide: "隐藏该组",
+    menu_rename: "重命名…",
     menu_mute: "静音该组",
     menu_unmute: "取消静音该组",
     menu_clear: "清除该组的状态",
@@ -299,6 +302,7 @@ static EN: NativeText = NativeText {
     tray_quit: "Quit SignalHub",
 
     menu_hide: "Hide this group",
+    menu_rename: "Rename…",
     menu_mute: "Mute this group",
     menu_unmute: "Unmute this group",
     menu_clear: "Clear this group's state",
@@ -391,6 +395,7 @@ mod tests {
             en.tray_collapsed,
             en.tray_quit,
             en.menu_hide,
+            en.menu_rename,
             en.menu_mute,
             en.menu_unmute,
             en.menu_clear,

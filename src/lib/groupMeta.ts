@@ -3,9 +3,9 @@ import type { GroupMeta } from "./useSettings";
 /**
  * 改某一组的**显示名**，返回新的 `group_meta`。
  *
- * 两处入口共用它：设置 →「外观」→「各组的显示」里的输入框，和展开的灯上那块牌
- * 就地改名（`SignalLamp.tsx`）。同一件事两条入口，各写一份算法迟早分叉 ——
- * 表现出来就是「灯上改完，设置里看着还是旧名字」。
+ * 唯一入口是设置 →「分组」→「各组的显示」里的输入框（`SettingsPanel.tsx`）。0.6.3
+ * 之前灯上那块牌也能就地改名，撤掉了（灯面不该是可交互的，见 `menu.rs` 的 `RENAME`）；
+ * 算法留在这里而不是搬进组件，是因为它有三条规则、有单测，和「谁调用它」无关。
  *
  * 三条规则：
  *
@@ -51,8 +51,9 @@ export function withGroupName(
  * - 本来就跟随自动（`current` 也是空）时没什么可写；
  * - 而改过名之后又清掉，是想**回到自动**，那一笔要写（由 `withGroupName` 删掉它）。
  *
- * 两处入口（灯上就地改名、设置里的输入框）共用 —— 各自判一次迟早分叉，表现出来
- * 就是「灯上点一下不会写配置，设置里点一下却写了」。
+ * 判据本身留在单独的纯函数里（而不是散在 `commitNameDraft` 里），是因为它有三个
+ * 容易写错的分支，值一份单测；顺便也让「点一下名字」和「Tab 进去再 Tab 出来」走
+ * 同一个判断。
  */
 export function nameChanged(seed: string, next: string, current: string): boolean {
   return next !== seed && next !== current;

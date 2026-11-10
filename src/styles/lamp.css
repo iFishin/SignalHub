@@ -26,6 +26,10 @@
  * （Rust 枚举 / TS 联合类型 / 这里的 `[data-sign-*]` 选择器），对不上的表现是
  * 「点了没反应」，界面上没有任何报错可循。
  *
+ * **边灯（`[data-sign-edge]`）和四角小灯（`.sign-corner`）是同一类东西**：只画在
+ * 已经存在的那块牌上，一个用伪元素、一个用绝对定位的子元素，都不参与 flex 布局，
+ * 也都不改盒 —— 所以窗口尺寸同样不必为它们加一个像素（见「边灯 / 角灯」一节）。
+ *
  * 两条硬性约束：
  * 1) html/body/#root 必须完全透明，否则 webview 会画出白底，透明窗口就白做了。
  * 2) **常驻**动画只动 opacity，交给 GPU 合成，避免这个常驻窗口烧 CPU。
@@ -95,6 +99,14 @@ body,
      零档位属性（比如预览里没挂 data 属性时）也必须画出原来那张牌。 */
   --sign-radius: 0.32; /* × size */
   --sign-text: 1; /* × 字号 */
+
+  /* 角灯的两把尺子：直径和离牌边的距离。都按 size 派生，所以大小档位一换，
+     四角的小点跟着缩放 —— 写死像素的话，16px 的牌上那枚点会显得比牌还重。
+     **4.4 / 5.3 这两个数是算出来的，不是估的**：牌高只有 `1.5 × size`，"角"其实
+     离中心很近；`inset ≥ 0.24 × size` 才能让 3.5px 的点在**最大圆角**（0.72 × size，
+     接近胶囊）时仍然落在圆角弧线内侧、不被 `overflow: hidden` 切掉一块。 */
+  --corner-d: calc(var(--size) * 0.16);
+  --corner-inset: calc(var(--size) * 0.24);
 
   /* 牌内字体。默认是系统无衬线；`[data-sign-font="mono"]` 把整块牌换成等宽
      —— 组名、状态词、消息、时长一起换，牌读起来像一段终端日志。
@@ -546,8 +558,8 @@ body,
   border-color: var(--sign-fg);
 }
 
-/* 键盘焦点：牌上的 ✎ / ×、审批气泡的按钮、就地改名的输入框，Tab 到哪一个
-   都得看得见。灯牌恒为深色 HUD，所以焦点环用亮白，不借主题变量。 */
+/* 键盘焦点：牌上的 ×、审批气泡的按钮，Tab 到哪一个都得看得见。
+   灯牌恒为深色 HUD，所以焦点环用亮白，不借主题变量。 */
 .lamp-root :is(button, a, input, [role="button"], [tabindex]):focus-visible {
   outline: 2px solid #f2f2f5;
   outline-offset: 2px;
@@ -586,37 +598,14 @@ body,
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
-  /* 点它就是改名 —— 光标得说出来这件事，否则没人会去点一个看起来只是文本的东西 */
-  cursor: pointer;
+  /* 它只是文本 —— 改名搬进了设置面板（分组 → 各组的显示），所以这里没有
+     `cursor: pointer`。早先是「点一下就进入编辑状态」，而灯是常驻在桌面上的：
+     误点一下就开始编辑，比改名的便利更碍事。 */
 }
 
-/* 就地改名的输入框。**必须占的和名字一样大**：牌的宽高是 Rust
-   （`config.rs::sign_width` / `sign_height`）与这里算出的同一个值，输入框只要比
-   文字高一点，牌就会被顶高、然后被 `overflow: hidden` 裁掉。所以边框和内边距
-   全部清零、行高与 `.sign` 一致；聚焦的提示用 inset 阴影画 —— 它不占布局。 */
-.sign-rename {
-  box-sizing: border-box;
-  flex: 1;
-  min-width: 0;
-  height: 1.15em;
-  margin: 0;
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: inherit;
-  font-family: inherit;
-  font-size: inherit;
-  font-weight: 600;
-  line-height: 1.15;
-  outline: none;
-  box-shadow: inset 0 -1px 0 var(--state, var(--sign-line));
-}
-
-/* 占位符（没起过名时显示服务端给的默认名）比正文淡一档 */
-.sign-rename::placeholder {
-  color: var(--sign-muted);
-  opacity: 1;
-}
+/* 牌面**没有**就地改名的输入框了。原来那条 `.sign-rename`（为了不顶高牌而把边框、
+   内边距全清零的那一版）一并删掉 —— 留着它只会让人以为灯上还能改名。
+   现在改名的入口有两个：设置 → 分组 → 各组的显示，或牌的右键菜单「重命名…」。 */
 
 .sign-state {
   flex: none;
@@ -639,6 +628,144 @@ body,
   font-size: calc(var(--size) * 0.45 * var(--sign-text, 1));
   font-variant-numeric: tabular-nums;
 }
+
+/* ---- 边灯 / 角灯：用光说话，而不是多写一行字 -----------------------------
+ *
+ * 这两样是同一件事的两半，所以放在一起，也共用一条约束：
+ * **不多写一个字、不动一个像素的几何**。牌宽高仍由 `config.rs::sign_width` /
+ * `sign_height` 算，留白仍是 `--lamp-inset`，窗口尺寸完全不受影响。
+ *
+ *   边灯（`data-sign-edge`）—— 状态色的**面积化**。灯珠只有 0.55 × size 大，
+ *     而一块牌在余光里最先被读到的不是字，是「一块有颜色的面」。
+ *   角灯（四枚 `.sign-corner`）—— 一块牌有四个角一直是空的，而「置顶了吗 /
+ *     静音了吗 / 还有多久变沉默」这类是 / 否信息正好只有一枚小点那么大。
+ *
+ * 两者都只表达**已经有的事实**（状态色、置顶、静音、沉默进度），不引入新语义：
+ * 灯上多出来的每一处亮色都得回答一个用户本来就知道去哪儿查的问题，否则它只是
+ * 装饰 —— 而装饰会让真正要紧的那点亮色失去分量。
+ */
+
+/* 边灯的载体是 `.sign::before`：绝对定位的伪元素，不参与 flex 布局、也不改盒。
+   `inset: 0` 相对**内边距盒**定位，所以它天然落在描边里面；圆角跟 `inherit`
+   走（比内圆角大 1px，肉眼看不出来）。`.sign` 自带 `overflow: hidden`，于是
+   顶边那道渐变会被圆角切出干净的弧，不需要额外 mask。
+   `pointer-events: none`：它盖在整块牌上，绝不能抢走拖拽和右键。 */
+.lamp-root[data-sign-edge="top"] .sign::before,
+.lamp-root[data-sign-edge="frame"] .sign::before,
+.lamp-root[data-sign-edge="glow"] .sign::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+/* 顶边：**一道细亮线 + 一小段向下的余晖**，像一根灯管照亮牌的上沿。
+   早先只画渐隐、没有那道线，结果整块牌的上半截被染成一片绿雾 —— 读起来是
+   「这块牌变绿了」，而不是「顶边亮着」。线只有 1.5px，靠 `inset` 阴影画在
+   内边距盒里，所以不会被牌自己的描边挤歪。
+   余晖的长度按 `size × 0.5` 算而不是百分比：`size` 32 的牌高 80px，`24%` 就是
+   19px，那一截看着像牌上盖了一块绿色的盖 —— 换个固定的 16px 才在三个大小档上
+   都是同一件事。 */
+.lamp-root[data-sign-edge="top"] .sign::before {
+  box-shadow: inset 0 1.5px 0 var(--state, transparent);
+  background: linear-gradient(
+    to bottom,
+    var(--state, transparent),
+    transparent calc(var(--size) * 0.5)
+  );
+  opacity: 0.6;
+}
+
+/* 四边：整块牌被状态色框住，像一台仪表的边框。
+   用不透明度而不是 `color-mix` 压暗 —— 状态色本身是个变量，混色要多赌一次
+   `color-mix` 的支持（见 `.dot` 那段同样的顾虑）。 */
+.lamp-root[data-sign-edge="frame"] .sign::before,
+.lamp-root[data-sign-edge="glow"] .sign::before {
+  border: 1px solid var(--state, transparent);
+  opacity: 0.7;
+}
+
+/* 辉光：在四边细线之上，再从牌**外面**散一圈同色柔光。
+   阴影画在 `.sign` 自己身上而不是伪元素上 —— 伪元素会被父级的
+   `overflow: hidden` 裁掉，光就散不出去。窗口每边有 14px 留白，
+   `size` 32 时 0.45 × size ≈ 14px 的模糊半径刚好用满、又不出窗。 */
+.lamp-root[data-sign-edge="glow"] .sign {
+  box-shadow: 0 0 calc(var(--size) * 0.45) calc(var(--size) * -0.12)
+    var(--state, transparent);
+}
+
+/* 角灯：四枚绝对定位的小点。**常亮、不闪** —— 节奏是灯珠的活，四角再闪就是
+   一处画面里好几个东西在动，而它们说的还都是同一件事。
+   用 `data-pos` 定位而不是四套类名：位置只有四个，值只有五个，两个维度分开写
+   才不会有 20 条规则。 */
+.sign-corner {
+  position: absolute;
+  width: var(--corner-d);
+  height: var(--corner-d);
+  border-radius: 50%;
+  /* 它只负责「看」：牌上按下要能拖窗口，右键要能弹组菜单 */
+  pointer-events: none;
+}
+
+.sign-corner[data-pos="tl"] {
+  left: var(--corner-inset);
+  top: var(--corner-inset);
+}
+
+.sign-corner[data-pos="tr"] {
+  right: var(--corner-inset);
+  top: var(--corner-inset);
+}
+
+.sign-corner[data-pos="br"] {
+  right: var(--corner-inset);
+  bottom: var(--corner-inset);
+}
+
+.sign-corner[data-pos="bl"] {
+  left: var(--corner-inset);
+  bottom: var(--corner-inset);
+}
+
+/* 状态色：和灯珠、和细环同一个 `--state`。关掉牌上那颗圆点之后，这是唯一的
+   颜色来源 —— 「我只要一块纯文字卡，但还得一眼看出颜色」就靠它。 */
+.sign-corner[data-kind="state"] {
+  background: var(--state);
+  opacity: 0.9;
+}
+
+/* 置顶：近白实心点。**不用状态色** —— 它是「我把它钉在最前面了」的记号，
+   和状态无关；用状态色会和 `state` 那枚混淆。 */
+.sign-corner[data-kind="pinned"] {
+  background: var(--sign-fg);
+  opacity: 0.8;
+}
+
+/* 静音：**空心环**。实心 / 空心是这两种角灯唯一能在一枚 3.5px 的点上分辨出来的
+   差别，所以静音用它 —— 语义上也对：「关掉了声音」＝ 中间是空的。
+   环用近白而不是 `--sign-muted`：3.5px 的一个 1px 圈，用灰线在深牌上几乎看不见，
+   而「看不见的角灯」比不挂更糟（用户会以为设置没生效）。 */
+.sign-corner[data-kind="muted"] {
+  box-sizing: border-box;
+  border: 1px solid var(--sign-fg);
+  background: transparent;
+  opacity: 0.55;
+}
+
+/* 沉默进度：越接近过期越淡。`--progress` 和灯珠那个细环是**同一个变量**
+   （`SignalLamp` 把它挂在 `.sign` 上），所以两者永远不会给出不同的答案。
+   不沉默时不画（由 `lampStyle.ts::cornerLights` 过滤），所以这里不必判状态。 */
+.sign-corner[data-kind="stale"] {
+  background: var(--state);
+  opacity: calc(0.2 + 0.7 * var(--progress, 1));
+}
+
+/* 悬停时右上角会浮出「清除该组」那枚 ×，它会盖住右上角那枚小灯 —— 这是**接受**
+   的取舍：hover 意味着手已经在这块牌上了，此刻要看的是那个按钮；而角灯是
+   余光级的信息，移开就回来，不需要为它挪按钮（挪到哪个角都会盖住另一个角）。
+   注意 `.sign-actions` 是 `pointer-events: none`（不 hover 时），所以它不会
+   让角灯区域变得点不动 —— 角灯自己也不接收事件。 */
 
 /* ---- 牌尾的小角标 -------------------------------------------------------- */
 

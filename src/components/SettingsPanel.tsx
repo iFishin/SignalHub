@@ -9,9 +9,10 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { inTauri } from "../lib/env";
-import { clearSettingsTab, readSettingsTab } from "../lib/settingsIntent";
+import { clearSettingsTab, readSettingsTab, OPEN_TAB_EVENT } from "../lib/settingsIntent";
 import {
   groupForTab,
   matchesTab,
@@ -28,14 +29,14 @@ import { CallMePage } from "./CallMePage";
 import { CallMeMessages } from "./CallMeMessages";
 import { LocalPanel, LocalTabs, PageHeader } from "./settings/SettingsPage";
 import { labelOf } from "../lib/lampSort";
-import { SIGN_OPACITY_MIN, stateOverridden, lampVars, resolveShapes } from "../lib/lampStyle";
+import { SIGN_OPACITY_MIN, stateOverridden, lampVars, resolveShapes, cornerLights, CORNER_POSITIONS } from "../lib/lampStyle";
 import {
   commitHeader,
   withoutHeader,
   MAX_HOOK_HEADERS,
 } from "../lib/hookHeaders";
 import { useLang, useMessages, type Lang, type Messages } from "../lib/i18n";
-import { useSettings, updateSettings, DEFAULTS, HTTP_PRESETS, type Settings, type Shape, type Palette, type SignRadius, type SignBorder, type SignTint, type SignText, type SignFont, type SignGap, type SignEmphasis, type HttpPreset, type Hook, type Device, type Machine, type MachineHealth, type StateStyle, type GroupMeta } from "../lib/useSettings";
+import { useSettings, updateSettings, DEFAULTS, HTTP_PRESETS, type Settings, type Shape, type Palette, type SignRadius, type SignBorder, type SignTint, type SignText, type SignFont, type SignGap, type SignEmphasis, type SignEdge, type SignCorner, type HttpPreset, type Hook, type Device, type Machine, type MachineHealth, type StateStyle, type GroupMeta } from "../lib/useSettings";
 import {
   useToggles,
   setAutostart,
@@ -228,6 +229,35 @@ function gapOptions(m: Messages): { label: string; value: SignGap }[] {
   ];
 }
 
+/**
+ * 边灯。四档从「完全不亮」到「牌外还带一圈光」。
+ *
+ * 选项顺序就是 `config::SignEdge` 里声明的顺序（最保守到最张扬），
+ * 值和 Rust 的 `lowercase` 序列化一一对应。
+ */
+function edgeOptions(m: Messages): { label: string; value: SignEdge }[] {
+  return [
+    { label: m.edgeOff, value: "off" },
+    { label: m.edgeTop, value: "top" },
+    { label: m.edgeFrame, value: "frame" },
+    { label: m.edgeGlow, value: "glow" },
+  ];
+}
+
+/**
+ * 角灯能挂什么。**每一项都只回答一个是 / 否**，所以用五档的 `select` 而不是
+ * 滑杆：这里没有连续量，只有「挂哪一种」。
+ */
+function cornerOptions(m: Messages): { label: string; value: SignCorner }[] {
+  return [
+    { label: m.cornerKind.empty, value: "empty" },
+    { label: m.cornerKind.state, value: "state" },
+    { label: m.cornerKind.pinned, value: "pinned" },
+    { label: m.cornerKind.muted, value: "muted" },
+    { label: m.cornerKind.stale, value: "stale" },
+  ];
+}
+
 /** 牌上可以单独关掉的五段内容。顺序就是它们在牌上出现的顺序。 */
 function fieldOptions(m: Messages): { key: keyof Settings["show"]; label: string }[] {
   return [
@@ -401,6 +431,16 @@ function LampPreview({ settings }: { settings: Settings }) {
     { state: "permission" },
   ];
 
+  // 预览里的四角**全部画出来**。真灯上「置顶 / 静音 / 沉默」要等条件成立才出现，
+  // 而预览的任务恰恰是「让你看清自己配了什么」—— 跟着条件走的话，配完可能一个角
+  // 都看不到，然后被当成没生效。条件全给 true，`staleProgress: 1` 让那枚取最实的
+  // 一档（它的亮度是随进度变的）。
+  const previewCorners = cornerLights(settings.sign_corners, {
+    pinned: true,
+    muted: true,
+    staleProgress: 1,
+  });
+
   return (
     <div className="lamp-preview">
       <div
@@ -421,11 +461,17 @@ function LampPreview({ settings }: { settings: Settings }) {
         data-sign-emphasis={settings.sign_emphasis}
         /* 字体也跟 —— 等宽档换的是整块牌的字形，预览不跟就看不出区别。 */
         data-sign-font={settings.sign_font}
+        /* 边灯同理：它也是「这一页调到的一项」。 */
+        data-sign-edge={settings.sign_edge}
       >
         {cards.map((card) => (
           <div
             key={card.state}
             className="sign"
+            /* `data-state` 是边灯和角灯取色的唯一入口（`--state` 来自 state.css）。
+               预览以前只在 `.dot` 上挂它，于是这两样在预览里会取到透明兜底 ——
+               表现是「调了没反应」，而真灯上是好的。 */
+            data-state={card.state}
             data-has-message={settings.show.message && card.message ? "true" : "false"}
           >
             {/* 和真灯同一处判断：关掉圆点之后预览也必须是纯文字卡，
@@ -445,6 +491,15 @@ function LampPreview({ settings }: { settings: Settings }) {
               )}
             </div>
             {settings.show.age && <span className="sign-age">{m.seconds(12)}</span>}
+            {/* 四角小灯：和真灯同一套类名与位置（见 lamp.css 的 `.sign-corner`）。 */}
+            {previewCorners.map((corner) => (
+              <span
+                key={corner.pos}
+                className="sign-corner"
+                data-pos={corner.pos}
+                data-kind={corner.kind}
+              />
+            ))}
           </div>
         ))}
       </div>
@@ -1464,6 +1519,8 @@ export function SettingsPanel({ snapshot }: Props) {
   const emphasisChoices = emphasisOptions(m);
   const fontChoices = fontOptions(m);
   const gapChoices = gapOptions(m);
+  const edgeChoices = edgeOptions(m);
+  const cornerChoices = cornerOptions(m);
   const blinkChoices = blinkOptions(m);
   const alertChoices = alertDelayOptions(m);
   const ttlDefaults = useStateTtls();
@@ -1531,6 +1588,24 @@ export function SettingsPanel({ snapshot }: Props) {
     }
   }, [tab]);
 
+  // 「翻到某一页」的第二条通道：Rust 发来的事件（灯上右键的「重命名…」就是）。
+  // 和上面那张纸条并存 —— 纸条是前端两个窗口之间递东西，事件是 Rust 往前端递，
+  // 各自都没有替代品（见 `lib/settingsIntent.ts` 的说明）。
+  //
+  // 无条件订阅、组件不卸载就一直在：设置窗是启动时建好、之后只 `show()` 的，
+  // 挂载只有一次，所以这里也不需要处理「窗口隐藏时漏掉事件」——`show()` 之后
+  // 才可能有人点菜单。
+  useEffect(() => {
+    if (!inTauri) return;
+    const ids = tabIds(m);
+    const pending = listen<string>(OPEN_TAB_EVENT, (event) => {
+      if (ids.includes(event.payload as Tab)) setTab(event.payload as Tab);
+    });
+    return () => {
+      pending.then((unlisten) => unlisten());
+    };
+  }, [m]);
+
   // 左栏默认折叠：只展开「在用的」那一组，其余组收成一行标题。切页时自动
   // 归位 —— 手动展开过别的组也不该让十几个页签又摊成一长列。不持久化：
   // 每次打开设置按当前页展开最自然，记一堆展开状态反而要用户自己收拾。
@@ -1588,6 +1663,15 @@ export function SettingsPanel({ snapshot }: Props) {
   // 逐状态那张表默认收起（十行表和上面九行不是一个量级）。它记的是**用户**的
   // 展开意图，所以放在 state 里；切走再切回来会保留（组件没卸载）。
   const [perStateOpen, setPerStateOpen] = useState(false);
+  // 四角小灯同样是「四行控件」，默认收起 —— 它回答的是「还能不能再塞点信息」，
+  // 而大多数人是来看圆角和字号的。收起时那行摘要会说挂了几个角。
+  const [cornersOpen, setCornersOpen] = useState(false);
+  // 摘要用：四角挂了几枚。和灯上用的是同一份判定（`lampStyle.cornerLights` 只在
+  // **画**的时候按条件过滤，这里只数「配了几个」——「置顶」角灯配了就算配了，
+  // 即使这一组没置顶，它仍然是用户的选择）。
+  const cornersSet = CORNER_POSITIONS.filter(
+    (pos) => settings.sign_corners[pos] !== "empty",
+  ).length;
   // 发布说明默认收起：它是**可选阅读**（想知道改了什么才看），不该把系统页撑长
   const [notesOpen, setNotesOpen] = useState(false);
   // 收起时那一行摘要要用：有几个状态被单独设过。判据和表里那个 `stateOverridden`
@@ -1971,8 +2055,8 @@ export function SettingsPanel({ snapshot }: Props) {
 
   /** 清空显示名 = 回到「跟随上报方给的原始组名」。
    *
-   *  改名的算法住在 `lib/groupMeta.ts` 里，因为**灯上那块牌也能就地改名** ——
-   *  两处各写一份，就会出现「灯上改完，设置里看着还是旧名字」。 */
+   *  改名的算法住在 `lib/groupMeta.ts` 里，不在这里：它有三条规则（空串 = 删、
+   *  空条目整条删、只动一个键），值得一份单测，而且和「界面长什么样」无关。 */
   const setGroupName = (group: string, name: string) =>
     patch({ group_meta: withGroupName(settings.group_meta, group, name) });
 
@@ -2007,8 +2091,9 @@ export function SettingsPanel({ snapshot }: Props) {
     if (!nameDraft) return;
     const { group, value, seed } = nameDraft;
     setNameDraft(null);
-    // 判据与灯上就地改名共用（`lib/groupMeta.ts::nameChanged`），否则会出现
-    // 「灯上点一下不会写配置，设置里点一下却写了」
+    // 「动没动过」的判据集中在 `lib/groupMeta.ts::nameChanged`：框里的初值和
+    // 提交值一样就当没改，否则一次误触就把一个探测出来的名字**钉成**用户自定义名，
+    // 之后上报方的项目 / 智能体变了牌上也不跟着变。
     const current = settings.group_meta[group]?.name ?? "";
     if (!nameChanged(seed, value.trim(), current)) return;
     setGroupName(group, value.trim());
@@ -2996,6 +3081,28 @@ export function SettingsPanel({ snapshot }: Props) {
                   </div>
                 </Row>
 
+                {/* 边灯紧跟描边：两者都在画牌的「边」，一个用中性线、一个用状态色。
+                    它也是这一页里唯一「用光代替字」的一项 —— 所以说明写得更长一点，
+                    否则很容易被当成纯装饰。 */}
+                <Row
+                  label={m.signEdge}
+                  hint={m.signEdgeHint}
+                  onReset={resetFor(settings, "sign_edge", patch)}
+                >
+                  <div className="seg">
+                    {edgeChoices.map((choice) => (
+                      <button
+                        key={choice.value}
+                        type="button"
+                        data-active={settings.sign_edge === choice.value}
+                        onClick={() => patch({ sign_edge: choice.value })}
+                      >
+                        {choice.label}
+                      </button>
+                    ))}
+                  </div>
+                </Row>
+
                 <Row label={m.signTint} onReset={resetFor(settings, "sign_tint", patch)}>
                   <div className="seg">
                     {tintChoices.map((choice) => (
@@ -3067,6 +3174,52 @@ export function SettingsPanel({ snapshot }: Props) {
                     ))}
                   </div>
                 </Row>
+
+                {/* 角灯：四行「哪个角挂什么」。默认收起 —— 它是这一页唯一**要你先
+                    想清楚**再动的项（另外几项都是「看起来变好看了没有」），摊在
+                    首屏会让人以为这也是一项必调的参数。收起时摘要说挂了几个角，
+                    于是「我配过它」这件事不会随收起而消失。 */}
+                <button
+                  type="button"
+                  className="disclosure"
+                  aria-expanded={cornersOpen}
+                  onClick={() => setCornersOpen((open) => !open)}
+                >
+                  <span className="caret" aria-hidden="true">
+                    {cornersOpen ? "▾" : "▸"}
+                  </span>
+                  <span className="disclosure-title">{m.signCorners}</span>
+                  <span className="disclosure-note">
+                    {cornersSet > 0 ? m.cornersSome(cornersSet) : m.cornersNone}
+                  </span>
+                </button>
+                {cornersOpen && (
+                  <>
+                    <p className="hint">{m.signCornersHint}</p>
+                    {CORNER_POSITIONS.map((pos) => (
+                      <Row key={pos} label={m.cornerPos[pos]}>
+                        <select
+                          className="select"
+                          value={settings.sign_corners[pos]}
+                          onChange={(event) =>
+                            patch({
+                              sign_corners: {
+                                ...settings.sign_corners,
+                                [pos]: event.target.value as SignCorner,
+                              },
+                            })
+                          }
+                        >
+                          {cornerChoices.map((choice) => (
+                            <option key={choice.value} value={choice.value}>
+                              {choice.label}
+                            </option>
+                          ))}
+                        </select>
+                      </Row>
+                    ))}
+                  </>
+                )}
               </LocalPanel>
             )}
           </>

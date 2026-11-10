@@ -6,17 +6,16 @@ import { inTauri } from "../lib/env";
 import { requestSettingsTab } from "../lib/settingsIntent";
 import { signalLabel, justFinishedLabel } from "../lib/signals";
 import { useLang, useMessages, type Messages, type Lang } from "../lib/i18n";
-import { lampVars, resolveShapes, resolveHaloAnimations, toneOf } from "../lib/lampStyle";
+import { lampVars, resolveShapes, resolveHaloAnimations, toneOf, cornerLights } from "../lib/lampStyle";
 import { transitions, type AggregateMap } from "../lib/lampTransitions";
 import { labelOf, orderVisible } from "../lib/lampSort";
-import { nameChanged, withGroupName } from "../lib/groupMeta";
 import { useNow } from "../lib/useNow";
 import { useToggles } from "../lib/useToggles";
 import { ApprovalBubble, MAX_APPROVAL_BUBBLES } from "./ApprovalBubble";
 import { Icon } from "./Icon";
 import { LampMenu } from "./LampMenu";
 import type { Approval } from "../lib/useApprovals";
-import { updateSettings, type GroupMeta, type Settings } from "../lib/useSettings";
+import type { GroupMeta, Settings } from "../lib/useSettings";
 import type { GroupView, SignalState } from "../lib/types";
 import { meetingTint } from "../lib/rules";
 
@@ -76,7 +75,7 @@ interface Props {
    * 演示 / 预览模式：**只画，不动真东西**。
    *
    * 演示窗口和设置里的「演示」页复用这同一个组件，为的是画面永远和真灯一致。
-   * 但拖拽、单击折叠、右键菜单、就地改名、清组这些交互全都得关掉 ——
+   * 但拖拽、单击折叠、右键菜单、清组这些交互全都得关掉 ——
    * 它们是「操作这个应用」，不是「看这个应用长什么样」。默认 false，真灯一行不改。
    */
   preview?: boolean;
@@ -558,43 +557,6 @@ export function SignalLamp({
   };
   const drag = useDragOrClick(onClickLamp, () => setMenuOpen(true));
 
-  // 就地改名：被点开的那一组（原始组名）+ 输入框里的草稿 + 打开那一刻填进去的值。
-  //
-  // **草稿 + 提交**，不是每敲一个字就存一次：那会把半截名字写进配置，而且灯窗
-  // 每帧都在重渲染（状态推送），受控输入容易掉字。
-  //
-  // `seed` 是打开那一刻**牌上显示的那个名字**（`labelOf`，三级：用户起的 →
-  // 探测出来的 → 原始组名），直接填进框里。以前填的是「用户自定义名」那个字段本身
-  // —— 没改过名时它是空的，于是点开改名看到的是一只空框，得把「SignalHub ·
-  // opencode」整个重敲一遍，而那个名字明明就挂在旁边的牌上。
-  const [renaming, setRenaming] = useState<{ group: string; value: string; seed: string } | null>(
-    null,
-  );
-
-  const startRename = (group: GroupView) => {
-    const seed = labelOf(group, settings.group_meta);
-    setRenaming({ group: group.name, value: seed, seed });
-  };
-
-  const commitRename = () => {
-    if (!renaming) return;
-    const { group, value, seed } = renaming;
-    setRenaming(null);
-    // 没动过就别写设置 —— 失焦提交时这条最常命中（点一下输入框又点回来）。
-    // 判据与设置页共用，见 `lib/groupMeta.ts::nameChanged`：写下去会把一个
-    // 探测出来的名字钉成用户自定义名。
-    const current = settings.group_meta[group]?.name ?? "";
-    if (!nameChanged(seed, value.trim(), current)) return;
-    // **整份设置展开**：`set_settings` 是整份替换，只传 group_meta 会把其它字段
-    // 回落到默认值，等于把所有设置重置一遍。改名算法与设置页共用同一个纯函数
-    // （`lib/groupMeta.ts`），两处不会分叉。
-    // 改完不用自己刷新：`set_settings` 会把新设置广播回来，两个窗口一起更新
-    // （同 `SettingsPanel` 的 `patch`）。
-    updateSettings({ ...settings, group_meta: withGroupName(settings.group_meta, group, value) }).catch(
-      console.error,
-    );
-  };
-
   const clearGroup = (group: string) => {
     if (!inTauri || preview) return;
     // 和右键菜单「清除该组的状态」走同一个命令（Rust 侧同一个函数），两条入口
@@ -704,6 +666,9 @@ export function SignalLamp({
          间距（`--sign-gap`）不在这里 —— 它影响窗口几何，得和 Rust 的
          `window_size` 用同一个倍率，所以和宽高倍率一起走 `lampVars`。 */
       data-sign-font={settings.sign_font}
+      /* 边灯：状态色铺到牌的边缘（见 lamp.css 的「边灯 / 角灯」一节）。
+         和上面几个 `data-sign-*` 同一个道理 —— 画法只住在 CSS 一处。 */
+      data-sign-edge={settings.sign_edge}
       data-paused={(!preview && paused) || undefined}
       // 有气泡时窗口要高出一块（Rust 算的），CSS 按同一个数把内容区收上去
       data-approvals={pending || undefined}
@@ -753,6 +718,19 @@ export function SignalLamp({
               transition: { type: "spring" as const, stiffness: 300, damping: 18, duration: 0.42 },
             }
           : {};
+        // 四角小灯：哪几枚该亮。判据在 `lampStyle.ts::cornerLights`（纯函数、有单测）
+        // —— 它只返回**该亮**的那些，「不亮」是根本不画，而不是画一个暗点。
+        //
+        // **占位牌（`name` 为空）不挂**：它不对应任何真实的组，也就没有「置顶 /
+        // 静音 / 沉默多久」可言 —— 挂上去的每一枚都会是假的。
+        const corners =
+          group.name === ""
+            ? []
+            : cornerLights(settings.sign_corners, {
+                pinned: settings.group_meta[group.name]?.order != null,
+                muted: settings.muted_groups.includes(group.name),
+                staleProgress: group.stale_progress,
+              });
         return !expanded ? (
           <motion.span
             // 折叠后只有点，没有可读的文字，所以 key 用下标；组名可能为空（占位那块）
@@ -787,11 +765,14 @@ export function SignalLamp({
             /* 给 `.sign` 挂 data-state，是为了让 state.css 的 `[data-state] { --state }`
                在**牌**这一层也生效 —— 跃迁时描边闪的是这个状态的颜色（见 lamp.css
                的 `edge-flash`）。
-               **顺带**把两处一直取不到 `--state` 的兜底实现了：`.sign-action:hover`
-               和 `.sign-rename` 的下划线现在会取状态色，而不是退回近白 / 细灰线。
-               那本来就是它们写着的意图（`var(--state, …)`），只是以前 `.sign` 上没有
-               这个变量；只在悬停 / 改名时出现，不影响静态观感。 */
+               **顺带**把一处一直取不到 `--state` 的兜底实现了：`.sign-action:hover`
+               现在会取状态色，而不是退回近白 —— 那本来就是它写着的意图
+               （`var(--state, …)`），只是以前 `.sign` 上没有这个变量。边灯和四角小灯
+               也都从这同一个 `--state` 取色。 */
             data-state={group.aggregate}
+            /* `--progress` 也挂到牌上：沉默进度那枚角灯要用它，而它原来只挂在
+               灯珠的 style 里。同一个变量、同一个来源，两者不会给出不同的答案。 */
+            style={progressStyle(group)}
             // 刚换了状态就闪一下（`pulses` 是这一帧跃迁的组名）。折叠态的点不带
             // 这个 —— 点的状态动画本身就会重放，重复闪反而糊。
             data-pulse={pulses.includes(group.name) || undefined}
@@ -811,55 +792,12 @@ export function SignalLamp({
             )}
             <div className="sign-body">
               <div className="sign-line">
-                {show.name && group.name && renaming?.group === group.name ? (
-                  /* 就地改名的输入框。**必须吃掉 mousedown / mouseup / click**：
-                     否则按一下就开始拖窗口、松开又被当成「点了一下灯」→ 折叠。
-                     Enter 提交、Esc 取消、失焦提交（同 macOS 各处的手感）。 */
-                  <input
-                    className="sign-rename"
-                    autoFocus
-                    value={renaming.value}
-                    placeholder={group.default_label ?? group.name}
-                    aria-label={m.renameHint}
-                    onMouseDown={stopMouse}
-                    onMouseUp={stopMouse}
-                    onClick={stopMouse}
-                    onFocus={(event) => event.currentTarget.select()}
-                    onChange={(event) =>
-                      /* `seed` 原样带着走：判「动没动过」用的还是打开那一刻的值 */
-                      setRenaming({
-                        group: group.name,
-                        value: event.target.value,
-                        seed: renaming.seed,
-                      })
-                    }
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") commitRename();
-                      // Esc 直接丢掉草稿：先把状态清掉，再让 blur 什么也不做
-                      if (event.key === "Escape") setRenaming(null);
-                      event.stopPropagation();
-                    }}
-                    onBlur={commitRename}
-                  />
-                ) : (
-                  show.name &&
-                  group.name && (
-                    <span
-                      className="sign-name"
-                      title={m.renameHint}
-                      /* **只吃 mouseup，不吃 mousedown**：冒到 `.lamp-root` 上的
-                         mouseup 会被当成「点了一下灯」→ 折叠（见 `useDragOrClick`）。
-                         而 mousedown 留着，从名字上照样能把灯拖走 —— 拖拽靠的是
-                         mousemove 上的 `startDragging()`，那条路不受影响。 */
-                      onMouseUp={stopMouse}
-                      onClick={(event) => {
-                        stopMouse(event);
-                        startRename(group);
-                      }}
-                    >
-                      {labelOf(group, settings.group_meta)}
-                    </span>
-                  )
+                {show.name && group.name && (
+                  /* 组名**只是一段文本**：改名的入口在设置面板（分组 → 各组的显示），
+                     也可以从牌的右键菜单「重命名…」直接跳过去。
+                     早先点它就能就地改，但那是一次「点一下就进入编辑状态」的交互 ——
+                     灯是常驻在桌面上的，误点一下就开始编辑，比改名的便利更碍事。 */
+                  <span className="sign-name">{labelOf(group, settings.group_meta)}</span>
                 )}
                 {guide.show && group.name === "" ? (
                   /* 第一次用：占位牌自己变成入口。**仍然只占一行**（按钮是
@@ -907,24 +845,9 @@ export function SignalLamp({
                 占位那块（name 为空）不对应任何真实的组，不挂这枚。 */}
             {!preview && group.name !== "" && (
               <span className="sign-actions">
-                {/* 名字被用户关掉时没有可改的东西 —— 不渲染这枚，也不为了改名把
-                    用户关掉的字段强行画出来。 */}
-                {show.name && renaming?.group !== group.name && (
-                  <button
-                    type="button"
-                    className="sign-action"
-                    title={m.renameHint}
-                    aria-label={m.renameHint}
-                    onMouseDown={stopMouse}
-                    onMouseUp={stopMouse}
-                    onClick={(event) => {
-                      stopMouse(event);
-                      startRename(group);
-                    }}
-                  >
-                    ✎
-                  </button>
-                )}
+                {/* 改名那枚 ✎ 已经撤掉（改名搬进设置面板），这里只剩「清掉这一组的
+                    状态」—— 上报方崩了、或者用户直接关掉了那个智能体会话时，牌会
+                    一直停在最后一个状态上，等 TTL 到期要好几分钟。 */}
                 <button
                   type="button"
                   className="sign-action"
@@ -966,6 +889,17 @@ export function SignalLamp({
                 +{hidden.length}
               </span>
             )}
+            {/* 四角小灯：**绝对定位、不参与 flex**，所以牌宽高一个像素都不变。
+                排在最后是为了让它们压在牌底之上 —— 它们本来就画在四角的留白里，
+                不会盖住字；这里只是保证「画在牌上」而不是「被牌挡住」。 */}
+            {corners.map((corner) => (
+              <span
+                key={corner.pos}
+                className="sign-corner"
+                data-pos={corner.pos}
+                data-kind={corner.kind}
+              />
+            ))}
           </div>
         );
       })}

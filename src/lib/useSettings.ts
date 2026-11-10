@@ -26,6 +26,31 @@ export type SignEmphasis = "auto" | "flat";
 /** 牌内字体：`system` = 系统无衬线（现状）；`mono` = 整块牌换成等宽。 */
 export type SignFont = "system" | "mono";
 /**
+ * 边灯：状态色铺到牌的边缘上。
+ *
+ * `off` = 现状；`top` = 顶边一道渐隐的光；`frame` = 四边一圈细线；`glow` = 细线
+ * 加牌外一圈柔光。**四档都只改画法**，牌宽高和窗口尺寸一个像素都不动 —— 边灯
+ * 由 `::before` 和 `box-shadow` 画，两者都不改盒。
+ */
+export type SignEdge = "off" | "top" | "frame" | "glow";
+/**
+ * 四角里的一枚小灯表达什么。
+ *
+ * `empty` = 不画；`state` = 状态色实心点；`pinned` = 置顶；`muted` = 静音（空心环）；
+ * `stale` = 沉默进度（越接近过期越淡）。
+ *
+ * **除 `state` 外都是条件色**：条件不成立时那枚不画，而不是画暗 —— 「有一枚暗点」
+ * 和「没有这枚点」是两种意思。判定在 `lampStyle.ts::cornerLights`，有单测。
+ */
+export type SignCorner = "empty" | "state" | "pinned" | "muted" | "stale";
+/** 四角各挂一枚。默认全空 = 加这个功能之前的样子。 */
+export interface SignCorners {
+  tl: SignCorner;
+  tr: SignCorner;
+  br: SignCorner;
+  bl: SignCorner;
+}
+/**
  * 多块牌之间的间距档位。**唯一影响窗口几何的外观项** —— 牌竖着叠，间距大了
  * 窗口就变高，所以只能是三个离散档（倍率见 `lampStyle.ts::SIGN_GAP_MULT`，
  * Rust 侧 `config::SignGap::px` 是同一个数）。
@@ -341,6 +366,10 @@ export interface Settings {
    * `config::SignGap::px` 是两处同名真值，改档位要一起改。
    */
   sign_gap: SignGap;
+  /** 牌面边灯：把状态色铺到牌的边缘上（不参与几何）。 */
+  sign_edge: SignEdge;
+  /** 牌面四角的小灯：四角各选一个来源，用来挂「塞不进 154px 的那几件事」。 */
+  sign_corners: SignCorners;
   /** 逐个状态的外观覆盖（颜色 / 形状 / 节奏）。没写的项跟随全局。 */
   styles: Record<string, StateStyle>;
   /** 折叠成一颗单纯的灯（只剩灯，没有牌面）。**默认 false = 展开成牌。** */
@@ -497,6 +526,9 @@ export const DEFAULTS: Settings = {
   // 字体 / 间距同样等于「加这两个字段之前」的样子
   sign_font: "system",
   sign_gap: "standard",
+  // 边灯 / 角灯默认全关，理由同上：加这两项之前牌的四边四角都是空的
+  sign_edge: "off",
+  sign_corners: { tl: "empty", tr: "empty", br: "empty", bl: "empty" },
   styles: {},
   collapsed: false,
   click_action: "collapse",

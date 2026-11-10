@@ -528,6 +528,23 @@ export interface Messages {
   gapTight: string;
   gapStandard: string;
   gapLoose: string;
+  /** 边灯：状态色铺到牌的四个边上。 */
+  signEdge: string;
+  signEdgeHint: string;
+  edgeOff: string;
+  edgeTop: string;
+  edgeFrame: string;
+  edgeGlow: string;
+  /** 四角小灯：四个角各挂一枚「是 / 否」指示灯。 */
+  signCorners: string;
+  signCornersHint: string;
+  /** 四角在设置里的名字（左上 / 右上 / 右下 / 左下），键和 `SignCorners` 一致。 */
+  cornerPos: { tl: string; tr: string; br: string; bl: string };
+  /** 每枚角灯能表达什么。`empty` = 不挂。 */
+  cornerKind: Record<"empty" | "state" | "pinned" | "muted" | "stale", string>;
+  /** 收起时那一行摘要：「挂了 2 枚」/「四角都空着」 */
+  cornersNone: string;
+  cornersSome: (n: number) => string;
   /** 「谁在叫我」那套压淡的强度。 */
   signEmphasis: string;
   emphasisAuto: string;
@@ -944,8 +961,6 @@ export interface Messages {
   collapseNow: string;
   /** 持续可见的状态指示 */
   lampPaused: string;
-  /** 牌上那一小块名字的悬停提示（点它就是改名） */
-  renameHint: string;
   /** 牌右上角那枚 × 的悬停提示 */
   lampClearGroup: string;
   /** 会话行尾那枚 × 的悬停提示 */
@@ -1533,6 +1548,26 @@ export const MESSAGES: Record<Lang, Messages> = {
     gapTight: "紧凑",
     gapStandard: "标准",
     gapLoose: "宽松",
+    signEdge: "边灯",
+    signEdgeHint:
+      "让状态色铺到牌的边上 —— 牌宽高不变，只是多一块有颜色的面，余光里比一颗小圆点早得多被看到。四条边说的是同一件事：这个状态是什么颜色。",
+    edgeOff: "不亮",
+    edgeTop: "顶边",
+    edgeFrame: "四边",
+    edgeGlow: "辉光",
+    signCorners: "角灯",
+    signCornersHint:
+      "牌有四个角一直空着。每个角可以挂一枚小灯，只回答一个是 / 否：置顶了、静音了、离沉默还有多久。条件不成立时那枚灯根本不出现 —— 不会画一个暗点。四枚都挂上也不占牌面，字一个都不会少。",
+    cornerPos: { tl: "左上", tr: "右上", br: "右下", bl: "左下" },
+    cornerKind: {
+      empty: "不挂",
+      state: "状态色",
+      pinned: "置顶",
+      muted: "静音",
+      stale: "沉默进度",
+    },
+    cornersNone: "四角都空着",
+    cornersSome: (n) => `挂了 ${n} 枚`,
     signEmphasis: "分层",
     emphasisAuto: "区分",
     emphasisFlat: "一致",
@@ -1951,7 +1986,6 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     expandNow: "已展开",
     collapseNow: "已折叠",
     lampPaused: "已暂停监控",
-    renameHint: "点击改名（留空则跟随上报方给的组名）",
     lampClearGroup: "清除该组的状态（智能体下次上报会回来）",
     clearSessionHint: "清掉这个会话（智能体下次上报会回来）",
     lampPassThrough: "点击穿透",
@@ -2493,6 +2527,26 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     gapTight: "Tight",
     gapStandard: "Standard",
     gapLoose: "Loose",
+    signEdge: "Edge light",
+    signEdgeHint:
+      "Spreads the state colour onto the sign's edges — the sign keeps its size, it just gains an area of colour that reads from much further away than an 8px dot. All four edges say the same thing: what colour this state is.",
+    edgeOff: "Off",
+    edgeTop: "Top",
+    edgeFrame: "Frame",
+    edgeGlow: "Glow",
+    signCorners: "Corner lights",
+    signCornersHint:
+      "A sign has four corners doing nothing. Each can hold one small light answering a yes/no: pinned, muted, how long until it goes quiet. When the answer is no the light is simply absent — it never draws a dimmed dot. Four of them cost no sign space, so no text is lost.",
+    cornerPos: { tl: "Top left", tr: "Top right", br: "Bottom right", bl: "Bottom left" },
+    cornerKind: {
+      empty: "None",
+      state: "State colour",
+      pinned: "Pinned",
+      muted: "Muted",
+      stale: "Silence left",
+    },
+    cornersNone: "All four corners empty",
+    cornersSome: (n) => `${n} in use`,
     signEmphasis: "Emphasis",
     emphasisAuto: "Tiered",
     emphasisFlat: "Uniform",
@@ -2915,7 +2969,6 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     expandNow: "Expanded",
     collapseNow: "Collapsed",
     lampPaused: "Monitoring paused",
-    renameHint: "Click to rename (leave empty to follow the group name the reporter sends)",
     lampClearGroup: "Clear this group's state (the agent will report again next time)",
     clearSessionHint: "Clear this session (the agent will report again next time)",
     lampPassThrough: "Click-through",

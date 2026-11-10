@@ -28,6 +28,13 @@ const CLEAR: &str = "group:clear";
 const TOGGLE: &str = "group:toggle";
 const SETTINGS: &str = "group:settings";
 const OPEN_DIR: &str = "group:open-dir";
+/// 「重命名…」：**不开输入框**，只是把设置窗翻到「分组」页（那一页有显示名的输入框）。
+///
+/// 牌上的就地改名在 0.6.2 之后被撤掉了：灯是常驻桌面的，点一下名字就进入编辑状态，
+/// 误触的代价（改到别人的名字、或者干脆没发现自己在编辑）比便利大。改名本身没
+/// 丢，只是搬到了设置里 —— 于是这里要留一条「知道它搬哪儿去了」的路，否则用户
+/// 会以为功能没了。
+const RENAME: &str = "group:rename";
 /// 「手动状态」子菜单里那些项的 id 前缀（后面接状态名，见 [`manual_state_for`]）。
 /// 和上面几个固定 id 同一个命名空间（`group:`），但不会撞：那几个没有 `manual:`
 /// 这一段。
@@ -84,6 +91,8 @@ pub fn show(app: &AppHandle, window: &WebviewWindow, group: &str) -> Result<(), 
         None::<&str>,
     )
     .map_err(menu_err)?;
+    let rename =
+        MenuItem::with_id(app, RENAME, t.menu_rename, true, None::<&str>).map_err(menu_err)?;
     let hide = MenuItem::with_id(app, HIDE, t.menu_hide, true, None::<&str>).map_err(menu_err)?;
     // 措辞跟着当前状态走：写「切换静音」的话得先看一眼设置才知道会切成什么
     let mute = MenuItem::with_id(
@@ -131,8 +140,9 @@ pub fn show(app: &AppHandle, window: &WebviewWindow, group: &str) -> Result<(), 
     let open_settings =
         MenuItem::with_id(app, SETTINGS, t.menu_settings, true, None::<&str>).map_err(menu_err)?;
 
-    let items: [&dyn IsMenuItem<tauri::Wry>; 7] = [
+    let items: [&dyn IsMenuItem<tauri::Wry>; 8] = [
         &open_dir,
+        &rename,
         &manual,
         &hide,
         &mute,
@@ -211,16 +221,23 @@ pub fn handle(app: &AppHandle, id: &str) -> bool {
         return true;
     }
 
-    if !matches!(id, OPEN_DIR | HIDE | MUTE | CLEAR | TOGGLE | SETTINGS)
+    if !matches!(id, OPEN_DIR | RENAME | HIDE | MUTE | CLEAR | TOGGLE | SETTINGS)
         && manual_state_for(id).is_none()
     {
         // 托盘菜单那些 id（quit / toggle / …）也走这条路，不是我们的就放行
         return false;
     }
 
-    // 打开设置不需要知道是哪一组
+    // 这两项都不需要知道是哪一组
     if id == SETTINGS {
         crate::reveal_settings(app);
+        return true;
+    }
+    // 「重命名…」直接翻到「分组」页 —— 那一页的「各组的显示」里就是显示名输入框。
+    // 不带上组名：翻到那一页、列表按名字排着，比自动滚到某一行更容易理解
+    // （而且 Tauri 的原生菜单没法可靠地滚到某一行，做到一半反而是骗人）。
+    if id == RENAME {
+        crate::reveal_settings_tab(app, "groups");
         return true;
     }
 
