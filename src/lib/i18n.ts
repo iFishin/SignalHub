@@ -340,7 +340,6 @@ export interface Messages {
   lampFirstRun: string;
   lampFirstRunDemo: string;
   lampFirstRunDemoHint: string;
-  lampFirstRunDismiss: string;
 
   // 演示
   demoTitle: string;
@@ -961,8 +960,6 @@ export interface Messages {
   collapseNow: string;
   /** 持续可见的状态指示 */
   lampPaused: string;
-  /** 牌右上角那枚 × 的悬停提示 */
-  lampClearGroup: string;
   /** 会话行尾那枚 × 的悬停提示 */
   clearSessionHint: string;
   lampPassThrough: string;
@@ -1287,7 +1284,6 @@ export const MESSAGES: Record<Lang, Messages> = {
     lampFirstRun: "第一次用？",
     lampFirstRunDemo: "看演示",
     lampFirstRunDemoHint: "不接智能体，先看这盏灯怎么亮（四段场景，每段 10–20 秒）",
-    lampFirstRunDismiss: "不再提示",
 
     demoTitle: "看懂 SignalHub 的四种场景",
     demoIntro: "按场景循环播放 —— 想看哪一段点哪一段，不用接任何智能体。",
@@ -1986,7 +1982,6 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     expandNow: "已展开",
     collapseNow: "已折叠",
     lampPaused: "已暂停监控",
-    lampClearGroup: "清除该组的状态（智能体下次上报会回来）",
     clearSessionHint: "清掉这个会话（智能体下次上报会回来）",
     lampPassThrough: "点击穿透",
     moreGroupsLead: "被收起来的组：",
@@ -2263,7 +2258,6 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     lampFirstRunDemo: "See a demo",
     lampFirstRunDemoHint:
       "See the lamp in action without connecting any agent (four scenes, 10–20s each)",
-    lampFirstRunDismiss: "Don't show again",
 
     demoTitle: "SignalHub in four scenes",
     demoIntro: "Four looping scenes — jump to the one you care about, no agent needed.",
@@ -2969,7 +2963,6 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     expandNow: "Expanded",
     collapseNow: "Collapsed",
     lampPaused: "Monitoring paused",
-    lampClearGroup: "Clear this group's state (the agent will report again next time)",
     clearSessionHint: "Clear this session (the agent will report again next time)",
     lampPassThrough: "Click-through",
     moreGroupsLead: "Hidden groups: ",

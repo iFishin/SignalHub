@@ -510,32 +510,10 @@ body,
   min-width: 0;
 }
 
-/* 牌右上角的动作区：**只在悬停时出现**。折叠态没有牌面，所以没有它。
-   `position: absolute` + 不参与布局 = 牌的宽高一个像素都不变。 */
-.sign-actions {
-  position: absolute;
-  top: 0;
-  right: 0;
-  display: flex;
-  gap: calc(var(--size) * 0.12);
-  padding: calc(var(--size) * 0.12);
-  opacity: 0;
-  /* 藏着的时候也点不到 —— 否则盲点会点掉一组的状态 */
-  pointer-events: none;
-}
-
-.sign:hover .sign-actions,
-.sign:focus-within .sign-actions {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-/* 首次启动引导那枚 × 要常驻 —— 引导本身就是「请你点一下」，藏到 hover 才出现
-   等于把唯一的退出路径藏起来。占位牌不渲染别的动作，所以不会和 ✎ 抢位置。 */
-.sign-actions-guide {
-  opacity: 1;
-  pointer-events: auto;
-}
+/* 牌上原来有一块「右上角动作区」（`.sign-actions` / `.sign-action`），悬停时出现
+   一枚 ×。2026-11-10 整块撤掉：常驻窗口上的一枚 × 读起来是「关掉这块牌」，而它只清
+   一个状态；那个角落也正是四角小灯 `tr` 的落点，悬停就把灯盖住。清除改走右键菜单。
+   **这里不再留任何按钮样式** —— 牌上唯一的可点元素只剩「看演示」chip（`.sign-guide`）。 */
 
 /* 占位牌里的「看演示」小 chip。**绝不能把牌撑高**：牌高由 Rust 算好，
    这里只做一行内的小按钮，不换行、不用会改变行高的 padding。 */
@@ -558,33 +536,11 @@ body,
   border-color: var(--sign-fg);
 }
 
-/* 键盘焦点：牌上的 ×、审批气泡的按钮，Tab 到哪一个都得看得见。
+/* 键盘焦点：牌上的「看演示」chip、审批气泡的按钮，Tab 到哪一个都得看得见。
    灯牌恒为深色 HUD，所以焦点环用亮白，不借主题变量。 */
 .lamp-root :is(button, a, input, [role="button"], [tabindex]):focus-visible {
   outline: 2px solid #f2f2f5;
   outline-offset: 2px;
-}
-
-.sign-action {
-  box-sizing: border-box;
-  /* max() 兜住下限：尺寸调小时这枚也得留得住能点中的面积 */
-  width: max(14px, calc(var(--size) * 0.62));
-  height: max(14px, calc(var(--size) * 0.62));
-  padding: 0;
-  border: 1px solid var(--sign-line);
-  border-radius: 50%;
-  background: var(--sign-bg);
-  color: var(--sign-fg);
-  font-family: inherit;
-  font-size: max(10px, calc(var(--size) * 0.44));
-  line-height: 1;
-  cursor: pointer;
-}
-
-.sign-action:hover {
-  /* 悬停只换配色，不动尺寸 —— 常驻窗口的动画只许动 opacity（见文件头） */
-  border-color: var(--state, var(--sign-fg));
-  color: var(--state, var(--sign-fg));
 }
 
 .sign-line {
@@ -761,11 +717,10 @@ body,
   opacity: calc(0.2 + 0.7 * var(--progress, 1));
 }
 
-/* 悬停时右上角会浮出「清除该组」那枚 ×，它会盖住右上角那枚小灯 —— 这是**接受**
-   的取舍：hover 意味着手已经在这块牌上了，此刻要看的是那个按钮；而角灯是
-   余光级的信息，移开就回来，不需要为它挪按钮（挪到哪个角都会盖住另一个角）。
-   注意 `.sign-actions` 是 `pointer-events: none`（不 hover 时），所以它不会
-   让角灯区域变得点不动 —— 角灯自己也不接收事件。 */
+/* 四角小灯曾经要给右上角那枚悬停出现的「清除该组」按钮让路（当时的判断是
+   「hover 意味着手已经在这块牌上，角灯让一让可以接受」）。现在按钮撤了，四个角
+   没有谁会被盖住 —— 角灯也不再需要这条让步说明。角灯自己不接收事件，
+   所以它们不会让牌的哪一块变得点不动。 */
 
 /* ---- 牌尾的小角标 -------------------------------------------------------- */
 

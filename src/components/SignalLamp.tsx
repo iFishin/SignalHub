@@ -557,13 +557,9 @@ export function SignalLamp({
   };
   const drag = useDragOrClick(onClickLamp, () => setMenuOpen(true));
 
-  const clearGroup = (group: string) => {
-    if (!inTauri || preview) return;
-    // 和右键菜单「清除该组的状态」走同一个命令（Rust 侧同一个函数），两条入口
-    // 不会分叉。**不做二次确认**：这是低频、幂等的操作，智能体下次上报就回来了，
-    // 而它本来就是「状态卡住了，赶紧清掉」这条路上的动作。
-    invoke("clear_group_state", { group }).catch(console.error);
-  };
+  // 牌上原来那枚「清除该组」的 × 已撤（见渲染里 `sign` 上方的说明），这条
+  // `invoke("clear_group_state")` 的前端入口也就没有调用方了 —— 清除只剩右键菜单
+  // 一条路，走的是 Rust 的原生菜单项 `menu.rs::CLEAR`，不需要前端再包一层。
 
   // 服务端已按**紧急度**排好，这里只叠一层用户的置顶偏好。规则必须和 Rust 侧的
   // `visible_groups` 逐字一致（窗口高度按「哪几块可见」算，两边算出不同的组就会
@@ -764,11 +760,8 @@ export function SignalLamp({
             }
             /* 给 `.sign` 挂 data-state，是为了让 state.css 的 `[data-state] { --state }`
                在**牌**这一层也生效 —— 跃迁时描边闪的是这个状态的颜色（见 lamp.css
-               的 `edge-flash`）。
-               **顺带**把一处一直取不到 `--state` 的兜底实现了：`.sign-action:hover`
-               现在会取状态色，而不是退回近白 —— 那本来就是它写着的意图
-               （`var(--state, …)`），只是以前 `.sign` 上没有这个变量。边灯和四角小灯
-               也都从这同一个 `--state` 取色。 */
+               的 `edge-flash`）。边灯和四角小灯都从这个 `--state` 取色，所以它必须
+               挂在牌上，而不是只挂在灯珠上。 */
             data-state={group.aggregate}
             /* `--progress` 也挂到牌上：沉默进度那枚角灯要用它，而它原来只挂在
                灯珠的 style 里。同一个变量、同一个来源，两者不会给出不同的答案。 */
@@ -840,50 +833,16 @@ export function SignalLamp({
               )}
             </div>
             {show.age && <span className="sign-age">{formatAge(group.since_ms, now)}</span>}
-            {/* 「状态卡住了」的解药：上报方崩了、或者用户直接关掉了那个智能体会话，
-                灯会一直停在最后一个状态上，等 TTL 到期要好几分钟。
-                占位那块（name 为空）不对应任何真实的组，不挂这枚。 */}
-            {!preview && group.name !== "" && (
-              <span className="sign-actions">
-                {/* 改名那枚 ✎ 已经撤掉（改名搬进设置面板），这里只剩「清掉这一组的
-                    状态」—— 上报方崩了、或者用户直接关掉了那个智能体会话时，牌会
-                    一直停在最后一个状态上，等 TTL 到期要好几分钟。 */}
-                <button
-                  type="button"
-                  className="sign-action"
-                  title={m.lampClearGroup}
-                  aria-label={m.lampClearGroup}
-                  onMouseDown={stopMouse}
-                  onMouseUp={stopMouse}
-                  onClick={(event) => {
-                    stopMouse(event);
-                    clearGroup(group.name);
-                  }}
-                >
-                  ×
-                </button>
-              </span>
-            )}
-            {/* 首次引导的「不再提示」。占位牌平时没有动作区，这里只借同一套
-                绝对定位的样式挂一枚 ×，不占布局、不改牌高。 */}
-            {!preview && guide.show && group.name === "" && (
-              <span className="sign-actions sign-actions-guide">
-                <button
-                  type="button"
-                  className="sign-action"
-                  title={m.lampFirstRunDismiss}
-                  aria-label={m.lampFirstRunDismiss}
-                  onMouseDown={stopMouse}
-                  onMouseUp={stopMouse}
-                  onClick={(event) => {
-                    stopMouse(event);
-                    guide.dismiss();
-                  }}
-                >
-                  ×
-                </button>
-              </span>
-            )}
+            {/* **牌上不再有任何按钮**（2026-11-10）。原来这里挂着一枚悬停出现的
+                ×（「清除该组的状态」），撤掉它有两条理由：
+                1. 常驻窗口上的一枚 × 读起来就是「关掉这块牌」，而它做的事只是清一个
+                   状态 —— 文案得靠 tooltip 纠正，那说明形状本身说错了话；
+                2. 它所在的右上角正是四角小灯 `tr` 的落点（`.sign-corner[data-pos="tr"]`），
+                   一悬停就盖住一盏读者刚配好的灯。
+                清除没丢：牌上右键 → 「清除」走同一条 `clear_group`（原生菜单
+                `menu.rs::CLEAR`）。首启引导那枚「不再提示」也一并撤了 —— 引导本来
+                「真有组上报就自动收起」，加上行内的「看演示」按钮，退出路径够用，
+                不值得为它在牌角留一颗常驻的 ×。 */}
             {hidden.length > 0 && index === rows.length - 1 && (
               <span className="sign-more" title={moreGroupsTip(m, hidden, settings.group_meta)}>
                 +{hidden.length}
