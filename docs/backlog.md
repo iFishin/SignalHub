@@ -113,6 +113,7 @@ D2（ntfy / Bark 预设）已作为**转发 preset** 落地（`plan-hub-round2.m
 | **Windows 命令式 hook 的 pid** | 2026-11-06 已实现（CLI 自己向上找祖先进程），**但 Windows 真机未验** —— 见 §3 与 `win_pid.rs` 头注释 | `plan-round5.md:94` |
 | **Windows portable 版 Toast（#25）** | 2026-11-09 已修（`win_toast.rs` 补 AUMID + 开始菜单快捷方式，随 v0.6.1 发布）；2026-11-10 又补了**通知图标**（`IconUri` 必须指向 png 文件、不能指向 exe，否则通知只有名字没有图标）；CI 只保证 Windows 分支编过，**真机 Toast 弹出、图标、动作按钮、目录搬动、NSIS 不重复均未验** | `architecture.md` §3.30；[issue #25](https://github.com/iFishin/SignalHub/issues/25) |
 | **外观新增项的真窗口观感** | 牌面质感五档、牌内字体、牌间距、圆点开关、透明度下限 65% —— 都用同一份 CSS 在 headless Chrome 里铺浅/深壁纸对照过，**真窗口（尤其多显示器 + 不同壁纸）没验**；等宽档组名截断偏早也只能真机判断 | `architecture.md` §3.4 / §3.33；`plan-round5.md` v0.6.2 |
+| **边灯 / 角灯的真窗口观感**（未发布） | 四档边灯（off / top / frame / glow）与四角五态（空 / 状态 / 置顶 / 静音 / 将过期）只在 headless Chrome 里按 16·22·32 三档 × 四种圆角 × 三种桌面底色截图核过，**真窗口没验**：`glow` 的外发光在浅色壁纸上会不会糊成一块、`top` 那道 1.5px 亮线在全屏白底应用前还辨不辨得出、角灯 `size*0.16` 在 Retina 缩放下够不够看清 —— 都只能真机判断。另一处待看的是「不亮 = 根本不画」这条在四个角只亮一个时读起来是否仍像有意的设计 | `architecture.md` §3.35 |
 
 `plan-round4.md` 里还有一串「没验证到的」小项：`:395-400` 真按键 / 辅助功能授权、
 `:442-445` 托盘菜单与 25 分钟、`:502-511` 审批气泡、`:555-557` 按住 800ms 手感、
