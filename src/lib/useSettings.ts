@@ -336,10 +336,10 @@ export interface Settings {
   /** 展开的牌上显示哪几段内容 */
   show: SignFields;
   /**
-   * 牌面背景的不透明度（50–100）。调低能看见桌面。
+   * 牌面背景的不透明度（65–100）。调低能看见桌面。
    *
    * 下限不是随便定的：牌里的浅字全靠这层深色托着，再淡字就落在桌面上（见
-   * `lampStyle.ts::SIGN_OPACITY_MIN`，滑杆与 Rust 那边都用同一个 50）。
+   * `lampStyle.ts::SIGN_OPACITY_MIN`，滑杆与 Rust 那边都用同一个 65）。
    */
   sign_opacity: number;
   /**

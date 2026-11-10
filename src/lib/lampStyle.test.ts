@@ -210,16 +210,16 @@ describe("lampVars", () => {
    * 的话，预览显示的透明度和灯迟早对不上，而「预览和灯不一样」比没有预览更糟。
    */
   it("carries the sign alpha for the settings preview", () => {
-    const vars = lampVars(withSettings({ sign_opacity: 60 })) as Record<string, string>;
-    expect(vars["--sign-alpha"]).toBe("0.6");
+    const vars = lampVars(withSettings({ sign_opacity: 72 })) as Record<string, string>;
+    expect(vars["--sign-alpha"]).toBe("0.72");
   });
 
   /**
    * calm 档的牌底不透明度：`α × 0.72`，**带托底**。
    *
-   * 托底那半条是本条测试的重点：滑杆到下限 50% 时 `0.5 × 0.72 = 0.36` 会让浅字
-   * 落在桌面上 —— 而「多组 + 低透明度」正是描边时代最难看、也是用户最常遇到的画面。
-   * 期望值按 `max(α × 0.72, 0.45)` 写，不写死具体数字串，改托底值时这里跟着走。
+   * 托底那半条是本条测试的重点：滑杆到下限 65% 时 `0.65 × 0.72 = 0.468` 会让次要
+   * 文字落在桌面上 —— 而「多组 + 低透明度」正是描边时代最难看、也是用户最常遇到
+   * 的画面。期望值按 `max(α × 0.72, 0.6)` 写，不写死具体数字串，改托底值时跟着走。
    */
   it("dims the calm tone but never below the readable floor", () => {
     const vars = (opacity: number) =>
@@ -233,16 +233,22 @@ describe("lampVars", () => {
   });
 
   /**
-   * 下限必须是**滑杆能停到的最淡值**，而且它得让牌面读得出来：0.5 的深色底托浅字。
-   * 这条常量是前端唯一真值（Rust 的 `config::MIN_SIGN_OPACITY` 是同名同义的一份），
-   * 被改成 20 之类的话，描边删掉之后字就真的没法读了 —— 那正是这次改动要根治的病。
+   * 下限必须是**滑杆能停到的最淡值**，而且它得让牌面读得出来。这条常量是前端唯一
+   * 真值（Rust 的 `config::MIN_SIGN_OPACITY` 是同名同义的一份），被改回 20、30 之类
+   * 的话，描边删掉之后字就真的没法读了 —— 那正是这次改动要根治的病。
    *
-   * 托底也跟着这条线走：**最淡的那块牌不能比「用户能手动调到的最淡」更淡**。
-   * 曾经取 0.45，截图对照里浅色壁纸上那块 calm 已经糊了。
+   * **65 是拿对照图量出来的**：50% 时在近白窗口上次要文字对比只有约 1.1:1（等于消失），
+   * 60% 余量太小，65% 才稳。这条断言的作用是「别有人为了更透，悄悄把它调回去」。
+   *
+   * 托底必须**低于**下限：图省事让两者相等的话，下限 65 时托底（0.65）会高过默认档的
+   * 乘积（0.619），把最常见那档的 calm 分层直接吃掉。
    */
   it("keeps the opacity floor at a level that still holds the text", () => {
-    expect(SIGN_OPACITY_MIN).toBe(50);
-    expect(CALM_ALPHA_FLOOR).toBe(SIGN_OPACITY_MIN / 100);
+    expect(SIGN_OPACITY_MIN).toBe(65);
+    expect(CALM_ALPHA_FLOOR).toBe(0.6);
+    expect(CALM_ALPHA_FLOOR).toBeLessThan(SIGN_OPACITY_MIN / 100);
+    // 默认档的 calm 必须仍明显淡于 need —— 托底不能吃掉日常的分层
+    expect(0.86 * CALM_ALPHA_FACTOR).toBeGreaterThan(CALM_ALPHA_FLOOR);
   });
 });
 

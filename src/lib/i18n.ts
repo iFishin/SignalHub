@@ -1461,7 +1461,7 @@ export const MESSAGES: Record<Lang, Messages> = {
     palette: "配色方案",
     signOpacity: "背景透明度",
     signOpacityHint:
-      "最低 50%：牌里的浅字全靠这层深色托着，再淡字就落在桌面上，浅色壁纸上会看不清。想让灯更隐形，用「安静模式」而不把它调没。",
+      "最低 65%：牌里的字全靠这层深色托着，再淡就落在桌面上，浅色窗口里会看不清。想让灯更隐形，用「安静模式」而不把它调没。",
     signWidth: "牌宽",
     signHeight: "牌高",
     blinkSpeed: "闪烁节奏",
@@ -2407,7 +2407,7 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     palette: "Palette",
     signOpacity: "Sign opacity",
     signOpacityHint:
-      "50% is the floor: the light text sits on that dark plate, so any thinner and it lands on your desktop where pale wallpapers swallow it. For a less obtrusive lamp, use Quiet mode instead.",
+      "65% is the floor: the text sits on that dark plate, so any thinner and it lands on your desktop where pale windows swallow it. For a less obtrusive lamp, use Quiet mode instead.",
     signWidth: "Sign width",
     signHeight: "Sign height",
     blinkSpeed: "Blink speed",
