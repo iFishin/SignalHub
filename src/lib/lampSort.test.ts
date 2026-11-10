@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { comparePinned, labelOf, orderVisible } from "./lampSort";
+import {
+  comparePinned,
+  composeLabel,
+  DEFAULT_LABEL_PREF,
+  labelOf,
+  labelParts,
+  labelPrefOf,
+  orderVisible,
+} from "./lampSort";
 import type { GroupView } from "./types";
 import type { GroupMeta } from "./useSettings";
+import { DEFAULTS } from "./useSettings";
 
 /** 造一个组。`state` 只用来占位 —— 这个文件测的是排序和显示名，不是聚合。 */
 function group(name: string, defaultLabel: string | null = null): GroupView {
@@ -188,5 +197,92 @@ describe("labelOf", () => {
       orderVisible([g], ["SignalHub · claude-code"], {}),
       "按显示名隐藏必须无效",
     ).toHaveLength(1);
+  });
+});
+
+/** 按会话分组出来的组：组名 == 会话 id，`sessions[]` 里带着 agent / cwd。 */
+function sessionGroup(
+  id: string,
+  agent: string | null,
+  cwd: string | null,
+  defaultLabel: string | null = "SignalHub · workbuddy",
+): GroupView {
+  return {
+    ...group(id, defaultLabel),
+    sessions: [
+      {
+        id,
+        state: "working",
+        agent,
+        cwd,
+        message: null,
+        age_ms: 0,
+        stale_progress: null,
+      },
+    ],
+  };
+}
+
+describe("会话标题（默认不拼智能体名）", () => {
+  const pref = labelPrefOf(DEFAULTS);
+  const g = () => sessionGroup("0191f0aa", "workbuddy", "/Users/me/code/SignalHub");
+
+  it("默认只显示会话 / 项目名", () => {
+    expect(DEFAULT_LABEL_PREF.mode).toBe("session");
+    expect(pref.mode).toBe("session");
+    expect(labelOf(g(), {}, pref)).toBe("SignalHub");
+    expect(composeLabel(g(), pref)).toBe("SignalHub");
+  });
+
+  it("旧观感仍可显式选回来", () => {
+    expect(
+      labelOf(g(), {}, { mode: "with_agent", template: "" }),
+    ).toBe("SignalHub · workbuddy");
+  });
+
+  it("自定义模板按占位符拼，空占位符不留尾巴", () => {
+    const custom = (template: string) =>
+      composeLabel(g(), { mode: "custom", template });
+    expect(custom("{session} · {agent}")).toBe("SignalHub · workbuddy");
+    expect(custom("{agent}: {session}")).toBe("workbuddy: SignalHub");
+    expect(custom("{group}")).toBe("0191f0aa");
+    expect(custom("[{session}] · {agent}")).toBe("[SignalHub] · workbuddy");
+    // agent 没上报时，模板里那段分隔符要被清掉
+    const noAgent = sessionGroup("0191f0aa", null, "/Users/me/code/SignalHub");
+    expect(composeLabel(noAgent, { mode: "custom", template: "{session} · {agent}" })).toBe(
+      "SignalHub",
+    );
+    // 全空时回落，绝不显示一个孤零零的「·」
+    expect(composeLabel(noAgent, { mode: "custom", template: "{agent}" })).toBe(
+      "SignalHub",
+    );
+  });
+
+  it("逐组改名仍然压过任何标题偏好", () => {
+    expect(
+      labelOf(g(), { "0191f0aa": { name: "重构" } }, { mode: "custom", template: "{agent}" }),
+    ).toBe("重构");
+  });
+
+  it("只有智能体名、没有项目名时退回智能体名，而不是一串会话 id", () => {
+    const onlyAgent = sessionGroup("0191f0aa", "workbuddy", null, "workbuddy");
+    expect(labelParts(onlyAgent)).toEqual({
+      session: null,
+      agent: "workbuddy",
+      group: "0191f0aa",
+    });
+    expect(composeLabel(onlyAgent, pref)).toBe("workbuddy");
+  });
+
+  it("显式组名 / 按目录分组的组没有零件，标题原样不动", () => {
+    expect(labelParts(group("build-1", "构建"))).toBeNull();
+    expect(labelOf(group("build-1", "构建"), {}, pref)).toBe("构建");
+  });
+
+  it("项目末段按路径分隔符取，与 Rust 的 project_name 一致", () => {
+    expect(labelParts(sessionGroup("id", "ci", "C:\\work\\api\\"))?.session).toBe("api");
+    expect(labelParts(sessionGroup("id", "ci", "/Users/me/code/SignalHub/"))?.session).toBe(
+      "SignalHub",
+    );
   });
 });

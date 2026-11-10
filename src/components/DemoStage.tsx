@@ -14,7 +14,11 @@ import {
   type DemoScenarioId,
 } from "../lib/demo";
 import { useMessages } from "../lib/i18n";
-import { useSettings, type Settings } from "../lib/useSettings";
+import {
+  DEFAULT_SIGN_LABEL_TEMPLATE,
+  useSettings,
+  type Settings,
+} from "../lib/useSettings";
 
 interface Props {
   /** 设置窗里那一页空间小，牌缩小一档；独立演示页用大一号。 */
@@ -87,10 +91,16 @@ export function DemoStage({ compact = false }: Props) {
       sign_corners: frame.corners ?? settings.sign_corners,
       // 触发方式与三把尺子全用默认档，理由和字体 / 间距一样：演示讲的是产品
       // 默认语义。尤其触发 —— 用户要是在「行为」页设成「只在要你处理时亮」，
-      // 跟着设置走会让「用光说话」那场大半时间什么都不亮。最后一步由剧本自己
-      // 把 `edgeTrigger` 换成 attention，专门演示这一项。
+      // 跟着设置走会让「用光说话」那场大半时间什么都不亮。那一场的最后两步由
+      // 剧本自己把 `edgeTrigger` 换成 attention / state，专门演示这一类条件。
       sign_edge_trigger: frame.edgeTrigger ?? "always",
-      sign_corner_trigger: "always",
+      sign_corner_trigger: frame.cornerTrigger ?? "always",
+      sign_trigger_state: frame.triggerState ?? "permission",
+      sign_trigger_from: 9 * 60,
+      sign_trigger_to: 18 * 60,
+      // 标题也走默认：演示讲的是「新装好是什么样」，不该被用户自定义模板带跑。
+      sign_label: "session",
+      sign_label_template: DEFAULT_SIGN_LABEL_TEMPLATE,
       sign_light_scale: "normal",
       sign_light_alpha: "normal",
       sign_light_color: "state",
@@ -113,6 +123,8 @@ export function DemoStage({ compact = false }: Props) {
       frame.pinned,
       frame.muted,
       frame.edgeTrigger,
+      frame.cornerTrigger,
+      frame.triggerState,
     ],
   );
 
@@ -151,6 +163,7 @@ export function DemoStage({ compact = false }: Props) {
         <div className="demo-lamp">
           <SignalLamp
             preview
+            previewPassThrough={frame.passThrough}
             aggregate={frame.aggregate}
             groups={frame.groups}
             settings={demoSettings}

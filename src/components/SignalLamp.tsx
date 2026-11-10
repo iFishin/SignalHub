@@ -6,9 +6,9 @@ import { inTauri } from "../lib/env";
 import { requestSettingsTab } from "../lib/settingsIntent";
 import { signalLabel, justFinishedLabel } from "../lib/signals";
 import { useLang, useMessages, type Messages, type Lang } from "../lib/i18n";
-import { lampVars, resolveShapes, resolveHaloAnimations, toneOf, cornerLights, lightOn } from "../lib/lampStyle";
+import { lampVars, resolveShapes, resolveHaloAnimations, toneOf, cornerLights, lightOn, type LightContext } from "../lib/lampStyle";
 import { transitions, type AggregateMap } from "../lib/lampTransitions";
-import { labelOf, orderVisible } from "../lib/lampSort";
+import { labelOf, labelPrefOf, orderVisible, type LabelPref } from "../lib/lampSort";
 import { useNow } from "../lib/useNow";
 import { useToggles } from "../lib/useToggles";
 import { ApprovalBubble, MAX_APPROVAL_BUBBLES } from "./ApprovalBubble";
@@ -79,6 +79,12 @@ interface Props {
    * 它们是「操作这个应用」，不是「看这个应用长什么样」。默认 false，真灯一行不改。
    */
   preview?: boolean;
+  /**
+   * 预览里要不要假装在点击穿透。穿透是这台机器的**瞬态**状态，不进 Settings，
+   * 演示剧本却需要画那一枚角灯 —— 所以给一个只在 `preview` 下生效的覆盖值。
+   * 不传 = 预览里一律当没穿透。
+   */
+  previewPassThrough?: boolean;
 }
 
 /** 首次启动引导只记一次。存 localStorage 而不是设置里：它纯粹是「这个窗口有没有
@@ -126,6 +132,7 @@ function tooltip(
   aggregate: SignalState,
   groups: GroupView[],
   meta: Record<string, GroupMeta>,
+  labelPref: LabelPref,
   extra: string[],
   /** 一组都没有时那句话说这句 —— 「刚完成 · N 分钟前」顶替「没有智能体在上报」 */
   emptyLabel: string,
@@ -138,7 +145,7 @@ function tooltip(
 
   if (groups.length === 1 && extra.length === 0) {
     const only = groups[0];
-    const head = `${labelOf(only, meta)} · ${signalLabel(lang, only.aggregate)}`;
+    const head = `${labelOf(only, meta, labelPref)} · ${signalLabel(lang, only.aggregate)}`;
     const detail = only.message ? ` — ${only.message}` : "";
     return `${head}${detail}\n${hint}`;
   }
@@ -148,7 +155,7 @@ function tooltip(
   // 否则那块标记只说得出「有更多」，说不出是什么。
   const listed = groups.map((group) => {
     const detail = group.message ? ` — ${group.message}` : "";
-    return `${labelOf(group, meta)} · ${signalLabel(lang, group.aggregate)}${detail}`;
+    return `${labelOf(group, meta, labelPref)} · ${signalLabel(lang, group.aggregate)}${detail}`;
   });
 
   return [
@@ -167,8 +174,9 @@ function moreGroupsTip(
   m: Messages,
   hidden: GroupView[],
   meta: Record<string, GroupMeta>,
+  labelPref: LabelPref,
 ): string {
-  return [m.moreGroups(hidden.length), m.moreGroupsLead + hidden.map((g) => labelOf(g, meta)).join(", ")].join(
+  return [m.moreGroups(hidden.length), m.moreGroupsLead + hidden.map((g) => labelOf(g, meta, labelPref)).join(", ")].join(
     "\n",
   );
 }
@@ -311,6 +319,7 @@ export function SignalLamp({
   onDecide,
   lastDoneMs,
   preview = false,
+  previewPassThrough = false,
 }: Props) {
   // 待审批的条数：Rust 的 `approval_area` 按**同一个数**给窗口留高度（见 lamp.css
   // 的 `--bubble-h`）。数错了就是气泡被裁掉一半 —— 而那两个按钮是唯一的出路。
@@ -322,16 +331,22 @@ export function SignalLamp({
   const { size, quiet, collapsed, show, hidden_groups } = settings;
   const m = useMessages();
   const lang = useLang();
-  // 穿透也能从托盘和全局快捷键改，所以订阅而不是读一次 —— 灯上那枚角标必须跟着变。
+  // 穿透也能从托盘和全局快捷键改，所以订阅而不是读一次 —— 配了「穿透」角灯的
+  // 那一刻必须立刻跟着变。**牌上那枚常驻的 ban 角标已经删掉了**（0.6.4）：现在
+  // 它只是四角里可选的一枚灯，用户没挂就不显示；状态本身仍进 tooltip / 托盘。
   const toggles = useToggles();
-  // 演示里不继承本机的「点击穿透」：那枚 ⇥ 是这台机器的真实状态，不该出现在
-  // 一段和产品无关的剧本里。hook 仍然无条件调用（React 规则），只是读的时候盖掉。
-  const passThrough = preview ? false : toggles.pass_through;
+  // 演示里不继承本机的「点击穿透」：那是这台机器的真实状态，不该出现在一段和
+  // 产品无关的剧本里。hook 仍然无条件调用（React 规则），只是读的时候盖掉；
+  // 剧本想演示这枚角灯时用 `previewPassThrough` 显式打开。
+  const passThrough = preview ? previewPassThrough : toggles.pass_through;
 
   // 形状是逐状态的（一个窗口里多块牌可以不一样），所以先整份算出来，再按每块牌
   // 的状态取。颜色和动画走 lampVars 的 CSS 变量，shape走元素属性 —— 形状不是
   // 「一个值」，没法塞进一个根变量里。
   const shapes = resolveShapes(settings);
+  // 牌上的名字、tooltip 和「+N」那一行必须说同一个名字。标题偏好从整份设置里
+  // 只取两项，别的组件（收件箱 / 分组页）也走同一个 `labelPrefOf`。
+  const labelPref = labelPrefOf(settings);
 
   // 灵动效果：柔光呼吸的逐状态 animation 值。挂在每个灯珠的 style 上（不是根上），
   // 这样一个窗口里多块牌的节奏可以不同。CSS 的 `[data-lively] .dot::before` 读
@@ -450,15 +465,11 @@ export function SignalLamp({
     [],
   );
 
-  // 穿透优先于暂停：那个状态下窗口点不动、拖不动，用户得先知道自己在里面。
-  const flag = !preview && (paused || passThrough);
-  const flagTitle = passThrough
-    ? [m.lampPassThrough, toggles.pass_through_shortcut]
-        .filter((line) => line !== "")
-        .join("\n")
-    : !preview && paused
-      ? m.lampPaused
-      : "";
+  // 这枚角标现在**只表示暂停**。穿透状态搬到角灯里之后，它不再画 `ban`：
+  // 一是用户已经在「外观 → 四角」里决定要不要看它，二是两种全局状态抢同一枚
+  // 12px 方块，穿透一开就把「暂停」盖掉，反而少了一条信息。
+  const flag = !preview && paused;
+  const flagTitle = !preview && paused ? m.lampPaused : "";
 
   // 「已持续」是算出来的，所以得有东西让它随时间重绘 —— 否则它永远停在状态刚变化
   // 那一刻，也就是 0s。折叠形态和关掉这一格的牌上没有这个数字，不起定时器。
@@ -693,7 +704,7 @@ export function SignalLamp({
       title={
         preview
           ? undefined
-          : tooltip(m, lang, aggregate, groups, settings.group_meta, [
+          : tooltip(m, lang, aggregate, groups, settings.group_meta, labelPref, [
               paused ? m.lampPaused : "",
               passThrough ? m.lampPassThrough : "",
             ].filter((line) => line !== ""), emptyLabel, m.lampHint[settings.click_action])
@@ -731,9 +742,21 @@ export function SignalLamp({
             }
           : {};
         // 边框光现在该不该亮：行为页那两个触发开关，边灯与角灯各判各的。
-        // 判据在 `lampStyle.ts::lightOn`（纯函数、有单测），同一份 ctx 传给两边，
+        // 判据在 `lampStyle.ts::lightOn`（纯函数、有单测），**同一份 ctx** 传给两边，
         // 不会出现「轨亮着、四枚灯却熄了」这种半套画面。
-        const lightCtx = { state: group.aggregate, quiet: quietDim };
+        // 九档条件里带参数的三档（指定状态 / 指定时段 / 沉默将尽、有消息、仅置顶）
+        // 都从这份 ctx 取值 —— 逐块牌判定，所以边灯也能「只在这一组达到某状态时亮」。
+        const pinned = settings.group_meta[group.name]?.order != null;
+        const lightCtx: LightContext = {
+          state: group.aggregate,
+          quiet: quietDim,
+          matchState: settings.sign_trigger_state,
+          from: settings.sign_trigger_from,
+          to: settings.sign_trigger_to,
+          staleProgress: group.stale_progress,
+          message: group.message,
+          pinned,
+        };
         const edgeOn = lightOn(settings.sign_edge_trigger, lightCtx);
         const cornerOn = lightOn(settings.sign_corner_trigger, lightCtx);
 
@@ -750,9 +773,11 @@ export function SignalLamp({
             : cornerLights(
                 settings.sign_corners,
                 {
-                  pinned: settings.group_meta[group.name]?.order != null,
+                  pinned,
                   muted: settings.muted_groups.includes(group.name),
                   staleProgress: group.stale_progress,
+                  // 全局事实：开着穿透时每块牌都挂这一枚（如果那一角配了它）。
+                  passThrough,
                 },
                 cornerOn,
               );
@@ -823,7 +848,7 @@ export function SignalLamp({
                      也可以从牌的右键菜单「重命名…」直接跳过去。
                      早先点它就能就地改，但那是一次「点一下就进入编辑状态」的交互 ——
                      灯是常驻在桌面上的，误点一下就开始编辑，比改名的便利更碍事。 */
-                  <span className="sign-name">{labelOf(group, settings.group_meta)}</span>
+                  <span className="sign-name">{labelOf(group, settings.group_meta, labelPref)}</span>
                 )}
                 {guide.show && group.name === "" ? (
                   /* 第一次用：占位牌自己变成入口。**仍然只占一行**（按钮是
@@ -877,7 +902,7 @@ export function SignalLamp({
                 「真有组上报就自动收起」，加上行内的「看演示」按钮，退出路径够用，
                 不值得为它在牌角留一颗常驻的 ×。 */}
             {hidden.length > 0 && index === rows.length - 1 && (
-              <span className="sign-more" title={moreGroupsTip(m, hidden, settings.group_meta)}>
+              <span className="sign-more" title={moreGroupsTip(m, hidden, settings.group_meta, labelPref)}>
                 +{hidden.length}
               </span>
             )}
@@ -900,23 +925,23 @@ export function SignalLamp({
       {pending > 0 && onDecide && (
         <ApprovalBubble approvals={approvals ?? []} onDecide={onDecide} />
       )}
-      {/* 暂停 / 穿透的角标。**两种形态共用一枚**：它绝对定位在窗口右上角那一圈
-          留白里（`top` / `right` = 1px，见 CSS 的 `.lamp-flag`），既不吃牌身宽度，
-          也不在折叠态占一个点距 —— 所以 Rust 的窗口尺寸完全不用为它变化。
-          图标用线性的 `Icon` 而不是 `⇥` / `⏸` 这种字符：那些字形在 7px 下只是一团
-          墨，而 svg 在 9px 上笔画仍然干净。穿透取 `ban`（圆环 + 斜杠 = 「点不进去」），
-          暂停取两道竖线 —— 两个状态的图标形状差得足够远，不用靠颜色分辨。
-          挂 `data-state` 才能从 state.css 拿到 `--state`（穿透时描边取状态色）。 */}
+      {/* 暂停角标。绝对定位在窗口右上角那一圈留白里（`top` / `right` = 1px，见
+          CSS 的 `.lamp-flag`），既不吃牌身宽度，也不在折叠态占一个点距 ——
+          所以 Rust 的窗口尺寸完全不用为它变化。
+          用线性的 `Icon` 而不是 `⏸` 字符：那个字形在 9px 下只是一团墨。
+          **穿透的 `ban` 角标 0.6.4 起不再画**：它成了「四角挂什么」里可选的一枚
+          （`.sign-corner[data-kind="passthrough"]`），挂不挂由用户定；开启穿透时
+          那条一次性通知、tooltip 的一行文字和托盘菜单仍然在。 */}
       {flag && (
         <span className="lamp-flag" data-state={aggregate} title={flagTitle}>
-          <Icon name={passThrough ? "ban" : "pause"} size={9} />
+          <Icon name="pause" size={9} />
         </span>
       )}
       {/* 展开态那条同样的提示挂在最后一块牌上；折叠态看不到牌面，**不留这一枚
           就等于「还有几个智能体在跑」被悄悄抹掉了** —— 而那正是这盏灯要回答的。
           条件与 Rust 的 `config::more_badge` 是同一个。 */}
       {!expanded && hidden.length > 0 && (
-        <span className="lamp-dot-more" title={moreGroupsTip(m, hidden, settings.group_meta)}>
+        <span className="lamp-dot-more" title={moreGroupsTip(m, hidden, settings.group_meta, labelPref)}>
           +{hidden.length}
         </span>
       )}

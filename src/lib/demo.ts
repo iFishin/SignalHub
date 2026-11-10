@@ -93,6 +93,12 @@ export interface DemoStep {
    * 那块亮边 —— 触发方式这种「什么时候亮」的事，光靠一行设置说明讲不清楚。
    */
   edgeTrigger?: LightTrigger;
+  /** 这一步角灯的触发方式。不填 = 常亮（和边灯各判各的，见「用光说话」倒数第二步）。 */
+  cornerTrigger?: LightTrigger;
+  /** 「达到指定状态」那一档挑哪个状态。不填 = DemoStage 给 `permission`。 */
+  triggerState?: SignalState;
+  /** 这一步假装在点击穿透，让 `passthrough` 角灯有条件亮。 */
+  passThrough?: boolean;
 }
 
 export interface DemoScenario {
@@ -342,6 +348,37 @@ export const DEMO_SCENARIOS: DemoScenario[] = [
         corners: { tl: "empty", tr: "empty", br: "empty", bl: "empty" },
         edgeTrigger: "attention",
       },
+      {
+        // 0.6.4：穿透不再是窗口右上角一枚常驻角标，而是四角里可选的一枚灯。
+        // 这一步把「穿透开着」当成事实喂进去，空心方才会出现（不亮 = 根本不画）。
+        id: "cornerPassthrough",
+        durationMs: DEMO_STEP_MS + 800,
+        aggregate: "working",
+        rows: [
+          { id: "build", state: "working" },
+          { id: "api", state: "thinking" },
+        ],
+        edge: "frame",
+        corners: { tl: "passthrough", tr: "state", br: "empty", bl: "empty" },
+        passThrough: true,
+      },
+      {
+        // 两行触发**各判各的**：边灯挑「达到指定状态 → 出错」，角灯仍常亮。
+        // 于是出错那块亮边、正在跑那块不亮，而四枚状态角灯两块牌都挂着 ——
+        // 一张图同时说清「九档条件」和「边灯/角灯互不牵连」。
+        id: "lightTriggerState",
+        durationMs: DEMO_STEP_MS + 1200,
+        aggregate: "error",
+        rows: [
+          { id: "review", state: "error" },
+          { id: "build", state: "working" },
+        ],
+        edge: "frame",
+        corners: { tl: "state", tr: "state", br: "state", bl: "state" },
+        edgeTrigger: "state",
+        triggerState: "error",
+        cornerTrigger: "always",
+      },
     ],
   },
 ];
@@ -448,8 +485,13 @@ export function demoSnapshot(
   /** 这一步是否把 [`DEMO_CORNER_GROUP`] 当作置顶 / 静音。 */
   pinned: boolean;
   muted: boolean;
-  /** 边灯这一刻的触发方式；`undefined` = 常亮。 */
+  /** 边灯 / 角灯这一刻的触发方式；`undefined` = 常亮。 */
   edgeTrigger: LightTrigger | undefined;
+  cornerTrigger: LightTrigger | undefined;
+  /** 「达到指定状态」那一步挑的状态。 */
+  triggerState: SignalState | undefined;
+  /** 这一步是否把「点击穿透」当成已开启（给 `passthrough` 角灯当事实）。 */
+  passThrough: boolean;
 } {
   const step = DEMO_STEPS[index];
   const groups: GroupView[] = step.rows.map((row) => ({
@@ -474,5 +516,8 @@ export function demoSnapshot(
     pinned: step.pinned === true,
     muted: step.muted === true,
     edgeTrigger: step.edgeTrigger,
+    cornerTrigger: step.cornerTrigger,
+    triggerState: step.triggerState,
+    passThrough: step.passThrough === true,
   };
 }

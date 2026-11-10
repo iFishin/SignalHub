@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { inTauri } from "./env";
+import type { SignalState } from "./types";
 
 /** 圆点形状。默认 circle 时 permission / error 会额外画成圆角方（色盲友好）。 */
 export type Shape = "circle" | "rounded" | "ring";
@@ -38,12 +39,18 @@ export type SignEdge = "off" | "top" | "frame" | "glow";
  * 四角里的一枚小灯表达什么。
  *
  * `empty` = 不画；`state` = 状态色实心点；`pinned` = 置顶；`muted` = 静音（空心环）；
- * `stale` = 沉默进度（越接近过期越淡）。
+ * `stale` = 沉默进度（越接近过期越淡）；`passthrough` = 点击穿透开着（空心方）。
  *
  * **除 `state` 外都是条件色**：条件不成立时那枚不画，而不是画暗 —— 「有一枚暗点」
  * 和「没有这枚点」是两种意思。判定在 `lampStyle.ts::cornerLights`，有单测。
  */
-export type SignCorner = "empty" | "state" | "pinned" | "muted" | "stale";
+export type SignCorner =
+  | "empty"
+  | "state"
+  | "pinned"
+  | "muted"
+  | "stale"
+  | "passthrough";
 /** 四角各挂一枚。默认全空 = 加这个功能之前的样子。 */
 export interface SignCorners {
   tl: SignCorner;
@@ -53,13 +60,33 @@ export interface SignCorners {
 }
 
 /**
- * 边框光**什么时候亮**。边灯和角灯各一份，放在「行为」页。
+ * 边框光**什么时候亮**。边灯和角灯各一份，但共用这**同一张**九档条件表，放在「行为」页。
  *
- * `always` = 条件成立就一直亮（加这个字段之前的样子）；`attention` = 只在
- * 「需要你动手」的三种状态亮；`active` = 空闲 / 完成 / 沉默 / 离线时不亮；
- * `quiet` = 安静模式压暗时一起熄。判定在 `lampStyle.ts::lightOn`，有单测。
+ * `always` = 条件成立就一直亮；`attention` = 只在「需要你动手」的三种状态亮；
+ * `active` = 空闲 / 完成 / 沉默 / 离线时不亮；`quiet` = 安静模式压暗时一起熄；
+ * `state` = 达到 `sign_trigger_state` 指定的状态；`schedule` = 落在
+ * `sign_trigger_from` / `sign_trigger_to` 这个本地时段；`stale` = 沉默宽限期过半；
+ * `message` = 牌上带着消息文字；`pinned` = 这一组被置顶。
+ * 判定在 `lampStyle.ts::lightOn`，有单测。
  */
-export type LightTrigger = "always" | "attention" | "active" | "quiet";
+export type LightTrigger =
+  | "always"
+  | "attention"
+  | "active"
+  | "quiet"
+  | "state"
+  | "schedule"
+  | "stale"
+  | "message"
+  | "pinned";
+
+/**
+ * 会话组在牌上叫什么。默认 `session` = **只显示会话 / 项目名，不拼智能体名**：
+ * 牌宽固定，那一行还要和状态词分，`SignalHub · workbuddy` 里的 `workbuddy`
+ * 几乎每次都被省略号吃掉，留下来的是噪音、被切掉的才是区分度。
+ */
+export type SignLabel = "session" | "with_agent" | "custom";
+export const DEFAULT_SIGN_LABEL_TEMPLATE = "{session} · {agent}";
 /** 边框光的粗细：线宽和角灯直径共用（分开调会调出「粗线配小芝麻」）。 */
 export type LightScale = "thin" | "normal" | "thick";
 /** 边框光的明暗。与粗细分开，浅色桌面常用「细而亮」，深色桌面常用「粗而淡」。 */
@@ -389,6 +416,13 @@ export interface Settings {
   /** 边灯 / 角灯什么时候亮（「行为」页）。默认 `always` = 常亮。 */
   sign_edge_trigger: LightTrigger;
   sign_corner_trigger: LightTrigger;
+  /** 触发条件配套的参数，**两个灯共用一份**（挑哪个状态、时段的起止分钟数）。 */
+  sign_trigger_state: SignalState;
+  sign_trigger_from: number;
+  sign_trigger_to: number;
+  /** 会话标题怎么拼（「外观 → 基础」页）。默认只显示会话名。 */
+  sign_label: SignLabel;
+  sign_label_template: string;
   /** 边框光三把尺子（「外观」页）：粗细、明暗、颜色来源。边灯与角灯共用。 */
   sign_light_scale: LightScale;
   sign_light_alpha: LightAlpha;
@@ -555,6 +589,13 @@ export const DEFAULTS: Settings = {
   sign_corners: { tl: "empty", tr: "empty", br: "empty", bl: "empty" },
   sign_edge_trigger: "always",
   sign_corner_trigger: "always",
+  // 触发参数与标题档。标题的默认值**是观感改动**（不再拼智能体名），
+  // 其余四项都等于「没加过」。
+  sign_trigger_state: "permission",
+  sign_trigger_from: 9 * 60,
+  sign_trigger_to: 18 * 60,
+  sign_label: "session",
+  sign_label_template: DEFAULT_SIGN_LABEL_TEMPLATE,
   sign_light_scale: "normal",
   sign_light_alpha: "normal",
   sign_light_color: "state",

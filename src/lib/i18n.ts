@@ -540,7 +540,10 @@ export interface Messages {
   /** 四角在设置里的名字（左上 / 右上 / 右下 / 左下），键和 `SignCorners` 一致。 */
   cornerPos: { tl: string; tr: string; br: string; bl: string };
   /** 每枚角灯能表达什么。`empty` = 不挂。 */
-  cornerKind: Record<"empty" | "state" | "pinned" | "muted" | "stale", string>;
+  cornerKind: Record<
+    "empty" | "state" | "pinned" | "muted" | "stale" | "passthrough",
+    string
+  >;
   /** 收起时那一行摘要：「挂了 2 枚」/「四角都空着」 */
   cornersNone: string;
   cornersSome: (n: number) => string;
@@ -573,6 +576,26 @@ export interface Messages {
   triggerAttention: string;
   triggerActive: string;
   triggerQuiet: string;
+  triggerState: string;
+  triggerSchedule: string;
+  triggerStale: string;
+  triggerMessage: string;
+  triggerPinned: string;
+  /** 触发条件带参数的那几档：挑哪个状态、时段的起止、以及一句说明。 */
+  triggerStatePick: string;
+  triggerScheduleFrom: string;
+  triggerScheduleTo: string;
+  triggerParamsHint: string;
+  /** 会话标题：默认不拼智能体名，也允许用户自己写模板。 */
+  signLabelTitle: string;
+  signLabelHint: string;
+  signLabel: string;
+  labelSession: string;
+  labelWithAgent: string;
+  labelCustom: string;
+  labelTemplate: string;
+  labelTemplateHint: string;
+  labelTemplatePlaceholder: string;
   /** 「谁在叫我」那套压淡的强度。 */
   signEmphasis: string;
   emphasisAuto: string;
@@ -1413,7 +1436,15 @@ export const MESSAGES: Record<Lang, Messages> = {
       },
       lightTrigger: {
         title: "什么时候亮，是另一回事",
-        body: "两块牌并排：这块被设成「只在要你处理时亮」，于是等批准的那块亮边、正在跑的那块不亮。外观管亮起来长什么样，行为管凭什么现在亮 —— 边灯和角灯各有自己的一档。",
+        body: "两块牌并排：边灯被设成「只在要你处理时亮」，于是等批准的那块亮边、正在跑的那块不亮。外观管亮起来长什么样，行为管凭什么现在亮 —— 边灯和角灯各有自己的一档。",
+      },
+      cornerPassthrough: {
+        title: "连「点不进去」也能挂在角上",
+        body: "左上那枚空心方是「点击穿透」：开着的时候它出现，关掉就整个消失。原先窗口右上角那枚常驻的禁止图标已经撤掉了 —— 要不要看这个状态、放在哪个角，现在由你在「外观 → 四角挂什么」里定。状态本身仍在 tooltip 和托盘菜单里。",
+      },
+      lightTriggerState: {
+        title: "九种条件，两行各判各的",
+        body: "边灯挑「达到指定状态 → 出错」，角灯仍是常亮：出错那块亮边、正在跑那块不亮，而四枚状态角灯两块牌都挂着。除了指定状态，还能按指定时段、沉默将尽、有没有消息、是否置顶来触发 —— 边灯和角灯共用同一张条件表。",
       },
     },
     demoStepCount: (index, total) => `${index} / ${total}`,
@@ -1615,12 +1646,13 @@ export const MESSAGES: Record<Lang, Messages> = {
       pinned: "置顶",
       muted: "静音",
       stale: "沉默进度",
+      passthrough: "点击穿透",
     },
     cornersNone: "四角都空着",
     cornersSome: (n) => `挂了 ${n} 枚`,
     frameLight: "边框光",
     frameLightHint:
-      "边灯是牌边那条轨，角灯是这条轨四个转角上的灯位 —— 两者共用同一套粗细、明暗和颜色，怎么调都是一整套。上面两块预览牌始终按常亮画；「什么时候亮」在「行为」页设。",
+      "边灯是牌边那条轨，角灯是这条轨四个转角上的灯位 —— 两者共用同一套粗细、明暗和颜色，怎么调都是一整套。上面两块预览牌始终按常亮画；「什么时候亮」在「行为」页设，边灯和角灯各有九种条件可选。四角还能挂「点击穿透」，原先窗口右上角那枚常驻图标已经删掉了。",
     lightScale: "粗细",
     lightScaleHint:
       "边灯的线宽和角灯的大小一起变。分开调很容易调出「一条粗线配四颗小芝麻」 —— 它们本来就是同一条轨上的东西。",
@@ -1638,13 +1670,34 @@ export const MESSAGES: Record<Lang, Messages> = {
     frameColorNeutral: "中性",
     lightBehavior: "边框光什么时候亮",
     lightBehaviorHint:
-      "「外观」那节管亮起来长什么样，这两行管凭什么现在亮。边灯面积大，适合只在要你处理时才亮；角灯是余光级的小记号，多数人愿意让它一直挂着。",
+      "「外观」那节管亮起来长什么样，这两行管凭什么现在亮。**两行是同一张九档条件表**，边灯不再只有形状可挑：想「平时不吵、下午六点以后整块牌亮起来」或者「只在出错时亮」，两样都能各选各的。判定逐块牌进行，同一盏灯里可以有牌亮、有牌不亮。",
     edgeTrigger: "边灯",
     cornerTrigger: "角灯",
     triggerAlways: "常亮",
     triggerAttention: "只在要你处理时",
     triggerActive: "只在有活动时",
     triggerQuiet: "跟随安静模式",
+    triggerState: "达到指定状态",
+    triggerSchedule: "指定时段内",
+    triggerStale: "沉默快到期时",
+    triggerMessage: "牌上有消息时",
+    triggerPinned: "只给置顶的组",
+    triggerStatePick: "指定哪个状态",
+    triggerScheduleFrom: "从",
+    triggerScheduleTo: "到",
+    triggerParamsHint:
+      "时段的起止按本机时间算，起 > 止就是跨夜（22:00–06:00）；两个时间设成一样表示不按时间筛。这两个参数是边灯和角灯共用的 —— 分开存会出现「两行都选了指定状态，却只有一个状态输入框」。",
+    signLabelTitle: "会话标题",
+    signLabelHint:
+      "按会话分组时，牌宽固定，名字那一行还要和状态词分 —— 默认的「项目 · 智能体」里智能体名几乎每次都被省略号吃掉。现在默认只显示会话 / 项目名；想看智能体名或自己写一套标题都可以。逐组改名仍然优先于这里。",
+    signLabel: "标题里写什么",
+    labelSession: "只显示会话名",
+    labelWithAgent: "会话 · 智能体",
+    labelCustom: "自定义模板",
+    labelTemplate: "模板",
+    labelTemplateHint:
+      "可用 {session}（项目名）、{agent}（智能体名）、{group}（原始组名）。空掉的占位符会被清掉，不会留一个孤零零的分隔符。转发摘要和 Web 面板仍用全名 —— 它们不受牌宽限制。",
+    labelTemplatePlaceholder: "{session} · {agent}",
     signEmphasis: "分层",
     emphasisAuto: "区分",
     emphasisFlat: "一致",
@@ -2439,7 +2492,15 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       },
       lightTrigger: {
         title: "When it lights up is a separate question",
-        body: "Two signs side by side with the trigger set to “when you're needed”: the one waiting for approval has a lit outline, the one still working does not. Appearance decides what it looks like lit; Behavior decides why it is lit now — edge and corner lights each have their own setting.",
+        body: "Two signs side by side with the edge trigger set to “when you're needed”: the one waiting for approval has a lit outline, the one still working does not. Appearance decides what it looks like lit; Behavior decides why it is lit now — edge and corner lights each have their own setting.",
+      },
+      cornerPassthrough: {
+        title: "Even “you can't click it” fits in a corner",
+        body: "The hollow square at the top left is click-through: it appears while enabled and vanishes entirely when off. The old always-on ban badge in the window corner is gone — whether to show this state, and in which corner, is now up to you under Appearance → Corner lights. The state is still in the tooltip and tray menu.",
+      },
+      lightTriggerState: {
+        title: "Nine conditions, two independent rows",
+        body: "The edge light is set to “in a chosen state → error” while the corner lights stay always on: the error card has a lit outline, the working one does not, and all four state corners show on both. Besides a chosen state you can trigger on a time window, silence nearly over, a message being shown, or a pinned group — both rows share the same condition list.",
       },
     },
     demoStepCount: (index, total) => `${index} / ${total}`,
@@ -2644,12 +2705,13 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       pinned: "Pinned",
       muted: "Muted",
       stale: "Silence left",
+      passthrough: "Click-through",
     },
     cornersNone: "All four corners empty",
     cornersSome: (n) => `${n} in use`,
     frameLight: "Frame light",
     frameLightHint:
-      "The edge light is the rail around the sign; the corner lights are four sockets on that rail's corners. They share one width, one brightness and one colour, so any change moves as a set. The two preview signs above are always drawn lit; when they light up is set under Behavior.",
+      "The edge light is the rail around the sign; the corner lights are four sockets on that rail's corners. They share one width, one brightness and one colour, so any change moves as a set. The two preview signs above are always drawn lit; when they light up is set under Behavior, where both rows pick from the same nine conditions. Click-through is now one of the corner options — the old always-on badge in the window corner is gone.",
     lightScale: "Weight",
     lightScaleHint:
       "The rail's line width and the corner lights' size move together. Set separately they drift into a thick line with four tiny dots — and they are the same rail.",
@@ -2667,13 +2729,34 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     frameColorNeutral: "Neutral",
     lightBehavior: "When the frame light comes on",
     lightBehaviorHint:
-      "Appearance sets what it looks like when lit; these two set why it is lit now. The edge is a large area and suits lighting only when you are needed; corner lights are periphery-level marks that most people keep on all the time.",
+      "Appearance sets what it looks like when lit; these two rows set why it is lit now. Both draw from the same nine conditions — the edge light no longer only has shapes to pick. Decisions are per sign, so some cards on the lamp can be lit while others stay dark.",
     edgeTrigger: "Edge light",
     cornerTrigger: "Corner lights",
     triggerAlways: "Always",
     triggerAttention: "When you're needed",
     triggerActive: "While active",
     triggerQuiet: "Follow quiet mode",
+    triggerState: "In a chosen state",
+    triggerSchedule: "During chosen hours",
+    triggerStale: "Silence nearly over",
+    triggerMessage: "When a message is shown",
+    triggerPinned: "Only for pinned groups",
+    triggerStatePick: "Which state",
+    triggerScheduleFrom: "From",
+    triggerScheduleTo: "To",
+    triggerParamsHint:
+      "Hours use local time; a start later than the end means overnight (22:00–06:00), and equal times mean no time filter. These parameters are shared by both rows — storing them twice would leave two 'chosen state' rows and only one state picker.",
+    signLabelTitle: "Session title",
+    signLabelHint:
+      "With session grouping the sign has a fixed width and shares its first line with the status word, so the agent in 'project · agent' was almost always cut off by the ellipsis. The default now shows only the session/project name; you can bring the agent back or write your own template. Per-group display names still win.",
+    signLabel: "What the title says",
+    labelSession: "Session name only",
+    labelWithAgent: "Session · agent",
+    labelCustom: "Custom template",
+    labelTemplate: "Template",
+    labelTemplateHint:
+      "Tokens: {session} (project), {agent} (agent), {group} (raw group name). Empty tokens are cleaned up, so no orphan separator is left behind. Forwarded summaries and the web panel still use the full name — they aren't width-constrained.",
+    labelTemplatePlaceholder: "{session} · {agent}",
     signEmphasis: "Emphasis",
     emphasisAuto: "Tiered",
     emphasisFlat: "Uniform",

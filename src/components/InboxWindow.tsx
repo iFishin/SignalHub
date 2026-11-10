@@ -10,6 +10,7 @@ import { signalLabel } from "../lib/signals";
 import type { Approval, DenyReason } from "../lib/useApprovals";
 import type { Snapshot } from "../lib/types";
 import { buildInbox, dirName, formatAge, type InboxRow } from "../lib/inboxRows";
+import { labelPrefOf } from "../lib/lampSort";
 import { requestSettingsTab } from "../lib/settingsIntent";
 import {
   buildAwaySummary,
@@ -94,8 +95,15 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
   const lang = useLang();
   const settings = useSettings();
   const model = useMemo(
-    () => buildInbox(snapshot, approvals, settings.group_meta),
-    [snapshot, approvals, settings.group_meta],
+    () =>
+      buildInbox(snapshot, approvals, settings.group_meta, labelPrefOf(settings)),
+    [
+      snapshot,
+      approvals,
+      settings.group_meta,
+      settings.sign_label,
+      settings.sign_label_template,
+    ],
   );
 
   // 所有段摊平成一条键盘路径：↑↓ 不会在「需要你」和「运行中」之间断掉。

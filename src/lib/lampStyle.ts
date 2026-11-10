@@ -77,22 +77,74 @@ export function toneOf(state: SignalState): SignTone {
  */
 const INACTIVE_STATES: readonly SignalState[] = ["idle", "done", "stale", "offline", "off"];
 
-/** 边框光触发判定的输入。`quiet` = **此刻整盏灯是否被安静模式压暗**（不是开关本身）。 */
+/**
+ * 边框光触发判定的输入。
+ *
+ * `quiet` = **此刻整盏灯是否被安静模式压暗**（不是开关本身）。后面那些可选字段
+ * 是九档条件里「带参数的三档」要用的：挑哪个状态、时段起止、以及逐块牌的事实
+ * （沉默进度 / 消息 / 置顶）。不传时一律取默认，这样旧的四档调用方不用改。
+ */
 export interface LightContext {
   state: SignalState;
   quiet: boolean;
+  /** `state` 档：用户挑的状态，默认 `permission`。 */
+  matchState?: SignalState;
+  /** `schedule` 档：本地时间的分钟数（0–1439）。 */
+  from?: number;
+  to?: number;
+  /** 此刻的本地分钟数。**测试要注入**，别在这里偷偷读 `new Date()` 还指望断言稳定。 */
+  minutes?: number;
+  /** `stale` / `message` / `pinned` 三档用的牌面事实。 */
+  staleProgress?: number | null;
+  message?: string | null;
+  pinned?: boolean;
+}
+
+/** 本地时钟的分钟数。只有调用方没注入 `ctx.minutes` 时才读一次。 */
+function localMinutes(): number {
+  const now = new Date();
+  return now.getHours() * 60 + now.getMinutes();
+}
+
+/**
+ * 时段判定。`from === to` 记成「整天」而不是「零长度」—— 用户把两个时间拨到
+ * 同一格时想表达的显然是「别按时间筛了」，给一个永远不亮的结果没有任何提示。
+ * 起 > 止就是跨夜（22:00–06:00），按两段并集算。
+ */
+/** 分钟数 → `<input type="time">` 要的 `HH:MM`。设置控件和判定之间的唯一换算。 */
+export function minutesToClock(minutes: number): string {
+  const value = ((minutes % 1440) + 1440) % 1440;
+  return `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`;
+}
+
+/** `HH:MM` → 分钟数。用户清空输入框时不写回设置（返回 `null` 让调用方跳过）。 */
+export function clockToMinutes(clock: string): number | null {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(clock.trim());
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours > 23 || minutes > 59) return null;
+  return hours * 60 + minutes;
+}
+
+export function inTimeWindow(minutes: number, from: number, to: number): boolean {
+  if (from === to) return true;
+  return from < to ? minutes >= from && minutes < to : minutes >= from || minutes < to;
 }
 
 /**
  * 这盏边框光现在该不该亮。
  *
  * 「外观」决定亮起来长什么样，「行为」决定凭什么现在亮 —— 这条纯函数就是后者，
- * 边灯和四角角灯共用它（各传各的 trigger）。抽成纯函数是因为灯的每一帧都在
- * 重渲染，判定藏在 JSX 里的话四档只能靠真机盯着灯等状态切换来验证。
+ * 边灯和四角角灯**共用同一张条件表**（各传各的 trigger）。抽成纯函数是因为灯的
+ * 每一帧都在重渲染，判定藏在 JSX 里的话九档只能靠真机盯着灯等状态切换来验证。
  *
  * 注意 `quiet` 传进来的是**已经算好的**「此刻被压暗了吗」：安静模式看的是整灯
  * 聚合状态，而边灯/角灯是逐块牌画的，两处的粒度不一样，混在这里算就会得到
  * 「红灯被压暗了、绿灯却没有」这种自相矛盾的画面。
+ *
+ * `state` / `schedule` 之外的五档都是**逐块牌**的事实判定，所以边灯设成「指定状态」
+ * 时，同一盏灯里也可以有的牌亮、有的不亮 —— 和角灯那套门控是同一个道理。
  */
 export function lightOn(trigger: LightTrigger, ctx: LightContext): boolean {
   switch (trigger) {
@@ -104,6 +156,21 @@ export function lightOn(trigger: LightTrigger, ctx: LightContext): boolean {
       return !INACTIVE_STATES.includes(ctx.state);
     case "quiet":
       return !ctx.quiet;
+    case "state":
+      return ctx.state === (ctx.matchState ?? "permission");
+    case "schedule":
+      return inTimeWindow(
+        ctx.minutes ?? localMinutes(),
+        ctx.from ?? 9 * 60,
+        ctx.to ?? 18 * 60,
+      );
+    // 1.0 = 刚转 stale，0.0 = 即将被删（见 types.ts）。后半程才值得再提醒一次。
+    case "stale":
+      return ctx.staleProgress != null && ctx.staleProgress <= 0.5;
+    case "message":
+      return (ctx.message ?? "").trim().length > 0;
+    case "pinned":
+      return ctx.pinned === true;
   }
 }
 
@@ -300,6 +367,12 @@ export interface CornerFacts {
    * 0 = 马上就要消失）。复用它而不是另算一份，两边才不会给出不同的答案。
    */
   staleProgress: number | null;
+  /**
+   * 此刻是不是在点击穿透（`useToggles` 的瞬态状态，不进 Settings）。
+   * 可选是因为它是**全局**事实而不是组的属性：设置页预览想看这枚灯时直接给 true，
+   * 老调用方不给也没关系（那一枚就按「条件不成立」不画）。
+   */
+  passThrough?: boolean;
 }
 
 export interface CornerLight {
@@ -322,7 +395,7 @@ export interface CornerLight {
  * 设了「只在需要我处理时亮」，空闲的牌上却还挂着一枚常亮的状态点，等于没设。
  *
  * 纯函数，有单测（`lampStyle.test.ts`）：卡片组件每帧都在重渲染，判定逻辑藏在
- * JSX 里的话，五种情况只能靠肉眼看灯验，而这盏灯不是所有机器上都摆得出来。
+ * JSX 里的话，六种情况只能靠肉眼看灯验，而这盏灯不是所有机器上都摆得出来。
  */
 export function cornerLights(
   corners: SignCorners,
@@ -337,6 +410,9 @@ export function cornerLights(
     if (kind === "pinned" && !facts.pinned) continue;
     if (kind === "muted" && !facts.muted) continue;
     if (kind === "stale" && facts.staleProgress === null) continue;
+    // 穿透是全局状态：开着的时候**每块牌**都挂，不是只挂第一块。它和 pinned /
+    // muted 一样是「条件不成立就不画」，所以没开穿透时牌上连一个空心方都没有。
+    if (kind === "passthrough" && facts.passThrough !== true) continue;
     out.push({ pos, kind });
   }
   return out;

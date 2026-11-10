@@ -184,6 +184,26 @@ describe("demo steps", () => {
     expect(meaning?.rows[0].staleProgress).not.toBeUndefined();
   });
 
+  it("「用光说话」也演示了穿透角灯与新增的触发条件", () => {
+    const steps = scenarioSteps("look");
+    const passthrough = steps.find((step) => step.id === "cornerPassthrough");
+    expect(passthrough?.corners?.tl).toBe("passthrough");
+    expect(passthrough?.passThrough).toBe(true);
+    const state = steps.find((step) => step.id === "lightTriggerState");
+    expect(state?.edgeTrigger).toBe("state");
+    expect(state?.triggerState).toBe("error");
+    expect(state?.cornerTrigger).toBe("always");
+
+    // 剧本里的事实要真的走到灯上，否则那两枚灯压根不会亮
+    const index = DEMO_STEPS.findIndex((step) => step.id === "cornerPassthrough");
+    const frame = demoSnapshot(index, NOW, LABELS);
+    expect(frame.passThrough).toBe(true);
+    // 不写 cornerTrigger = DemoStage 那边回落成 "always"
+    expect(frame.cornerTrigger).toBeUndefined();
+    const stateIndex = DEMO_STEPS.findIndex((step) => step.id === "lightTriggerState");
+    expect(demoSnapshot(stateIndex, NOW, LABELS).triggerState).toBe("error");
+  });
+
   it("demoSnapshot 给出可直接渲染的 GroupView", () => {
     const index = DEMO_STEPS.findIndex((step) => step.id === "working");
     const frame = demoSnapshot(index, NOW, LABELS);

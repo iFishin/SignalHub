@@ -8,6 +8,9 @@ import {
   stateOverridden,
   toneOf,
   lightOn,
+  inTimeWindow,
+  minutesToClock,
+  clockToMinutes,
   CALM_ALPHA_FACTOR,
   CALM_ALPHA_FLOOR,
   SIGN_OPACITY_MIN,
@@ -420,6 +423,22 @@ describe("cornerLights", () => {
     expect(lit.map((corner) => corner.pos)).toEqual(["tl", "tr", "br", "bl"]);
   });
 
+  /** 点击穿透是**全局**事实：开着时每块牌都挂，没开时连空心方都不画。 */
+  it("lights the click-through corner only while pass-through is on", () => {
+    const withCorner = corners({ tr: "passthrough", bl: "state" });
+    const facts = { pinned: false, muted: false, staleProgress: null };
+    expect(cornerLights(withCorner, { ...facts, passThrough: false })).toEqual([
+      { pos: "bl", kind: "state" },
+    ]);
+    expect(cornerLights(withCorner, facts)).toEqual([{ pos: "bl", kind: "state" }]);
+    expect(cornerLights(withCorner, { ...facts, passThrough: true })).toEqual([
+      { pos: "tr", kind: "passthrough" },
+      { pos: "bl", kind: "state" },
+    ]);
+    // 门控排在一切条件之前
+    expect(cornerLights(withCorner, { ...facts, passThrough: true }, false)).toEqual([]);
+  });
+
   /** 触发方式说不亮的时候，连无条件亮的 `state` 那枚也得消失。 */
   it("lets the behavior gate silence every corner, including the state one", () => {
     const facts = { pinned: true, muted: true, staleProgress: 0.8 };
@@ -466,5 +485,58 @@ describe("lightOn", () => {
     expect(DEFAULTS.sign_edge_trigger).toBe("always");
     expect(DEFAULTS.sign_corner_trigger).toBe("always");
     expect(lightOn(DEFAULTS.sign_edge_trigger, ctx("offline", true))).toBe(true);
+  });
+
+  /** 0.6.4 新增的五档：边灯和角灯都能按状态 / 时段 / 牌面事实来亮。 */
+  it("matches a chosen state and nothing else", () => {
+    const chosen = { ...ctx("error"), matchState: "error" as const };
+    expect(lightOn("state", chosen)).toBe(true);
+    expect(lightOn("state", { ...ctx("working"), matchState: "error" as const })).toBe(false);
+    // 没注入参数时退回默认档，不能永远不亮
+    expect(lightOn("state", ctx("permission"))).toBe(true);
+    expect(lightOn("state", ctx("working"))).toBe(false);
+  });
+
+  it("uses the local time window, including overnight ranges", () => {
+    expect(lightOn("schedule", { ...ctx("idle"), minutes: 10 * 60, from: 9 * 60, to: 18 * 60 })).toBe(true);
+    expect(lightOn("schedule", { ...ctx("idle"), minutes: 19 * 60, from: 9 * 60, to: 18 * 60 })).toBe(false);
+    // 22:00–06:00 跨夜
+    expect(lightOn("schedule", { ...ctx("idle"), minutes: 2 * 60, from: 22 * 60, to: 6 * 60 })).toBe(true);
+    expect(lightOn("schedule", { ...ctx("idle"), minutes: 12 * 60, from: 22 * 60, to: 6 * 60 })).toBe(false);
+    // 起止相同 = 不按时间筛
+    expect(lightOn("schedule", { ...ctx("idle"), minutes: 3 * 60, from: 6 * 60, to: 6 * 60 })).toBe(true);
+  });
+
+  it("reads the three per-sign facts without dimming anything", () => {
+    expect(lightOn("stale", { ...ctx("stale"), staleProgress: 0.4 })).toBe(true);
+    expect(lightOn("stale", { ...ctx("stale"), staleProgress: 0.9 })).toBe(false);
+    expect(lightOn("stale", ctx("working"))).toBe(false);
+    expect(lightOn("message", { ...ctx("working"), message: "compiling" })).toBe(true);
+    expect(lightOn("message", { ...ctx("working"), message: "   " })).toBe(false);
+    expect(lightOn("message", ctx("working"))).toBe(false);
+    expect(lightOn("pinned", { ...ctx("idle"), pinned: true })).toBe(true);
+    expect(lightOn("pinned", ctx("idle"))).toBe(false);
+  });
+});
+
+describe("time helpers", () => {
+  it("round-trips minutes through the HH:MM control", () => {
+    for (const minutes of [0, 9 * 60, 18 * 60 + 15, 1439]) {
+      expect(clockToMinutes(minutesToClock(minutes))).toBe(minutes);
+    }
+    expect(minutesToClock(9 * 60)).toBe("09:00");
+    expect(minutesToClock(22 * 60 + 5)).toBe("22:05");
+  });
+
+  it("rejects a half-typed or impossible clock", () => {
+    expect(clockToMinutes("")).toBeNull();
+    expect(clockToMinutes("24:00")).toBeNull();
+    expect(clockToMinutes("12:60")).toBeNull();
+    expect(clockToMinutes("9:30")).toBe(570);
+  });
+
+  it("keeps the boundary half-open so 18:00 is outside 09:00–18:00", () => {
+    expect(inTimeWindow(9 * 60, 9 * 60, 18 * 60)).toBe(true);
+    expect(inTimeWindow(18 * 60, 9 * 60, 18 * 60)).toBe(false);
   });
 });

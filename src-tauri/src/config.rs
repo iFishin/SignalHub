@@ -32,7 +32,7 @@ fn clamp_mult(value: f32) -> f32 {
 
 /// 圆点四周留白的**总量**（不是每边）。留白是为了好抓取圆点来拖动。
 ///
-/// **28（每边 14）不是随手取的**：窗口右上角那枚「暂停 / 穿透」角标就住在这圈留白里
+/// **28（每边 14）不是随手取的**：窗口右上角那枚「暂停」角标就住在这圈留白里
 /// （`lamp.css` 的 `.lamp-flag`：12px 的方块 + 1px 边距 = 14）。它不参与布局，所以
 /// 留白是它唯一的容身之处。早先总量 20（每边 10）时角标只能做成 9px，小到像渲染残留。
 pub const LAMP_MARGIN: u16 = 28;
@@ -111,7 +111,7 @@ pub fn more_badge(visible: usize) -> usize {
 /// 所以点数和组数一样；一个组都没有时也要有一个点（表示 offline）。
 ///
 /// `badges` 是**占一个点位的额外角标数**，现在只有「还有几组没画出来」的 `+N`
-/// 那一枚（见 [`more_badge`]）。暂停 / 穿透角标是绝对定位在灯体内部最上沿的
+/// 那一枚（见 [`more_badge`]）。暂停角标是绝对定位在灯体内部最上沿的
 /// 徽标，**不占点位**，所以切换穿透 / 暂停都不该让窗口尺寸变（那会把灯珠推偏）。
 ///
 /// ⚠️ 点径、点距、留白和 CSS 的 `.lamp-dot` / `.lamp-dot-more` /
@@ -551,6 +551,13 @@ pub enum SignCorner {
     Muted,
     /// 沉默进度：`stale` 时那圈剩余时间，越接近过期越淡。不沉默就不画。
     Stale,
+    /// 点击穿透开着（`useToggles` 的瞬态状态）。**空心方** —— 圆的都是「组的属性」，
+    /// 方的留给「窗口本身的状态」，形状和语义一起分家。
+    ///
+    /// 0.6.4 之前它是窗口右上角一枚 12px 的 `ban` 角标。角标是**常驻**的：穿透时
+    /// 鼠标点不到灯，一次性通知早就忘光了，连 tooltip 都不弹。把它搬进角灯之后，
+    /// 用户自己决定要不要挂、挂哪个角；没挂的人靠托盘菜单和 tooltip 那行字就够了。
+    Passthrough,
 }
 
 /// 四角上的四枚小灯。
@@ -586,8 +593,10 @@ impl SignCorners {
 /// **行为**管的是「凭什么现在亮」。拆开之后，「平时不吵、只有要我动手时才把整块牌
 /// 框成红的」这类用法才有地方放。
 ///
-/// 边灯和角灯各有一份，是因为它们常常想要不同的节奏：边灯面积大，适合只在
-/// 「要你处理」时亮；角灯是余光级的小记号，多数人愿意让它一直挂着。
+/// 边灯和角灯**共用同一张条件表**、各存一份选择：边灯面积大，适合只在「要你处理」
+/// 时亮；角灯是余光级的小记号，多数人愿意让它一直挂着。0.6.4 之前只有四档，
+/// 而角灯还能按「置顶 / 静音」这类事实逐枚决定挂不挂 —— 边灯没有对应的入口，
+/// 看起来就像「只有角灯有触发条件」。现在两行控件一模一样，九档全都能选。
 ///
 /// 判定在前端 `lampStyle.ts::lightOn`（纯函数、有单测）—— Rust 不参与逐帧渲染，
 /// 这里只负责把用户的偏好存下来。默认 `Always` = 加这些字段之前的样子（红线 3）。
@@ -603,7 +612,65 @@ pub enum LightTrigger {
     Active,
     /// 跟随「安静模式」：安静时熄，鼠标一碰灯就回来。
     Quiet,
+    /// 达到**指定状态**才亮。挑哪个状态存 `sign_trigger_state`。
+    State,
+    /// 只在**指定时段**内亮。起止存 `sign_trigger_from` / `sign_trigger_to`
+    /// （本地时间的分钟数，0–1439；跨夜也没问题，起 > 止就是「晚上到早上」）。
+    Schedule,
+    /// 沉默宽限期过半（`stale_progress <= 0.5`）才亮 —— 快被忘掉之前再提醒一次。
+    Stale,
+    /// 牌上带着消息文字才亮。空消息的行不该被框起来。
+    Message,
+    /// 只给置顶的组亮（`group_meta[组].order` 有值）。
+    Pinned,
 }
+
+/// 「达到指定状态」那一档能挑的状态。和 `notify_when` 共用同一套规整（见
+/// [`normalize_notify_states`]），只是它多选一，所以这里存一个 `String`。
+pub const DEFAULT_LIGHT_TRIGGER_STATE: &str = "permission";
+/// 可挑的是**全部**十个聚合状态（含 `offline` / `off`），和通知那张表不同：
+/// 通知不该提醒「你暂停了」，但灯完全可以在「离线时把边亮起来」这件事上有意义。
+pub const LIGHT_TRIGGER_STATES: [&str; 10] = [
+    "offline",
+    "off",
+    "stale",
+    "idle",
+    "done",
+    "thinking",
+    "working",
+    "attention",
+    "permission",
+    "error",
+];
+/// 指定时段的默认起止：工作时段 09:00–18:00。存的是**分钟数**而不是 `"09:00"`
+/// 字符串，因为前端判定的输入就是 `Date` 的小时 × 60 + 分钟，字符串还要再解析一次，
+/// 手改过的配置文件里也就不会出现 `"9:0"` 这种半合法值。
+pub const DEFAULT_LIGHT_TRIGGER_FROM: u16 = 9 * 60;
+pub const DEFAULT_LIGHT_TRIGGER_TO: u16 = 18 * 60;
+
+/// 会话组在牌上叫什么。
+///
+/// 0.6.3 及以前，服务端把「目录末段 · 智能体」写进 `default_label` 直接画出来。
+/// 牌宽固定 `size × 7`，那一行还要和状态词分，于是 `SignalHub · workbuddy` 里的
+/// `workbuddy` 几乎每次都被省略号吃掉 —— **留下来的是噪音，被切掉的才是区分度**。
+/// 默认改成只显示会话 / 项目名；想看智能体、或想自己写一套标题，都交给用户。
+///
+/// 只影响**灯上的标题**（前端 `lampSort.ts::labelOf`）。转发摘要 / Web 面板仍用
+/// `default_label` 那个全名：它们不受牌宽限制，多一个智能体名是有用的信息。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SignLabel {
+    /// 只显示会话名（项目目录末段）。默认。
+    #[default]
+    Session,
+    /// 「会话 · 智能体」—— 0.6.3 及以前的样子。
+    WithAgent,
+    /// 用 `sign_label_template` 自己拼。
+    Custom,
+}
+
+pub const DEFAULT_SIGN_LABEL_TEMPLATE: &str = "{session} · {agent}";
+pub const MAX_SIGN_LABEL_TEMPLATE: usize = 80;
 
 /// 边框光的粗细。**边灯的线宽和角灯的直径共用这一档** —— 两样分开调，用户
 /// 十有八九会调出「一条粗线配四颗小芝麻」，而它们本来就是同一条轨上的东西。
@@ -1503,9 +1570,18 @@ pub struct Settings {
     /// 它只画在已经存在的那块牌上，而且绝对定位。
     pub sign_corners: SignCorners,
     /// 边灯 / 角灯**什么时候亮**（见 [`LightTrigger`]）。放在「行为」页。
-    /// 默认 `Always`：加这两个字段之前两样都是常亮的。
+    /// 默认 `Always`：加这两个字段之前两样都是常亮的。两行共用同一张九档条件表。
     pub sign_edge_trigger: LightTrigger,
     pub sign_corner_trigger: LightTrigger,
+    /// 触发条件配套的三样参数，**两个灯共用一份**：挑哪个状态、时段的起止。
+    /// 分开存会出现「边灯选了指定状态 permission、角灯选了指定状态 error，却只有
+    /// 一个状态输入框」这种没法解释的界面。两行里只要有一行用到，就把参数显示出来。
+    pub sign_trigger_state: String,
+    pub sign_trigger_from: u16,
+    pub sign_trigger_to: u16,
+    /// 会话组的标题怎么拼（见 [`SignLabel`]）。放在「外观 → 基础」页。
+    pub sign_label: SignLabel,
+    pub sign_label_template: String,
     /// 边框光的三把尺子：粗细、明暗、取哪一路颜色。放在「外观」页。
     ///
     /// 三者都**不是**窗口几何：只画在 `.sign::before` 和四枚绝对定位的角灯上，
@@ -1975,6 +2051,13 @@ impl Default for Settings {
             sign_corners: SignCorners::default(),
             sign_edge_trigger: LightTrigger::default(),
             sign_corner_trigger: LightTrigger::default(),
+            // 触发参数 + 标题档：全部等于「没加过」。注意标题的**默认值变了**
+            // （`Session` 不再拼智能体名），这是用户明确要的观感改动，不是兼容项。
+            sign_trigger_state: DEFAULT_LIGHT_TRIGGER_STATE.to_string(),
+            sign_trigger_from: DEFAULT_LIGHT_TRIGGER_FROM,
+            sign_trigger_to: DEFAULT_LIGHT_TRIGGER_TO,
+            sign_label: SignLabel::default(),
+            sign_label_template: DEFAULT_SIGN_LABEL_TEMPLATE.to_string(),
             sign_light_scale: LightScale::default(),
             sign_light_alpha: LightAlpha::default(),
             sign_light_color: LightColor::default(),
@@ -2040,6 +2123,25 @@ impl Settings {
         self.sign_opacity = self.sign_opacity.clamp(MIN_SIGN_OPACITY, 100);
         self.blink_speed = self.blink_speed.clamp(MIN_BLINK_SPEED, MAX_BLINK_SPEED);
         self.alert_after_secs = self.alert_after_secs.min(MAX_ALERT_DELAY_SECS);
+        // 触发参数：状态名不认识就退回默认（否则那一档永远不亮，界面上没有任何
+        // 线索）；时段按分钟取模绕回一天内；模板按字符数截断，免得一行配置把
+        // config.json 撑成几 MB，牌上也只会显示前几个字。
+        let wanted = self.sign_trigger_state.trim().to_ascii_lowercase();
+        self.sign_trigger_state = if LIGHT_TRIGGER_STATES.contains(&wanted.as_str()) {
+            wanted
+        } else {
+            DEFAULT_LIGHT_TRIGGER_STATE.to_string()
+        };
+        self.sign_trigger_from %= 1440;
+        self.sign_trigger_to %= 1440;
+        // `String::truncate` 按字节切，切在 UTF-8 中间会 panic —— 按字符数收。
+        if self.sign_label_template.chars().count() > MAX_SIGN_LABEL_TEMPLATE {
+            self.sign_label_template = self
+                .sign_label_template
+                .chars()
+                .take(MAX_SIGN_LABEL_TEMPLATE)
+                .collect();
+        }
         // 通知状态列表：写坏的项直接丢掉。**全丢光时退回默认** —— 一个都认不出来
         // 还留成空表的话，表现是「通知开着、权限也给了，但永远不弹」，而界面上
         // 没有任何线索指向这里。
@@ -2700,6 +2802,13 @@ mod tests {
             // 触发与三把尺子全取非默认，漏哪个字段往返测试都看得出来
             sign_edge_trigger: LightTrigger::Attention,
             sign_corner_trigger: LightTrigger::Active,
+            // 三个触发参数 + 两个标题字段也全部非默认：它们是 0.6.4 新加的，
+            // 漏一个字段在这条往返里就该现形
+            sign_trigger_state: "error".into(),
+            sign_trigger_from: 8 * 60 + 30,
+            sign_trigger_to: 20 * 60 + 15,
+            sign_label: SignLabel::Custom,
+            sign_label_template: "{session} / {agent}".into(),
             sign_light_scale: LightScale::Thick,
             sign_light_alpha: LightAlpha::Soft,
             sign_light_color: LightColor::Neutral,
@@ -3528,6 +3637,12 @@ mod tests {
         assert_eq!(settings.sign_light_scale, LightScale::Normal);
         assert_eq!(settings.sign_light_alpha, LightAlpha::Normal);
         assert_eq!(settings.sign_light_color, LightColor::State);
+        // 0.6.4：标题默认只显示会话名，不拼智能体名（用户明确要的观感改动）
+        assert_eq!(settings.sign_label, SignLabel::Session);
+        assert_eq!(settings.sign_label_template, DEFAULT_SIGN_LABEL_TEMPLATE);
+        assert_eq!(settings.sign_trigger_state, DEFAULT_LIGHT_TRIGGER_STATE);
+        assert_eq!(settings.sign_trigger_from, DEFAULT_LIGHT_TRIGGER_FROM);
+        assert_eq!(settings.sign_trigger_to, DEFAULT_LIGHT_TRIGGER_TO);
 
         // 旧配置里这些字段一个都没有，不能因此让整份设置失效 —— 尤其触发方式
         // 和尺子是后加的，0.6.2 写出来的 config.json 里根本没有它们
@@ -3539,6 +3654,8 @@ mod tests {
         assert_eq!(old.sign_light_scale, LightScale::Normal);
         assert_eq!(old.sign_light_alpha, LightAlpha::Normal);
         assert_eq!(old.sign_light_color, LightColor::State);
+        assert_eq!(old.sign_label, SignLabel::Session);
+        assert_eq!(old.sign_trigger_state, DEFAULT_LIGHT_TRIGGER_STATE);
     }
 
     /// 四角可以只写一个 —— `SignCorners` 自己有 `serde(default)`，缺的角退回「空」。
@@ -3606,6 +3723,69 @@ mod tests {
         assert!(back.contains(r#""sign_light_scale":"thick""#), "{back}");
         assert!(back.contains(r#""sign_light_alpha":"soft""#), "{back}");
         assert!(back.contains(r#""sign_light_color":"neutral""#), "{back}");
+    }
+
+    /// 0.6.4 加的五档触发条件、穿透角灯和标题设置都要能存回去。
+    ///
+    /// 这几个字段是**外观页 / 行为页各写一半**的：`set_settings` 整份替换，任何一处
+    /// 漏字段都会被另一处悄悄重置。穿透那一枚用 `Passthrough`，是因为旧配置里
+    /// 没有这个值 —— 反序列化不认的话，整份设置会被当成损坏。
+    #[test]
+    fn the_extra_triggers_passthrough_corner_and_label_roundtrip() {
+        let raw = r#"{
+            "sign_edge_trigger": "schedule",
+            "sign_corner_trigger": "state",
+            "sign_trigger_state": "error",
+            "sign_trigger_from": 510,
+            "sign_trigger_to": 1215,
+            "sign_label": "custom",
+            "sign_label_template": "{agent} / {session}",
+            "sign_corners": {"tl": "passthrough", "tr": "state", "br": "empty", "bl": "muted"}
+        }"#;
+        let settings = serde_json::from_str::<Settings>(raw).unwrap();
+        assert_eq!(settings.sign_edge_trigger, LightTrigger::Schedule);
+        assert_eq!(settings.sign_corner_trigger, LightTrigger::State);
+        assert_eq!(settings.sign_trigger_state, "error");
+        assert_eq!(settings.sign_trigger_from, 510);
+        assert_eq!(settings.sign_trigger_to, 1215);
+        assert_eq!(settings.sign_label, SignLabel::Custom);
+        assert_eq!(settings.sign_corners.tl, SignCorner::Passthrough);
+        assert_eq!(settings.sign_corners.count(), 3);
+
+        let back = serde_json::to_string(&settings).unwrap();
+        for needle in [
+            r#""sign_edge_trigger":"schedule""#,
+            r#""sign_corner_trigger":"state""#,
+            r#""sign_trigger_state":"error""#,
+            r#""sign_label":"custom""#,
+            r#""tl":"passthrough""#,
+        ] {
+            assert!(back.contains(needle), "序列化漏了 {needle}: {back}");
+        }
+    }
+
+    /// 手改过的配置里那三个自由值要规整，不能让灯「配了却永远不亮」。
+    #[test]
+    fn free_form_light_trigger_values_are_clamped() {
+        // 用多字节字符拼一个超长模板：`String::truncate` 按字节切的话，这里会
+        // 直接 panic（切在 UTF-8 中间），而不只是「长度不对」。
+        let long = "构建".repeat(60);
+        let raw = format!(
+            r#"{{
+                "sign_trigger_state": "NOPE",
+                "sign_trigger_from": 2000,
+                "sign_trigger_to": 50000,
+                "sign_label_template": "{long}"
+            }}"#
+        );
+        let settings = serde_json::from_str::<Settings>(&raw).unwrap().clamped();
+        assert_eq!(settings.sign_trigger_state, DEFAULT_LIGHT_TRIGGER_STATE);
+        assert_eq!(settings.sign_trigger_from, 2000 % 1440);
+        assert_eq!(settings.sign_trigger_to, 50000 % 1440);
+        assert_eq!(
+            settings.sign_label_template.chars().count(),
+            MAX_SIGN_LABEL_TEMPLATE
+        );
     }
 
     /// 隐藏的组名来自右键菜单、也会被用户手改进配置文件，所以要规整：

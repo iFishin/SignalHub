@@ -45,6 +45,7 @@ describe("样式表", () => {
     for (const needle of [
       "white-space: nowrap", // 组名 / 消息不换行（靠省略号截断）
       ".sign-corner", // 四角小灯
+      '.sign-corner[data-kind="passthrough"]', // 穿透角灯（旧角标删掉后唯一的画法）
       '.sign[data-edge="frame"]', // 边灯那条轨（按牌挂，不是挂在窗口根上）
       "--corner-arc", // 角灯落点跟着圆角算，写死就又会缩回牌内
       "data-sign-light-scale", // 粗细尺子
@@ -52,6 +53,9 @@ describe("样式表", () => {
     ]) {
       expect(lampCss.includes(needle), `lamp.css 里找不到 ${needle}`).toBe(true);
     }
+    // 穿透那枚常驻 `ban` 角标已经删掉了：CSS 里不该再留「穿透时给 .lamp-flag
+    // 换描边色」那条规则（留着的话暂停角标会在穿透时莫名变色，而图标还是暂停）
+    expect(lampCss.includes("[data-pass-through] .lamp-flag")).toBe(false);
     // 文件以 `}` 收尾：尾巴被吞掉时，最后几行会是一条没结束的注释或声明
     expect(lampCss.trimEnd().endsWith("}")).toBe(true);
   });

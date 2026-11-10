@@ -28,15 +28,15 @@ import { DemoStage } from "./DemoStage";
 import { CallMePage } from "./CallMePage";
 import { CallMeMessages } from "./CallMeMessages";
 import { LocalPanel, LocalTabs, PageHeader } from "./settings/SettingsPage";
-import { labelOf } from "../lib/lampSort";
-import { SIGN_OPACITY_MIN, stateOverridden, lampVars, resolveShapes, cornerLights, CORNER_POSITIONS } from "../lib/lampStyle";
+import { labelOf, labelPrefOf } from "../lib/lampSort";
+import { SIGN_OPACITY_MIN, stateOverridden, lampVars, resolveShapes, cornerLights, CORNER_POSITIONS, minutesToClock, clockToMinutes } from "../lib/lampStyle";
 import {
   commitHeader,
   withoutHeader,
   MAX_HOOK_HEADERS,
 } from "../lib/hookHeaders";
 import { useLang, useMessages, type Lang, type Messages } from "../lib/i18n";
-import { useSettings, updateSettings, DEFAULTS, HTTP_PRESETS, type Settings, type Shape, type Palette, type SignRadius, type SignBorder, type SignTint, type SignText, type SignFont, type SignGap, type SignEmphasis, type SignEdge, type SignCorner, type LightTrigger, type LightScale, type LightAlpha, type LightColor, type HttpPreset, type Hook, type Device, type Machine, type MachineHealth, type StateStyle, type GroupMeta } from "../lib/useSettings";
+import { useSettings, updateSettings, DEFAULTS, HTTP_PRESETS, type Settings, type Shape, type Palette, type SignRadius, type SignBorder, type SignTint, type SignText, type SignFont, type SignGap, type SignEmphasis, type SignEdge, type SignCorner, type LightTrigger, type LightScale, type LightAlpha, type LightColor, type HttpPreset, type Hook, type Device, type Machine, type MachineHealth, type StateStyle, type GroupMeta, type SignLabel } from "../lib/useSettings";
 import {
   useToggles,
   setAutostart,
@@ -255,12 +255,15 @@ function cornerOptions(m: Messages): { label: string; value: SignCorner }[] {
     { label: m.cornerKind.pinned, value: "pinned" },
     { label: m.cornerKind.muted, value: "muted" },
     { label: m.cornerKind.stale, value: "stale" },
+    { label: m.cornerKind.passthrough, value: "passthrough" },
   ];
 }
 
 /**
- * 边框光「什么时候亮」。两行（边灯 / 角灯）共用这张表，所以放在「行为」页。
- * 顺序就是由静到动：常亮 → 只在要你处理时 → 只在有活动时 → 跟随安静模式。
+ * 边框光「什么时候亮」。**两行（边灯 / 角灯）共用这一张表**，所以放在「行为」页：
+ * 0.6.4 之前边灯只能挑形状，角灯却能按「置顶 / 静音」这些条件挂，看起来像
+ * 「只有角灯有触发条件」。现在九档一一对应，两行都从同一个下拉里选。
+ * 顺序：先是最常用的四档，再是按状态 / 时间 / 牌面事实细挑的五档。
  */
 function triggerOptions(m: Messages): { label: string; value: LightTrigger }[] {
   return [
@@ -268,6 +271,20 @@ function triggerOptions(m: Messages): { label: string; value: LightTrigger }[] {
     { label: m.triggerAttention, value: "attention" },
     { label: m.triggerActive, value: "active" },
     { label: m.triggerQuiet, value: "quiet" },
+    { label: m.triggerState, value: "state" },
+    { label: m.triggerSchedule, value: "schedule" },
+    { label: m.triggerStale, value: "stale" },
+    { label: m.triggerMessage, value: "message" },
+    { label: m.triggerPinned, value: "pinned" },
+  ];
+}
+
+/** 会话标题怎么拼。默认第一项：只显示会话 / 项目名，不拼智能体名。 */
+function labelOptions(m: Messages): { label: string; value: SignLabel }[] {
+  return [
+    { label: m.labelSession, value: "session" },
+    { label: m.labelWithAgent, value: "with_agent" },
+    { label: m.labelCustom, value: "custom" },
   ];
 }
 
@@ -472,10 +489,13 @@ function LampPreview({ settings }: { settings: Settings }) {
   // 而预览的任务恰恰是「让你看清自己配了什么」—— 跟着条件走的话，配完可能一个角
   // 都看不到，然后被当成没生效。条件全给 true，`staleProgress: 1` 让那枚取最实的
   // 一档（它的亮度是随进度变的）。
+  // 穿透也是「条件成立才画」的一枚，预览里同样给真：否则用户给某个角挑了
+  // 「点击穿透」，预览四角却全是空的，会被当成下拉没生效。
   const previewCorners = cornerLights(settings.sign_corners, {
     pinned: true,
     muted: true,
     staleProgress: 1,
+    passThrough: true,
   });
 
   return (
@@ -1566,6 +1586,15 @@ export function SettingsPanel({ snapshot }: Props) {
   const edgeChoices = edgeOptions(m);
   const cornerChoices = cornerOptions(m);
   const triggerChoices = triggerOptions(m);
+  const labelChoices = labelOptions(m);
+  // 三档带参数的触发条件共用一个状态选择器 / 一组时段输入：**两行里只要有一行
+  // 用到就显示**。两行各存一份参数的话，用户会看到两个「指定哪个状态」却只有一个
+  // 能生效；反过来只存一份、却给边灯和角灯分别显示两遍也一样别扭。
+  const triggerUsesState =
+    settings.sign_edge_trigger === "state" || settings.sign_corner_trigger === "state";
+  const triggerUsesSchedule =
+    settings.sign_edge_trigger === "schedule" ||
+    settings.sign_corner_trigger === "schedule";
   const scaleChoices = scaleOptions(m);
   const alphaChoices = alphaOptions(m);
   const lightColorChoices = lightColorOptions(m);
@@ -2647,7 +2676,7 @@ export function SettingsPanel({ snapshot }: Props) {
             ) : (
               snapshot.groups.map((group) => {
                 const hidden = settings.hidden_groups.includes(group.name);
-                const label = labelOf(group, settings.group_meta);
+                const label = labelOf(group, settings.group_meta, labelPrefOf(settings));
                 return (
                   <div className="group" key={group.name} data-hidden={hidden}>
                     <div className="group-head" data-state={group.aggregate}>
@@ -2810,45 +2839,112 @@ export function SettingsPanel({ snapshot }: Props) {
                 （档位 / 四角挂什么 / 粗细明暗颜色），这边管「凭什么现在亮」。
                 拆开是刻意的 —— 想调「平时别亮、要我批准时整块牌框成红的」的人，
                 不该去外观页里翻；而只想换个颜色的人也不该被触发条件拦住。
-                判定在 `lampStyle.ts::lightOn`，边灯与角灯各传各的 trigger。
+
+                **两行用同一张九档表、同一个下拉**：0.6.4 之前边灯只有形状，角灯
+                却能按「置顶 / 静音」这些条件挂，看着像只有角灯有触发条件。九档塞不进
+                seg（一行九个按钮会挤成两行半），所以换成下拉；颜色 / 选中态仍沿用
+                输入框那一套扁平语言。判定在 `lampStyle.ts::lightOn`，各传各的 trigger。
                 **放在静默超时之后、窗口交互之前**：上一轮「外观里无法设置和查看」
-                的教训是藏太深，这一节只有两行，没必要让它沉到页尾。 */}
+                的教训是藏太深，这一节不能沉到页尾。 */}
             <div className="section-title">{m.lightBehavior}</div>
             <p className="hint">{m.lightBehaviorHint}</p>
             <Row
               label={m.edgeTrigger}
               onReset={resetFor(settings, "sign_edge_trigger", patch)}
             >
-              <div className="seg">
+              <select
+                className="select select-wide"
+                value={settings.sign_edge_trigger}
+                onChange={(event) =>
+                  patch({ sign_edge_trigger: event.target.value as LightTrigger })
+                }
+              >
                 {triggerChoices.map((choice) => (
-                  <button
-                    key={choice.value}
-                    type="button"
-                    data-active={settings.sign_edge_trigger === choice.value}
-                    onClick={() => patch({ sign_edge_trigger: choice.value })}
-                  >
+                  <option key={choice.value} value={choice.value}>
                     {choice.label}
-                  </button>
+                  </option>
                 ))}
-              </div>
+              </select>
             </Row>
             <Row
               label={m.cornerTrigger}
               onReset={resetFor(settings, "sign_corner_trigger", patch)}
             >
-              <div className="seg">
+              <select
+                className="select select-wide"
+                value={settings.sign_corner_trigger}
+                onChange={(event) =>
+                  patch({ sign_corner_trigger: event.target.value as LightTrigger })
+                }
+              >
                 {triggerChoices.map((choice) => (
-                  <button
-                    key={choice.value}
-                    type="button"
-                    data-active={settings.sign_corner_trigger === choice.value}
-                    onClick={() => patch({ sign_corner_trigger: choice.value })}
-                  >
+                  <option key={choice.value} value={choice.value}>
                     {choice.label}
-                  </button>
+                  </option>
                 ))}
-              </div>
+              </select>
             </Row>
+            {triggerUsesState && (
+              <Row
+                label={m.triggerStatePick}
+                onReset={resetFor(settings, "sign_trigger_state", patch)}
+              >
+                <select
+                  className="select select-wide"
+                  value={settings.sign_trigger_state}
+                  onChange={(event) =>
+                    patch({ sign_trigger_state: event.target.value as SignalState })
+                  }
+                >
+                  {SIGNALS.map((state) => (
+                    <option key={state} value={state}>
+                      {signalLabel(lang, state)}
+                    </option>
+                  ))}
+                </select>
+              </Row>
+            )}
+            {triggerUsesSchedule && (
+              <Row
+                label={m.triggerSchedule}
+                onReset={
+                  settings.sign_trigger_from !== DEFAULTS.sign_trigger_from ||
+                  settings.sign_trigger_to !== DEFAULTS.sign_trigger_to
+                    ? () =>
+                        patch({
+                          sign_trigger_from: DEFAULTS.sign_trigger_from,
+                          sign_trigger_to: DEFAULTS.sign_trigger_to,
+                        })
+                    : undefined
+                }
+              >
+                <div className="time-range">
+                  <span className="muted-text">{m.triggerScheduleFrom}</span>
+                  <input
+                    type="time"
+                    className="input input-time"
+                    value={minutesToClock(settings.sign_trigger_from)}
+                    onChange={(event) => {
+                      const next = clockToMinutes(event.target.value);
+                      if (next !== null) patch({ sign_trigger_from: next });
+                    }}
+                  />
+                  <span className="muted-text">{m.triggerScheduleTo}</span>
+                  <input
+                    type="time"
+                    className="input input-time"
+                    value={minutesToClock(settings.sign_trigger_to)}
+                    onChange={(event) => {
+                      const next = clockToMinutes(event.target.value);
+                      if (next !== null) patch({ sign_trigger_to: next });
+                    }}
+                  />
+                </div>
+              </Row>
+            )}
+            {(triggerUsesState || triggerUsesSchedule) && (
+              <p className="hint">{m.triggerParamsHint}</p>
+            )}
 
             <div className="section-title">{m.behaviorWindowTitle}</div>
             {/* 单击是灯上最便宜的手势。v0.5.0 把它给了折叠，收件箱被挤进
@@ -3232,6 +3328,51 @@ export function SettingsPanel({ snapshot }: Props) {
                     ))}
                   </div>
                 </Row>
+
+                {/* ---- 会话标题 ------------------------------------------------------
+                    紧挨着「牌上显示」：那一排 chip 决定**有没有名字**，这一节决定
+                    **名字里写什么**。默认只显示会话 / 项目名 —— `SignalHub · workbuddy`
+                    在固定牌宽里几乎每次都被截成 `SignalHub · w…`，留下的是噪音、
+                    切掉的才是区分度。想看智能体名或自己写模板都在这儿，逐组改名
+                    仍然优先（见「分组 → 各组的显示」）。 */}
+                <div className="section-title">{m.signLabelTitle}</div>
+                <p className="hint">{m.signLabelHint}</p>
+                <Row
+                  label={m.signLabel}
+                  onReset={resetFor(settings, "sign_label", patch)}
+                >
+                  <select
+                    className="select select-wide"
+                    value={settings.sign_label}
+                    onChange={(event) =>
+                      patch({ sign_label: event.target.value as SignLabel })
+                    }
+                  >
+                    {labelChoices.map((choice) => (
+                      <option key={choice.value} value={choice.value}>
+                        {choice.label}
+                      </option>
+                    ))}
+                  </select>
+                </Row>
+                {settings.sign_label === "custom" && (
+                  <Row
+                    label={m.labelTemplate}
+                    hint={m.labelTemplateHint}
+                    onReset={resetFor(settings, "sign_label_template", patch)}
+                  >
+                    <input
+                      className="input"
+                      value={settings.sign_label_template}
+                      placeholder={m.labelTemplatePlaceholder}
+                      maxLength={80}
+                      onChange={(event) =>
+                        patch({ sign_label_template: event.target.value })
+                      }
+                    />
+                  </Row>
+                )}
+
                 {/* 逐状态覆盖和上面的全局项是**两层**：上面是「没被覆盖时用哪个」，
                     这里是「某个状态单独长什么样」。默认收起 —— 十行表和上面那九行
                     不是一个量级，全摊开会把这一页淹掉，而它回答的其实是「外观」的

@@ -1,7 +1,7 @@
 import type { Approval } from "./useApprovals";
 import type { GroupMeta } from "./useSettings";
 import type { GroupView, SignalState, Snapshot } from "./types";
-import { labelOf } from "./lampSort";
+import { DEFAULT_LABEL_PREF, labelOf, type LabelPref } from "./lampSort";
 
 /**
  * 收件箱的一行。
@@ -64,8 +64,13 @@ function byAgeDesc(a: InboxRow, b: InboxRow): number {
   return b.ageMs - a.ageMs;
 }
 
-function labelFor(group: GroupView | undefined, meta: Record<string, GroupMeta>, fallback: string): string {
-  return group ? labelOf(group, meta) : fallback;
+function labelFor(
+  group: GroupView | undefined,
+  meta: Record<string, GroupMeta>,
+  fallback: string,
+  pref: LabelPref,
+): string {
+  return group ? labelOf(group, meta, pref) : fallback;
 }
 
 /**
@@ -81,6 +86,7 @@ export function buildInbox(
   snapshot: Snapshot,
   approvals: Approval[],
   meta: Record<string, GroupMeta>,
+  pref: LabelPref = DEFAULT_LABEL_PREF,
 ): InboxModel {
   const rows: InboxRow[] = [];
   const seen = new Set<string>();
@@ -92,7 +98,7 @@ export function buildInbox(
         key: `s:${session.id}`,
         session: session.id,
         group: group.name,
-        label: labelFor(group, meta, session.id),
+        label: labelFor(group, meta, session.id, pref),
         agent: session.agent,
         state: approval ? "permission" : session.state,
         message: session.message,

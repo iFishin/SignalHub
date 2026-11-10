@@ -811,6 +811,28 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   cursor: default;
 }
 
+/* 触发条件下拉：九档里有一半是短句（「达到指定状态」「沉默快到期时」），
+   84px 的表格宽度装不下。宽度跟着内容走、上限是整行，和 `.hook-preset` 同理。
+   时段 / 模板输入同属「行为 → 边框光」这一节，沿用扁平的一套，不另起视觉语言。 */
+.select-wide {
+  width: auto;
+  min-width: 148px;
+  max-width: 100%;
+}
+
+.time-range {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.input-time {
+  width: auto;
+  min-width: 92px;
+  padding: 3px 7px;
+  font-size: 11.5px;
+}
+
 .style-col {
   flex: none;
   width: 84px;
