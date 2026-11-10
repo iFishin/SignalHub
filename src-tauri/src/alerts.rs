@@ -145,8 +145,20 @@ pub enum Decision {
 impl Gate {
     /// 记下这次的聚合值，返回该怎么处理。
     ///
+    /// `wanted` 是「这个状态在用户勾的提醒列表里吗」（见 `Settings::notify_wants`）。
+    /// 它只决定**第一次要不要弹**，不影响 `alerting` / `episode` 的推进：这两样
+    /// 要反映真实状态，否则用户勾上之后，`confirm` 和延迟检查会拿一个更旧的值
+    /// 去比对。而「已通知」只在真的弹出去时置上，所以没勾的那几帧不会把它吃掉
+    /// —— 勾上之后的下一帧照样能弹。
+    ///
     /// `now` 不用在这里，计时由调用方负责（它才知道怎么排延迟任务）。
-    pub fn observe(&mut self, alerting: Signal, threshold: Duration, quiet: bool) -> Decision {
+    pub fn observe(
+        &mut self,
+        alerting: Signal,
+        threshold: Duration,
+        quiet: bool,
+        wanted: bool,
+    ) -> Decision {
         // 聚合值一变就是新的一轮：`notified` / `pending` 都要清零，否则新一轮
         // 会被上一轮的「已通知」挡住，或者上一轮排的定时器会替它把检查提前。
         if self.alerting != Some(alerting) {
@@ -157,8 +169,10 @@ impl Gate {
             self.episode = self.episode.wrapping_add(1);
         }
 
-        // 不是紧急状态就永远不弹 —— 落回普通状态不需要通知
-        if !is_urgent(alerting) {
+        // 用户没把这个状态勾进「在哪些状态下提醒」就不弹。默认集合是授权 /
+        // 关注 / 出错（`config::DEFAULT_NOTIFY_STATES`），所以老配置走到这里
+        // 的行为和加这个开关之前一模一样。
+        if !wanted {
             return Decision::None;
         }
 
@@ -244,8 +258,11 @@ pub fn stuck_for_ms(snapshot: &Snapshot, muted: &[String], state: Signal) -> u64
         .unwrap_or(0)
 }
 
-/// 这个状态值得打扰用户吗。抽出来是为了让「哪些状态算紧急」只有一处定义 ——
-/// `observe` 和调用方都用它，免得两边漂移。
+/// 「需要你处理」的那三个状态。
+///
+/// 它现在只决定**重复提醒**：提醒说的是「还卡着、已经等了 20 分钟」，而完成 /
+/// 空闲 / 沉默不会卡住 —— 给它们排一条这样的提醒是胡说。第一次要不要弹由用户
+/// 勾的列表决定（见 `Settings::notify_wants` 与 `Gate::observe` 的 `wanted`）。
 pub fn is_urgent(state: Signal) -> bool {
     matches!(state, Signal::Permission | Signal::Attention | Signal::Error)
 }
@@ -769,21 +786,21 @@ mod tests {
         // 普通状态不弹，但随后的跃迁要弹
         let mut gate = Gate::default();
         assert!(matches!(
-            gate.observe(Signal::Working, Duration::ZERO, false),
+            gate.observe(Signal::Working, Duration::ZERO, false, false),
             Decision::None
         ));
         assert!(matches!(
-            gate.observe(Signal::Permission, Duration::ZERO, false),
+            gate.observe(Signal::Permission, Duration::ZERO, false, true),
             Decision::Now
         ));
 
         // 换一个紧急状态 = 新的一轮，也该弹
         assert!(matches!(
-            gate.observe(Signal::Attention, Duration::ZERO, false),
+            gate.observe(Signal::Attention, Duration::ZERO, false, true),
             Decision::Now
         ));
         assert!(matches!(
-            gate.observe(Signal::Error, Duration::ZERO, false),
+            gate.observe(Signal::Error, Duration::ZERO, false, true),
             Decision::Now
         ));
     }
@@ -793,19 +810,23 @@ mod tests {
     fn staying_in_an_urgent_state_does_not_alert_again() {
         let mut gate = Gate::default();
         assert!(matches!(
-            gate.observe(Signal::Permission, Duration::ZERO, false),
+            gate.observe(Signal::Permission, Duration::ZERO, false, true),
             Decision::Now
         ));
         for _ in 0..3 {
             assert!(matches!(
-                gate.observe(Signal::Permission, Duration::ZERO, false),
+                gate.observe(Signal::Permission, Duration::ZERO, false, true),
                 Decision::None
             ));
         }
     }
 
+    /// 没被勾进「在哪些状态下提醒」的状态永远不弹 —— 包括默认不勾的那几个。
+    ///
+    /// 这一条替掉了原来那个「普通状态不弹」的用例：判断从写死的 `is_urgent` 变成
+    /// 了用户勾的列表，所以测的也该是那个输入（`wanted = false`），而不是状态本身。
     #[test]
-    fn ordinary_states_never_alert() {
+    fn states_the_user_did_not_pick_never_alert() {
         for state in [
             Signal::Offline,
             Signal::Off,
@@ -818,36 +839,73 @@ mod tests {
             // 从「没见过状态」直接来
             let mut fresh = Gate::default();
             assert!(
-                matches!(fresh.observe(state, Duration::ZERO, false), Decision::None),
-                "{state:?} 不该弹通知"
+                matches!(fresh.observe(state, Duration::ZERO, false, false), Decision::None),
+                "{state:?} 没被勾上，不该弹通知"
             );
 
-            // 从紧急状态落下到普通状态也不弹
+            // 从紧急状态落下到它也不弹
             let mut gate = Gate::default();
             assert!(matches!(
-                gate.observe(Signal::Permission, Duration::ZERO, false),
+                gate.observe(Signal::Permission, Duration::ZERO, false, true),
                 Decision::Now
             ));
             assert!(
-                matches!(gate.observe(state, Duration::ZERO, false), Decision::None),
-                "{state:?} 不该弹通知"
+                matches!(gate.observe(state, Duration::ZERO, false, false), Decision::None),
+                "{state:?} 没被勾上，不该弹通知"
             );
         }
+    }
+
+    /// 反过来：用户勾了的非紧急状态**要**弹。这是这个开关存在的全部理由 ——
+    /// 「干完活告我一声」不该逼人去配一条 webhook。
+    #[test]
+    fn a_picked_state_alerts_even_when_it_is_not_urgent() {
+        for state in [Signal::Done, Signal::Stale, Signal::Idle] {
+            let mut gate = Gate::default();
+            assert!(
+                matches!(gate.observe(state, Duration::ZERO, false, true), Decision::Now),
+                "{state:?} 被勾上了，就该弹"
+            );
+            // 同一轮里再来一次不重复弹（和紧急状态同一条节流）
+            assert!(matches!(
+                gate.observe(state, Duration::ZERO, false, true),
+                Decision::None
+            ));
+        }
+    }
+
+    /// 用户中途把某个状态勾上时，即使聚合值没变也要立刻成立。
+    ///
+    /// 靠的是「已通知」只在真的弹出去时置上：没勾的那几帧走了早退分支，`notified`
+    /// 一直是 false，所以勾上之后的下一帧还能弹。
+    #[test]
+    fn turning_a_state_on_takes_effect_on_the_very_next_push() {
+        let mut gate = Gate::default();
+        // 没勾的时候来了一帧 done：不弹，但要记下「现在是 done」
+        assert!(matches!(
+            gate.observe(Signal::Done, Duration::ZERO, false, false),
+            Decision::None
+        ));
+        // 用户勾上 done，状态没变，下一帧就该弹
+        assert!(matches!(
+            gate.observe(Signal::Done, Duration::ZERO, false, true),
+            Decision::Now
+        ));
     }
 
     #[test]
     fn leaving_an_urgent_state_does_not_alert() {
         let mut gate = Gate::default();
         assert!(matches!(
-            gate.observe(Signal::Permission, Duration::ZERO, false),
+            gate.observe(Signal::Permission, Duration::ZERO, false, true),
             Decision::Now
         ));
         assert!(matches!(
-            gate.observe(Signal::Working, Duration::ZERO, false),
+            gate.observe(Signal::Working, Duration::ZERO, false, false),
             Decision::None
         ));
         assert!(matches!(
-            gate.observe(Signal::Idle, Duration::ZERO, false),
+            gate.observe(Signal::Idle, Duration::ZERO, false, false),
             Decision::None
         ));
     }
@@ -858,16 +916,16 @@ mod tests {
     fn a_changed_aggregate_starts_a_fresh_episode() {
         let mut gate = Gate::default();
         assert!(matches!(
-            gate.observe(Signal::Permission, Duration::ZERO, false),
+            gate.observe(Signal::Permission, Duration::ZERO, false, true),
             Decision::Now
         ));
         // 落下再回来 = 新的一轮，应该能再弹
         assert!(matches!(
-            gate.observe(Signal::Working, Duration::ZERO, false),
+            gate.observe(Signal::Working, Duration::ZERO, false, false),
             Decision::None
         ));
         assert!(matches!(
-            gate.observe(Signal::Permission, Duration::ZERO, false),
+            gate.observe(Signal::Permission, Duration::ZERO, false, true),
             Decision::Now
         ));
     }
@@ -877,7 +935,7 @@ mod tests {
     fn a_nonzero_threshold_defers_the_first_alert() {
         let mut gate = Gate::default();
         assert!(matches!(
-            gate.observe(Signal::Permission, Duration::from_secs(5), false),
+            gate.observe(Signal::Permission, Duration::from_secs(5), false, true),
             Decision::Later
         ));
     }
@@ -889,16 +947,16 @@ mod tests {
         let mut gate = Gate::default();
         let threshold = Duration::from_secs(5);
         assert!(matches!(
-            gate.observe(Signal::Permission, threshold, false),
+            gate.observe(Signal::Permission, threshold, false, true),
             Decision::Later
         ));
         assert!(matches!(
-            gate.observe(Signal::Permission, threshold, false),
+            gate.observe(Signal::Permission, threshold, false, true),
             Decision::None
         ));
         // 第三次仍然是 None，证明 pending 没被第二次 observe 重置
         assert!(matches!(
-            gate.observe(Signal::Permission, threshold, false),
+            gate.observe(Signal::Permission, threshold, false, true),
             Decision::None
         ));
     }
@@ -909,7 +967,7 @@ mod tests {
         let mut gate = Gate::default();
         let threshold = Duration::from_secs(5);
         assert!(matches!(
-            gate.observe(Signal::Permission, threshold, false),
+            gate.observe(Signal::Permission, threshold, false, true),
             Decision::Later
         ));
         assert!(gate.confirm(Signal::Permission));
@@ -923,12 +981,12 @@ mod tests {
         let mut gate = Gate::default();
         let threshold = Duration::from_secs(5);
         assert!(matches!(
-            gate.observe(Signal::Permission, threshold, false),
+            gate.observe(Signal::Permission, threshold, false, true),
             Decision::Later
         ));
         // 定时器到点之前，状态先走了
         assert!(matches!(
-            gate.observe(Signal::Working, threshold, false),
+            gate.observe(Signal::Working, threshold, false, false),
             Decision::None
         ));
         assert!(!gate.confirm(Signal::Permission), "状态已经不是它了，不该弹");
@@ -942,12 +1000,12 @@ mod tests {
 
         // 先排了一次延迟检查
         assert!(matches!(
-            gate.observe(Signal::Permission, threshold, false),
+            gate.observe(Signal::Permission, threshold, false, true),
             Decision::Later
         ));
         // 勿扰开始了，新的推送把这一轮标记成「已通知」
         assert!(matches!(
-            gate.observe(Signal::Permission, threshold, true),
+            gate.observe(Signal::Permission, threshold, true, true),
             Decision::None
         ));
         // 之前那个定时器到点：不该再弹
@@ -962,11 +1020,11 @@ mod tests {
     fn an_immediate_alert_marks_the_episode_notified() {
         let mut gate = Gate::default();
         assert!(matches!(
-            gate.observe(Signal::Error, Duration::ZERO, false),
+            gate.observe(Signal::Error, Duration::ZERO, false, true),
             Decision::Now
         ));
         assert!(matches!(
-            gate.observe(Signal::Error, Duration::ZERO, false),
+            gate.observe(Signal::Error, Duration::ZERO, false, true),
             Decision::None
         ));
     }
@@ -1037,18 +1095,18 @@ mod tests {
         let mut gate = Gate::default();
 
         for _ in 0..5 {
-            gate.observe(Signal::Permission, Duration::ZERO, false);
+            gate.observe(Signal::Permission, Duration::ZERO, false, true);
         }
         let first = gate.episode();
         assert_eq!(gate.episode(), first, "同一个状态推五次不该算五轮");
 
-        gate.observe(Signal::Working, Duration::ZERO, false);
+        gate.observe(Signal::Working, Duration::ZERO, false, true);
         assert_ne!(gate.episode(), first, "状态变了就是新的一轮");
 
         // **离开又回到同一个值**也是一轮新的：提醒任务必须认得出这件事，否则它会
         // 替新一轮发一条「已等待 20 分钟」，而新一轮才刚开始。
         let second = gate.episode();
-        gate.observe(Signal::Permission, Duration::ZERO, false);
+        gate.observe(Signal::Permission, Duration::ZERO, false, true);
         assert_ne!(gate.episode(), second, "回到同一个值也是一轮新的");
     }
 

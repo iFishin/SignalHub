@@ -1095,6 +1095,14 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   margin-bottom: 0;
 }
 
+/* 放在 `.row` 里当控件用的 chips（「提醒」页的「在哪些状态下提醒」）。
+   `.chips` 的下边距是给整块过滤区留的，搁进行里会把这一行撑得比别的行高，
+   看着像多了一格空白。 */
+.chips-in-row {
+  margin-bottom: 0;
+  justify-content: flex-end;
+}
+
 /* ---- 滑杆（背景透明度 / 闪烁节奏） ---- */
 
 .slider {

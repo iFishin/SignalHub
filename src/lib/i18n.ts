@@ -532,6 +532,9 @@ export interface Messages {
 
   // 提醒页
   notifyWhenNeeded: string;
+  /** 「在哪些状态下提醒」那一行 */
+  notifyWhen: string;
+  notifyWhenHint: string;
   soundWithNotify: string;
   alertAfter: string;
   alertAfterHint: string;
@@ -1494,12 +1497,15 @@ export const MESSAGES: Record<Lang, Messages> = {
     groupDisplayEmpty: "还没有任何分组 —— 接上智能体、或调用上报接口之后，它们会出现在这里。",
 
     notifyWhenNeeded: "需要时弹通知",
+    notifyWhen: "在哪些状态下提醒",
+    notifyWhenHint:
+      "只在整体状态变成这几个时弹。一个都不选就不弹 —— 想彻底关掉用上面那个总开关。和「转发」的状态过滤是同一套判断，只是「转发」默认不筛、这里默认只筛需要你处理的那三个。",
     soundWithNotify: "通知带提示音",
     alertAfter: "持续多久才提醒",
     alertAfterHint: "状态要持续这么久才弹通知，一闪而过的忽略掉",
     quietHours: "勿扰时段",
     alertHint:
-      "需要授权、需要关注或出错时弹一条系统通知。声音挂在通知上，所以关掉通知也就没有声音。勿扰时段里不弹也不出声，灯照常显示 —— 而且不补发：早上醒来收到一堆昨晚的通知，正是勿扰想避免的。",
+      "弹一条系统通知，告诉你是哪一组、卡在什么状态。声音挂在通知上，所以关掉通知也就没有声音。勿扰时段里不弹也不出声，灯照常显示 —— 而且不补发：早上醒来收到一堆昨晚的通知，正是勿扰想避免的。",
     rulesTitle: "预设规则",
     rulesHint:
       "三条写死的规则，各自一个开关 —— 不做表达式引擎。它们只决定「什么时候打扰你」，不改变灯的聚合、排序和转发。",
@@ -2412,12 +2418,15 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     groupDisplayEmpty: "No groups yet — they show up here once an agent or the report API tells us about one.",
 
     notifyWhenNeeded: "Notify when needed",
+    notifyWhen: "Notify for these states",
+    notifyWhenHint:
+      "Only notify when the overall state becomes one of these. None selected means never — use the switch above to turn notifications off entirely. Same filter as in Forwarding; the difference is only the default (that one filters nothing, this one starts on the three that need you).",
     soundWithNotify: "Sound with notification",
     alertAfter: "Alert after",
     alertAfterHint: "A state must last this long before notifying; brief ones are ignored",
     quietHours: "Quiet hours",
     alertHint:
-      "A system notification when approval, attention or error happens. Sound rides on the notification, so turning notifications off silences it too. During quiet hours nothing pops or sounds and the lamp still shows — and nothing is replayed: waking to a pile of last night's notifications is exactly what quiet hours avoids.",
+      "A system notification that says which group it is and what state it is stuck in. Sound rides on the notification, so turning notifications off silences it too. During quiet hours nothing pops or sounds and the lamp still shows — and nothing is replayed: waking to a pile of last night's notifications is exactly what quiet hours avoids.",
     rulesTitle: "Presets",
     rulesHint:
       "Three hard-coded rules, each with its own switch — no expression engine. They only decide when to interrupt you; aggregation, ordering and forwarding are untouched.",

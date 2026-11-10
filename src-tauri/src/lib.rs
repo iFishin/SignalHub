@@ -310,6 +310,12 @@ fn validate_settings(settings: &Settings) -> Result<(), String> {
         }
     }
 
+    // 通知的状态过滤。界面只会发合法值，所以这里挡的是「导入一份手改过的配置」——
+    // 报错要指到具体那个名字，而不是「设置不合法」。
+    if let Some(problem) = config::notify_when_problem(&settings.notify_when) {
+        return Err(format!("通知状态不合法：{problem}"));
+    }
+
     for device in &settings.devices {
         if let Some(problem) = config::device_problem(device) {
             return Err(format!("物理灯不合法：{problem}"));

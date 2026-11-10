@@ -257,6 +257,16 @@ export interface Settings {
   quiet: boolean;
   /** 需要你注意时弹系统通知。 */
   notify: boolean;
+  /**
+   * 哪些状态变化时弹系统通知 —— `notify` 总开关之下的一层过滤。
+   *
+   * **空数组 = 一条都不弹**，和 `hooks[].when` 的「空 = 不过滤」刻意不同：那里
+   * 的空当「不过滤」讲是对的，这里的空要是照搬，等于给每个状态都弹通知。
+   *
+   * 名字取自 `NOTIFY_STATES`（`offline` / `off` 不在里面，见那边的注释）；
+   * Rust 侧 `config::NOTIFY_STATES` 是同一份集合。
+   */
+  notify_when: string[];
   /** 出站钩子。 */
   hooks: Hook[];
   /**
@@ -420,6 +430,9 @@ export const DEFAULTS: Settings = {
   snap_to_edge: false,
   quiet: true,
   notify: true,
+  // 和 Rust 的 `config::DEFAULT_NOTIFY_STATES` 必须一致：这里是「加这个开关之前
+  // 的行为」，也是界面上 ↺ 要回到的那三个。
+  notify_when: ["permission", "attention", "error"],
   hooks: [],
   devices: [],
   approve_tools: false,

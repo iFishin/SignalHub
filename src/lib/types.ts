@@ -32,6 +32,20 @@ export const SIGNALS = [
 
 export type SignalState = (typeof SIGNALS)[number];
 
+/**
+ * 能给**系统通知**挑的状态：`SIGNALS` 去掉 `offline` / `off`。
+ *
+ * 那两个不代表「发生了什么」——`offline` 是「一个组都没有 / 全被静音」时的兜底，
+ * `off` 是「用户自己按了暂停」。勾上只会得到「你暂停时提醒你暂停了」这种噪音。
+ *
+ * Rust 侧是 `config::NOTIFY_STATES`，两边集合必须一致：界面能勾的项在那边被丢掉
+ * 的话，用户点了半天没反应。这里是**推导**出来的，不是另抄一份表 —— 所以只有
+ * 那条「去掉两个」的规则需要两边同步。
+ */
+export const NOTIFY_STATES: readonly SignalState[] = SIGNALS.filter(
+  (state) => state !== "offline" && state !== "off",
+);
+
 export interface SessionView {
   id: string;
   state: SignalState;

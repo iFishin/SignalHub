@@ -92,7 +92,13 @@ import {
   EMPTY_AGENT_DRAFT,
   type AgentDraft,
 } from "../lib/customAgentForm";
-import { SIGNALS, REPORTABLE_SIGNALS, type SignalState, type Snapshot } from "../lib/types";
+import {
+  NOTIFY_STATES,
+  SIGNALS,
+  REPORTABLE_SIGNALS,
+  type SignalState,
+  type Snapshot,
+} from "../lib/types";
 
 /**
  * 给「在自己的事件钩子里调」那一类智能体抄的那条命令。
@@ -3009,6 +3015,39 @@ export function SettingsPanel({ snapshot }: Props) {
             <Row label={m.notifyWhenNeeded} onReset={resetFor(settings, "notify", patch)}>
               <Switch on={settings.notify} onChange={(on) => patch({ notify: on })} />
             </Row>
+
+            {/* 状态过滤。紧跟在总开关下面 —— 它是同一个问题的第二层（「什么时候弹」
+                里的「哪些状态」），和「转发」页那排 chip 是同一套控件、同一套语义。 */}
+            {settings.notify && (
+              <>
+                <Row
+                  label={m.notifyWhen}
+                  onReset={resetFor(settings, "notify_when", patch)}
+                >
+                  <div className="chips chips-in-row">
+                    {NOTIFY_STATES.map((state) => (
+                      <button
+                        key={state}
+                        type="button"
+                        className="chip"
+                        data-active={settings.notify_when.includes(state)}
+                        onClick={() =>
+                          patch({
+                            notify_when: settings.notify_when.includes(state)
+                              ? settings.notify_when.filter((name) => name !== state)
+                              : [...settings.notify_when, state],
+                          })
+                        }
+                      >
+                        {m.shortSignal[state]}
+                      </button>
+                    ))}
+                  </div>
+                </Row>
+                <p className="hint">{m.notifyWhenHint}</p>
+              </>
+            )}
+
             <Row label={m.soundWithNotify} onReset={resetFor(settings, "sound", patch)}>
               <Switch on={settings.sound} onChange={(on) => patch({ sound: on })} />
             </Row>

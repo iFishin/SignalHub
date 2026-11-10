@@ -69,7 +69,7 @@ export const TAB_ALIASES: Record<Tab, string[]> = {
   look: ["外观", "颜色", "形状", "大小", "透明度", "预设", "灵动", "柔光", "呼吸", "光晕", "look", "color", "size", "preset", "lively", "glow"],
   behavior: ["行为", "静默超时", "超时", "安静模式", "点击穿透", "behavior", "ttl", "timeout"],
   groups: ["分组", "置顶", "多灯", "每组分灯", "group", "pin", "lamp count"],
-  alert: ["提醒", "通知", "勿扰", "提示音", "声音", "alert", "notify", "dnd", "sound"],
+  alert: ["提醒", "通知", "勿扰", "提示音", "声音", "状态", "alert", "notify", "dnd", "sound", "state"],
   hooks: ["转发", "出站", "webhook", "slack", "ntfy", "wled", "物理灯", "hooks", "forward"],
   connect: ["接入", "智能体", "采集器", "cli", "hook", "token", "局域网", "web 面板", "审批", "诊断", "connect", "agent", "panel"],
   machines: ["多机", "远程", "hub", "machine", "remote"],

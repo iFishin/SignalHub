@@ -1111,6 +1111,15 @@ pub struct Settings {
     pub quiet: bool,
     /// 需要你注意（授权 / 关注 / 出错）时弹系统通知。
     pub notify: bool,
+    /// 哪些状态变化时弹系统通知 —— `notify` 总开关之下的**一层过滤**。
+    ///
+    /// 默认就是加这个字段之前的行为（`DEFAULT_NOTIFY_STATES`），所以从旧版本
+    /// 升级上来的人不会被 `working` / `done` 突然吵到。
+    ///
+    /// **空 = 一条都不弹。** 和 `hooks[].when` 的「空 = 任何变化」刻意不同：
+    /// 那里空是「不过滤」，这里要是照搬，等于给每个状态都弹通知。
+    #[serde(default = "default_notify_when")]
+    pub notify_when: Vec<String>,
     /// **已废弃**，只为读得懂旧配置。启动时会搬成一条 `hooks` 条目
     /// （见 `migrate_legacy_webhook`），并且**永不写回** —— 出口只有一条路，
     /// 不让「单条 webhook」和「钩子列表」两种表达并存。
@@ -1366,6 +1375,59 @@ pub const MAX_ALERT_DELAY_SECS: u16 = 3600;
 /// 又不至于让真正的等待等太久。
 pub const DEFAULT_ALERT_DELAY_SECS: u16 = 5;
 
+/// 默认会在哪些状态下弹系统通知。
+///
+/// **这必须等于加 `notify_when` 之前的行为**：老配置里没有这个字段，落到的就是
+/// 这几个值。要是这里写成「空 = 全部状态」，升级上来的用户会突然在每一次
+/// `working` / `done` 时被弹一下 —— 这是这类改动里最不该发生的事。
+pub const DEFAULT_NOTIFY_STATES: [&str; 3] = ["permission", "attention", "error"];
+
+/// 能给通知挑的状态：`Signal::ALL_NAMES` 去掉两个。
+///
+/// 去掉的是 `offline` 和 `off`：它们不代表「发生了什么」。`offline` 是「一个组
+/// 都没有 / 全被静音」时的兜底值，`off` 是「用户自己按了暂停」—— 勾上只会得到
+/// 「你暂停时提醒你暂停了」这种噪音。`stale` 留着：一个会话沉默到快消失，确实
+/// 是值得知道的事。
+///
+/// 前端那份是 `src/lib/types.ts` 的 `NOTIFY_STATES`（由 `SIGNALS` 过滤出来），
+/// 两边集合必须一致 —— 界面能勾的项在这里被丢掉的话，用户点了半天没反应。
+pub const NOTIFY_STATES: [&str; 8] = [
+    "stale", "idle", "thinking", "working", "done", "attention", "permission", "error",
+];
+
+fn default_notify_when() -> Vec<String> {
+    DEFAULT_NOTIFY_STATES.iter().map(|name| name.to_string()).collect()
+}
+
+/// 通知状态列表的规整：去空白、统一小写、丢掉不认识 / 不能选的、去重。
+///
+/// **保持用户给的顺序**：判定是 `contains`，顺序没有语义，但按原样留着更容易
+/// 看出「用户当时点了什么」。
+fn normalize_notify_states(names: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for name in names {
+        let name = name.trim().to_ascii_lowercase();
+        if NOTIFY_STATES.contains(&name.as_str()) && !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    out
+}
+
+/// 通知状态列表里有没有不能用的名字。`validate_settings` 用它给出明确报错 ——
+/// 界面只会发合法值，所以这条只在「导入一份手改过的配置」时才会触发。
+pub fn notify_when_problem(names: &[String]) -> Option<String> {
+    for name in names {
+        if !NOTIFY_STATES.contains(&name.as_str()) {
+            return Some(format!(
+                "状态 {name:?} 不能配通知；可用: {}",
+                NOTIFY_STATES.join(" ")
+            ));
+        }
+    }
+    None
+}
+
 /// 组名列表的规整：去空白、去空串、去重、排序。
 ///
 /// 隐藏和静音两个列表都要它。脏数据（`" ci"` 和 `"ci"`）会让「这一组藏了吗」
@@ -1510,6 +1572,7 @@ impl Default for Settings {
             snap_to_edge: false,
             quiet: true,
             notify: true,
+            notify_when: default_notify_when(),
             webhook_url: None,
             hooks: Vec::new(),
             // 空 = 一台灯都不发（新增外发默认关，红线 3）
@@ -1560,6 +1623,16 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// 这个状态该不该弹系统通知。
+    ///
+    /// 用名字比字符串，而不是先把列表解析成 `Vec<Signal>`：这条判断在每一次状态
+    /// 推送里都会跑（一秒可能好几次），为它每次都分配一个小 Vec 不值当。列表在
+    /// `clamped` 里已经规整过，所以这里只做精确比较。
+    pub fn notify_wants(&self, state: crate::state::Signal) -> bool {
+        let name = state.name();
+        self.notify_when.iter().any(|wanted| wanted == name)
+    }
+
     /// 把越界值夹回允许范围。设置来自两处不可信输入：手改过的 config.json
     /// 和前端传来的值。
     pub fn clamped(mut self) -> Self {
@@ -1570,6 +1643,16 @@ impl Settings {
         self.sign_opacity = self.sign_opacity.min(100);
         self.blink_speed = self.blink_speed.clamp(MIN_BLINK_SPEED, MAX_BLINK_SPEED);
         self.alert_after_secs = self.alert_after_secs.min(MAX_ALERT_DELAY_SECS);
+        // 通知状态列表：写坏的项直接丢掉。**全丢光时退回默认** —— 一个都认不出来
+        // 还留成空表的话，表现是「通知开着、权限也给了，但永远不弹」，而界面上
+        // 没有任何线索指向这里。
+        let had_states = !self.notify_when.is_empty();
+        let states = normalize_notify_states(std::mem::take(&mut self.notify_when));
+        self.notify_when = if states.is_empty() && had_states {
+            default_notify_when()
+        } else {
+            states
+        };
         self.quiet_hours.start = self.quiet_hours.start.min(23);
         self.quiet_hours.end = self.quiet_hours.end.min(23);
         // 组名去空白、去空串、去重并排序。这两个列表都会被反复比较（每块牌都要问
@@ -2244,6 +2327,9 @@ mod tests {
             },
             muted_groups: vec!["quiet".into()],
             alert_after_secs: 30,
+            // 新字段设成非默认值：默认是那三个「需要你处理」的状态，全默认的话
+            // 「漏了这个字段」在往返里看不出来
+            notify_when: vec!["done".into(), "stale".into()],
             rule_stuck_push: true,
             rule_busy_silence: true,
             rule_meeting: true,
@@ -2780,6 +2866,83 @@ mod tests {
         let raw = r#"{"alert_after_secs": 60000}"#;
         let settings = serde_json::from_str::<Settings>(raw).unwrap().clamped();
         assert_eq!(settings.alert_after_secs, MAX_ALERT_DELAY_SECS);
+    }
+
+    // ---- 通知的状态过滤 -------------------------------------------------------
+
+    /// 老配置里没有这个字段 —— 落到的必须是**加开关之前**的那三个状态，
+    /// 否则升级上来的用户会在每一次 `working` / `done` 时被弹一下。
+    #[test]
+    fn an_old_config_notifies_on_the_three_urgent_states() {
+        let settings = serde_json::from_str::<Settings>("{}").unwrap().clamped();
+        assert_eq!(settings.notify_when, vec!["permission", "attention", "error"]);
+
+        let wants = |state| settings.notify_wants(state);
+        assert!(wants(crate::state::Signal::Permission));
+        assert!(wants(crate::state::Signal::Attention));
+        assert!(wants(crate::state::Signal::Error));
+        for state in [
+            crate::state::Signal::Working,
+            crate::state::Signal::Done,
+            crate::state::Signal::Idle,
+            crate::state::Signal::Stale,
+        ] {
+            assert!(!wants(state), "{state:?} 不该在默认集合里");
+        }
+    }
+
+    /// 默认集合必须是**能勾选**的集合的子集 —— 否则界面上一开始就有三项是死的
+    #[test]
+    fn the_default_states_are_all_selectable() {
+        for name in DEFAULT_NOTIFY_STATES {
+            assert!(
+                NOTIFY_STATES.contains(&name),
+                "{name} 在默认集合里却选不了"
+            );
+        }
+        // 派生状态里只有 stale 给了通知，offline / off 不给（见 NOTIFY_STATES 注释）
+        assert!(!NOTIFY_STATES.contains(&"offline"));
+        assert!(!NOTIFY_STATES.contains(&"off"));
+        assert!(NOTIFY_STATES.contains(&"stale"));
+    }
+
+    /// 手改配置里写坏的值要被丢掉，而不是让整份设置退回默认
+    #[test]
+    fn notify_states_are_normalized() {
+        let raw = r#"{"notify_when": [" Done ", "DONE", "nonsense", "offline"]}"#;
+        let settings = serde_json::from_str::<Settings>(raw).unwrap().clamped();
+        assert_eq!(
+            settings.notify_when,
+            vec!["done"],
+            "去空白、统一小写、去重，认不出来的（含不能选的 offline）丢掉"
+        );
+    }
+
+    /// **一个都认不出来时退回默认**：留成空表的话，表现是「通知开着却永远不弹」，
+    /// 而界面上没有任何线索指向这里。
+    #[test]
+    fn an_unreadable_notify_list_falls_back_to_the_default() {
+        let raw = r#"{"notify_when": ["nonsense", "offline"]}"#;
+        let settings = serde_json::from_str::<Settings>(raw).unwrap().clamped();
+        assert_eq!(settings.notify_when, vec!["permission", "attention", "error"]);
+    }
+
+    /// 但**显式清空**是用户的真实意图（一个都不弹），不能被兜底顶掉
+    #[test]
+    fn an_explicitly_empty_notify_list_stays_empty() {
+        let raw = r#"{"notify_when": []}"#;
+        let settings = serde_json::from_str::<Settings>(raw).unwrap().clamped();
+        assert!(settings.notify_when.is_empty());
+        assert!(!settings.notify_wants(crate::state::Signal::Permission));
+    }
+
+    /// 报错要指出是哪个名字不能用 —— 这条只在导入一份手改过的配置时才会走到
+    #[test]
+    fn a_bad_notify_state_is_named_precisely() {
+        assert!(notify_when_problem(&["done".into(), "stale".into()]).is_none());
+        let problem = notify_when_problem(&["offline".into()]).unwrap();
+        assert!(problem.contains("offline"), "{problem}");
+        assert!(problem.contains("permission"), "报错里要列出可用的名字：{problem}");
     }
 
     // ---- 逐组显示偏好 ---------------------------------------------------------

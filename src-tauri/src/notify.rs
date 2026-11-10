@@ -193,11 +193,14 @@ fn decide_alert(
     let quiet = is_quiet_now(app) || crate::rules::silence(snapshot, settings).is_some();
 
     let threshold = Duration::from_secs(settings.alert_after_secs as u64);
+    // 用户勾了哪几个状态（「提醒」页那一排 chip）。默认是授权 / 关注 / 出错，
+    // 也就是加这个开关之前的行为 —— 见 `config::DEFAULT_NOTIFY_STATES`。
+    let wanted = settings.notify_wants(alerting);
     // 决定和轮次**在同一次加锁里取**：分两次的话，中间可能被另一次状态推送插进来，
     // 于是这里抓到的会是新一轮的编号、而决定属于上一轮 —— 那正好让轮次判断失效。
     let (decision, episode) = {
         let mut gate = gate.lock().expect("gate poisoned");
-        let decision = gate.observe(alerting, threshold, quiet);
+        let decision = gate.observe(alerting, threshold, quiet, wanted);
         (decision, gate.episode())
     };
 
@@ -239,6 +242,11 @@ fn decide_alert(
                     .snapshot();
                 if alerts::alerting_aggregate(&snapshot, muted) != alerting {
                     return; // 已经不是那个状态了
+                }
+                // 等待期间用户可能把它从「在哪些状态下提醒」里取消勾选了 ——
+                // 和静音、提示音一样现读，否则会替一个已经不被要的状态弹出去。
+                if !live.notify_wants(alerting) {
+                    return;
                 }
                 // 等待期间进了会议 / 有会话开始干活：这一轮按「不打扰」处理，
                 // 和勿扰时段一样不补发（见 `decide_alert` 顶部）。
@@ -294,6 +302,13 @@ fn spawn_reminders(
     alerting: Signal,
     episode: u64,
 ) {
+    // 只有「需要你处理」的那三个状态才有重复提醒：提醒说的是「还卡着、已经等
+    // 了 20 分钟」，而完成 / 空闲 / 沉默不会卡住 —— 给它们排一条这样的提醒是
+    // 胡说（见 `alerts::is_urgent`）。
+    if !alerts::is_urgent(alerting) {
+        return;
+    }
+
     tauri::async_runtime::spawn(async move {
         for gap in alerts::REMIND_GAPS {
             tokio::time::sleep(gap).await;
