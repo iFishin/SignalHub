@@ -469,8 +469,6 @@ export interface Messages {
   signHeight: string;
   blinkSpeed: string;
   /** 「灵动效果」开关及其说明（柔光呼吸 + 弹簧转场）。 */
-  lively: string;
-  livelyHint: string;
   onSign: string;
   quietMode: string;
   snapToEdge: string;
@@ -527,27 +525,17 @@ export interface Messages {
   gapTight: string;
   gapStandard: string;
   gapLoose: string;
-  /** 边灯：状态色铺到牌的四个边上。 */
-  signEdge: string;
-  signEdgeHint: string;
+  /** 一条边怎么亮。`edgeOff` / `edgeGlow` 是 0.6.4 留下的短词，沿用不改名。 */
   edgeOff: string;
-  edgeTop: string;
-  edgeFrame: string;
   edgeGlow: string;
-  /** 四角小灯：四个角各挂一枚「是 / 否」指示灯。 */
-  signCorners: string;
-  signCornersHint: string;
-  /** 四角在设置里的名字（左上 / 右上 / 右下 / 左下），键和 `SignCorners` 一致。 */
+  /** 四角在设置里的名字（左上 / 右上 / 右下 / 左下），键和 `CornerPos` 一致。 */
   cornerPos: { tl: string; tr: string; br: string; bl: string };
   /** 每枚角灯能表达什么。`empty` = 不挂。 */
   cornerKind: Record<
     "empty" | "state" | "pinned" | "muted" | "stale" | "passthrough",
     string
   >;
-  /** 收起时那一行摘要：「挂了 2 枚」/「四角都空着」 */
-  cornersNone: string;
-  cornersSome: (n: number) => string;
-  /** 外观页「边框光」这一节：边灯和角灯是同一条轨，所以放一起。 */
+  /** 外观页「边框光」这一节：六个独立灯位共用三把尺子，所以放一起。 */
   frameLight: string;
   frameLightHint: string;
   /** 粗细：边灯线宽与角灯直径共用一档。 */
@@ -570,8 +558,6 @@ export interface Messages {
   /** 行为页「边框光什么时候亮」这一节。 */
   lightBehavior: string;
   lightBehaviorHint: string;
-  edgeTrigger: string;
-  cornerTrigger: string;
   triggerAlways: string;
   triggerAttention: string;
   triggerActive: string;
@@ -596,6 +582,46 @@ export interface Messages {
   labelTemplate: string;
   labelTemplateHint: string;
   labelTemplatePlaceholder: string;
+  // ---- 0.6.5：整套皮肤 / 六档形状 / 牌轮廓 / 五档效果 / 六个灯位 ------------
+  /** 一整套主题：配色 + 牌底 + 形状 + 轮廓 + 效果 + 边框光六槽，一键全换。 */
+  skinTitle: string;
+  skinHint: string;
+  skinPlain: string;
+  skinPlainHint: string;
+  skinFocus: string;
+  skinFocusHint: string;
+  skinNeon: string;
+  skinNeonHint: string;
+  skinPaper: string;
+  skinPaperHint: string;
+  skinSignal: string;
+  skinSignalHint: string;
+  shapeSquare: string;
+  shapeDiamond: string;
+  shapeCapsule: string;
+  outlineTitle: string;
+  outlineHint: string;
+  outlineRect: string;
+  outlineCapsule: string;
+  outlineLeaf: string;
+  outlineArch: string;
+  /** 动效风格下拉（替代 0.6.4 那个 `lively` 布尔开关）。 */
+  effect: string;
+  effectHint: string;
+  effectOff: string;
+  effectBreathe: string;
+  effectPulse: string;
+  effectSweep: string;
+  effectFade: string;
+  /** 上下两条边的画法档位；`edgeOff` / `edgeGlow` 沿用旧 key。 */
+  edgeLine: string;
+  edgeFade: string;
+  /** 行为页六行灯位控件共用的标签。 */
+  slotTop: string;
+  slotBottom: string;
+  slotKind: string;
+  slotTrigger: string;
+  slotsHint: string;
   /** 「谁在叫我」那套压淡的强度。 */
   signEmphasis: string;
   emphasisAuto: string;
@@ -1414,37 +1440,41 @@ export const MESSAGES: Record<Lang, Messages> = {
         title: "收起来也照样会亮",
         body: "完成时这颗灯会闪一下再落定。折叠只是少占桌面，不是把提醒关掉 —— 这也是很多人平时的默认形态。",
       },
-      edgeTop: {
-        title: "不写字，也能说一句",
-        body: "顶边一道亮线加一小截余晖，颜色跟状态走 —— 远看是一道光，不用读字。这是边灯的第二档，默认是不亮。",
+      edgeLine: {
+        title: "上边亮，下边可以仍然不亮",
+        body: "上边一道状态色的亮线，下边留着「不亮」—— 上下两条边是两个独立灯位，不再是一条轨一起开关。颜色、粗细和明暗在「外观 → 边框光」里一起调，字一个都没多。",
       },
-      edgeFrame: {
-        title: "整圈描边",
-        body: "同一条轨从顶边铺到四条边：轮廓用状态色，粗细和明暗在「外观 → 边框光」里一起调。字一个都没多，读起来却是「这一块整体在报警」。",
+      edgeBoth: {
+        title: "上下各挑各的",
+        body: "这次上下都设成实线，但它们是两行、两个下拉：想让下边只在出错时亮、上边常亮，也只要各挑一次。四档画法还有辉光和两端淡出。",
       },
       edgeGlow: {
         title: "辉光：最张扬的一档",
-        body: "描边之外再加一圈外发光。坐得远、显示器多、或者要它从余光里跳出来时用它；浅色壁纸上会淡一些，那是有意的。",
+        body: "上下两条边都换成辉光，牌外再散一圈光。坐得远、显示器多、或者要它从余光里跳出来时用它；浅色壁纸上会淡一些，那是有意的。",
       },
       cornersState: {
         title: "四个角，四个是非题",
-        body: "四枚小灯就落在边框的四个转角上，跟着圆角走，不占牌面。分别回答：有状态 / 置顶 / 静音 / 将过期。这里四枚都设成「状态色」，先让你看见它们站在哪。",
+        body: "四枚小灯就落在边框的四个转角上，跟着轮廓走，不占牌面。分别回答：有状态 / 置顶 / 静音 / 将过期。这里四枚都设成「状态色」，先让你看见它们站在哪 —— 四角在「外观」里也是四行、四个下拉。",
       },
       cornersMeaning: {
         title: "条件不成立，就根本不画",
-        body: "这一块牌同时满足四条 —— 有状态、被置顶、被静音、正在沉默，所以四枚都亮。任何一条不成立，那枚角灯就整个消失，而不是留一个暗点：暗点会让人以为「这个位置本来就有东西，只是没亮」，于是永远不会去设置里找。都能在「外观 → 边框光」里配。",
+        body: "这一块牌同时满足四条 —— 有状态、被置顶、被静音、正在沉默，所以四枚都亮。任何一条不成立，那枚角灯就整个消失，而不是留一个暗点：暗点会让人以为「这个位置本来就有东西，只是没亮」，于是永远不会去设置里找。四角各自的触发还能在「行为」页单独挑。",
       },
       lightTrigger: {
         title: "什么时候亮，是另一回事",
-        body: "两块牌并排：边灯被设成「只在要你处理时亮」，于是等批准的那块亮边、正在跑的那块不亮。外观管亮起来长什么样，行为管凭什么现在亮 —— 边灯和角灯各有自己的一档。",
+        body: "两块牌并排：上边被设成「只在要你处理时亮」，于是等批准的那块亮、正在跑的那块不亮。外观管亮起来长什么样，行为管凭什么现在亮 —— 六个灯位各有自己的九档条件。",
       },
       cornerPassthrough: {
         title: "连「点不进去」也能挂在角上",
-        body: "左上那枚空心方是「点击穿透」：开着的时候它出现，关掉就整个消失。原先窗口右上角那枚常驻的禁止图标已经撤掉了 —— 要不要看这个状态、放在哪个角，现在由你在「外观 → 四角挂什么」里定。状态本身仍在 tooltip 和托盘菜单里。",
+        body: "左上那枚空心方是「点击穿透」：开着的时候它出现，关掉就整个消失。原先窗口右上角那枚常驻的禁止图标已经撤掉了 —— 要不要看这个状态、放在哪个角，现在由你在「外观 → 边框光」的六行里定。状态本身仍在 tooltip 和托盘菜单里。",
       },
       lightTriggerState: {
-        title: "九种条件，两行各判各的",
-        body: "边灯挑「达到指定状态 → 出错」，角灯仍是常亮：出错那块亮边、正在跑那块不亮，而四枚状态角灯两块牌都挂着。除了指定状态，还能按指定时段、沉默将尽、有没有消息、是否置顶来触发 —— 边灯和角灯共用同一张条件表。",
+        title: "九种条件，六行各判各的",
+        body: "上边挑「达到指定状态 → 出错」，下边常亮，四角也常亮：出错那块上下都亮、正在跑那块只剩一条下边，四枚状态角灯两块牌都挂着。除了指定状态，还能按指定时段、沉默将尽、有没有消息、是否置顶来触发 —— 六行共用同一张条件表，但各存各的一档。",
+      },
+      lookSkin: {
+        title: "也能一键换整套",
+        body: "这一步是「霓虹」皮肤：配色、牌底、圆角、描边、灯珠形状、牌的轮廓、动效，以及六个灯位的画法和触发，一次全换。「外观 → 皮肤」里一共五套；只想改大小或透明度的话，下面那四套外观预设不动这些。",
       },
     },
     demoStepCount: (index, total) => `${index} / ${total}`,
@@ -1573,9 +1603,6 @@ export const MESSAGES: Record<Lang, Messages> = {
     signWidth: "牌宽",
     signHeight: "牌高",
     blinkSpeed: "闪烁节奏",
-    lively: "灵动效果",
-    livelyHint:
-      "灯珠外多一层同色柔光，跟着状态的节奏呼吸；换状态、折叠展开时轻轻弹一下。关掉就回到原来那颗朴素的灯。系统开了「减少动态效果」时会自动降级。",
     onSign: "牌上显示",
     quietMode: "安静模式",
     snapToEdge: "贴边吸附",
@@ -1629,16 +1656,8 @@ export const MESSAGES: Record<Lang, Messages> = {
     gapTight: "紧凑",
     gapStandard: "标准",
     gapLoose: "宽松",
-    signEdge: "边灯",
-    signEdgeHint:
-      "把状态色铺到牌边的那条轨上：顶边只走上边，四边围一整圈，辉光再往牌外散一圈。三档是同一条轨的覆盖范围，切档不会像换了块牌。开了边灯，原来那圈中性描边会让位 —— 牌边永远只有一层线。",
     edgeOff: "不亮",
-    edgeTop: "顶边",
-    edgeFrame: "四边",
     edgeGlow: "辉光",
-    signCorners: "角灯",
-    signCornersHint:
-      "四枚小灯就落在边框的四个转角上，跟着圆角走，不占牌面也不压字。每个角只回答一个是 / 否：置顶了、静音了、离沉默还有多久。条件不成立时那枚灯根本不出现 —— 不会画一个暗点。",
     cornerPos: { tl: "左上", tr: "右上", br: "右下", bl: "左下" },
     cornerKind: {
       empty: "不挂",
@@ -1648,11 +1667,9 @@ export const MESSAGES: Record<Lang, Messages> = {
       stale: "沉默进度",
       passthrough: "点击穿透",
     },
-    cornersNone: "四角都空着",
-    cornersSome: (n) => `挂了 ${n} 枚`,
     frameLight: "边框光",
     frameLightHint:
-      "边灯是牌边那条轨，角灯是这条轨四个转角上的灯位 —— 两者共用同一套粗细、明暗和颜色，怎么调都是一整套。上面两块预览牌始终按常亮画；「什么时候亮」在「行为」页设，边灯和角灯各有九种条件可选。四角还能挂「点击穿透」，原先窗口右上角那枚常驻图标已经删掉了。",
+      "上下两条边和四个角是六个独立灯位，共用同一套粗细、明暗和颜色。每个灯位在「行为」页各有自己的九档触发条件；四角还能挂「点击穿透」。上面两块预览牌始终按常亮画 —— 它们是一张静态样机，不跟着触发条件走。",
     lightScale: "粗细",
     lightScaleHint:
       "边灯的线宽和角灯的大小一起变。分开调很容易调出「一条粗线配四颗小芝麻」 —— 它们本来就是同一条轨上的东西。",
@@ -1670,9 +1687,7 @@ export const MESSAGES: Record<Lang, Messages> = {
     frameColorNeutral: "中性",
     lightBehavior: "边框光什么时候亮",
     lightBehaviorHint:
-      "「外观」那节管亮起来长什么样，这两行管凭什么现在亮。**两行是同一张九档条件表**，边灯不再只有形状可挑：想「平时不吵、下午六点以后整块牌亮起来」或者「只在出错时亮」，两样都能各选各的。判定逐块牌进行，同一盏灯里可以有牌亮、有牌不亮。",
-    edgeTrigger: "边灯",
-    cornerTrigger: "角灯",
+      "「外观」那节管亮起来长什么样，这六行管凭什么现在亮。**六行是同一张九档条件表**：上边可以常亮、下边只在出错时亮、四个角各挂各的，互不牵连。判定逐块牌进行，同一盏灯里可以有牌亮、有牌不亮。",
     triggerAlways: "常亮",
     triggerAttention: "只在要你处理时",
     triggerActive: "只在有活动时",
@@ -1686,7 +1701,7 @@ export const MESSAGES: Record<Lang, Messages> = {
     triggerScheduleFrom: "从",
     triggerScheduleTo: "到",
     triggerParamsHint:
-      "时段的起止按本机时间算，起 > 止就是跨夜（22:00–06:00）；两个时间设成一样表示不按时间筛。这两个参数是边灯和角灯共用的 —— 分开存会出现「两行都选了指定状态，却只有一个状态输入框」。",
+      "时段的起止按本机时间算，起 > 止就是跨夜（22:00–06:00）；两个时间设成一样表示不按时间筛。这三个参数是六个灯位共用的 —— 六份输入框会把这一页撑成一张表，而「两行都选了指定状态却只有一个状态框」更没法解释。",
     signLabelTitle: "会话标题",
     signLabelHint:
       "按会话分组时，牌宽固定，名字那一行还要和状态词分 —— 默认的「项目 · 智能体」里智能体名几乎每次都被省略号吃掉。现在默认只显示会话 / 项目名；想看智能体名或自己写一套标题都可以。逐组改名仍然优先于这里。",
@@ -1698,6 +1713,46 @@ export const MESSAGES: Record<Lang, Messages> = {
     labelTemplateHint:
       "可用 {session}（项目名）、{agent}（智能体名）、{group}（原始组名）。空掉的占位符会被清掉，不会留一个孤零零的分隔符。转发摘要和 Web 面板仍用全名 —— 它们不受牌宽限制。",
     labelTemplatePlaceholder: "{session} · {agent}",
+    skinTitle: "皮肤",
+    skinHint:
+      "一键换一整套：配色、牌底、圆角和描边、灯珠形状、牌的轮廓、动效，以及边框光六个灯位。**换肤会连六行触发条件一起覆盖** —— 只想改大小、透明度或显示哪几段，用下面那四套外观预设。",
+    skinPlain: "素净",
+    skinPlainHint: "回到最初的样子：默认配色、圆形灯珠、柔光呼吸，边框光全关。",
+    skinFocus: "专注",
+    skinFocusHint: "平时不吵，只在要你处理时上边亮一道细线；左上挂置顶、右上挂静音，动效全关。",
+    skinNeon: "霓虹",
+    skinNeonHint: "高饱和配色 + 纯黑牌底 + 胶囊轮廓，上下辉光、四角状态色，灯珠随节奏脉冲。",
+    skinPaper: "纸感",
+    skinPaperHint: "暖黑牌底、明显描边、大圆角和拱形轮廓，方灯珠，整块牌轻轻淡入淡出。",
+    skinSignal: "信号",
+    skinSignalHint:
+      "色盲友好配色 + 菱形灯珠 + 对角圆轮廓，一道高光扫过牌面；上边只在有消息时亮、下边只在要你处理时亮。",
+    shapeSquare: "方",
+    shapeDiamond: "菱",
+    shapeCapsule: "胶囊",
+    outlineTitle: "牌的轮廓",
+    outlineHint:
+      "在圆角之外换整块牌的形状。四档都只用圆角画，不会裁掉四角上的小灯；每档的角灯落点会跟着轮廓一起走。",
+    outlineRect: "矩形",
+    outlineCapsule: "胶囊",
+    outlineLeaf: "对角圆",
+    outlineArch: "拱形",
+    effect: "效果",
+    effectHint:
+      "以前只有一个「灵动效果」开关，现在五选一：柔光呼吸就是原来开着的样子。系统开了「减少动态效果」时，五档一律自动降级成静止。",
+    effectOff: "关闭",
+    effectBreathe: "柔光呼吸",
+    effectPulse: "脉冲",
+    effectSweep: "扫光",
+    effectFade: "渐隐",
+    edgeLine: "实线",
+    edgeFade: "两端淡出",
+    slotTop: "上边",
+    slotBottom: "下边",
+    slotKind: "画法",
+    slotTrigger: "触发",
+    slotsHint:
+      "六个灯位各自挑画法和触发条件：上边可以常亮、下边只在出错时亮，四个角也能各挂各的、各判各的 —— 不再是一整条轨一起开关。判定逐块牌进行，同一盏灯里可以有牌亮、有牌不亮。",
     signEmphasis: "分层",
     emphasisAuto: "区分",
     emphasisFlat: "一致",
@@ -2470,37 +2525,41 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
         title: "Collapsed still lights up",
         body: "On completion the light flashes once and settles. Collapsing only saves desktop space — it does not mute anything, which is why many people keep it this way.",
       },
-      edgeTop: {
-        title: "It can say something without words",
-        body: "One bright line along the top edge, with a short afterglow, in the state colour — read from across the room as a line of light rather than text. This is the second of the four edge-light modes; the default is off.",
+      edgeLine: {
+        title: "Light the top, leave the bottom dark",
+        body: "One state-coloured line along the top edge; the bottom stays off. The two edges are independent slots now, no longer one rail switched together. Weight, brightness and colour are shared under Appearance → Frame light — not one extra word on the sign.",
       },
-      edgeFrame: {
-        title: "The whole outline",
-        body: "The same rail now runs along all four sides in the state colour; its weight and brightness are set together under Appearance → Frame light. Not one extra word, yet the whole card reads as “this one needs attention”.",
+      edgeBoth: {
+        title: "Two edges, two dropdowns",
+        body: "Here both are solid lines, but they are two separate rows: to keep the top always on and light the bottom only on an error, you just pick once in each. The four looks also include glow and a line that fades at both ends.",
       },
       edgeGlow: {
         title: "Glow — the loudest setting",
-        body: "An outer halo on top of the outline. Use it when the lamp sits far away, on a large or multiple displays, or when it has to catch your peripheral vision. It is deliberately softer on light wallpapers.",
+        body: "Both edges switch to glow, spreading a halo outside the card. Use it when the lamp sits far away, across multiple displays, or when it has to catch your peripheral vision. It is deliberately softer on light wallpapers.",
       },
       cornersState: {
         title: "Four corners, four yes/no questions",
-        body: "The four little lights sit on the rail's corners and follow the corner radius, so they take no space from the text. Each answers: has a state / pinned / muted / about to go stale. Here all four are set to “state colour” so you can see where they sit.",
+        body: "The four little lights sit on the corners of the outline and follow its shape, so they take no space from the text. Each answers: has a state / pinned / muted / about to go stale. All four are set to “state colour” here so you can see where they sit — and in Appearance they are four separate dropdowns.",
       },
       cornersMeaning: {
         title: "If the condition does not hold, nothing is drawn",
-        body: "This card satisfies all four — it has a state, it is pinned, it is muted, and it is going quiet — so all four lights show. Let any one of those fail and that light disappears entirely rather than becoming a dim dot: a dim dot would suggest “there is something here, it is just not lit”, which is exactly why nobody would ever look for the setting. Configure them under Appearance → Frame light.",
+        body: "This card satisfies all four — it has a state, it is pinned, it is muted, and it is going quiet — so all four lights show. Let any one of those fail and that light disappears entirely rather than becoming a dim dot: a dim dot would suggest “there is something here, it is just not lit”, which is exactly why nobody would ever look for the setting. Each corner also has its own trigger under Behavior.",
       },
       lightTrigger: {
         title: "When it lights up is a separate question",
-        body: "Two signs side by side with the edge trigger set to “when you're needed”: the one waiting for approval has a lit outline, the one still working does not. Appearance decides what it looks like lit; Behavior decides why it is lit now — edge and corner lights each have their own setting.",
+        body: "Two signs side by side with the top edge set to “when you're needed”: the one waiting for approval lights up, the one still working does not. Appearance decides what it looks like lit; Behavior decides why it is lit now — all six slots have their own pick from the same nine-condition list.",
       },
       cornerPassthrough: {
         title: "Even “you can't click it” fits in a corner",
-        body: "The hollow square at the top left is click-through: it appears while enabled and vanishes entirely when off. The old always-on ban badge in the window corner is gone — whether to show this state, and in which corner, is now up to you under Appearance → Corner lights. The state is still in the tooltip and tray menu.",
+        body: "The hollow square at the top left is click-through: it appears while enabled and vanishes entirely when off. The old always-on ban badge in the window corner is gone — whether to show this state, and in which corner, is now one of the six rows under Appearance → Frame light. The state is still in the tooltip and tray menu.",
       },
       lightTriggerState: {
-        title: "Nine conditions, two independent rows",
-        body: "The edge light is set to “in a chosen state → error” while the corner lights stay always on: the error card has a lit outline, the working one does not, and all four state corners show on both. Besides a chosen state you can trigger on a time window, silence nearly over, a message being shown, or a pinned group — both rows share the same condition list.",
+        title: "Nine conditions, six independent rows",
+        body: "The top edge is “in a chosen state → error”, the bottom edge is always on, and so are the four corners: the error card lights both edges, the working one keeps only the bottom line, and four state corners show on both. Besides a chosen state you can trigger on a time window, silence nearly over, a message being shown, or a pinned group — the six rows share one condition list but store their own pick.",
+      },
+      lookSkin: {
+        title: "Or swap the whole look at once",
+        body: "This step is the Neon skin: palette, card tint, radius and border, dot shape, card outline, motion, and the look and trigger of all six frame-light slots change together. There are five skins under Appearance → Skin; the four look presets below only touch size, opacity and which fields show.",
       },
     },
     demoStepCount: (index, total) => `${index} / ${total}`,
@@ -2630,9 +2689,6 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     signWidth: "Sign width",
     signHeight: "Sign height",
     blinkSpeed: "Blink speed",
-    lively: "Lively motion",
-    livelyHint:
-      "A soft halo around each light breathes with its state rhythm, with a gentle spring on state changes and expand/collapse. Turn it off for the plain light of old. Automatically dialled down when the system asks for reduced motion.",
     onSign: "On the sign",
     quietMode: "Quiet mode",
     snapToEdge: "Snap to edges",
@@ -2688,16 +2744,8 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     gapTight: "Tight",
     gapStandard: "Standard",
     gapLoose: "Loose",
-    signEdge: "Edge light",
-    signEdgeHint:
-      "Puts the state colour on the rail around the sign: Top lights the upper edge, Frame goes all the way round, Glow adds a halo outside it. All three are the same rail at different extents, so switching never feels like a different card. With an edge light on, the neutral border steps aside — there is only ever one line around a sign.",
     edgeOff: "Off",
-    edgeTop: "Top",
-    edgeFrame: "Frame",
     edgeGlow: "Glow",
-    signCorners: "Corner lights",
-    signCornersHint:
-      "Four little lights sit on the rail's corners and follow the corner radius, so they take no space from the text. Each answers one yes/no: pinned, muted, or how long until it goes quiet. When the answer is no the light is simply absent — it never draws a dimmed dot.",
     cornerPos: { tl: "Top left", tr: "Top right", br: "Bottom right", bl: "Bottom left" },
     cornerKind: {
       empty: "None",
@@ -2707,11 +2755,9 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       stale: "Silence left",
       passthrough: "Click-through",
     },
-    cornersNone: "All four corners empty",
-    cornersSome: (n) => `${n} in use`,
     frameLight: "Frame light",
     frameLightHint:
-      "The edge light is the rail around the sign; the corner lights are four sockets on that rail's corners. They share one width, one brightness and one colour, so any change moves as a set. The two preview signs above are always drawn lit; when they light up is set under Behavior, where both rows pick from the same nine conditions. Click-through is now one of the corner options — the old always-on badge in the window corner is gone.",
+      "The top and bottom edges plus the four corners are six independent slots, sharing one width, one brightness and one colour. Each slot has its own nine-condition trigger under Behavior; click-through is one of the corner options. The two preview signs above are always drawn lit — they are a static mock-up and deliberately ignore the triggers.",
     lightScale: "Weight",
     lightScaleHint:
       "The rail's line width and the corner lights' size move together. Set separately they drift into a thick line with four tiny dots — and they are the same rail.",
@@ -2729,9 +2775,7 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     frameColorNeutral: "Neutral",
     lightBehavior: "When the frame light comes on",
     lightBehaviorHint:
-      "Appearance sets what it looks like when lit; these two rows set why it is lit now. Both draw from the same nine conditions — the edge light no longer only has shapes to pick. Decisions are per sign, so some cards on the lamp can be lit while others stay dark.",
-    edgeTrigger: "Edge light",
-    cornerTrigger: "Corner lights",
+      "Appearance sets what it looks like when lit; these six rows set why each slot is lit now. All six draw from the same nine conditions: the top edge can stay on while the bottom lights only on errors, and the four corners each decide for themselves. Decisions are per sign, so some cards on the lamp can be lit while others stay dark.",
     triggerAlways: "Always",
     triggerAttention: "When you're needed",
     triggerActive: "While active",
@@ -2745,7 +2789,7 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     triggerScheduleFrom: "From",
     triggerScheduleTo: "To",
     triggerParamsHint:
-      "Hours use local time; a start later than the end means overnight (22:00–06:00), and equal times mean no time filter. These parameters are shared by both rows — storing them twice would leave two 'chosen state' rows and only one state picker.",
+      "Hours use local time; a start later than the end means overnight (22:00–06:00), and equal times mean no time filter. These parameters are shared by all six slots — six copies would turn this page into a spreadsheet, and two 'chosen state' rows with only one picker makes no sense either.",
     signLabelTitle: "Session title",
     signLabelHint:
       "With session grouping the sign has a fixed width and shares its first line with the status word, so the agent in 'project · agent' was almost always cut off by the ellipsis. The default now shows only the session/project name; you can bring the agent back or write your own template. Per-group display names still win.",
@@ -2757,6 +2801,49 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     labelTemplateHint:
       "Tokens: {session} (project), {agent} (agent), {group} (raw group name). Empty tokens are cleaned up, so no orphan separator is left behind. Forwarded summaries and the web panel still use the full name — they aren't width-constrained.",
     labelTemplatePlaceholder: "{session} · {agent}",
+    skinTitle: "Skin",
+    skinHint:
+      "Swap a whole look at once: palette, card tint, radius and border, dot shape, outline, motion, and all six frame-light slots. **Changing skins overwrites all six trigger rows too** — for just size, opacity or which fields show, use the four look presets below.",
+    skinPlain: "Plain",
+    skinPlainHint: "Back to the original: default palette, round dots, breathing halo, frame light off.",
+    skinFocus: "Focus",
+    skinFocusHint:
+      "Quiet by default — a thin top edge only when you're needed, pinned / muted on the top corners, no motion.",
+    skinNeon: "Neon",
+    skinNeonHint:
+      "Vivid palette, black card, capsule outline, glowing top and bottom edges, state dots in all four corners, pulsing dots.",
+    skinPaper: "Paper",
+    skinPaperHint:
+      "Warm black card, strong border, large radius and an arched outline, square dots, a gentle fade in and out.",
+    skinSignal: "Signal",
+    skinSignalHint:
+      "Colour-blind-safe palette, diamond dots, diagonal-round outline and a sweep of light; top edge only with a message, bottom edge only when you're needed.",
+    shapeSquare: "Square",
+    shapeDiamond: "Diamond",
+    shapeCapsule: "Capsule",
+    outlineTitle: "Card outline",
+    outlineHint:
+      "Change the overall silhouette beyond corner radius. All four are drawn with border-radius only, so corner lights are never clipped; their anchor follows the outline.",
+    outlineRect: "Rectangle",
+    outlineCapsule: "Capsule",
+    outlineLeaf: "Diagonal round",
+    outlineArch: "Arch",
+    effect: "Effect",
+    effectHint:
+      "There used to be a single 'Lively motion' switch; now pick one of five. 'Breathing halo' is exactly what that switch used to enable. All five fall back to static when the system asks for reduced motion.",
+    effectOff: "Off",
+    effectBreathe: "Breathing halo",
+    effectPulse: "Pulse",
+    effectSweep: "Sweep",
+    effectFade: "Fade",
+    edgeLine: "Solid line",
+    edgeFade: "Fade at ends",
+    slotTop: "Top edge",
+    slotBottom: "Bottom edge",
+    slotKind: "Look",
+    slotTrigger: "Trigger",
+    slotsHint:
+      "Each of the six slots picks its own look and its own trigger: the top edge can stay on while the bottom lights up only on errors, and the four corners can each hang and judge something different. Judgement is per sign, so one lamp can have lit and unlit cards at once.",
     signEmphasis: "Emphasis",
     emphasisAuto: "Tiered",
     emphasisFlat: "Uniform",

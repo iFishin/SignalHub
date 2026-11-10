@@ -6,7 +6,7 @@ import { inTauri } from "../lib/env";
 import { requestSettingsTab } from "../lib/settingsIntent";
 import { signalLabel, justFinishedLabel } from "../lib/signals";
 import { useLang, useMessages, type Messages, type Lang } from "../lib/i18n";
-import { lampVars, resolveShapes, resolveHaloAnimations, toneOf, cornerLights, lightOn, type LightContext } from "../lib/lampStyle";
+import { lampVars, resolveShapes, resolveHaloAnimations, toneOf, cornerLights, edgeLightKinds, type LightContext } from "../lib/lampStyle";
 import { transitions, type AggregateMap } from "../lib/lampTransitions";
 import { labelOf, labelPrefOf, orderVisible, type LabelPref } from "../lib/lampSort";
 import { useNow } from "../lib/useNow";
@@ -348,14 +348,16 @@ export function SignalLamp({
   // 只取两项，别的组件（收件箱 / 分组页）也走同一个 `labelPrefOf`。
   const labelPref = labelPrefOf(settings);
 
-  // 灵动效果：柔光呼吸的逐状态 animation 值。挂在每个灯珠的 style 上（不是根上），
-  // 这样一个窗口里多块牌的节奏可以不同。CSS 的 `[data-lively] .dot::before` 读
-  // `var(--halo-anim, none)` —— 没挂（开关关了 / 旧配置）就是 `none`，柔光不画。
-  const lively = settings.lively;
-  const haloAnims = lively ? resolveHaloAnimations(settings) : null;
+  // 0.6.5：效果从布尔开关扩成五档。柔光呼吸（`breathe`，也就是旧开关开着的
+  // 样子）才有逐状态的 halo animation；其余四档由 CSS 各自的 `[data-effect]`
+  // 规则画，不走 `--halo-anim`。挂在每个灯珠上（不是根上），这样一个窗口里
+  // 多块牌的节奏可以不同。
+  const effect = settings.effect;
+  const haloAnims = effect === "breathe" ? resolveHaloAnimations(settings) : null;
   // motion 弹簧也尊重系统的「减少动态效果」。motion 的 useReducedMotion 返回
   // boolean | null（null = 未检测），按 falsy 处理。
   const reduceMotion = useReducedMotion();
+  const motionOn = effect !== "off" && !reduceMotion;
 
   // 折叠态悬停**临时**展开：只改渲染 + 让 Rust 把窗口算大，**不改设置** —— 退出
   // 重开仍是折叠态（这是这一项的验收之一）。3s 到点、或鼠标移开就回去。窗口尺寸
@@ -620,7 +622,7 @@ export function SignalLamp({
         // 不带的话用户把灯调大之后，菜单里的灯珠还停在默认大小。
         style={{ "--size": `${size}px`, ...lampVars(settings) } as React.CSSProperties}
         data-aggregate={aggregate}
-        data-lively={lively || undefined}
+        data-effect={effect}
         // 菜单形态没有「某一块牌」可右键，但 webview 自己的右键菜单（dev 下是
         // 「重新加载」那种）绝不能冒出来 —— 这个窗口里它一直是关掉的。
         onContextMenu={(event) => event.preventDefault()}
@@ -683,11 +685,14 @@ export function SignalLamp({
          间距（`--sign-gap`）不在这里 —— 它影响窗口几何，得和 Rust 的
          `window_size` 用同一个倍率，所以和宽高倍率一起走 `lampVars`。 */
       data-sign-font={settings.sign_font}
+      // 整块牌的轮廓。四档都只改 border-radius，不改牌宽高。
+      data-sign-outline={settings.sign_outline}
       /* 边框光的三把尺子（粗细 / 明暗 / 颜色来源）。和上面几个 `data-sign-*`
          同一个道理 —— 倍数与取色只住在 `lamp.css` 一处。
 
-         **边灯档位本身不挂在这里**：触发方式是逐块牌判定的（只在要你处理时
-         亮 / 只在活跃时亮），所以那条轨由每块 `.sign` 自己带 `data-edge`。
+         **六个灯位的画法不挂在这里**：每个槽的触发条件是逐块牌判定的（只在
+         要你处理时亮 / 只在出错时亮），所以上下两条边由每块 `.sign` 自己带
+         `data-edge-top` / `data-edge-bottom`，四枚角灯则只画该亮的那些。
          根上挂一个全局值会让整盏灯一起亮灭，等于没有触发开关。 */
       data-sign-light-scale={settings.sign_light_scale}
       data-sign-light-alpha={settings.sign_light_alpha}
@@ -698,9 +703,9 @@ export function SignalLamp({
       data-pass-through={passThrough || undefined}
       data-collapsed={!expanded}
       data-flash={flash || undefined}
-      // 灵动效果总开关。CSS 里所有 `[data-lively]` 规则只在它下面才生效，
-      // 关掉后柔光 / 涟漪 / 高光 / 悬停提亮一个都不长，逐像素回到旧观感。
-      data-lively={lively || undefined}
+      // 五档动效。旧版 `[data-lively]` 那批规则现在归 `[data-effect="breathe"]`，
+      // 其余四档各有一套；系统「减少动态效果」时 CSS 把五档一律降级成静止。
+      data-effect={effect}
       title={
         preview
           ? undefined
@@ -730,22 +735,23 @@ export function SignalLamp({
           // `.dot::before { animation: var(--halo-anim, none) }` 读它。
           ...(haloAnims ? { "--halo-anim": haloAnims[group.aggregate] } : {}),
         } as React.CSSProperties;
-        // 灵动效果 + 没开「减少动态效果」时，灯珠用 motion 弹簧入场。
+        // 效果不是「关闭」、也没开「减少动态效果」时，灯珠用 motion 弹簧入场。
         // spring 比 ease-out 更「灵动」——有一点过冲，像灯珠落到了位。
         // 只动 opacity 和 scale：**不改盒模型**，scale 走 transform 合成层，
         // 不触发重排（红线 2 只限制「常驻循环动画」，一次性弹簧不在此列）。
-        const dotMotion = lively && !reduceMotion
+        const dotMotion = motionOn
           ? {
               initial: { opacity: 0, scale: 0.6 },
               animate: { opacity: 1, scale: 1 },
               transition: { type: "spring" as const, stiffness: 300, damping: 18, duration: 0.42 },
             }
           : {};
-        // 边框光现在该不该亮：行为页那两个触发开关，边灯与角灯各判各的。
-        // 判据在 `lampStyle.ts::lightOn`（纯函数、有单测），**同一份 ctx** 传给两边，
-        // 不会出现「轨亮着、四枚灯却熄了」这种半套画面。
-        // 九档条件里带参数的三档（指定状态 / 指定时段 / 沉默将尽、有消息、仅置顶）
-        // 都从这份 ctx 取值 —— 逐块牌判定，所以边灯也能「只在这一组达到某状态时亮」。
+        // 六个灯位共用**这一份**逐块牌事实。判据在 `lampStyle.ts::lightOn`
+        // （纯函数、有单测）；每个槽各自拿自己的 trigger 去问，所以上边常亮、
+        // 下边只在出错时亮、四个角各挂各的是同一帧里判出来的，不会出现
+        // 「轨亮着、四枚灯却熄了」这种半套画面。
+        // 九档里带参数的档位（指定状态 / 指定时段 / 沉默将尽、有消息、仅置顶）
+        // 都从这份 ctx 取值，六个槽共用一份参数。
         const pinned = settings.group_meta[group.name]?.order != null;
         const lightCtx: LightContext = {
           state: group.aggregate,
@@ -757,13 +763,12 @@ export function SignalLamp({
           message: group.message,
           pinned,
         };
-        const edgeOn = lightOn(settings.sign_edge_trigger, lightCtx);
-        const cornerOn = lightOn(settings.sign_corner_trigger, lightCtx);
+        const edges = edgeLightKinds(settings.sign_lights, lightCtx);
 
         // 四角小灯：哪几枚该亮。判据在 `lampStyle.ts::cornerLights`（纯函数、有单测）
         // —— 它只返回**该亮**的那些，「不亮」是根本不画，而不是画一个暗点。
-        // 第三参是触发门控，排在一切条件之前：说「现在别亮」时连无条件亮的
-        // `state` 那枚也得消失。
+        // 每个角先过自己的 trigger，再过这枚灯自己的事实：说「现在别亮」时连
+        // 无条件亮的 `state` 那枚也得消失。0.6.5 之前四角共用一个 gate。
         //
         // **占位牌（`name` 为空）不挂**：它不对应任何真实的组，也就没有「置顶 /
         // 静音 / 沉默多久」可言 —— 挂上去的每一枚都会是假的。
@@ -771,7 +776,7 @@ export function SignalLamp({
           group.name === ""
             ? []
             : cornerLights(
-                settings.sign_corners,
+                settings.sign_lights,
                 {
                   pinned,
                   muted: settings.muted_groups.includes(group.name),
@@ -779,7 +784,7 @@ export function SignalLamp({
                   // 全局事实：开着穿透时每块牌都挂这一枚（如果那一角配了它）。
                   passThrough,
                 },
-                cornerOn,
+                lightCtx,
               );
         return !expanded ? (
           <motion.span
@@ -817,10 +822,12 @@ export function SignalLamp({
                的 `edge-flash`）。边灯和四角小灯都从这个 `--state` 取色，所以它必须
                挂在牌上，而不是只挂在灯珠上。 */
             data-state={group.aggregate}
-            /* 边框那条轨**逐块牌**判定：同一盏灯里可以有的牌亮边、有的不亮。
-               `off` 时仍然挂属性（而不是不挂），CSS 的「中性描边让位」那条
-               `:not([data-edge="off"])` 才不会误伤没开边灯的牌。 */
-            data-edge={edgeOn ? settings.sign_edge : "off"}
+            /* 上下两条边**逐块牌、逐条**判定：同一盏灯里可以有的牌亮边、有的不亮，
+               同一块牌也可以只亮上边。`off` 时仍然挂属性（而不是不挂），CSS 的
+               「中性描边让位」那条 `:not([data-edge-top="off"])` 才不会误伤
+               没开边灯的牌。 */
+            data-edge-top={edges.top}
+            data-edge-bottom={edges.bottom}
             /* `--progress` 也挂到牌上：沉默进度那枚角灯要用它，而它原来只挂在
                灯珠的 style 里。同一个变量、同一个来源，两者不会给出不同的答案。 */
             style={progressStyle(group)}

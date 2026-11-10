@@ -4,10 +4,12 @@ import {
   isActivePreset,
   isActiveStylePreset,
   presets,
+  skins,
+  isActiveSkin,
   type StylePreset,
 } from "./presets";
 import { MESSAGES } from "./i18n";
-import { DEFAULTS, type Settings } from "./useSettings";
+import { DEFAULTS, SLOT_IDS, type Settings } from "./useSettings";
 
 /** 预设只该动形状和节奏；颜色与静默超时是用户的东西。 */
 describe("applyStylePreset", () => {
@@ -168,5 +170,81 @@ describe("外观预设", () => {
         `${preset.apply.sign_radius}/${preset.apply.sign_border}/${preset.apply.sign_text}`,
     );
     expect(new Set(keys).size).toBe(expanded.length);
+  });
+});
+
+/**
+ * 整套皮肤（0.6.5）。
+ *
+ * 和上面那四套「外观预设」是**两种东西**：预设只改大小 / 显示段 / 圆角，
+ * 皮肤一次改十一项，含六个灯位的画法**和**触发。这里钉住三件容易悄悄坏的：
+ * 每套都得是合法值、选中态得逐项比（漏一项就永远不高亮）、以及换肤确实覆盖了灯位。
+ */
+describe("整套皮肤", () => {
+  const m = MESSAGES.zh;
+  const all = skins(m);
+  const applied = (id: string): Settings => ({
+    ...DEFAULTS,
+    ...all.find((skin) => skin.id === id)!.apply,
+  });
+
+  it("五套都在，且每套都有名字和一句说明", () => {
+    expect(all.map((skin) => skin.id)).toEqual([
+      "plain",
+      "focus",
+      "neon",
+      "paper",
+      "signal",
+    ]);
+    for (const skin of all) {
+      expect(skin.label.length).toBeGreaterThan(0);
+      expect(skin.hint.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("不碰窗口几何：尺寸、间距、透明度、折叠一概不动", () => {
+    for (const skin of all) {
+      expect(skin.apply).not.toHaveProperty("size");
+      expect(skin.apply).not.toHaveProperty("sign_gap");
+      expect(skin.apply).not.toHaveProperty("sign_opacity");
+      expect(skin.apply).not.toHaveProperty("collapsed");
+      expect(skin.apply).not.toHaveProperty("sign_w_mult");
+      expect(skin.apply).not.toHaveProperty("sign_h_mult");
+    }
+  });
+
+  it("六槽写全，且各套的画法 / 触发组合互不相同", () => {
+    const combos = new Set<string>();
+    for (const skin of all) {
+      const lights = skin.apply.sign_lights;
+      for (const id of SLOT_IDS) {
+        expect(lights[id].kind, `${skin.id}/${id}/kind`).toBeTruthy();
+        expect(lights[id].trigger, `${skin.id}/${id}/trigger`).toBeTruthy();
+      }
+      combos.add(SLOT_IDS.map((id) => `${lights[id].kind}:${lights[id].trigger}`).join("|"));
+    }
+    expect(combos.size).toBe(all.length);
+  });
+
+  it("换肤会覆盖六行触发，选中态因此也跟着这六行走", () => {
+    const focus = all.find((skin) => skin.id === "focus")!;
+    expect(focus.apply.sign_lights.top.trigger).toBe("attention");
+    expect(isActiveSkin(focus, applied("focus"))).toBe(true);
+    // 只改一格的触发，就不该再高亮成「正在用这套皮肤」
+    const tweaked = applied("focus");
+    tweaked.sign_lights = {
+      ...tweaked.sign_lights,
+      top: { ...tweaked.sign_lights.top, trigger: "always" },
+    };
+    expect(isActiveSkin(focus, tweaked)).toBe(false);
+    // 只改一个标量也一样
+    expect(
+      isActiveSkin(focus, { ...applied("focus"), effect: "sweep" }),
+    ).toBe(false);
+  });
+
+  it("素净就是默认外观，选中它等于把灯拉回出厂样子", () => {
+    const plain = all.find((skin) => skin.id === "plain")!;
+    expect(isActiveSkin(plain, DEFAULTS)).toBe(true);
   });
 });

@@ -14,6 +14,7 @@ import {
   type DemoScenarioId,
 } from "../lib/demo";
 import { useMessages } from "../lib/i18n";
+import { skins } from "../lib/presets";
 import {
   DEFAULT_SIGN_LABEL_TEMPLATE,
   useSettings,
@@ -71,8 +72,13 @@ export function DemoStage({ compact = false }: Props) {
     [step, startedAt, labels],
   );
 
-  const demoSettings: Settings = useMemo(
-    () => ({
+  const demoSettings: Settings = useMemo(() => {
+    // 整套皮肤那一步从 `skins()` 里按 id 取，剧本不复制那十一项 —— 皮肤改了，
+    // 演示跟着变。放在对象**最后**展开，好压过下面那些「默认语义」的值。
+    const skinApply = frame.skin
+      ? skins(m).find((skin) => skin.id === frame.skin)?.apply
+      : undefined;
+    return {
       ...settings,
       collapsed: frame.collapsed,
       quiet: frame.quiet,
@@ -85,16 +91,14 @@ export function DemoStage({ compact = false }: Props) {
       // 字体和间距同理 —— 换过等宽 / 宽松间距的人，看演示时该看到默认那张牌。
       sign_font: "system",
       sign_gap: "standard",
-      // 边灯 / 角灯：**只有「用光说话」那一场由剧本给**，别的场景跟随用户设置。
-      // 那一场讲的就是这两项，跟着用户设置走等于什么都没讲。
-      sign_edge: frame.edge ?? settings.sign_edge,
-      sign_corners: frame.corners ?? settings.sign_corners,
-      // 触发方式与三把尺子全用默认档，理由和字体 / 间距一样：演示讲的是产品
-      // 默认语义。尤其触发 —— 用户要是在「行为」页设成「只在要你处理时亮」，
-      // 跟着设置走会让「用光说话」那场大半时间什么都不亮。那一场的最后两步由
-      // 剧本自己把 `edgeTrigger` 换成 attention / state，专门演示这一类条件。
-      sign_edge_trigger: frame.edgeTrigger ?? "always",
-      sign_corner_trigger: frame.cornerTrigger ?? "always",
+      // 六个灯位：**「用光说话」那一场由剧本整份给**，别的场景跟随用户设置。
+      // 每个槽自带画法 + 触发，所以剧本一步就能写清「上边出错才亮、下边常亮」。
+      // 轮廓和动效跟着用户走（和 `shape` 一样是外观选择），皮肤那一步再覆盖。
+      sign_lights: frame.lights ?? settings.sign_lights,
+      sign_outline: settings.sign_outline,
+      effect: settings.effect,
+      // 带参数的三档触发共用这三个值，固定成默认档：演示不该被用户「时段
+      // 22:00–06:00」之类带着跑。`state` 那一步由剧本给 `triggerState`。
       sign_trigger_state: frame.triggerState ?? "permission",
       sign_trigger_from: 9 * 60,
       sign_trigger_to: 18 * 60,
@@ -111,22 +115,21 @@ export function DemoStage({ compact = false }: Props) {
       hidden_groups: [],
       styles: {},
       lamp_layout: "single",
-    }),
-    [
-      settings,
-      compact,
-      frame.collapsed,
-      frame.quiet,
-      frame.shape,
-      frame.edge,
-      frame.corners,
-      frame.pinned,
-      frame.muted,
-      frame.edgeTrigger,
-      frame.cornerTrigger,
-      frame.triggerState,
-    ],
-  );
+      ...(skinApply ?? {}),
+    };
+  }, [
+    settings,
+    m,
+    compact,
+    frame.collapsed,
+    frame.quiet,
+    frame.shape,
+    frame.lights,
+    frame.skin,
+    frame.pinned,
+    frame.muted,
+    frame.triggerState,
+  ]);
 
   const info = m.demoStep[DEMO_STEPS[step].id];
 

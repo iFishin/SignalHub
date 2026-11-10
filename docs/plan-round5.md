@@ -67,6 +67,20 @@
 
 ## 发布记录
 
+- **v0.6.5**（2026-11-11）：用户嫌「整合在一起了，不好个性化设置」，于是把边框光从
+  「一条轨 + 两行触发」拆成**六个独立灯位**：`Settings.sign_lights` 的 `top / bottom /
+  tl / tr / br / bl` 各存 `{ kind, trigger }`，外观页六行管画法、行为页同名六行管触发，
+  共用一张九档条件表和一组带参参数。旧四个字段降级成 `skip_serializing` 的迁移输入
+  （`migrate_legacy_light_slots`），`lively: false` 由 `migrate_legacy_effect` 搬成
+  `effect=off`。CSS 把 `.sign::before` / `::after` 分给上下两条边，`data-edge-top` /
+  `-bottom` 逐块牌挂；`glow` 用 `box-shadow`，五档效果改用 background / opacity /
+  transform，不抢同一属性。新增 `skins()` 五套整套皮肤（覆盖配色 / 牌底 / 圆角描边 /
+  形状 / 轮廓 / 动效 / 三把尺子 / 六灯位含触发，界面写明「会覆盖六行触发」）、
+  `Shape` 三档→六档、`SignOutline` 四档（只用 `border-radius`）、`Effect` 五档取代
+  `lively` 布尔。预览走 `cornerLights` / `edgeLightKinds` 的**可选 ctx**（不给就按常亮画），
+  不复制判定。演示第五场重写成九步，最后一步按 id 套「霓虹」皮肤。
+  用真实 CSS 在 headless Chrome 出过静态对照 `.workbuddy/light-065.png`；
+  真窗口观感仍列在 `backlog.md`。详见 `architecture.md` §3.35.2。
 - **v0.6.4**（2026-11-10）：把「灯上出现什么、什么时候出现」彻底交给用户，三件事。
   ① **触发从四档扩到九档**，边灯与角灯共用同一张表（新增达到指定状态 / 指定时段内 /
   沉默快到期 / 牌上有消息 / 只给置顶的组）；带参数的状态选择器与时段输入两行共用一份，

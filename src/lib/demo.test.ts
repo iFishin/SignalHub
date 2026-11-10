@@ -13,6 +13,8 @@ import {
   type DemoScenarioId,
 } from "./demo";
 import { MESSAGES } from "./i18n";
+import { skins } from "./presets";
+import type { SignLights } from "./useSettings";
 
 const LABELS: Record<DemoGroupId, string> = {
   build: "构建",
@@ -165,43 +167,63 @@ describe("demo steps", () => {
   });
 
   /**
-   * 边灯 / 角灯那一场必须有东西可讲 —— 这两项默认全关，演示是唯一会被新用户
-   * 看到的地方。少一步不会报错，只会让那一场变成一条什么都不演示的空镜头。
+   * 六个灯位那一场必须有东西可讲 —— 它们默认全关，演示是唯一会被新用户看到的
+   * 地方。少一步不会报错，只会让那一场变成一条什么都不演示的空镜头。
    */
-  it("「用光说话」那一场真的切换了边灯与角灯", () => {
+  it("「用光说话」那一场真的逐个切换了六个灯位", () => {
     const steps = scenarioSteps("look");
-    const edges = steps.map((step) => step.edge).filter(Boolean);
-    expect(edges).toContain("top");
-    expect(edges).toContain("frame");
-    expect(edges).toContain("glow");
-    const withCorners = steps.filter((step) => step.corners);
-    expect(withCorners.length).toBeGreaterThan(0);
-    // 四枚判据同时成立的最后一步：置顶 + 静音 + 沉默 + 状态，缺一条角灯就不亮
+    const configs = steps
+      .map((step) => step.lights)
+      .filter((value): value is SignLights => value !== undefined);
+    expect(configs.length).toBeGreaterThanOrEqual(7);
+
+    // 上下两条边各存各的：真的出现过「只亮上边」，也出现过上下都辉光
+    expect(configs.some((c) => c.top.kind === "line" && c.bottom.kind === "off")).toBe(true);
+    expect(configs.some((c) => c.top.kind === "glow" && c.bottom.kind === "glow")).toBe(true);
+    // 四角至少有一挂四枚，四个角都被用到过
+    expect(
+      configs.some((c) => (["tl", "tr", "br", "bl"] as const).every((p) => c[p].kind !== "empty")),
+    ).toBe(true);
+    // 触发也是逐槽的：上边「指定状态」、下边常亮，不再是一行统管
+    expect(
+      configs.some((c) => c.top.trigger === "state" && c.bottom.trigger === "always"),
+    ).toBe(true);
+    expect(configs.some((c) => c.top.trigger === "attention")).toBe(true);
+
+    // 四枚判据同时成立的那一步：置顶 + 静音 + 沉默 + 状态，缺一条角灯就不亮
     const meaning = steps.find((step) => step.id === "cornersMeaning");
+    expect(meaning?.lights?.tl.kind).toBe("state");
+    expect(meaning?.lights?.tr.kind).toBe("pinned");
+    expect(meaning?.lights?.br.kind).toBe("muted");
+    expect(meaning?.lights?.bl.kind).toBe("stale");
     expect(meaning?.pinned).toBe(true);
     expect(meaning?.muted).toBe(true);
     expect(meaning?.rows[0].state).toBe("stale");
     expect(meaning?.rows[0].staleProgress).not.toBeUndefined();
   });
 
-  it("「用光说话」也演示了穿透角灯与新增的触发条件", () => {
+  it("「用光说话」也演示了穿透角灯、指定状态触发和整套皮肤", () => {
     const steps = scenarioSteps("look");
     const passthrough = steps.find((step) => step.id === "cornerPassthrough");
-    expect(passthrough?.corners?.tl).toBe("passthrough");
+    expect(passthrough?.lights?.tl.kind).toBe("passthrough");
     expect(passthrough?.passThrough).toBe(true);
     const state = steps.find((step) => step.id === "lightTriggerState");
-    expect(state?.edgeTrigger).toBe("state");
+    expect(state?.lights?.top.trigger).toBe("state");
+    expect(state?.lights?.bottom.trigger).toBe("always");
     expect(state?.triggerState).toBe("error");
-    expect(state?.cornerTrigger).toBe("always");
+    const skin = steps.find((step) => step.id === "lookSkin");
+    expect(skin?.skin).toBe("neon");
+    // 剧本里存的是 id，不是抄一份十一项的副本 —— 皮肤改了演示要跟着变
+    expect(skins(MESSAGES.zh).some((item) => item.id === skin?.skin)).toBe(true);
 
     // 剧本里的事实要真的走到灯上，否则那两枚灯压根不会亮
     const index = DEMO_STEPS.findIndex((step) => step.id === "cornerPassthrough");
     const frame = demoSnapshot(index, NOW, LABELS);
     expect(frame.passThrough).toBe(true);
-    // 不写 cornerTrigger = DemoStage 那边回落成 "always"
-    expect(frame.cornerTrigger).toBeUndefined();
+    expect(frame.lights?.tl.kind).toBe("passthrough");
     const stateIndex = DEMO_STEPS.findIndex((step) => step.id === "lightTriggerState");
     expect(demoSnapshot(stateIndex, NOW, LABELS).triggerState).toBe("error");
+    expect(demoSnapshot(DEMO_STEPS.indexOf(skin!), NOW, LABELS).skin).toBe("neon");
   });
 
   it("demoSnapshot 给出可直接渲染的 GroupView", () => {

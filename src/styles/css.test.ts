@@ -46,13 +46,29 @@ describe("样式表", () => {
       "white-space: nowrap", // 组名 / 消息不换行（靠省略号截断）
       ".sign-corner", // 四角小灯
       '.sign-corner[data-kind="passthrough"]', // 穿透角灯（旧角标删掉后唯一的画法）
-      '.sign[data-edge="frame"]', // 边灯那条轨（按牌挂，不是挂在窗口根上）
+      // 0.6.5：一条轨拆成上下两条边，各挂各的画法。少了这两个伪元素，
+      // 六行设置里「上边 / 下边」两行会一起变成「点了没反应」。
+      ".sign::before",
+      ".sign::after",
+      '.sign[data-edge-top="off"]::before',
+      '.sign[data-edge-bottom="off"]::after',
+      '.sign[data-edge-top="glow"]',
+      '.sign[data-edge-bottom="fade"]',
+      '.dot[data-shape="diamond"]', // 六档灯珠形状里唯一靠 clip-path 画的
+      '[data-sign-outline="leaf"]', // 四档牌轮廓
+      '[data-effect="sweep"]', // 五档动效
       "--corner-arc", // 角灯落点跟着圆角算，写死就又会缩回牌内
       "data-sign-light-scale", // 粗细尺子
       "overflow: hidden", // 裁掉超出牌面的内容
     ]) {
       expect(lampCss.includes(needle), `lamp.css 里找不到 ${needle}`).toBe(true);
     }
+    // 0.6.4 那条单一轨不能再留：它和新的上下两条边抢同一对伪元素，
+    // 两条规则都在的话「只亮上边」会变成「整圈都亮」。
+    expect(lampCss.includes('.sign[data-edge="frame"]')).toBe(false);
+    // 旧「灵动效果」开关已换成 `data-effect` 五档；留着 `[data-lively]` 的话
+    // 预览和真灯会各自读一个不存在的属性，柔光一眼就消失。
+    expect(lampCss.includes("[data-lively]")).toBe(false);
     // 穿透那枚常驻 `ban` 角标已经删掉了：CSS 里不该再留「穿透时给 .lamp-flag
     // 换描边色」那条规则（留着的话暂停角标会在穿透时莫名变色，而图标还是暂停）
     expect(lampCss.includes("[data-pass-through] .lamp-flag")).toBe(false);

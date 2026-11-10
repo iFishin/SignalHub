@@ -1,4 +1,4 @@
-import type { Settings, Shape, StateStyle, SignGap, SignCorner, SignCorners, LightTrigger } from "./useSettings";
+import { CORNER_SLOTS, type Settings, type Shape, type StateStyle, type SignGap, type SignCorner, type CornerPos, type SignLights, type EdgeLight, type EdgePos, type LightTrigger } from "./useSettings";
 import { SIGNALS, type SignalState } from "./types";
 import { colorVars } from "./palettes";
 
@@ -352,7 +352,7 @@ export const SIGN_GAP_MULT: Record<SignGap, number> = {
  * 决定，和这个数组的次序无关。写在这里是为了让「设置里第一行 = 左上角」有唯一
  * 出处，而不是两处各写一遍 `["tl","tr","br","bl"]`。
  */
-export const CORNER_POSITIONS = ["tl", "tr", "br", "bl"] as const;
+export const CORNER_POSITIONS = CORNER_SLOTS;
 
 /** 这一块牌的四角要挂什么（[`cornerLights`] 的输入）。 */
 export interface CornerFacts {
@@ -376,8 +376,30 @@ export interface CornerFacts {
 }
 
 export interface CornerLight {
-  pos: (typeof CORNER_POSITIONS)[number];
+  pos: CornerPos;
   kind: SignCorner;
+}
+
+/**
+ * 上下两条边现在各画成什么样。
+ *
+ * 0.6.5 之前整盏灯只有一个 `data-edge`，上下永远一模一样。现在每条边各判各的
+ * 触发条件：同一块牌可以「上边常亮、下边只在出错时亮」。判据和四角共用同一份
+ * `LightContext`，所以「指定状态 / 指定时段」这些带参档位在六个槽里是同一个答案。
+ *
+ * 不亮返回 `"off"` 而不是 `null`：CSS 那边只要一个 `[data-edge-top="off"]` 就能
+ * 决定画不画，不用再给每枚灯挂一个 `data-on`。
+ */
+export function edgeLightKinds(
+  lights: SignLights,
+  ctx?: LightContext,
+): Record<EdgePos, EdgeLight> {
+  // 不传 ctx = 设置页那张静态预览：只看画法、不看「什么时候亮」。
+  // 预览跟着触发走的话，配成「只在出错时亮」就什么都画不出来，会被当成没生效。
+  return {
+    top: !ctx || lightOn(lights.top.trigger, ctx) ? lights.top.kind : "off",
+    bottom: !ctx || lightOn(lights.bottom.trigger, ctx) ? lights.bottom.kind : "off",
+  };
 }
 
 /**
@@ -387,25 +409,30 @@ export interface CornerLight {
  * 用户看到的是一枚「快灭了」的灯，而它其实在说反话。所以这里做的是过滤，
  * 不是给 `data-on` 之类的东西。
  *
- * 唯一的例外是 `state`：它没有条件，配了就一直在 —— 那正是「关掉圆点之后仍然
- * 要有颜色」的用法。
+ * `ctx` 可选：给了就走**两道判据**，触发排在第一；不给（设置页预览）就只走第二道，
+ * 按常亮画。每个角现在有自己的 `trigger`，触发说「现在别亮」
+ * 时连无条件亮的 `state` 那枚也得消失 —— 否则用户设了「只在需要我处理时亮」，
+ * 空闲的牌上却还挂着一枚常亮的状态点，等于没设。0.6.5 之前四角共用一个 gate，
+ * 想让「左上常亮、右上只在出错时亮」根本做不到。
  *
- * `gate` 是「行为」页那道触发开关的结果（`lightOn`）。**它排在一切条件之前**：
- * 触发方式说「现在别亮」的时候，连无条件亮的 `state` 那枚也得消失 —— 否则用户
- * 设了「只在需要我处理时亮」，空闲的牌上却还挂着一枚常亮的状态点，等于没设。
+ * 第二道是这枚灯自己的事实（置顶 / 静音 / 沉默 / 穿透）。`state` 没有第二道，
+ * 配了就一直在 —— 那正是「关掉圆点之后仍然要有颜色」的用法。
  *
  * 纯函数，有单测（`lampStyle.test.ts`）：卡片组件每帧都在重渲染，判定逻辑藏在
  * JSX 里的话，六种情况只能靠肉眼看灯验，而这盏灯不是所有机器上都摆得出来。
  */
 export function cornerLights(
-  corners: SignCorners,
+  lights: SignLights,
   facts: CornerFacts,
-  gate = true,
+  ctx?: LightContext,
 ): CornerLight[] {
-  if (!gate) return [];
+  // 不传 ctx = 设置页那张静态预览：只按「挂了什么」「事实成立吗」画，
+  // 不套用行为页的九档触发。两处共用同一份事实判据，别在预览里再抄一遍。
   const out: CornerLight[] = [];
   for (const pos of CORNER_POSITIONS) {
-    const kind = corners[pos];
+    const slot = lights[pos];
+    if (ctx && !lightOn(slot.trigger, ctx)) continue;
+    const kind = slot.kind;
     if (kind === "empty") continue;
     if (kind === "pinned" && !facts.pinned) continue;
     if (kind === "muted" && !facts.muted) continue;

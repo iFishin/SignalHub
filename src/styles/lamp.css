@@ -16,8 +16,8 @@
  * 可读性改由**滑杆下限 65%** 保证（见下面那段说明），牌底始终保持足够的深色；
  * 次要文字（`--sign-muted`）也从 `#9b9ba3` 提到了 `#c2c2cb` —— 只抬下限不动字色，
  * 等于让灰字配一块更深的灰底。
- * 「灵动效果」开启后（`[data-lively]`，见文件末尾）才多一层柔光与跃迁涟漪 ——
- * 它是可关的观感层，关掉后逐像素回到 0.4.4。
+ * 效果档（根上的 `data-effect`，见文件末尾）决定多哪一层动效：柔光呼吸 / 脉冲 /
+ * 扫光 / 渐隐 / 关闭。五档都是可换的观感层，选「关闭」逐像素回到 0.4.4。
  *
  * 牌面的**圆角 / 描边 / 底色 / 字号 / 分层强度**由 `[data-sign-*]` 驱动（见「质感」
  * 一节），取值来自 `config.rs` 的同名枚举、经 `useSettings.ts` 的联合类型转一道。
@@ -26,11 +26,11 @@
  * （Rust 枚举 / TS 联合类型 / 这里的 `[data-sign-*]` 选择器），对不上的表现是
  * 「点了没反应」，界面上没有任何报错可循。
  *
- * **边框光（`[data-edge]` 那条轨 + `.sign-corner` 四枚灯位）是同一类东西**：只画在
- * 已经存在的那块牌上，一个用伪元素、一个用绝对定位的子元素，都不参与 flex 布局，
- * 也都不改盒 —— 所以窗口尺寸同样不必为它们加一个像素（见「边框光」一节）。
- * 三把尺子（`data-sign-light-scale` / `-alpha` / `-color`）同样只改画法，
- * 「什么时候亮」由逐块牌的 `data-edge` 和角灯的门控决定，判据在 `lightOn()`。
+ * **边框光是六个独立灯位**（`data-edge-top` / `data-edge-bottom` 两条边的伪元素，
+ * 加 `.sign-corner` 四枚绝对定位子元素）：只画在已经存在的那块牌上，都不参与
+ * flex 布局，也都不改盒 —— 所以窗口尺寸同样不必为它们加一个像素（见「边框光」一节）。
+ * 三把尺子（`data-sign-light-scale` / `-alpha` / `-color`）同样只改画法，六槽共用；
+ * 「什么时候亮」逐块牌、逐槽判定，判据在 `lightOn()` 与 `edgeLightKinds()`。
  *
  * 两条硬性约束：
  * 1) html/body/#root 必须完全透明，否则 webview 会画出白底，透明窗口就白做了。
@@ -102,15 +102,15 @@ body,
   --sign-radius: 0.32; /* × size */
   --sign-text: 1; /* × 字号 */
 
-  /* ---- 边框光：一根轨、四枚灯位，共用三把尺子 ----------------------------
+  /* ---- 边框光：上下两条边 + 四角 = 六个灯位，共用三把尺子 ------------------
    *
-   * 边灯的**线宽**和角灯的**直径**共用 `--light-w` / `--corner-d`，取色和明暗
-   * 共用 `--light-c` / `--light-a`。两样分开调，用户十有八九会调出「一条粗线配
-   * 四颗小芝麻」，而它们本来就是同一条轨上的东西 —— 这也是 0.6.3 之前「灯看起来
-   * 不协调」的根因：边灯画在边框上、角灯却缩在牌内，各画各的。
+   * **槽可以各挑各的画法与触发**（0.6.5），但线宽 / 直径 / 取色 / 明暗仍是六槽共用
+   * 一份：边灯的线宽和角灯的直径共用 `--light-w` / `--corner-d`，取色和明暗共用
+   * `--light-c` / `--light-a`。这两组再拆开，用户十有八九会调出「一条粗线配四颗
+   * 小芝麻」—— 那正是 0.6.3 之前「灯看起来不协调」的根因：各画各的。
    *
    * 默认档写在下面，三档覆盖在文件后面的 `[data-sign-light-*]` 一段里。
-   * **没有一档参与窗口几何**：边灯是 `::before` 伪元素，角灯绝对定位。
+   * **没有一档参与窗口几何**：两条边是 `::before` / `::after` 伪元素，角灯绝对定位。
    */
   --light-w: calc(var(--size) * 0.068);
   --light-a: 0.72;
@@ -419,6 +419,50 @@ body,
   --sign-radius: 0.72;
 }
 
+/* ---- 牌的轮廓（0.6.5） ----------------------------------------------------
+ *
+ * 和上面的「圆角」是两件事：圆角调四个角**多圆**，轮廓换整块牌**什么形状**。
+ * 四档都只用 `border-radius`，**绝不能用 `clip-path`** —— 角灯和边框光是绝对
+ * 定位在牌的 bounding box 四角 / 四边上的，clip-path 会把它们一起裁掉。
+ *
+ * `rect` 不写规则：沿用 `[data-sign-radius]` 给的 `--sign-radius`。`capsule` 只要
+ * 把倍率抬到牌高的一半（1.5×size / 2 = 0.75），`--corner-arc` 会自己跟着算。
+ * 非对称的两档（leaf / arch）必须**逐角**覆盖 `--corner-inset`：靠近直角的那一枚
+ * 若沿用大圆角的落点，会飘到弧线内侧、离边框老远。 */
+.lamp-root[data-sign-outline="capsule"] {
+  --sign-radius: 0.75;
+}
+
+.lamp-root[data-sign-outline="leaf"] .sign {
+  border-radius: calc(var(--size) * 0.62) calc(var(--size) * 0.1)
+    calc(var(--size) * 0.62) calc(var(--size) * 0.1);
+}
+
+.lamp-root[data-sign-outline="leaf"] .sign-corner[data-pos="tl"],
+.lamp-root[data-sign-outline="leaf"] .sign-corner[data-pos="br"] {
+  --corner-inset: calc(var(--size) * 0.62 * 0.293 + 1px);
+}
+
+.lamp-root[data-sign-outline="leaf"] .sign-corner[data-pos="tr"],
+.lamp-root[data-sign-outline="leaf"] .sign-corner[data-pos="bl"] {
+  --corner-inset: calc(var(--size) * 0.1 * 0.293 + 1px);
+}
+
+.lamp-root[data-sign-outline="arch"] .sign {
+  border-radius: calc(var(--size) * 0.6) calc(var(--size) * 0.6)
+    calc(var(--size) * 0.1) calc(var(--size) * 0.1);
+}
+
+.lamp-root[data-sign-outline="arch"] .sign-corner[data-pos="tl"],
+.lamp-root[data-sign-outline="arch"] .sign-corner[data-pos="tr"] {
+  --corner-inset: calc(var(--size) * 0.6 * 0.293 + 1px);
+}
+
+.lamp-root[data-sign-outline="arch"] .sign-corner[data-pos="br"],
+.lamp-root[data-sign-outline="arch"] .sign-corner[data-pos="bl"] {
+  --corner-inset: calc(var(--size) * 0.1 * 0.293 + 1px);
+}
+
 /* 描边。none 把线宽收成 0 而不是 `border: none`。 */
 .lamp-root[data-sign-border="none"] {
   --sign-border-w: 0px;
@@ -603,23 +647,24 @@ body,
   font-variant-numeric: tabular-nums;
 }
 
-/* ---- 边框光：一条轨 + 四枚灯位 ---------------------------------------------
+/* ---- 边框光：六个独立灯位 -------------------------------------------------
  *
- * 0.6.3 之前边灯和角灯是**三套画法**（中性描边、顶边绿雾、四边细线）加**牌内
- * 四个散点**，各画各的，所以整块牌看着不协调。现在它们合成一套东西：
+ * 0.6.5 之前是**一条整轨**（`data-edge`）加四角共用的一个 gate：上下边永远一样、
+ * 四枚角灯一起亮灭，想「上边常亮、下边只在出错时亮」根本没地方设。现在六个槽
+ * 各存「画成什么样 + 凭什么亮」：
  *
- *   `.sign::before` = 边框那条**轨**（top 只走上边 / frame 走四边 / glow 再加
- *     牌外一圈同色柔光）；
- *   `.sign-corner` = 轨上四个转角处的**灯位**（落点跟着圆角算，见上面
- *     `--corner-arc`）。
+ *   `.sign::before` = **上边**那条线（`data-edge-top`）
+ *   `.sign::after`  = **下边**那条线（`data-edge-bottom`）
+ *   `.sign-corner`  = 轨上四个转角处的灯位（只画该亮的那些）
  *
- * 两者共用 `--light-w` / `--light-a` / `--light-c` 三把尺子，开边灯时中性描边让位，
- * 于是牌边永远只有一层线。仍然**不多写一个字、不动一个像素的几何**：牌宽高仍由
- * `config.rs::sign_width` / `sign_height` 算，窗口尺寸完全不受影响。
+ * 四档画法（不亮 / 实线 / 辉光 / 两端淡出）都是同一条 `border` 的变体，不引入
+ * 第二层线。开哪条边就让**那条边**的中性描边让位 —— 左右两截描边保留，不像旧版
+ * 那样把整圈一起抹掉。六个槽共用 `--light-w` / `--light-a` / `--light-c` 三把
+ * 尺子；辉光画在 `.sign` 自己身上（伪元素会被 `overflow: hidden` 裁掉，散不出去）。
  *
- * 两者都只表达**已经有的事实**（状态色、置顶、静音、沉默进度），不引入新语义。
- * 「什么时候亮」交给 `data-edge` / `cornerLights` 的 gate，判据在
- * `lampStyle.ts::lightOn`（行为页的两个触发开关），这一段只管亮起来长什么样。
+ * **不动一个像素的几何**：牌宽高仍由 `config.rs::sign_width` / `sign_height` 算。
+ * `data-edge-*` 挂在每块 `.sign` 上而不是根上 —— 触发条件逐块牌判定，一盏灯里
+ * 几块牌状态不同。判据在 `lampStyle.ts::lightOn` / `edgeLightKinds` / `cornerLights`。
  */
 
 /* `--light-c` 必须**在 `.sign` 这一层**取值，不能从 `.lamp-root` 往下传：状态色是
@@ -654,51 +699,86 @@ body,
   --light-a: 0.95;
 }
 
-/* 边灯的载体是 `.sign::before`：绝对定位的伪元素，不参与 flex 布局、也不改盒。
-   `inset: 0` 相对**内边距盒**定位，所以它天然落在牌自己的描边里面；圆角跟
-   `inherit` 走（比内圆角大 1px，肉眼看不出来）。`pointer-events: none`：
-   它盖在整块牌上，绝不能抢走拖拽和右键。
-
-   **`data-edge` 挂在每块 `.sign` 上，不是 `.lamp-root`**：行为页的触发方式是
-   「这块牌现在该不该亮」（只在要你处理时 / 只在活跃时），而一盏灯里好几块牌
-   状态不同。挂在根上就只能整盏一起亮灭，等于没有触发开关。 */
-.sign[data-edge="top"]::before,
-.sign[data-edge="frame"]::before,
-.sign[data-edge="glow"]::before {
+/* 上 / 下两条边各用一个绝对定位伪元素。`inset: 0` 相对内边距盒定位，天然落在
+   牌自己的描边里面；`border-radius: inherit` 让线跟着圆角与轮廓走。
+   `pointer-events: none`：它盖在整块牌上，绝不能抢走拖拽和右键。 */
+.sign::before,
+.sign::after {
   content: "";
   position: absolute;
   inset: 0;
   border-radius: inherit;
-  /* 三档是**同一条轨**的覆盖范围，不是三种画法。旧版 `top` 用渐变绿雾、
-     `frame` 用 1px 细线，切档时像换了块牌 —— 那正是「不协调」的来源。 */
   border: 0 solid var(--light-c, transparent);
   opacity: var(--light-a);
   pointer-events: none;
 }
 
-.sign[data-edge="top"]::before {
+.sign::before {
   border-top-width: var(--light-w);
 }
 
-.sign[data-edge="frame"]::before,
-.sign[data-edge="glow"]::before {
-  border-width: var(--light-w);
+.sign::after {
+  border-bottom-width: var(--light-w);
 }
 
-/* 开边灯时中性描边让位：否则沿牌边会同时有一条中性线和一条状态线，
-   两条线差 1px、谁也看不清。描边档（`data-sign-border`）只是被盖住，
-   关掉边灯立刻原样回来，不必让设置面板去同步两个开关。 */
-.sign[data-edge]:not([data-edge="off"]) {
-  border-color: transparent;
+/* 不亮 = 根本不画，连一个空伪元素都不留（少一层合成）。 */
+.sign[data-edge-top="off"]::before,
+.sign[data-edge-bottom="off"]::after {
+  display: none;
 }
 
-/* 辉光：在四边细线之上，再从牌**外面**散一圈同色柔光。
-   阴影画在 `.sign` 自己身上而不是伪元素上 —— 伪元素会被父级的
-   `overflow: hidden` 裁掉，光就散不出去。窗口每边有 14px 留白，
-   `size` 32 时 0.45 × size ≈ 14px 的模糊半径刚好用满、又不出窗。 */
-.sign[data-edge="glow"] {
-  box-shadow: 0 0 calc(var(--size) * 0.45) calc(var(--size) * -0.12)
-    var(--light-c, transparent);
+/* 「两端淡出」：用 mask 让线从中间向两头渐隐，**不是**真把线截短 —— 截短之后
+   两个端点和圆角就接不上了，读起来会像一条没画完的线。 */
+.sign[data-edge-top="fade"]::before,
+.sign[data-edge-bottom="fade"]::after {
+  -webkit-mask-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    #000 18%,
+    #000 82%,
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    #000 18%,
+    #000 82%,
+    transparent 100%
+  );
+}
+
+/* 开边灯时**对应那条边**的中性描边让位：否则会同时有一条中性线和一条状态线，
+   两条差 1px、谁也看不清。旧版把整圈 `border-color` 一起抹掉，左右两截就空了；
+   现在只让上 / 下，左右照旧。描边档只是被盖住，关掉边灯立刻原样回来。 */
+.sign[data-edge-top]:not([data-edge-top="off"]) {
+  border-top-color: transparent;
+}
+
+.sign[data-edge-bottom]:not([data-edge-bottom="off"]) {
+  border-bottom-color: transparent;
+}
+
+/* 辉光：在边线之外，再从牌**外面**散一圈同色柔光。阴影必须画在 `.sign` 自己
+   身上 —— 伪元素会被 `overflow: hidden` 裁掉，光散不出去。上下各给一个方向；
+   两边都选了辉光就写两条，后写的那条不能把前一条覆盖掉。
+   `box-shadow` 是这一类效果里唯一挂 `.sign` 的属性，所以「效果」那几档一律
+   改用 `background-image` 做牌面高光，不去抢它（见文件末尾）。 */
+.sign[data-edge-top="glow"] {
+  box-shadow: 0 calc(var(--size) * -0.18) calc(var(--size) * 0.45)
+    calc(var(--size) * -0.12) var(--light-c, transparent);
+}
+
+.sign[data-edge-bottom="glow"] {
+  box-shadow: 0 calc(var(--size) * 0.18) calc(var(--size) * 0.45)
+    calc(var(--size) * -0.12) var(--light-c, transparent);
+}
+
+.sign[data-edge-top="glow"][data-edge-bottom="glow"] {
+  box-shadow:
+    0 calc(var(--size) * -0.18) calc(var(--size) * 0.45) calc(var(--size) * -0.12)
+      var(--light-c, transparent),
+    0 calc(var(--size) * 0.18) calc(var(--size) * 0.45) calc(var(--size) * -0.12)
+      var(--light-c, transparent);
 }
 
 /* 角灯：边框四个转角上的**灯位**，不是牌内散点。落点 `--corner-inset` 跟着
@@ -1018,6 +1098,27 @@ body,
   display: none;
 }
 
+/* 0.6.5 新增的三档。枚举只往后加，旧值仍然合法。 */
+.dot[data-shape="square"] {
+  /* 留 2px 而不是 0：直角在 22px 档上会有明显的锯齿，一点点圆角只是消锯齿。 */
+  border-radius: 2px;
+}
+
+/* 菱形用 clip-path 而不是 rotate(45deg)：transform 要留给逐状态的 pulse 动画和
+   motion 弹簧，旋转会跟它们抢同一个属性。代价是柔光 / 涟漪这些伪元素会一起被
+   裁成菱形 —— 这反而比「菱形灯珠套一层圆形柔光」更统一，刻意保留。 */
+.dot[data-shape="diamond"] {
+  border-radius: 0;
+  clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%);
+}
+
+/* 竖胶囊：只收窄 width，两端全圆。点径（height）不变，所以 `flex: none` 的占位
+   变化只是让名字往左挪半个点径，牌宽和窗口尺寸一个像素都不动。 */
+.dot[data-shape="capsule"] {
+  width: calc(var(--dot) * 0.72);
+  border-radius: 999px;
+}
+
 /* ---- 节奏 ---------------------------------------------------------------- */
 
 /* 每个状态的 animation 由 `--anim-<状态名>` 变量驱动，值在 TS 里算好（见
@@ -1114,10 +1215,11 @@ body,
   }
 }
 
-/* ---- 灵动效果：柔光呼吸 -------------------------------------------------- */
+/* ---- 效果之一：柔光呼吸（原「灵动效果」） -------------------------------- */
 
 /*
- * 一层**可关**的观感，只在 `.lamp-root[data-lively]` 下生效。三件事：
+ * 0.6.5 起效果有五档，这一档就是旧开关 `lively=true` 的样子，所以升级不改观感。
+ * 只在 `.lamp-root[data-effect="breathe"]` 下生效。三件事：
  *   1) 灯珠外一圈同色柔光，按**该状态自己的节奏**呼吸。节奏来自 TS 挂在每个
  *      灯珠上的 `--halo-anim`（见 lampStyle.ts::resolveHaloAnimations），所以
  *      blink_speed 和逐个状态设的 blink_ms 都跟着变；
@@ -1128,11 +1230,11 @@ body,
  * 都是伪元素，画在元素盒之外但**不改盒**；涟漪只动 transform。窗口一个像素
  * 都不用重算，也就不会被 Rust 那个瞬间变尺寸的窗口裁到。
  */
-.lamp-root[data-lively] .dot {
+.lamp-root[data-effect="breathe"] .dot {
   position: relative;
 }
 
-.lamp-root[data-lively] .dot::before {
+.lamp-root[data-effect="breathe"] .dot::before {
   content: "";
   position: absolute;
   /* 外扩 50%：牌内灯珠径 0.55×size，外扩 ≈6px 仍落在牌的 padding 区里；
@@ -1160,7 +1262,7 @@ body,
 
 /* ring 形状自己就带着一圈环，再叠柔光会糊成两个不同心的圆；而且它的 mask
    会把外扩的伪元素一起裁掉，只剩几段怪异的弧。直接不画。 */
-.lamp-root[data-lively] .dot[data-shape="ring"]::before {
+.lamp-root[data-effect="breathe"] .dot[data-shape="ring"]::before {
   display: none;
 }
 
@@ -1170,7 +1272,7 @@ body,
    1) 外扩收窄（-50% → -30%）：光晕更贴着灯珠，不散成一摊；
    2) 渐变更柔（中心透明区扩大、亮带变窄、外缘更快衰减）：
       读起来像「灯珠在发光」而不是「灯珠外面套了个圈」。 */
-.lamp-root[data-lively] .lamp-dot::before {
+.lamp-root[data-effect="breathe"] .lamp-dot::before {
   inset: -30%;
   background: radial-gradient(
     circle,
@@ -1199,7 +1301,7 @@ body,
    只在**那一帧**动 transform（420ms 后摘掉 data-pulse），不是常驻循环。
    ring + stale 那条旧的 `::after { display: none }` 会兜住它 —— 正好，环形
    状态下再扩一圈环是重复信息。 */
-.lamp-root[data-lively] .sign[data-pulse] .dot::after {
+.lamp-root[data-effect="breathe"] .sign[data-pulse] .dot::after {
   content: "";
   position: absolute;
   inset: -18%;
@@ -1221,24 +1323,98 @@ body,
   }
 }
 
-/* 牌面：一道从顶部往下淡出的极淡白（2%，只在亮桌面才隐约看得见），
-   加一条非常柔的内高光（inset 0 0.5px 0 rgba(255,255,255,0.06)）。
-   原来 0.1 的 inset 高光太亮 —— 在深色牌上就是一条刺眼的白线。
-   玻璃感应该是「若有若无」的，不是「能看见一条边」的。
-   不改盒模型，也不碰 --sign-bg 的 alpha —— 低透明度那套浅字 + 描边照旧。 */
-.lamp-root[data-lively] .sign {
-  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 50%);
-  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.06);
-  transition: box-shadow 240ms ease;
+/* 牌面：一道从顶部往下淡出的极淡白（2%，只在亮桌面才隐约看得见），加一条
+   非常柔的顶部高光。玻璃感应该是「若有若无」的，不是「能看见一条边」的。
+   不改盒模型，也不碰 --sign-bg 的 alpha —— 低透明度那套浅字 + 描边照旧。
+   **0.6.5 起刻意不用 box-shadow 做内高光**：`.sign` 的 box-shadow 归边框光的
+   辉光档所有（见上面那段），两条规则抢同一个属性会让辉光凭空消失。改成叠一层
+   顶部 1px 渐变，观感几乎一样，但两套效果可以共存。 */
+.lamp-root[data-effect="breathe"] .sign {
+  background-image:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.07), transparent 1.5px),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 50%);
 }
 
-/* 悬停不用 border-color 跳变（0.14 → 0.3 太生硬），只微微加深内高光。
+/* 悬停不用 border-color 跳变（0.14 → 0.3 太生硬），只把顶部那道高光微微加深。
    牌面边框始终保持原有的 --sign-line，不因 hover 而变亮 ——
    「悬停提亮」应该像手指碰了一下玻璃，不是开了一盏灯。 */
-.lamp-root[data-lively] .sign:hover {
-  box-shadow:
-    inset 0 0.5px 0 rgba(255, 255, 255, 0.1),
-    inset 0 0 12px rgba(255, 255, 255, 0.03);
+.lamp-root[data-effect="breathe"] .sign:hover {
+  background-image:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.12), transparent 2px),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 50%);
+}
+
+/* ---- 另外四档效果（0.6.5） ------------------------------------------------
+ *
+ * 五档互斥，都由根上的 `data-effect` 选择。`off` 不写任何规则（逐像素回到
+ * 0.4.4：脉冲、柔光、高光、弹簧全部不画）。所有常驻动画只动 opacity / transform
+ * / background-position，不改盒模型、不动窗口几何。
+ *
+ * **不要在这些规则里写 `.sign` 的 box-shadow**，理由见上。
+ * `.sign::before` / `::after` 已经被上下两条边灯占了，所以扫光走 background-image，
+ * 脉冲走 `.dot::after`（breathe 档才用涟漪，两档互斥，不会撞车）。
+ */
+
+/* 脉冲：从灯珠扩出去一圈同色环。用固定 1.6s 节奏，不另起一套时钟去和
+   `--anim-*` 抢 `.dot` 自己的 animation —— 那一层归逐状态节奏所有。 */
+@keyframes effect-pulse {
+  0% {
+    opacity: 0.7;
+    transform: scale(0.86);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.85);
+  }
+}
+.lamp-root[data-effect="pulse"] .dot {
+  position: relative;
+}
+.lamp-root[data-effect="pulse"] .dot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--state);
+  border-radius: inherit;
+  pointer-events: none;
+  animation: effect-pulse 1600ms ease-out infinite;
+}
+
+/* 扫光：一道很淡的高光周期性扫过牌面。用 background-position 而不是伪元素，
+   因为 `.sign` 的两个伪元素都归边灯了。 */
+@keyframes effect-sweep {
+  0% {
+    background-position: -70% 0;
+  }
+  100% {
+    background-position: 170% 0;
+  }
+}
+.lamp-root[data-effect="sweep"] .sign {
+  background-image: linear-gradient(
+    100deg,
+    transparent 34%,
+    rgba(255, 255, 255, 0.09) 50%,
+    transparent 66%
+  );
+  background-size: 60% 100%;
+  background-repeat: no-repeat;
+  animation: effect-sweep 3200ms linear infinite;
+}
+
+/* 渐隐：整块牌随节奏轻轻淡入淡出。**安静模式下不淡** —— 那一档靠 opacity
+   压暗、靠 hover 恢复，动画覆盖 opacity 会让「鼠标一碰就回来」失效。 */
+@keyframes effect-fade {
+  0%,
+  100% {
+    opacity: 0.78;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.lamp-root:not([data-quiet])[data-effect="fade"] .sign {
+  animation: effect-fade 3200ms ease-in-out infinite;
 }
 
 /* ---- 圆环菜单（长按灯呼出）-------------------------------------------- */
@@ -1410,17 +1586,19 @@ body,
   .lamp-root .sign[data-pulse] {
     animation: none !important;
   }
-  /* 灵动效果里的常驻呼吸 / 一次性涟漪也降级：柔光留着（静态的一圈光，仍由
-     颜色承载语义），但不再动；牌的悬停过渡也去掉。motion 弹簧那一层由
-     SignalLamp 的 useReducedMotion 关掉，两端不会打架。 */
-  .lamp-root[data-lively] .dot::before {
+  /* 0.6.5：五档效果里的常驻呼吸 / 脉冲 / 扫光 / 渐隐一律降级。柔光留着
+     （静态的一圈光，仍由颜色承载语义），但不再动；涟漪也去掉。motion 弹簧
+     那一层由 SignalLamp 的 useReducedMotion 关掉，两端不会打架。 */
+  .lamp-root[data-effect="breathe"] .dot::before {
     animation: none !important;
     opacity: 0.34;
   }
-  .lamp-root[data-lively] .sign[data-pulse] .dot::after {
+  .lamp-root[data-effect="breathe"] .sign[data-pulse] .dot::after,
+  .lamp-root[data-effect="pulse"] .dot::after {
     display: none;
   }
-  .lamp-root[data-lively] .sign {
-    transition: none;
+  .lamp-root[data-effect="sweep"] .sign,
+  .lamp-root[data-effect="fade"] .sign {
+    animation: none !important;
   }
 }

@@ -23,7 +23,7 @@
  *   只为演示编出来的。
  */
 import type { GroupView, SignalState } from "./types";
-import type { Shape, SignCorners, SignEdge, LightTrigger } from "./useSettings";
+import type { Shape, SignLights } from "./useSettings";
 
 /** 演示里出现的组。名字是稳定的 id，显示名走 i18n（中英各一份）。 */
 export type DemoGroupId = "build" | "api" | "review";
@@ -36,6 +36,25 @@ export type DemoGroupId = "build" | "api" | "review";
  * 灯，所以 id 只能有一处出处 —— 从剧本里念一遍字符串，两边迟早对不上。
  */
 export const DEMO_CORNER_GROUP: DemoGroupId = "build";
+
+/**
+ * 「用光说话」那一场的六灯位骨架。
+ *
+ * 剧本只写自己要改的那几个槽，其余全是默认（不亮 / 不挂 / 常亮）。和
+ * `presets.ts::lights` 是同一套写法但**故意不共用**：那边是用户能一键选的皮肤，
+ * 这边是演示脚本，改一边不该让另一边跟着变。
+ */
+function demoLights(patch: Partial<SignLights>): SignLights {
+  return {
+    top: { kind: "off", trigger: "always" },
+    bottom: { kind: "off", trigger: "always" },
+    tl: { kind: "empty", trigger: "always" },
+    tr: { kind: "empty", trigger: "always" },
+    br: { kind: "empty", trigger: "always" },
+    bl: { kind: "empty", trigger: "always" },
+    ...patch,
+  };
+}
 
 /** 场景 id。文案在 i18n 的 `demoScenario`。 */
 export type DemoScenarioId = "day" | "asking" | "silence" | "tucked" | "look";
@@ -74,27 +93,19 @@ export interface DemoStep {
    */
   shape?: Shape;
   /**
-   * 这一步把边灯换成哪一档。不填 = 跟随用户设置。
+   * 这一步六个灯位换成什么。不填 = 跟随用户设置。
    *
-   * 只有「用光说话」那个场景会填 —— 那一场讲的就是这四个档位，跟着用户的设置走
-   * 就等于什么都没讲。
+   * 只有「用光说话」那个场景会填 —— 那一场讲的就是上下两条边和四个角，跟着
+   * 用户的设置走等于什么都没讲。每个槽自带画法 + 触发，所以一步就能演示
+   * 「上边只在出错时亮、下边常亮、四个角各挂各的」。
    */
-  edge?: SignEdge;
-  /** 这一步四角各挂什么。不填 = 跟随用户设置。 */
-  corners?: SignCorners;
+  lights?: SignLights;
+  /** 这一步换成哪套整套皮肤（id 见 `presets.ts::skins`）。不填 = 逐项手调。 */
+  skin?: string;
   /** 这一步把那块牌当成「被置顶」（角灯的 `pinned` 判据）。 */
   pinned?: boolean;
   /** 这一步把那块牌当成「被静音」（角灯的 `muted` 判据）。 */
   muted?: boolean;
-  /**
-   * 这一步把边灯的触发方式换成哪一档。不填 = 常亮。
-   *
-   * 只有「用光说话」最后那一步会填：让两块状态不同的牌并排，只有需要你动手的
-   * 那块亮边 —— 触发方式这种「什么时候亮」的事，光靠一行设置说明讲不清楚。
-   */
-  edgeTrigger?: LightTrigger;
-  /** 这一步角灯的触发方式。不填 = 常亮（和边灯各判各的，见「用光说话」倒数第二步）。 */
-  cornerTrigger?: LightTrigger;
   /** 「达到指定状态」那一档挑哪个状态。不填 = DemoStage 给 `permission`。 */
   triggerState?: SignalState;
   /** 这一步假装在点击穿透，让 `passthrough` 角灯有条件亮。 */
@@ -106,7 +117,7 @@ export interface DemoScenario {
   steps: DemoStep[];
 }
 
-/** 每一步停多久。场景最长 7 步 ≈ 22 秒，最短 2 步 ≈ 7 秒。 */
+/** 每一步停多久。场景最长 9 步 ≈ 30 秒，最短 2 步 ≈ 7 秒。 */
 export const DEMO_STEP_MS = 3200;
 
 export const DEMO_SCENARIOS: DemoScenario[] = [
@@ -277,30 +288,34 @@ export const DEMO_SCENARIOS: DemoScenario[] = [
     ],
   },
   {
-    // 用光说话：边灯四档 + 四角角灯。这一场存在的理由是**可发现性** ——
-    // 两项默认全关，不进演示，用户根本不会知道设置里有它们。
-    // 每一步都换成「这一档长什么样」，而不是跟着用户当前的设置走。
+    // 用光说话：上下两条边 + 四个角 = **六个独立灯位**，最后一步一键换整套皮肤。
+    // 这一场存在的理由是**可发现性** —— 六槽默认全关，不进演示，用户根本不会
+    // 知道设置里有它们。每一步都由剧本给 `lights`，不跟着用户当前设置走。
     id: "look",
     steps: [
       {
-        id: "edgeTop",
+        id: "edgeLine",
         durationMs: DEMO_STEP_MS,
         aggregate: "working",
         rows: [
           { id: "build", state: "working" },
           { id: "api", state: "thinking" },
         ],
-        edge: "top",
+        // 只亮上边 —— 下边仍是独立的「不亮」。这正是 0.6.4 那一条轨做不到的。
+        lights: demoLights({ top: { kind: "line", trigger: "always" } }),
       },
       {
-        id: "edgeFrame",
+        id: "edgeBoth",
         durationMs: DEMO_STEP_MS,
         aggregate: "working",
         rows: [
           { id: "build", state: "working" },
           { id: "api", state: "thinking" },
         ],
-        edge: "frame",
+        lights: demoLights({
+          top: { kind: "line", trigger: "always" },
+          bottom: { kind: "line", trigger: "always" },
+        }),
       },
       {
         id: "edgeGlow",
@@ -310,7 +325,10 @@ export const DEMO_SCENARIOS: DemoScenario[] = [
           { id: "review", state: "permission" },
           { id: "build", state: "working" },
         ],
-        edge: "glow",
+        lights: demoLights({
+          top: { kind: "glow", trigger: "always" },
+          bottom: { kind: "glow", trigger: "always" },
+        }),
       },
       {
         id: "cornersState",
@@ -320,8 +338,12 @@ export const DEMO_SCENARIOS: DemoScenario[] = [
           { id: "build", state: "working" },
           { id: "api", state: "thinking" },
         ],
-        edge: "off",
-        corners: { tl: "state", tr: "state", br: "state", bl: "state" },
+        lights: demoLights({
+          tl: { kind: "state", trigger: "always" },
+          tr: { kind: "state", trigger: "always" },
+          br: { kind: "state", trigger: "always" },
+          bl: { kind: "state", trigger: "always" },
+        }),
       },
       {
         // 四条判据同时成立，四枚才一起亮 —— 正是「不亮 = 根本不画」的反面。
@@ -329,13 +351,17 @@ export const DEMO_SCENARIOS: DemoScenario[] = [
         durationMs: DEMO_STEP_MS + 1200,
         aggregate: "stale",
         rows: [{ id: DEMO_CORNER_GROUP, state: "stale", staleProgress: 0.78 }],
-        edge: "off",
-        corners: { tl: "state", tr: "pinned", br: "muted", bl: "stale" },
+        lights: demoLights({
+          tl: { kind: "state", trigger: "always" },
+          tr: { kind: "pinned", trigger: "always" },
+          br: { kind: "muted", trigger: "always" },
+          bl: { kind: "stale", trigger: "always" },
+        }),
         pinned: true,
         muted: true,
       },
       {
-        // 两块牌状态不同，只有「等你批准」那块亮边 —— 行为页的触发方式用一张图
+        // 两块牌状态不同，只有「等你批准」那块上边亮 —— 行为页的触发方式用一张图
         // 就能说清，光靠一行说明讲不明白。这一步不挂角灯，免得两件事抢注意力。
         id: "lightTrigger",
         durationMs: DEMO_STEP_MS + 1200,
@@ -344,12 +370,12 @@ export const DEMO_SCENARIOS: DemoScenario[] = [
           { id: "review", state: "permission" },
           { id: "build", state: "working" },
         ],
-        edge: "frame",
-        corners: { tl: "empty", tr: "empty", br: "empty", bl: "empty" },
-        edgeTrigger: "attention",
+        lights: demoLights({
+          top: { kind: "line", trigger: "attention" },
+        }),
       },
       {
-        // 0.6.4：穿透不再是窗口右上角一枚常驻角标，而是四角里可选的一枚灯。
+        // 穿透不再是窗口右上角一枚常驻角标，而是四角里可选的一枚灯。
         // 这一步把「穿透开着」当成事实喂进去，空心方才会出现（不亮 = 根本不画）。
         id: "cornerPassthrough",
         durationMs: DEMO_STEP_MS + 800,
@@ -358,14 +384,17 @@ export const DEMO_SCENARIOS: DemoScenario[] = [
           { id: "build", state: "working" },
           { id: "api", state: "thinking" },
         ],
-        edge: "frame",
-        corners: { tl: "passthrough", tr: "state", br: "empty", bl: "empty" },
+        lights: demoLights({
+          top: { kind: "line", trigger: "always" },
+          tl: { kind: "passthrough", trigger: "always" },
+          tr: { kind: "state", trigger: "always" },
+        }),
         passThrough: true,
       },
       {
-        // 两行触发**各判各的**：边灯挑「达到指定状态 → 出错」，角灯仍常亮。
-        // 于是出错那块亮边、正在跑那块不亮，而四枚状态角灯两块牌都挂着 ——
-        // 一张图同时说清「九档条件」和「边灯/角灯互不牵连」。
+        // 六个槽**各判各的**：上边挑「达到指定状态 → 出错」，下边常亮，四角常亮。
+        // 于是出错那块上下都亮、正在跑那块只剩一条下边，而四枚状态角灯两块牌
+        // 都挂着 —— 一张图同时说清「九档条件」和「六行互不牵连」。
         id: "lightTriggerState",
         durationMs: DEMO_STEP_MS + 1200,
         aggregate: "error",
@@ -373,11 +402,28 @@ export const DEMO_SCENARIOS: DemoScenario[] = [
           { id: "review", state: "error" },
           { id: "build", state: "working" },
         ],
-        edge: "frame",
-        corners: { tl: "state", tr: "state", br: "state", bl: "state" },
-        edgeTrigger: "state",
+        lights: demoLights({
+          top: { kind: "line", trigger: "state" },
+          bottom: { kind: "line", trigger: "always" },
+          tl: { kind: "state", trigger: "always" },
+          tr: { kind: "state", trigger: "always" },
+          br: { kind: "state", trigger: "always" },
+          bl: { kind: "state", trigger: "always" },
+        }),
         triggerState: "error",
-        cornerTrigger: "always",
+      },
+      {
+        // 一键换整套：配色、牌底、圆角、描边、灯珠形状、牌的轮廓、动效，以及
+        // 六个灯位的画法与触发。由 DemoStage 从 `skins()` 里按 id 取，剧本只存 id
+        // —— 皮肤改了，演示跟着变，不会变成一份过时的说明书。
+        id: "lookSkin",
+        durationMs: DEMO_STEP_MS + 1200,
+        aggregate: "permission",
+        rows: [
+          { id: "review", state: "permission" },
+          { id: "build", state: "working" },
+        ],
+        skin: "neon",
       },
     ],
   },
@@ -478,16 +524,13 @@ export function demoSnapshot(
   quiet: boolean;
   /** `undefined` = 跟随用户设置。 */
   shape: Shape | undefined;
-  /** `undefined` = 跟随用户设置。 */
-  edge: SignEdge | undefined;
-  /** `undefined` = 跟随用户设置。 */
-  corners: SignCorners | undefined;
+  /** 六灯位覆盖；`undefined` = 跟随用户设置。 */
+  lights: SignLights | undefined;
+  /** 整套皮肤 id；`undefined` = 不换肤。 */
+  skin: string | undefined;
   /** 这一步是否把 [`DEMO_CORNER_GROUP`] 当作置顶 / 静音。 */
   pinned: boolean;
   muted: boolean;
-  /** 边灯 / 角灯这一刻的触发方式；`undefined` = 常亮。 */
-  edgeTrigger: LightTrigger | undefined;
-  cornerTrigger: LightTrigger | undefined;
   /** 「达到指定状态」那一步挑的状态。 */
   triggerState: SignalState | undefined;
   /** 这一步是否把「点击穿透」当成已开启（给 `passthrough` 角灯当事实）。 */
@@ -511,12 +554,10 @@ export function demoSnapshot(
     collapsed: step.collapsed === true,
     quiet: step.quiet === true,
     shape: step.shape,
-    edge: step.edge,
-    corners: step.corners,
+    lights: step.lights,
+    skin: step.skin,
     pinned: step.pinned === true,
     muted: step.muted === true,
-    edgeTrigger: step.edgeTrigger,
-    cornerTrigger: step.cornerTrigger,
     triggerState: step.triggerState,
     passThrough: step.passThrough === true,
   };

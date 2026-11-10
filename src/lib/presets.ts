@@ -1,5 +1,14 @@
 import type { Messages } from "./i18n";
-import type { Settings, SignFields, StateStyle } from "./useSettings";
+import {
+  CORNER_SLOTS,
+  EDGE_SLOTS,
+  type EdgeLight,
+  type LightTrigger,
+  type Settings,
+  type SignFields,
+  type SignLights,
+  type StateStyle,
+} from "./useSettings";
 
 /**
  * 外观预设。
@@ -290,5 +299,201 @@ export function isActiveStylePreset(
     (key) =>
       have.includes(key) &&
       sameShapeOrRhythm(preset.styles[key], settings.styles[key]),
+  );
+}
+
+// ---- 整套主题皮肤（0.6.5） -------------------------------------------------
+
+/**
+ * 皮肤和上面那四套「外观预设」回答的是**两个不同的问题**：
+ *
+ * - `presets()` 管「牌多大、多透、显示哪几段」，刻意不碰配色和形状（那两样
+ *   承载语义）；换一套不会改窗口大小。
+ * - `skins()` 管「这一整套看起来是什么风格」：配色、牌底、圆角 / 描边、灯珠
+ *   形状、牌轮廓、动效、边框光六个灯位，一键全换。
+ *
+ * 分开是因为「我就想要个安静的小灯」和「我想换一身皮」不是同一件事；混成一套
+ * 的话，换个配色会顺手把牌宽、字号、显示段一起冲掉，而那些是用户一个个调过的。
+ *
+ * **皮肤会整份覆盖 `sign_lights`**（包括六行触发条件）—— 这是「整套」的代价，
+ * 也是它和四套尺寸预设最不一样的地方。界面上要把这句话写出来，否则用户精心
+ * 调的六行触发被一次换肤冲掉会完全找不到原因。
+ */
+export interface Skin {
+  id: string;
+  label: string;
+  hint: string;
+  apply: Pick<
+    Settings,
+    | "palette"
+    | "sign_tint"
+    | "sign_radius"
+    | "sign_border"
+    | "shape"
+    | "sign_outline"
+    | "effect"
+    | "sign_light_scale"
+    | "sign_light_alpha"
+    | "sign_light_color"
+    | "sign_lights"
+  >;
+}
+
+/** 六个灯位全关的骨架。皮肤只写自己要改的那几个槽，其余保持默认。 */
+function lights(patch: Partial<SignLights>): SignLights {
+  return {
+    top: { kind: "off", trigger: "always" },
+    bottom: { kind: "off", trigger: "always" },
+    tl: { kind: "empty", trigger: "always" },
+    tr: { kind: "empty", trigger: "always" },
+    br: { kind: "empty", trigger: "always" },
+    bl: { kind: "empty", trigger: "always" },
+    ...patch,
+  };
+}
+
+const edge = (kind: EdgeLight, trigger: LightTrigger = "always") => ({ kind, trigger });
+
+export function skins(m: Messages): Skin[] {
+  return [
+    {
+      id: "plain",
+      label: m.skinPlain,
+      hint: m.skinPlainHint,
+      apply: {
+        palette: "default",
+        sign_tint: "graphite",
+        sign_radius: "standard",
+        sign_border: "hairline",
+        shape: "circle",
+        sign_outline: "rect",
+        effect: "breathe",
+        sign_light_scale: "normal",
+        sign_light_alpha: "normal",
+        sign_light_color: "state",
+        sign_lights: lights({}),
+      },
+    },
+    {
+      id: "focus",
+      label: m.skinFocus,
+      hint: m.skinFocusHint,
+      apply: {
+        palette: "default",
+        sign_tint: "slate",
+        sign_radius: "soft",
+        sign_border: "hairline",
+        shape: "circle",
+        sign_outline: "rect",
+        effect: "off",
+        sign_light_scale: "normal",
+        sign_light_alpha: "soft",
+        sign_light_color: "neutral",
+        sign_lights: lights({
+          top: edge("line", "attention"),
+          tl: { kind: "pinned", trigger: "always" },
+          tr: { kind: "muted", trigger: "always" },
+        }),
+      },
+    },
+    {
+      id: "neon",
+      label: m.skinNeon,
+      hint: m.skinNeonHint,
+      apply: {
+        palette: "vivid",
+        sign_tint: "black",
+        sign_radius: "round",
+        sign_border: "none",
+        shape: "ring",
+        sign_outline: "capsule",
+        effect: "pulse",
+        sign_light_scale: "thick",
+        sign_light_alpha: "strong",
+        sign_light_color: "state",
+        sign_lights: lights({
+          top: edge("glow", "active"),
+          bottom: edge("glow", "active"),
+          tl: { kind: "state", trigger: "always" },
+          tr: { kind: "state", trigger: "always" },
+          br: { kind: "state", trigger: "always" },
+          bl: { kind: "state", trigger: "always" },
+        }),
+      },
+    },
+    {
+      id: "paper",
+      label: m.skinPaper,
+      hint: m.skinPaperHint,
+      apply: {
+        palette: "default",
+        sign_tint: "warm",
+        sign_radius: "round",
+        sign_border: "strong",
+        shape: "square",
+        sign_outline: "arch",
+        effect: "fade",
+        sign_light_scale: "thin",
+        sign_light_alpha: "normal",
+        sign_light_color: "neutral",
+        sign_lights: lights({ top: edge("line") }),
+      },
+    },
+    {
+      id: "signal",
+      label: m.skinSignal,
+      hint: m.skinSignalHint,
+      apply: {
+        palette: "colorblind",
+        sign_tint: "graphite",
+        sign_radius: "square",
+        sign_border: "strong",
+        shape: "diamond",
+        sign_outline: "leaf",
+        effect: "sweep",
+        sign_light_scale: "thick",
+        sign_light_alpha: "strong",
+        sign_light_color: "state",
+        sign_lights: lights({
+          top: edge("fade", "message"),
+          bottom: edge("line", "attention"),
+          tl: { kind: "passthrough", trigger: "always" },
+          br: { kind: "stale", trigger: "always" },
+        }),
+      },
+    },
+  ];
+}
+
+/** 六槽逐字段比。键顺序在 Rust 那边往返一趟可能变，所以不比 JSON 字符串。 */
+function sameSignLights(a: SignLights, b: SignLights): boolean {
+  return (
+    EDGE_SLOTS.every(
+      (pos) => a[pos].kind === b[pos].kind && a[pos].trigger === b[pos].trigger,
+    ) &&
+    CORNER_SLOTS.every(
+      (pos) => a[pos].kind === b[pos].kind && a[pos].trigger === b[pos].trigger,
+    )
+  );
+}
+
+const SKIN_SCALAR_FIELDS = [
+  "palette",
+  "sign_tint",
+  "sign_radius",
+  "sign_border",
+  "shape",
+  "sign_outline",
+  "effect",
+  "sign_light_scale",
+  "sign_light_alpha",
+  "sign_light_color",
+] as const;
+
+/** 当前外观是不是正好等于这套皮肤（用来高亮选中的那一个）。 */
+export function isActiveSkin(skin: Skin, settings: Settings): boolean {
+  return (
+    SKIN_SCALAR_FIELDS.every((key) => settings[key] === skin.apply[key]) &&
+    sameSignLights(settings.sign_lights, skin.apply.sign_lights)
   );
 }

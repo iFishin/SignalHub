@@ -4,8 +4,11 @@ import { listen } from "@tauri-apps/api/event";
 import { inTauri } from "./env";
 import type { SignalState } from "./types";
 
-/** 圆点形状。默认 circle 时 permission / error 会额外画成圆角方（色盲友好）。 */
-export type Shape = "circle" | "rounded" | "ring";
+/**
+ * 圆点形状。默认 circle 时 permission / error 会额外画成圆角方（色盲友好）。
+ * 0.6.5 从三档扩到六档，旧值仍然是合法的（枚举只往后加）。
+ */
+export type Shape = "circle" | "rounded" | "ring" | "square" | "diamond" | "capsule";
 
 /** 配色预设。给预设而不是任意取色 —— 红=危险、黄=注意是有语义的。 */
 export type Palette = "default" | "colorblind" | "vivid";
@@ -27,23 +30,15 @@ export type SignEmphasis = "auto" | "flat";
 /** 牌内字体：`system` = 系统无衬线（现状）；`mono` = 整块牌换成等宽。 */
 export type SignFont = "system" | "mono";
 /**
- * 边框光轨：状态色铺到牌的边上。
+ * 一条边怎么亮。
  *
- * `off` = 现状；`top` / `frame` / `glow` 是**同一条线**的覆盖范围（只走上边 /
- * 四边 / 四边再加牌外柔光），不是三种画法。开边灯时中性描边让位。
- * **四档都只改画法**，牌宽高和窗口尺寸一个像素都不动 —— 边灯由 `::before`
- * 和 `box-shadow` 画，两者都不改盒。
+ * 0.6.5 之前全局只有一个 `SignEdge`，四档描述的是**一条轨铺多大范围**，上下边
+ * 永远长得一样、也没法各自挑「什么时候亮」。现在每条边是独立灯位，四档都是
+ * 同一条 `border` 的变体（`fade` 用 `mask-image` 让两端淡出），不引入第二层线。
  */
-export type SignEdge = "off" | "top" | "frame" | "glow";
-/**
- * 四角里的一枚小灯表达什么。
- *
- * `empty` = 不画；`state` = 状态色实心点；`pinned` = 置顶；`muted` = 静音（空心环）；
- * `stale` = 沉默进度（越接近过期越淡）；`passthrough` = 点击穿透开着（空心方）。
- *
- * **除 `state` 外都是条件色**：条件不成立时那枚不画，而不是画暗 —— 「有一枚暗点」
- * 和「没有这枚点」是两种意思。判定在 `lampStyle.ts::cornerLights`，有单测。
- */
+export type EdgeLight = "off" | "line" | "glow" | "fade";
+
+/** 四角里的一枚小灯表达什么。 */
 export type SignCorner =
   | "empty"
   | "state"
@@ -51,16 +46,45 @@ export type SignCorner =
   | "muted"
   | "stale"
   | "passthrough";
-/** 四角各挂一枚。默认全空 = 加这个功能之前的样子。 */
-export interface SignCorners {
-  tl: SignCorner;
-  tr: SignCorner;
-  br: SignCorner;
-  bl: SignCorner;
+
+/** 六个灯位里的一个：画成什么样 + 凭什么亮。 */
+export interface EdgeSlot {
+  kind: EdgeLight;
+  trigger: LightTrigger;
+}
+export interface CornerSlot {
+  kind: SignCorner;
+  trigger: LightTrigger;
 }
 
 /**
- * 边框光**什么时候亮**。边灯和角灯各一份，但共用这**同一张**九档条件表，放在「行为」页。
+ * 六个独立灯位：上边 / 下边 + 左上 / 右上 / 右下 / 左下。
+ * **这是边框光的唯一真值**：外观页管「画成什么样」、行为页管「凭什么现在亮」，
+ * 两种设置都存在同一个槽里 —— 拆成两张表的话，换一档画法会把触发条件悄悄重置。
+ */
+export interface SignLights {
+  top: EdgeSlot;
+  bottom: EdgeSlot;
+  tl: CornerSlot;
+  tr: CornerSlot;
+  br: CornerSlot;
+  bl: CornerSlot;
+}
+export type SlotId = keyof SignLights;
+export type EdgePos = "top" | "bottom";
+export type CornerPos = "tl" | "tr" | "br" | "bl";
+/** 设置页和渲染共用的顺序，别在两处各写一份数组。 */
+export const EDGE_SLOTS: EdgePos[] = ["top", "bottom"];
+export const CORNER_SLOTS: CornerPos[] = ["tl", "tr", "br", "bl"];
+export const SLOT_IDS: SlotId[] = [...EDGE_SLOTS, ...CORNER_SLOTS];
+
+/** 整块牌的轮廓。只能用 `border-radius`，不能用 `clip-path`（会裁掉角灯）。 */
+export type SignOutline = "rect" | "capsule" | "leaf" | "arch";
+/** 动效风格。`breathe` 就是旧「灵动效果」开关开着的样子。 */
+export type Effect = "off" | "breathe" | "pulse" | "sweep" | "fade";
+
+/**
+ * 边框光**什么时候亮**。**六个灯位各存一份**，但共用这**同一张**九档条件表，放在「行为」页。
  *
  * `always` = 条件成立就一直亮；`attention` = 只在「需要你动手」的三种状态亮；
  * `active` = 空闲 / 完成 / 沉默 / 离线时不亮；`quiet` = 安静模式压暗时一起熄；
@@ -409,24 +433,21 @@ export interface Settings {
    * `config::SignGap::px` 是两处同名真值，改档位要一起改。
    */
   sign_gap: SignGap;
-  /** 牌面边灯：把状态色铺到牌的边缘上（不参与几何）。 */
-  sign_edge: SignEdge;
-  /** 牌面四角的小灯：四角各选一个来源，用来挂「塞不进 154px 的那几件事」。 */
-  sign_corners: SignCorners;
-  /** 边灯 / 角灯什么时候亮（「行为」页）。默认 `always` = 常亮。 */
-  sign_edge_trigger: LightTrigger;
-  sign_corner_trigger: LightTrigger;
-  /** 触发条件配套的参数，**两个灯共用一份**（挑哪个状态、时段的起止分钟数）。 */
+  /** 六个独立灯位（见 `SignLights`）。**唯一真值**，纯 CSS，不参与几何。 */
+  sign_lights: SignLights;
+  /** 触发条件配套的参数，**六个灯位共用一份**（挑哪个状态、时段的起止分钟数）。 */
   sign_trigger_state: SignalState;
   sign_trigger_from: number;
   sign_trigger_to: number;
   /** 会话标题怎么拼（「外观 → 基础」页）。默认只显示会话名。 */
   sign_label: SignLabel;
   sign_label_template: string;
-  /** 边框光三把尺子（「外观」页）：粗细、明暗、颜色来源。边灯与角灯共用。 */
+  /** 边框光三把尺子（「外观」页）：粗细、明暗、颜色来源。六个灯位共用一份。 */
   sign_light_scale: LightScale;
   sign_light_alpha: LightAlpha;
   sign_light_color: LightColor;
+  /** 整块牌的轮廓（「外观」页）。只改 CSS，不改几何。 */
+  sign_outline: SignOutline;
   /** 逐个状态的外观覆盖（颜色 / 形状 / 节奏）。没写的项跟随全局。 */
   styles: Record<string, StateStyle>;
   /** 折叠成一颗单纯的灯（只剩灯，没有牌面）。**默认 false = 展开成牌。** */
@@ -458,12 +479,11 @@ export interface Settings {
   /** 闪烁节奏倍率（50–200，100 = 原始速度）。数字越大闪得越快。对没有单独设节奏的状态生效。 */
   blink_speed: number;
   /**
-   * **灵动效果**（默认开）：灯珠外的柔光呼吸、跃迁涟漪、牌面内高光与弹簧转场。
-   *
-   * 纯前端观感，不进任何状态判断、也不影响 Rust 算窗口尺寸。关掉就逐像素回到
-   * 0.4.4 的样子 —— 常驻动画仍然只有 opacity，适合「只想要一颗朴素灯」的人。
+   * 动效风格（默认 `breathe` = 旧「灵动效果」开着的样子）：柔光呼吸、脉冲、
+   * 扫光、渐隐或彻底关闭。纯前端观感，不进任何状态判断、也不影响窗口几何；
+   * 系统开了「减少动态效果」时五档一律降级成静止。
    */
-  lively: boolean;
+  effect: Effect;
   /** 需要你注意时，系统通知是否带提示音。 */
   sound: boolean;
   /** 勿扰时段：这段时间里不弹通知、不出声。 */
@@ -583,12 +603,15 @@ export const DEFAULTS: Settings = {
   // 字体 / 间距同样等于「加这两个字段之前」的样子
   sign_font: "system",
   sign_gap: "standard",
-  // 边灯 / 角灯默认全关，理由同上：加这两项之前牌的四边四角都是空的。
-  // 触发方式与三把尺子全部取默认档，五个字段合起来等于「没加过」
-  sign_edge: "off",
-  sign_corners: { tl: "empty", tr: "empty", br: "empty", bl: "empty" },
-  sign_edge_trigger: "always",
-  sign_corner_trigger: "always",
+  // 六个灯位默认全关 / 全空、触发全常亮，合起来等于「加这些字段之前」
+  sign_lights: {
+    top: { kind: "off", trigger: "always" },
+    bottom: { kind: "off", trigger: "always" },
+    tl: { kind: "empty", trigger: "always" },
+    tr: { kind: "empty", trigger: "always" },
+    br: { kind: "empty", trigger: "always" },
+    bl: { kind: "empty", trigger: "always" },
+  },
   // 触发参数与标题档。标题的默认值**是观感改动**（不再拼智能体名），
   // 其余四项都等于「没加过」。
   sign_trigger_state: "permission",
@@ -599,6 +622,7 @@ export const DEFAULTS: Settings = {
   sign_light_scale: "normal",
   sign_light_alpha: "normal",
   sign_light_color: "state",
+  sign_outline: "rect",
   styles: {},
   collapsed: false,
   click_action: "collapse",
@@ -607,7 +631,7 @@ export const DEFAULTS: Settings = {
   hidden_groups: [],
   muted_groups: [],
   blink_speed: 100,
-  lively: true,
+  effect: "breathe",
   sound: true,
   quiet_hours: { enabled: false, start: 22, end: 8 },
   alert_after_secs: 5,

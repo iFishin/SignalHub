@@ -29,14 +29,14 @@ import { CallMePage } from "./CallMePage";
 import { CallMeMessages } from "./CallMeMessages";
 import { LocalPanel, LocalTabs, PageHeader } from "./settings/SettingsPage";
 import { labelOf, labelPrefOf } from "../lib/lampSort";
-import { SIGN_OPACITY_MIN, stateOverridden, lampVars, resolveShapes, cornerLights, CORNER_POSITIONS, minutesToClock, clockToMinutes } from "../lib/lampStyle";
+import { SIGN_OPACITY_MIN, stateOverridden, lampVars, resolveShapes, cornerLights, edgeLightKinds, minutesToClock, clockToMinutes } from "../lib/lampStyle";
 import {
   commitHeader,
   withoutHeader,
   MAX_HOOK_HEADERS,
 } from "../lib/hookHeaders";
 import { useLang, useMessages, type Lang, type Messages } from "../lib/i18n";
-import { useSettings, updateSettings, DEFAULTS, HTTP_PRESETS, type Settings, type Shape, type Palette, type SignRadius, type SignBorder, type SignTint, type SignText, type SignFont, type SignGap, type SignEmphasis, type SignEdge, type SignCorner, type LightTrigger, type LightScale, type LightAlpha, type LightColor, type HttpPreset, type Hook, type Device, type Machine, type MachineHealth, type StateStyle, type GroupMeta, type SignLabel } from "../lib/useSettings";
+import { useSettings, updateSettings, DEFAULTS, HTTP_PRESETS, EDGE_SLOTS, CORNER_SLOTS, SLOT_IDS, type Settings, type Shape, type Palette, type SignRadius, type SignBorder, type SignTint, type SignText, type SignFont, type SignGap, type SignEmphasis, type SignCorner, type SignLights, type SlotId, type EdgeLight, type SignOutline, type Effect, type LightTrigger, type LightScale, type LightAlpha, type LightColor, type HttpPreset, type Hook, type Device, type Machine, type MachineHealth, type StateStyle, type GroupMeta, type SignLabel } from "../lib/useSettings";
 import {
   useToggles,
   setAutostart,
@@ -85,6 +85,8 @@ import {
   stylePresets,
   isActiveStylePreset,
   applyStylePreset,
+  skins,
+  isActiveSkin,
 } from "../lib/presets";
 import { nameChanged, withGroupName } from "../lib/groupMeta";
 import { buildOnboardingPrompt } from "../lib/onboardingPrompt";
@@ -143,12 +145,42 @@ function sizeOptions(m: Messages): { label: string; value: number }[] {
   ];
 }
 
-/** 与 Rust 侧 `config::Shape` 一致。 */
+/**
+ * 与 Rust 侧 `config::Shape` 一致。
+ *
+ * 0.6.5 从三档扩到六档：方 / 菱 / 胶囊和原来的圆 / 圆角 / 圆环是同一层东西，
+ * 都是「灯珠长什么样」，所以挤在同一个 seg 里，不另开一节。六档全是短词，
+ * 窄设置窗里放得下。
+ */
 function shapeOptions(m: Messages): { label: string; value: Shape }[] {
   return [
     { label: m.shapeCircle, value: "circle" },
     { label: m.shapeRounded, value: "rounded" },
     { label: m.shapeRing, value: "ring" },
+    { label: m.shapeSquare, value: "square" },
+    { label: m.shapeDiamond, value: "diamond" },
+    { label: m.shapeCapsule, value: "capsule" },
+  ];
+}
+
+/** 牌的**整体轮廓**。和 `sign_radius`（圆角几档）不是一回事：这里换的是外形。 */
+function outlineOptions(m: Messages): { label: string; value: SignOutline }[] {
+  return [
+    { label: m.outlineRect, value: "rect" },
+    { label: m.outlineCapsule, value: "capsule" },
+    { label: m.outlineLeaf, value: "leaf" },
+    { label: m.outlineArch, value: "arch" },
+  ];
+}
+
+/** 动效风格。第一档 = 旧的「灵动效果：关」，第二档 = 旧的开着。 */
+function effectOptions(m: Messages): { label: string; value: Effect }[] {
+  return [
+    { label: m.effectOff, value: "off" },
+    { label: m.effectBreathe, value: "breathe" },
+    { label: m.effectPulse, value: "pulse" },
+    { label: m.effectSweep, value: "sweep" },
+    { label: m.effectFade, value: "fade" },
   ];
 }
 
@@ -230,17 +262,19 @@ function gapOptions(m: Messages): { label: string; value: SignGap }[] {
 }
 
 /**
- * 边灯。四档从「完全不亮」到「牌外还带一圈光」。
+ * 一条边怎么亮。四档都是同一条 `border` 的变体，不是四条不同的线：
+ * `fade` 是两端用 mask 淡出，`glow` 是在牌外补一层 `box-shadow`。
  *
- * 选项顺序就是 `config::SignEdge` 里声明的顺序（最保守到最张扬），
- * 值和 Rust 的 `lowercase` 序列化一一对应。
+ * 0.6.5 之前这四档描述的是「一条轨铺多大范围」（顶边 / 四边 / 辉光），
+ * 上下边永远长得一样；现在每条边是独立灯位，各挑各的这一档。
+ * 值和 Rust 的 `EdgeLight` `lowercase` 序列化一一对应。
  */
-function edgeOptions(m: Messages): { label: string; value: SignEdge }[] {
+function edgeOptions(m: Messages): { label: string; value: EdgeLight }[] {
   return [
     { label: m.edgeOff, value: "off" },
-    { label: m.edgeTop, value: "top" },
-    { label: m.edgeFrame, value: "frame" },
+    { label: m.edgeLine, value: "line" },
     { label: m.edgeGlow, value: "glow" },
+    { label: m.edgeFade, value: "fade" },
   ];
 }
 
@@ -260,9 +294,58 @@ function cornerOptions(m: Messages): { label: string; value: SignCorner }[] {
 }
 
 /**
- * 边框光「什么时候亮」。**两行（边灯 / 角灯）共用这一张表**，所以放在「行为」页：
- * 0.6.4 之前边灯只能挑形状，角灯却能按「置顶 / 静音」这些条件挂，看起来像
- * 「只有角灯有触发条件」。现在九档一一对应，两行都从同一个下拉里选。
+ * 六灯位共用的一张标签表。**别在「外观」和「行为」两页各写一份**：两页的行名
+ * 指的是同一批槽（同一个 `sign_lights` 键），哪边多写一行、少写一行都会让人以为
+ * 是两套设置。顺序也由 `SLOT_IDS` 一处给（上 / 下 / 顺时针四角）。
+ */
+function slotLabel(id: SlotId, m: Messages): string {
+  switch (id) {
+    case "top":
+      return m.slotTop;
+    case "bottom":
+      return m.slotBottom;
+    default:
+      return m.cornerPos[id];
+  }
+}
+
+/**
+ * 只替换 `sign_lights` 里的**一个槽**。
+ *
+ * 六个灯位共用一个 Settings 字段，所以这里不能直接 `resetFor(settings,
+ * "sign_lights", patch)` —— 那会把六行一起拉回默认，表现是「我只改了上边的
+ * 触发，四个角却全被清空了」。类型上收成 `Record<string, string>` 是因为
+ * `EdgeSlot.kind` 与 `CornerSlot.kind` 是两个不同的枚举，用联合类型当值写回
+ * 时 TS 推不出「这个键属于哪一类」；最终写回的字段在两个结构体里都同名同义。
+ */
+function withLightSlot(
+  lights: SignLights,
+  id: SlotId,
+  next: Record<string, string>,
+): SignLights {
+  return { ...lights, [id]: { ...lights[id], ...next } } as SignLights;
+}
+
+/** 某一行偏离默认时给一个只重置那一格的 ↺。 */
+function resetSlotFor(
+  settings: Settings,
+  id: SlotId,
+  field: "kind" | "trigger",
+  patch: (next: Partial<Settings>) => void,
+): (() => void) | undefined {
+  if (settings.sign_lights[id][field] === DEFAULTS.sign_lights[id][field]) return undefined;
+  return () =>
+    patch({
+      sign_lights: withLightSlot(settings.sign_lights, id, {
+        [field]: DEFAULTS.sign_lights[id][field],
+      }),
+    });
+}
+
+/**
+ * 边框光「什么时候亮」。**六个灯位共用这一张表**，放在「行为」页；「外观」页
+ * 那六行管的是画法。0.6.4 之前是「一条轨 + 四角共用一个 gate」，用户想给上边
+ * 和下边挑不同条件根本做不到，所以现在每槽各存一份 trigger。
  * 顺序：先是最常用的四档，再是按状态 / 时间 / 牌面事实细挑的五档。
  */
 function triggerOptions(m: Messages): { label: string; value: LightTrigger }[] {
@@ -491,12 +574,16 @@ function LampPreview({ settings }: { settings: Settings }) {
   // 一档（它的亮度是随进度变的）。
   // 穿透也是「条件成立才画」的一枚，预览里同样给真：否则用户给某个角挑了
   // 「点击穿透」，预览四角却全是空的，会被当成下拉没生效。
-  const previewCorners = cornerLights(settings.sign_corners, {
+  // 两个函数都**不传 LightContext**：那就是「按常亮画」，六行触发条件一律不参与
+  // 预览。判定仍走真灯那两个函数，不在这里另抄一份「什么该画」。
+  const previewCorners = cornerLights(settings.sign_lights, {
     pinned: true,
     muted: true,
     staleProgress: 1,
     passThrough: true,
   });
+  // 上下两条边同理：预览只看画法（line / glow / fade），不看「什么时候亮」。
+  const previewEdges = edgeLightKinds(settings.sign_lights);
 
   return (
     <div className="lamp-preview">
@@ -505,10 +592,11 @@ function LampPreview({ settings }: { settings: Settings }) {
         style={
           { "--size": `${settings.size}px`, ...lampVars(settings) } as React.CSSProperties
         }
-        /* 预览也跟着「灵动效果」开关走 —— 否则关了开关，预览里还亮着一圈柔光，
-           用户会以为开关没生效。这里只借 CSS 的柔光 / 高光，不挂 motion 弹簧：
-           预览是静态示意，不该每帧动。 */
-        data-lively={settings.lively || undefined}
+        /* 效果五档和牌的轮廓也跟着走 —— 这一页调的就是它们，预览不跟等于
+           让人对着一张不会变的样机调参数。这里只借 CSS 的柔光 / 高光 / 扫光，
+           不挂 motion 弹簧：预览是静态示意，不该每帧动。 */
+        data-effect={settings.effect}
+        data-sign-outline={settings.sign_outline}
         /* 预览必须跟着质感五档一起变 —— 这一页调的就是它们，预览不跟等于
            让人对着一个不会变的样机调参数。 */
         data-sign-radius={settings.sign_radius}
@@ -531,11 +619,12 @@ function LampPreview({ settings }: { settings: Settings }) {
                预览以前只在 `.dot` 上挂它，于是这两样在预览里会取到透明兜底 ——
                表现是「调了没反应」，而真灯上是好的。 */
             data-state={card.state}
-            /* 预览**不套用行为页的触发开关**：那两行管的是「什么时候亮」，而预览
+            /* 预览**不套用行为页的触发开关**：那六行管的是「什么时候亮」，而预览
                是一张静态样机，跟着触发走的话设成「只在要你处理时亮」就有一块牌
                什么都不画，会被当成开关没生效。预览始终按常亮画，什么时候亮去
-               「行为」页看。 */
-            data-edge={settings.sign_edge}
+               「行为」页看。上下两条边各挂各的画法。 */
+            data-edge-top={previewEdges.top}
+            data-edge-bottom={previewEdges.bottom}
             data-has-message={settings.show.message && card.message ? "true" : "false"}
           >
             {/* 和真灯同一处判断：关掉圆点之后预览也必须是纯文字卡，
@@ -1585,16 +1674,20 @@ export function SettingsPanel({ snapshot }: Props) {
   const gapChoices = gapOptions(m);
   const edgeChoices = edgeOptions(m);
   const cornerChoices = cornerOptions(m);
+  const outlineChoices = outlineOptions(m);
+  const effectChoices = effectOptions(m);
+  const skinChoices = skins(m);
   const triggerChoices = triggerOptions(m);
   const labelChoices = labelOptions(m);
-  // 三档带参数的触发条件共用一个状态选择器 / 一组时段输入：**两行里只要有一行
-  // 用到就显示**。两行各存一份参数的话，用户会看到两个「指定哪个状态」却只有一个
-  // 能生效；反过来只存一份、却给边灯和角灯分别显示两遍也一样别扭。
-  const triggerUsesState =
-    settings.sign_edge_trigger === "state" || settings.sign_corner_trigger === "state";
-  const triggerUsesSchedule =
-    settings.sign_edge_trigger === "schedule" ||
-    settings.sign_corner_trigger === "schedule";
+  // 三档带参数的触发条件共用一个状态选择器 / 一组时段输入：**六个槽里只要有一个
+  // 用到就显示**。六份输入框会把这一页撑成一张表，而「六个槽都选了指定状态却
+  // 只有一个状态框」反而更好解释 —— 它们判的是同一份本机事实。
+  const triggerUsesState = SLOT_IDS.some(
+    (id) => settings.sign_lights[id].trigger === "state",
+  );
+  const triggerUsesSchedule = SLOT_IDS.some(
+    (id) => settings.sign_lights[id].trigger === "schedule",
+  );
   const scaleChoices = scaleOptions(m);
   const alphaChoices = alphaOptions(m);
   const lightColorChoices = lightColorOptions(m);
@@ -1740,16 +1833,9 @@ export function SettingsPanel({ snapshot }: Props) {
   // 逐状态那张表默认收起（十行表和上面九行不是一个量级）。它记的是**用户**的
   // 展开意图，所以放在 state 里；切走再切回来会保留（组件没卸载）。
   const [perStateOpen, setPerStateOpen] = useState(false);
-  // 四角挂什么**默认展开**。它原先收起在「质感」子页末尾，结果是用户根本找不到
-  // 角灯在哪儿（「外观里无法设置和查看」）；现在整节搬到外观页首屏，四行下拉也就
-  // 没有再藏起来的理由。仍留一个可收起的按钮：不调角灯的人可以折起来省一屏。
-  const [cornersOpen, setCornersOpen] = useState(true);
-  // 摘要用：四角挂了几枚。和灯上用的是同一份判定（`lampStyle.cornerLights` 只在
-  // **画**的时候按条件过滤，这里只数「配了几个」——「置顶」角灯配了就算配了，
-  // 即使这一组没置顶，它仍然是用户的选择）。
-  const cornersSet = CORNER_POSITIONS.filter(
-    (pos) => settings.sign_corners[pos] !== "empty",
-  ).length;
+  // 六灯位控件**常驻，不折叠**。0.6.3 那轮把四角收在「质感」子页末尾，用户
+  // 进「外观」根本找不到（原话：「外观里无法设置和查看」）；0.6.5 六行比四行
+  // 更需要一眼看全，折叠只会把「上下边能各调各的」这件新事重新藏起来。
   // 发布说明默认收起：它是**可选阅读**（想知道改了什么才看），不该把系统页撑长
   const [notesOpen, setNotesOpen] = useState(false);
   // 收起时那一行摘要要用：有几个状态被单独设过。判据和表里那个 `stateOverridden`
@@ -2834,56 +2920,44 @@ export function SettingsPanel({ snapshot }: Props) {
             })}
             <p className="hint">{m.silenceTimeoutsMore}</p>
 
-            {/* ---- 边框光什么时候亮 ----------------------------------------------
-                这两行和「外观」页那节是同一套灯的两半：那边管「亮起来长什么样」
-                （档位 / 四角挂什么 / 粗细明暗颜色），这边管「凭什么现在亮」。
-                拆开是刻意的 —— 想调「平时别亮、要我批准时整块牌框成红的」的人，
-                不该去外观页里翻；而只想换个颜色的人也不该被触发条件拦住。
+            {/* ---- 六个灯位什么时候亮 --------------------------------------------
+                和「外观」页那六行是**同一批槽**：那边管画法，这边管触发，两处都写进
+                `sign_lights[id]`。拆开是刻意的 —— 想调「平时别亮、要我批准时上边
+                亮」的人不该去外观页里翻，而只想换个颜色的人也不该被触发条件拦住。
 
-                **两行用同一张九档表、同一个下拉**：0.6.4 之前边灯只有形状，角灯
-                却能按「置顶 / 静音」这些条件挂，看着像只有角灯有触发条件。九档塞不进
-                seg（一行九个按钮会挤成两行半），所以换成下拉；颜色 / 选中态仍沿用
-                输入框那一套扁平语言。判定在 `lampStyle.ts::lightOn`，各传各的 trigger。
+                0.6.4 只有「边灯 / 角灯」两个下拉：上下边永远一样、四角共用一个
+                gate，用户说的「整合在一起了，不好个性化设置」正是这个。现在六行
+                各存一份 trigger，但**共用同一张九档表**（`lightOn` 只有一份判定）。
+                九档塞不进 seg，所以沿用 `.select-wide` 那套扁平下拉。
                 **放在静默超时之后、窗口交互之前**：上一轮「外观里无法设置和查看」
                 的教训是藏太深，这一节不能沉到页尾。 */}
             <div className="section-title">{m.lightBehavior}</div>
             <p className="hint">{m.lightBehaviorHint}</p>
-            <Row
-              label={m.edgeTrigger}
-              onReset={resetFor(settings, "sign_edge_trigger", patch)}
-            >
-              <select
-                className="select select-wide"
-                value={settings.sign_edge_trigger}
-                onChange={(event) =>
-                  patch({ sign_edge_trigger: event.target.value as LightTrigger })
-                }
+            {SLOT_IDS.map((id) => (
+              <Row
+                key={id}
+                label={slotLabel(id, m)}
+                onReset={resetSlotFor(settings, id, "trigger", patch)}
               >
-                {triggerChoices.map((choice) => (
-                  <option key={choice.value} value={choice.value}>
-                    {choice.label}
-                  </option>
-                ))}
-              </select>
-            </Row>
-            <Row
-              label={m.cornerTrigger}
-              onReset={resetFor(settings, "sign_corner_trigger", patch)}
-            >
-              <select
-                className="select select-wide"
-                value={settings.sign_corner_trigger}
-                onChange={(event) =>
-                  patch({ sign_corner_trigger: event.target.value as LightTrigger })
-                }
-              >
-                {triggerChoices.map((choice) => (
-                  <option key={choice.value} value={choice.value}>
-                    {choice.label}
-                  </option>
-                ))}
-              </select>
-            </Row>
+                <select
+                  className="select select-wide"
+                  value={settings.sign_lights[id].trigger}
+                  onChange={(event) =>
+                    patch({
+                      sign_lights: withLightSlot(settings.sign_lights, id, {
+                        trigger: event.target.value,
+                      }),
+                    })
+                  }
+                >
+                  {triggerChoices.map((choice) => (
+                    <option key={choice.value} value={choice.value}>
+                      {choice.label}
+                    </option>
+                  ))}
+                </select>
+              </Row>
+            ))}
             {triggerUsesState && (
               <Row
                 label={m.triggerStatePick}
@@ -3011,75 +3085,86 @@ export function SettingsPanel({ snapshot }: Props) {
             <LampPreview settings={settings} />
             <p className="hint">{m.previewHint}</p>
 
-            {/* ---- 边框光：边灯与角灯是同一条轨，所以放同一节 ------------------
-                原先这堆控件散在「质感」子页里，角灯还默认折叠 —— 用户进「外观」
-                根本看不见。现在整节提到预览下面：改的就是预览里那两块牌的边，
-                控件和效果必须在同一屏里对得上。「什么时候亮」不在这儿，在
-                「行为」页 —— 那是另一类问题（见那边的注释）。 */}
+            {/* ---- 皮肤 ----------------------------------------------------------
+                放在预览正下方：一次改十一项，是这一页「动作最大」的一下，必须和
+                预览同屏才看得出换成了什么。和下面那四套「外观预设」不是一回事：
+                预设只管大小 / 透明度 / 显示哪几段，皮肤管的是整套主题（配色、牌底、
+                形状、轮廓、动效，以及六个灯位的画法**和**触发）。
+                换肤会覆盖六行触发条件 —— 这句写在文案里，不让它变成一次静默覆盖。 */}
+            <div className="section-title">{m.skinTitle}</div>
+            <p className="hint">{m.skinHint}</p>
+            <div className="seg">
+              {skinChoices.map((skin) => (
+                <button
+                  key={skin.id}
+                  type="button"
+                  title={skin.hint}
+                  data-active={isActiveSkin(skin, settings)}
+                  onClick={() => patch(skin.apply)}
+                >
+                  {skin.label}
+                </button>
+              ))}
+            </div>
+
+            {/* ---- 六个灯位画成什么样 --------------------------------------------
+                0.6.4 的「一条轨 + 四个角共用一个 gate」让用户没法分别给上下边、
+                四个角挑东西（原话：「整合在一起了，不好个性化设置」）。现在六行
+                常驻在预览下面：改的就是预览里那两块牌的边和角，控件与效果同屏。
+                「什么时候亮」不在这儿，在「行为」页 —— 那是另一类问题。 */}
             <div className="section-title">{m.frameLight}</div>
             <p className="hint">{m.frameLightHint}</p>
-
-            <Row
-              label={m.signEdge}
-              hint={m.signEdgeHint}
-              onReset={resetFor(settings, "sign_edge", patch)}
-            >
-              <div className="seg">
-                {edgeChoices.map((choice) => (
-                  <button
-                    key={choice.value}
-                    type="button"
-                    data-active={settings.sign_edge === choice.value}
-                    onClick={() => patch({ sign_edge: choice.value })}
-                  >
-                    {choice.label}
-                  </button>
-                ))}
-              </div>
-            </Row>
-
-            {/* 四角挂什么。默认展开（理由见 `cornersOpen` 那条 state 注释）。 */}
-            <button
-              type="button"
-              className="disclosure"
-              aria-expanded={cornersOpen}
-              onClick={() => setCornersOpen((open) => !open)}
-            >
-              <span className="caret" aria-hidden="true">
-                {cornersOpen ? "▾" : "▸"}
-              </span>
-              <span className="disclosure-title">{m.signCorners}</span>
-              <span className="disclosure-note">
-                {cornersSet > 0 ? m.cornersSome(cornersSet) : m.cornersNone}
-              </span>
-            </button>
-            {cornersOpen && (
-              <>
-                <p className="hint">{m.signCornersHint}</p>
-                {CORNER_POSITIONS.map((pos) => (
-                  <Row key={pos} label={m.cornerPos[pos]}>
-                    <select
-                      className="select"
-                      value={settings.sign_corners[pos]}
-                      onChange={(event) =>
-                        patch({
-                          sign_corners: {
-                            ...settings.sign_corners,
-                            [pos]: event.target.value as SignCorner,
-                          },
-                        })
-                      }
-                    >
-                      {cornerChoices.map((choice) => (
-                        <option key={choice.value} value={choice.value}>
-                          {choice.label}
-                        </option>
-                      ))}
-                    </select>
-                  </Row>
-                ))}
-              </>
-            )}
+            {EDGE_SLOTS.map((pos) => (
+              <Row
+                key={pos}
+                label={slotLabel(pos, m)}
+                onReset={resetSlotFor(settings, pos, "kind", patch)}
+              >
+                <select
+                  className="select"
+                  value={settings.sign_lights[pos].kind}
+                  onChange={(event) =>
+                    patch({
+                      sign_lights: withLightSlot(settings.sign_lights, pos, {
+                        kind: event.target.value,
+                      }),
+                    })
+                  }
+                >
+                  {edgeChoices.map((choice) => (
+                    <option key={choice.value} value={choice.value}>
+                      {choice.label}
+                    </option>
+                  ))}
+                </select>
+              </Row>
+            ))}
+            {CORNER_SLOTS.map((pos) => (
+              <Row
+                key={pos}
+                label={slotLabel(pos, m)}
+                onReset={resetSlotFor(settings, pos, "kind", patch)}
+              >
+                <select
+                  className="select"
+                  value={settings.sign_lights[pos].kind}
+                  onChange={(event) =>
+                    patch({
+                      sign_lights: withLightSlot(settings.sign_lights, pos, {
+                        kind: event.target.value,
+                      }),
+                    })
+                  }
+                >
+                  {cornerChoices.map((choice) => (
+                    <option key={choice.value} value={choice.value}>
+                      {choice.label}
+                    </option>
+                  ))}
+                </select>
+              </Row>
+            ))}
+            <p className="hint">{m.slotsHint}</p>
 
             {/* 三把尺子：边灯的线宽和角灯的直径**共用一档**，取色和明暗也共用。
                 分开设四行只会让人调出「一条粗线配四颗小芝麻」。 */}
@@ -3303,15 +3388,28 @@ export function SettingsPanel({ snapshot }: Props) {
                     format={(value) => `${value}%`}
                   />
                 </Row>
-                {/* 灵动效果是「怎么动」的总闸，和闪烁节奏同一层。放在节奏下面：改完节奏
-                    立刻能开关柔光，看得出两者是同步的。关掉后 SignalLamp 连 motion 的
-                    弹簧都不挂，逐像素回到旧观感。 */}
+                {/* 动效是「怎么动」的总闸，和闪烁节奏同一层，放在节奏下面：改完节奏
+                    立刻能换一档看得出两者是同步的。0.6.5 从「开 / 关」换成五档下拉：
+                    「柔光呼吸」就是原来开着的样子，「关闭」连 motion 弹簧都不挂。
+                    五档各有自己的 CSS，不抢同一个属性（见 lamp.css 文件头）。 */}
                 <Row
-                  label={m.lively}
-                  hint={m.livelyHint}
-                  onReset={resetFor(settings, "lively", patch)}
+                  label={m.effect}
+                  hint={m.effectHint}
+                  onReset={resetFor(settings, "effect", patch)}
                 >
-                  <Switch on={settings.lively} onChange={(on) => patch({ lively: on })} />
+                  <select
+                    className="select select-wide"
+                    value={settings.effect}
+                    onChange={(event) =>
+                      patch({ effect: event.target.value as Effect })
+                    }
+                  >
+                    {effectChoices.map((choice) => (
+                      <option key={choice.value} value={choice.value}>
+                        {choice.label}
+                      </option>
+                    ))}
+                  </select>
                 </Row>
                 <Row label={m.onSign} onReset={resetFor(settings, "show", patch)}>
                   <div className="chips chips-tight">
@@ -3445,8 +3543,31 @@ export function SettingsPanel({ snapshot }: Props) {
                   </div>
                 </Row>
 
-                {/* 边灯原先挤在这儿（紧跟「描边」），角灯还折叠在本页末尾。
-                    两者现在都搬到了上面的「边框光」小节 —— 它们画的是牌边那条轨，
+                {/* 牌的**整体轮廓**：和上面「圆角」是两层 —— 圆角只管四个角各弯多少，
+                    这里换的是整块牌的外形（胶囊 / 对角圆 / 拱形）。只用 `border-radius`
+                    画，绝不能用 `clip-path`（会裁掉四角的小灯）。紧挨圆角放，因为
+                    两者改的是同一条边；顺序上先圆角后轮廓，后者是一档更大的改动。 */}
+                <Row
+                  label={m.outlineTitle}
+                  hint={m.outlineHint}
+                  onReset={resetFor(settings, "sign_outline", patch)}
+                >
+                  <div className="seg">
+                    {outlineChoices.map((choice) => (
+                      <button
+                        key={choice.value}
+                        type="button"
+                        data-active={settings.sign_outline === choice.value}
+                        onClick={() => patch({ sign_outline: choice.value })}
+                      >
+                        {choice.label}
+                      </button>
+                    ))}
+                  </div>
+                </Row>
+
+                {/* 六灯位原先挤在这儿（紧跟「描边」），角灯还折叠在本页末尾。
+                    现在整节搬到了上面的「边框光」小节 —— 它们画的是牌边那条轨，
                     和圆角 / 描边 / 牌底不是一层东西，混在「质感」里既找不到也说不清。 */}
 
                 <Row label={m.signTint} onReset={resetFor(settings, "sign_tint", patch)}>

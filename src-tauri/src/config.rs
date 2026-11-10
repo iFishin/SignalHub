@@ -315,6 +315,10 @@ pub fn append_hook_log(line: &str) {
 /// 默认是圆；此时 `permission` / `error` 会额外画成**圆角方**，那是给色盲用的
 /// 形状区分（红绿是红绿色盲最难分的一对）。用户若把形状改成别的，这个区分就
 /// 失效了 —— 设置面板里会说明这一点。
+///
+/// 0.6.5 从三档扩到六档（多了方 / 菱 / 胶囊）。**旧值仍然是合法的**：枚举只往
+/// 后加，不改已有拼写，所以老配置不会因为多出几档就整份解析失败。新形状全部
+/// 只用 `border-radius` / `clip-path` 画在 `.dot` 内部，不改盒模型、不改窗口几何。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Shape {
@@ -323,6 +327,12 @@ pub enum Shape {
     Rounded,
     /// 空心圆环。桌面上几乎没有别的东西长这样，最好认。
     Ring,
+    /// 正方。
+    Square,
+    /// 菱形（转 45° 的方）。
+    Diamond,
+    /// 竖胶囊。
+    Capsule,
 }
 
 /// 多灯布局：一盏灯画一叠牌，还是每个可见组一盏自己的灯。
@@ -707,6 +717,121 @@ pub enum LightColor {
     #[default]
     State,
     Neutral,
+}
+
+// ---- 六个独立灯位（0.6.5） --------------------------------------------------
+
+/// 一条边怎么亮。
+///
+/// 0.6.5 之前全局只有一个 [`SignEdge`]，四档描述的是**一条轨铺多大范围**，于是
+/// 上边和下边永远一模一样，也没法各自挑「什么时候亮」。现在每条边是一个独立
+/// 灯位（[`EdgeSlot`]），同时存「画成什么样」和「凭什么亮」。
+///
+/// 四档都是同一条 `border` 的变体，不引入第二层线；全部画在绝对定位的元素上，
+/// **不参与窗口几何**。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EdgeLight {
+    /// 现状：这条边只有那圈中性描边。
+    #[default]
+    Off,
+    /// 一条实线。
+    Line,
+    /// 实线 + 牌外一圈同色柔光。
+    Glow,
+    /// 两端淡出的实线（`mask-image` 做的，不是真把线截短）。
+    Fade,
+}
+
+/// 一条边的灯位：画法 + 触发。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EdgeSlot {
+    pub kind: EdgeLight,
+    pub trigger: LightTrigger,
+}
+
+/// 一个角的灯位：挂什么 + 触发。
+///
+/// 0.6.5 之前四个角共用一个 `sign_corner_trigger`，一个 gate 让四枚一起亮灭 ——
+/// 连「状态色」这种无条件挂的角灯也跟着消失。现在每角各判各的。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CornerSlot {
+    pub kind: SignCorner,
+    pub trigger: LightTrigger,
+}
+
+/// 六个灯位：上边 / 下边 + 左上 / 右上 / 右下 / 左下。
+///
+/// **这是边框光的唯一真值。** 旧的 `sign_edge` / `sign_corners` /
+/// `sign_edge_trigger` / `sign_corner_trigger` 只在读旧 config.json 时存在，
+/// `migrate_legacy_light_slots` 会把它们搬进来，之后永不写回。
+///
+/// **为什么只有上下两条边**：牌是横向的一条，`size * 7` 宽、`size * 1.5` 高，
+/// 左右那两截竖边不到 30px，单独给它们各配一套触发只会让设置页多两行看不出
+/// 区别的选项。旧模型里 `Frame` / `Glow` 顺带画出的左右两截，迁移时**不保留** ——
+/// 那两截本来也不是用户主动选的。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SignLights {
+    pub top: EdgeSlot,
+    pub bottom: EdgeSlot,
+    pub tl: CornerSlot,
+    pub tr: CornerSlot,
+    pub br: CornerSlot,
+    pub bl: CornerSlot,
+}
+
+impl SignLights {
+    /// 挂了几枚角灯（设置页收起时的那行摘要用）。
+    pub fn corner_count(self) -> usize {
+        [self.tl.kind, self.tr.kind, self.br.kind, self.bl.kind]
+            .iter()
+            .filter(|kind| **kind != SignCorner::Empty)
+            .count()
+    }
+}
+
+/// 整块牌的轮廓。和 [`SignRadius`]（圆角倍数）是两件事：圆角调的是「四个角
+/// 多圆」，轮廓换的是「这块牌整体什么形状」。
+///
+/// **只能用 `border-radius` 实现，不能用 `clip-path`**：角灯和边框光是绝对定位在
+/// 牌的 bounding box 四角 / 四边上的，clip-path 会把它们一起裁掉。每档另外给
+/// `--corner-arc` 一个覆盖值，让角灯继续贴着边角走（见 `lamp.css`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SignOutline {
+    /// 遵守 `sign_radius`。默认 —— 升级不改观感。
+    #[default]
+    Rect,
+    /// 胶囊：两端全圆。
+    Capsule,
+    /// 对角圆：左上 / 右下圆，另两角近直。
+    Leaf,
+    /// 拱形：上方两角圆，下方两角近直。
+    Arch,
+}
+
+/// 动效风格。
+///
+/// 0.6.5 之前只有一个 `lively: bool`：要么「柔光呼吸 + 弹簧」全开，要么全关。
+/// 现在是多选一；[`Effect::Breathe`] 就是原来那个开关开着的样子，所以升级不改
+/// 观感。系统开了「减少动态效果」时，五档一律降级成静止（见 `lamp.css` 末尾）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Effect {
+    /// 完全静止，逐像素回到 0.4.4 的样子。
+    Off,
+    /// 柔光呼吸 + 状态跃迁涟漪 + 弹簧转场（原「灵动效果」）。
+    #[default]
+    Breathe,
+    /// 灯珠随状态节奏轻微缩放，牌边一次脉冲。
+    Pulse,
+    /// 一道高光周期性扫过牌面。
+    Sweep,
+    /// 整块牌随状态节奏淡入淡出。
+    Fade,
 }
 
 /// 多块牌之间的间距。
@@ -1562,33 +1687,42 @@ pub struct Settings {
     pub sign_font: SignFont,
     /// 多块牌之间的间距档位。**唯一会影响窗口高度的外观项**（见 [`SignGap`]）。
     pub sign_gap: SignGap,
-    /// 牌面边灯：状态色铺到牌的边缘上（见 [`SignEdge`]）。只改画法，不改几何。
+    /// **已废弃**：0.6.5 之前的一整条边灯。只为读得懂旧配置，
+    /// `migrate_legacy_light_slots` 会搬进 `sign_lights`，并且**永不写回**。
+    #[serde(skip_serializing)]
     pub sign_edge: SignEdge,
-    /// 牌面四角的小灯（见 [`SignCorners`]）。同样是纯 CSS，不参与几何。
-    ///
-    /// **不参与「哪几块牌可见」的判断**：角灯挂不挂，和牌数、窗口尺寸无关 ——
-    /// 它只画在已经存在的那块牌上，而且绝对定位。
+    /// **已废弃**：0.6.5 之前四角只存「挂什么」。同上。
+    #[serde(skip_serializing)]
     pub sign_corners: SignCorners,
-    /// 边灯 / 角灯**什么时候亮**（见 [`LightTrigger`]）。放在「行为」页。
-    /// 默认 `Always`：加这两个字段之前两样都是常亮的。两行共用同一张九档条件表。
+    /// **已废弃**：0.6.5 之前边灯 / 四角各一个触发条件。同上。
+    #[serde(skip_serializing)]
     pub sign_edge_trigger: LightTrigger,
+    #[serde(skip_serializing)]
     pub sign_corner_trigger: LightTrigger,
-    /// 触发条件配套的三样参数，**两个灯共用一份**：挑哪个状态、时段的起止。
-    /// 分开存会出现「边灯选了指定状态 permission、角灯选了指定状态 error，却只有
-    /// 一个状态输入框」这种没法解释的界面。两行里只要有一行用到，就把参数显示出来。
+    /// 六个独立灯位：上边 / 下边 + 四个角，每个各自有画法与触发条件（见
+    /// [`SignLights`]）。**这是边框光的唯一真值**，纯 CSS，不参与窗口几何。
+    /// 外观页管「画成什么样」，行为页管「凭什么现在亮」，但都存在同一个槽里 ——
+    /// 拆成两张表的话，换一档画法会把触发条件悄悄重置。
+    pub sign_lights: SignLights,
+    /// 触发条件配套的三样参数，**六个灯位共用一份**：挑哪个状态、时段的起止。
+    /// 分开存会出现「两行都选了指定状态，却只有一个状态输入框」这种没法解释的
+    /// 界面；六个灯位各自存一份更是六倍的输入框。六个槽里只要有一个用到带参的
+    /// 档位，就把参数行显示出来。
     pub sign_trigger_state: String,
     pub sign_trigger_from: u16,
     pub sign_trigger_to: u16,
     /// 会话组的标题怎么拼（见 [`SignLabel`]）。放在「外观 → 基础」页。
     pub sign_label: SignLabel,
     pub sign_label_template: String,
-    /// 边框光的三把尺子：粗细、明暗、取哪一路颜色。放在「外观」页。
-    ///
-    /// 三者都**不是**窗口几何：只画在 `.sign::before` 和四枚绝对定位的角灯上，
-    /// 牌宽高仍由 `sign_width` / `sign_height` 算。
+    /// 边框光的三把尺子：粗细、明暗、取哪一路颜色。六个灯位共用一份 ——
+    /// 它们本来就是同一条轨上的东西，分开调会调出「一条粗线配四颗小芝麻」。
+    /// 三者都**不是**窗口几何：只画在绝对定位的光轨与角灯上，牌宽高仍由
+    /// `sign_width` / `sign_height` 算。
     pub sign_light_scale: LightScale,
     pub sign_light_alpha: LightAlpha,
     pub sign_light_color: LightColor,
+    /// 整块牌的轮廓（见 [`SignOutline`]）。只改 CSS，不改几何。
+    pub sign_outline: SignOutline,
     /// 界面语言偏好。`Auto` 由**前端**解析成具体语言 —— Rust 不知道系统语言。
     pub locale: Locale,
     /// 设置窗口的亮 / 深色偏好。`Auto` = 跟随系统，解析见前端 `lib/theme.ts`。
@@ -1627,13 +1761,15 @@ pub struct Settings {
     pub hidden_groups: Vec<String>,
     /// 闪烁节奏倍率（50–200，100 = 默认）。闪得太快会分心，太慢又看不出在动。
     pub blink_speed: u16,
-    /// **灵动效果**：灯珠外一圈同色柔光随状态节奏呼吸，状态跃迁 / 折叠展开有一次性
-    /// 弹簧反馈，牌面加一道细内高光。默认开 —— 这是门面的观感，不是会打扰人的能力。
-    ///
-    /// 关掉之后**逐像素回到 0.4.4 的样子**：柔光、涟漪、高光、弹簧全部不长，
-    /// 只剩原有的 opacity 脉冲。给「只想要一颗朴素灯」和开了「减少动态效果」的人留路。
-    /// 它只影响前端绘制，不进任何状态判断、不影响窗口几何（`config.rs` 那套尺寸）。
+    /// **已废弃**：0.6.5 之前的「灵动效果」布尔开关。只为读得懂旧配置，
+    /// `migrate_legacy_effect` 会把它搬进 `effect`，并且**永不写回**。
+    /// 默认是 `true`（= `Effect::Breathe`），所以只有旧配置显式写了 `false`
+    /// 才需要迁移，不会把新配置里的效果档误改成默认值。
+    #[serde(skip_serializing)]
     pub lively: bool,
+    /// 动效风格（见 [`Effect`]）。默认 `Breathe` == 旧开关开着的样子（红线 3）。
+    /// 五档都只影响前端绘制，不进任何状态判断、不影响窗口几何。
+    pub effect: Effect,
     /// 需要你注意时，系统通知是否带声音。
     ///
     /// 声音挂在系统通知上（`NotificationBuilder::sound`），所以关掉通知就没有
@@ -2044,13 +2180,14 @@ impl Default for Settings {
             // 字体和间距同理：默认 == 加这两个字段之前的样子
             sign_font: SignFont::default(),
             sign_gap: SignGap::default(),
-            // 边灯 / 角灯默认全关：加这两项之前，牌的四面和四角都是空的。
-            // 触发方式与三把尺子同样取默认档 —— 五个字段全部等价于「没加过」，
-            // 所以旧配置读进来观感一点不变（红线 3）
+            // 六个灯位默认全关 / 全空、触发全常亮：加这些字段之前，牌的四面和
+            // 四角本来就是空的。旧字段同样取默认 —— 它们只是迁移输入。全部等价于
+            // 「没加过」，所以旧配置读进来观感一点不变（红线 3）
             sign_edge: SignEdge::default(),
             sign_corners: SignCorners::default(),
             sign_edge_trigger: LightTrigger::default(),
             sign_corner_trigger: LightTrigger::default(),
+            sign_lights: SignLights::default(),
             // 触发参数 + 标题档：全部等于「没加过」。注意标题的**默认值变了**
             // （`Session` 不再拼智能体名），这是用户明确要的观感改动，不是兼容项。
             sign_trigger_state: DEFAULT_LIGHT_TRIGGER_STATE.to_string(),
@@ -2061,6 +2198,8 @@ impl Default for Settings {
             sign_light_scale: LightScale::default(),
             sign_light_alpha: LightAlpha::default(),
             sign_light_color: LightColor::default(),
+            // 轮廓默认 Rect（= 遵守 sign_radius），升级不改观感
+            sign_outline: SignOutline::default(),
             locale: Locale::default(),
             // 跟随系统：升级上来的旧配置没有这个字段，行为必须和加开关之前一致
             theme: Theme::default(),
@@ -2071,8 +2210,10 @@ impl Default for Settings {
             show: SignFields::default(),
             sign_opacity: DEFAULT_SIGN_OPACITY,
             blink_speed: 100,
-            // 门面默认带一层呼吸感；关掉就完全回到旧观感（见字段注释）
+            // 门面默认带一层呼吸感。旧开关默认 true 与 Breathe 是同一副样子，
+            // 所以 migrate_legacy_effect 只在旧配置写了 false 时才动手
             lively: true,
+            effect: Effect::default(),
             hidden_groups: Vec::new(),
             sound: true,
             quiet_hours: QuietHours::default(),
@@ -2395,12 +2536,92 @@ pub fn load_settings() -> Settings {
         return Settings::default();
     };
     match serde_json::from_str::<Settings>(&raw) {
-        Ok(settings) => migrate_legacy_colors(migrate_legacy_webhook(settings)).clamped(),
+        Ok(settings) => {
+            // 顺序无所谓：三件事各搬各的字段，互不读取对方的产物。
+            let settings = migrate_legacy_light_slots(settings);
+            let settings = migrate_legacy_effect(settings);
+            migrate_legacy_colors(migrate_legacy_webhook(settings)).clamped()
+        }
         Err(err) => {
             eprintln!("[signalhub] {} 无法解析（{err}），使用默认设置", path.display());
             Settings::default()
         }
     }
+}
+
+/// 把 0.6.4 及以前的一整条边灯 / 四角共用触发搬进六个独立灯位。
+///
+/// 旧字段标了 `skip_serializing`，配置写回一次之后它们就再也不出现，所以迁移
+/// 只会发生一次 —— 不会在用户后来把某个灯位改回默认时又被旧值盖掉。
+///
+/// **「新结构完全没写过」是迁移的唯一条件**：新配置里四个旧字段一律是默认值，
+/// 这个判断既把它们挡在外面，也保证用户手工同时写了新旧两套时以新的为准。
+fn migrate_legacy_light_slots(mut settings: Settings) -> Settings {
+    if settings.sign_lights != SignLights::default() {
+        return settings;
+    }
+    let edge = settings.sign_edge;
+    let edge_trigger = settings.sign_edge_trigger;
+    let corners = settings.sign_corners;
+    let corner_trigger = settings.sign_corner_trigger;
+    if edge == SignEdge::Off
+        && corners.count() == 0
+        && edge_trigger == LightTrigger::Always
+        && corner_trigger == LightTrigger::Always
+    {
+        return settings;
+    }
+
+    // 旧的「覆盖范围」四档映射到上下两条边：Top 只走上边，Frame / Glow 上下都走。
+    // 左右两截不保留，理由见 SignLights 的注释。
+    let top = match edge {
+        SignEdge::Off => EdgeLight::Off,
+        SignEdge::Top | SignEdge::Frame => EdgeLight::Line,
+        SignEdge::Glow => EdgeLight::Glow,
+    };
+    let bottom = match edge {
+        SignEdge::Off | SignEdge::Top => EdgeLight::Off,
+        SignEdge::Frame => EdgeLight::Line,
+        SignEdge::Glow => EdgeLight::Glow,
+    };
+    settings.sign_lights.top = EdgeSlot {
+        kind: top,
+        trigger: edge_trigger,
+    };
+    settings.sign_lights.bottom = EdgeSlot {
+        kind: bottom,
+        trigger: edge_trigger,
+    };
+
+    let slot = |kind: SignCorner| CornerSlot {
+        kind,
+        trigger: corner_trigger,
+    };
+    settings.sign_lights.tl = slot(corners.tl);
+    settings.sign_lights.tr = slot(corners.tr);
+    settings.sign_lights.br = slot(corners.br);
+    settings.sign_lights.bl = slot(corners.bl);
+
+    // 内存里也清掉，免得这份对象被别处直接序列化时又把旧值带出去。
+    settings.sign_edge = SignEdge::Off;
+    settings.sign_corners = SignCorners::default();
+    settings.sign_edge_trigger = LightTrigger::Always;
+    settings.sign_corner_trigger = LightTrigger::Always;
+    eprintln!("[signalhub] 把旧的一条边框光搬进了六个独立灯位");
+    settings
+}
+
+/// 把旧的「灵动效果：关」搬成 `effect = off`。
+///
+/// `lively` 默认 `true`，而新配置里根本没有这个键（`skip_serializing`），所以
+/// 只有旧配置**显式写了 false** 才会走到这里；用户在新版里选了别的效果档不会被改。
+fn migrate_legacy_effect(mut settings: Settings) -> Settings {
+    if !settings.lively {
+        settings.effect = Effect::Off;
+        settings.lively = true;
+        eprintln!("[signalhub] 把旧的「灵动效果：关」搬成了 effect=off");
+    }
+    settings
 }
 
 /// 把旧版的逐状态颜色表搬进 `styles`。
@@ -2791,19 +3012,40 @@ mod tests {
             // 字体与间距同理：都取非默认值，漏字段才验得出来
             sign_font: SignFont::Mono,
             sign_gap: SignGap::Loose,
-            // 边灯与角灯同理：四角挂满且各不相同，漏一个字段这里就看得出来
-            sign_edge: SignEdge::Glow,
-            sign_corners: SignCorners {
-                tl: SignCorner::State,
-                tr: SignCorner::Pinned,
-                br: SignCorner::Stale,
-                bl: SignCorner::Muted,
+            // 旧的那四个字段标了 skip_serializing，读回来必然是默认值 —— 夹具里
+            // 只能留默认，否则这条 assert_eq 会自己失败
+            sign_edge: SignEdge::Off,
+            sign_corners: SignCorners::default(),
+            sign_edge_trigger: LightTrigger::Always,
+            sign_corner_trigger: LightTrigger::Always,
+            // 六个灯位全部取非默认：漏一个槽、漏一个 trigger，往返里就该现形
+            sign_lights: SignLights {
+                top: EdgeSlot {
+                    kind: EdgeLight::Glow,
+                    trigger: LightTrigger::Attention,
+                },
+                bottom: EdgeSlot {
+                    kind: EdgeLight::Fade,
+                    trigger: LightTrigger::Schedule,
+                },
+                tl: CornerSlot {
+                    kind: SignCorner::State,
+                    trigger: LightTrigger::Always,
+                },
+                tr: CornerSlot {
+                    kind: SignCorner::Pinned,
+                    trigger: LightTrigger::Pinned,
+                },
+                br: CornerSlot {
+                    kind: SignCorner::Stale,
+                    trigger: LightTrigger::Stale,
+                },
+                bl: CornerSlot {
+                    kind: SignCorner::Muted,
+                    trigger: LightTrigger::Message,
+                },
             },
-            // 触发与三把尺子全取非默认，漏哪个字段往返测试都看得出来
-            sign_edge_trigger: LightTrigger::Attention,
-            sign_corner_trigger: LightTrigger::Active,
-            // 三个触发参数 + 两个标题字段也全部非默认：它们是 0.6.4 新加的，
-            // 漏一个字段在这条往返里就该现形
+            // 三个触发参数 + 两个标题字段也全部非默认
             sign_trigger_state: "error".into(),
             sign_trigger_from: 8 * 60 + 30,
             sign_trigger_to: 20 * 60 + 15,
@@ -2812,6 +3054,9 @@ mod tests {
             sign_light_scale: LightScale::Thick,
             sign_light_alpha: LightAlpha::Soft,
             sign_light_color: LightColor::Neutral,
+            // 轮廓和效果同样取非默认（默认 Rect / Breathe）
+            sign_outline: SignOutline::Leaf,
+            effect: Effect::Sweep,
             locale: Locale::En,
             // 同理：`Theme` 默认是 `Auto`，这里用 `Dark` 才验得出「漏了这个字段」
             theme: Theme::Dark,
@@ -2851,8 +3096,9 @@ mod tests {
             sign_opacity: 72,
             hidden_groups: vec!["noisy".into()],
             blink_speed: 150,
-            // 新字段同样设成非默认值：全默认的话「漏了字段」在往返里看不出来
-            lively: false,
+            // `lively` 是迁移输入，读回来必然是默认 true —— 效果档由上面的
+            // `effect: Effect::Sweep` 负责取非默认值
+            lively: true,
             sound: false,
             quiet_hours: QuietHours {
                 enabled: true,
@@ -3622,146 +3868,220 @@ mod tests {
         assert!(back.contains(r#""sign_gap":"loose""#));
     }
 
-    /// 边灯 / 角灯默认全关：加这两项之前，牌的四面和四角本来就是空的（红线 3）。
+    /// 六个灯位默认全关 / 全空：加这些字段之前，牌的四面和四角本来就是空的
+    /// （红线 3）。轮廓和效果也取「等于没加过」的那一档。
     ///
-    /// 两条都要钉住，因为它们是**观感**的默认值而不是行为的：改错了不会有任何
-    /// 测试失败，只会让升级上来的用户看到一盏忽然发光、四角冒点的灯。
+    /// 这些是**观感**的默认值而不是行为的：改错了不会有任何测试失败，只会让
+    /// 升级上来的用户看到一盏忽然发光、四角冒点的灯。
     #[test]
-    fn the_edge_and_corner_lights_default_to_off() {
+    fn the_six_light_slots_default_to_off() {
         let settings = Settings::default();
-        assert_eq!(settings.sign_edge, SignEdge::Off, "默认不点亮边缘");
-        assert_eq!(settings.sign_corners, SignCorners::default(), "默认四角全空");
-        assert_eq!(settings.sign_corners.count(), 0);
-        assert_eq!(settings.sign_edge_trigger, LightTrigger::Always);
-        assert_eq!(settings.sign_corner_trigger, LightTrigger::Always);
+        assert_eq!(settings.sign_lights, SignLights::default());
+        assert_eq!(settings.sign_lights.corner_count(), 0);
+        assert_eq!(settings.sign_lights.top.kind, EdgeLight::Off);
+        assert_eq!(settings.sign_lights.top.trigger, LightTrigger::Always);
         assert_eq!(settings.sign_light_scale, LightScale::Normal);
         assert_eq!(settings.sign_light_alpha, LightAlpha::Normal);
         assert_eq!(settings.sign_light_color, LightColor::State);
-        // 0.6.4：标题默认只显示会话名，不拼智能体名（用户明确要的观感改动）
+        assert_eq!(settings.sign_outline, SignOutline::Rect);
+        assert_eq!(settings.effect, Effect::Breathe, "默认 == 旧 lively=true");
         assert_eq!(settings.sign_label, SignLabel::Session);
         assert_eq!(settings.sign_label_template, DEFAULT_SIGN_LABEL_TEMPLATE);
         assert_eq!(settings.sign_trigger_state, DEFAULT_LIGHT_TRIGGER_STATE);
         assert_eq!(settings.sign_trigger_from, DEFAULT_LIGHT_TRIGGER_FROM);
         assert_eq!(settings.sign_trigger_to, DEFAULT_LIGHT_TRIGGER_TO);
 
-        // 旧配置里这些字段一个都没有，不能因此让整份设置失效 —— 尤其触发方式
-        // 和尺子是后加的，0.6.2 写出来的 config.json 里根本没有它们
+        // 0.6.2 写出来的 config.json 里这些键一个都没有，不能因此整份失效
         let old: Settings = serde_json::from_str(r#"{"size": 22}"#).unwrap();
-        assert_eq!(old.sign_edge, SignEdge::Off);
-        assert_eq!(old.sign_corners.count(), 0);
-        assert_eq!(old.sign_edge_trigger, LightTrigger::Always);
-        assert_eq!(old.sign_corner_trigger, LightTrigger::Always);
+        assert_eq!(old.sign_lights, SignLights::default());
         assert_eq!(old.sign_light_scale, LightScale::Normal);
-        assert_eq!(old.sign_light_alpha, LightAlpha::Normal);
-        assert_eq!(old.sign_light_color, LightColor::State);
+        assert_eq!(old.effect, Effect::Breathe);
+        assert_eq!(old.sign_outline, SignOutline::Rect);
         assert_eq!(old.sign_label, SignLabel::Session);
-        assert_eq!(old.sign_trigger_state, DEFAULT_LIGHT_TRIGGER_STATE);
     }
 
-    /// 四角可以只写一个 —— `SignCorners` 自己有 `serde(default)`，缺的角退回「空」。
-    ///
-    /// 这条不是洁癖：前端每次 `set_settings` 都发整份设置，但**手改 config.json 的
-    /// 人是按需写的**，只写 `{"br": "muted"}` 是很自然的动作。没有字段级默认的话，
-    /// 那份文件会让整份设置解析失败，然后被当成损坏重置 —— 一句话丢掉他所有配置。
+    /// 六个槽可以只写一部分 —— `SignLights` / `EdgeSlot` / `CornerSlot` 各自有
+    /// `serde(default)`。**这条不是洁癖**：手改 config.json 的人是按需写的，只写
+    /// `{"br": {"kind": "muted"}}` 很自然；没有字段级默认，那份文件会让整份设置
+    /// 解析失败，然后被当成损坏静默重置 —— 一句话丢掉他所有配置。
     #[test]
-    fn a_half_written_corner_set_still_parses() {
-        let settings: Settings =
-            serde_json::from_str(r#"{"sign_corners": {"br": "muted"}, "sign_edge": "top"}"#)
-                .unwrap();
-        assert_eq!(settings.sign_edge, SignEdge::Top);
-        assert_eq!(settings.sign_corners.br, SignCorner::Muted);
-        assert_eq!(settings.sign_corners.tl, SignCorner::Empty, "没写的角是空");
-        assert_eq!(settings.sign_corners.count(), 1);
-    }
-
-    /// 边灯 / 角灯取值要能原样存回去 —— 存不回去的表现是「设置点了没反应」，
-    /// 而那种 bug 在界面上没有任何线索。
-    #[test]
-    fn the_edge_and_corner_lights_roundtrip_through_json() {
-        let raw = r#"{
-            "sign_edge": "glow",
-            "sign_corners": {"tl": "state", "tr": "pinned", "br": "stale", "bl": "muted"}
-        }"#;
-        let settings = serde_json::from_str::<Settings>(raw).unwrap();
-        assert_eq!(settings.sign_edge, SignEdge::Glow);
-        assert_eq!(settings.sign_corners.count(), 4);
-
-        let back = serde_json::to_string(&settings).unwrap();
-        assert!(back.contains(r#""sign_edge":"glow""#), "{back}");
-        assert!(back.contains(r#""br":"stale""#), "{back}");
-        assert!(back.contains(r#""bl":"muted""#), "{back}");
-    }
-
-    /// 触发方式与三把尺子的取值也要能原样存回去。
-    ///
-    /// 这五个字段散落在两个页里（外观 / 行为），而 `set_settings` 是**整份替换**：
-    /// 任何一处只发自己那页的字段，另一页设过的东西就会悄悄回到默认值 —— 表现是
-    /// 「行为页调完，回外观页看一眼，触发方式自己变了」。往返测试钉住序列化，
-    /// 前端那侧则由 `useSettings.ts` 的整份 patch 保证。
-    #[test]
-    fn the_light_trigger_and_scale_roundtrip_through_json() {
-        let raw = r#"{
-            "sign_edge_trigger": "attention",
-            "sign_corner_trigger": "quiet",
-            "sign_light_scale": "thick",
-            "sign_light_alpha": "soft",
-            "sign_light_color": "neutral"
-        }"#;
-        let settings = serde_json::from_str::<Settings>(raw).unwrap();
-        assert_eq!(settings.sign_edge_trigger, LightTrigger::Attention);
-        assert_eq!(settings.sign_corner_trigger, LightTrigger::Quiet);
-        assert_eq!(settings.sign_light_scale, LightScale::Thick);
-        assert_eq!(settings.sign_light_alpha, LightAlpha::Soft);
-        assert_eq!(settings.sign_light_color, LightColor::Neutral);
-
-        let back = serde_json::to_string(&settings).unwrap();
-        assert!(
-            back.contains(r#""sign_edge_trigger":"attention""#),
-            "{back}"
+    fn a_half_written_slot_set_still_parses() {
+        let settings: Settings = serde_json::from_str(
+            r#"{"sign_lights": {"top": {"kind": "glow"}, "br": {"kind": "muted", "trigger": "pinned"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(settings.sign_lights.top.kind, EdgeLight::Glow);
+        assert_eq!(
+            settings.sign_lights.top.trigger,
+            LightTrigger::Always,
+            "没写的触发是常亮"
         );
-        assert!(back.contains(r#""sign_corner_trigger":"quiet""#), "{back}");
-        assert!(back.contains(r#""sign_light_scale":"thick""#), "{back}");
-        assert!(back.contains(r#""sign_light_alpha":"soft""#), "{back}");
-        assert!(back.contains(r#""sign_light_color":"neutral""#), "{back}");
+        assert_eq!(
+            settings.sign_lights.bottom.kind,
+            EdgeLight::Off,
+            "没写的边是关"
+        );
+        assert_eq!(settings.sign_lights.br.kind, SignCorner::Muted);
+        assert_eq!(settings.sign_lights.br.trigger, LightTrigger::Pinned);
+        assert_eq!(
+            settings.sign_lights.tl.kind,
+            SignCorner::Empty,
+            "没写的角是空"
+        );
+        assert_eq!(settings.sign_lights.corner_count(), 1);
     }
 
-    /// 0.6.4 加的五档触发条件、穿透角灯和标题设置都要能存回去。
-    ///
-    /// 这几个字段是**外观页 / 行为页各写一半**的：`set_settings` 整份替换，任何一处
-    /// 漏字段都会被另一处悄悄重置。穿透那一枚用 `Passthrough`，是因为旧配置里
-    /// 没有这个值 —— 反序列化不认的话，整份设置会被当成损坏。
+    /// 六个灯位各自的画法 / 触发都要能原样存回去 —— 存不回去的表现是
+    /// 「设置点了没反应」，而那种 bug 在界面上没有任何线索。
     #[test]
-    fn the_extra_triggers_passthrough_corner_and_label_roundtrip() {
+    fn the_six_light_slots_roundtrip_through_json() {
         let raw = r#"{
-            "sign_edge_trigger": "schedule",
-            "sign_corner_trigger": "state",
-            "sign_trigger_state": "error",
-            "sign_trigger_from": 510,
-            "sign_trigger_to": 1215,
-            "sign_label": "custom",
-            "sign_label_template": "{agent} / {session}",
-            "sign_corners": {"tl": "passthrough", "tr": "state", "br": "empty", "bl": "muted"}
+            "sign_lights": {
+                "top": {"kind": "fade", "trigger": "attention"},
+                "bottom": {"kind": "glow", "trigger": "schedule"},
+                "tl": {"kind": "state", "trigger": "always"},
+                "tr": {"kind": "pinned", "trigger": "pinned"},
+                "br": {"kind": "stale", "trigger": "stale"},
+                "bl": {"kind": "passthrough", "trigger": "active"}
+            }
         }"#;
         let settings = serde_json::from_str::<Settings>(raw).unwrap();
-        assert_eq!(settings.sign_edge_trigger, LightTrigger::Schedule);
-        assert_eq!(settings.sign_corner_trigger, LightTrigger::State);
-        assert_eq!(settings.sign_trigger_state, "error");
-        assert_eq!(settings.sign_trigger_from, 510);
-        assert_eq!(settings.sign_trigger_to, 1215);
-        assert_eq!(settings.sign_label, SignLabel::Custom);
-        assert_eq!(settings.sign_corners.tl, SignCorner::Passthrough);
-        assert_eq!(settings.sign_corners.count(), 3);
+        assert_eq!(settings.sign_lights.top.kind, EdgeLight::Fade);
+        assert_eq!(settings.sign_lights.bottom.trigger, LightTrigger::Schedule);
+        assert_eq!(settings.sign_lights.bl.kind, SignCorner::Passthrough);
+        assert_eq!(settings.sign_lights.corner_count(), 4);
 
         let back = serde_json::to_string(&settings).unwrap();
         for needle in [
-            r#""sign_edge_trigger":"schedule""#,
-            r#""sign_corner_trigger":"state""#,
-            r#""sign_trigger_state":"error""#,
-            r#""sign_label":"custom""#,
-            r#""tl":"passthrough""#,
+            r#""sign_lights":{"#,
+            r#""top":{"kind":"fade","trigger":"attention"}"#,
+            r#""bottom":{"kind":"glow","trigger":"schedule"}"#,
+            r#""bl":{"kind":"passthrough","trigger":"active"}"#,
         ] {
             assert!(back.contains(needle), "序列化漏了 {needle}: {back}");
         }
+        // 旧字段是迁移输入，永不写回 —— 否则每次启动都会把新设置盖回旧样子
+        for gone in [
+            "sign_edge",
+            "sign_corners",
+            "sign_edge_trigger",
+            "sign_corner_trigger",
+            "lively",
+        ] {
+            assert!(
+                !back.contains(&format!("\"{gone}\"")),
+                "旧字段 {gone} 不该再落盘: {back}"
+            );
+        }
+    }
+
+    /// 触发参数、三把尺子、标题、轮廓、效果、形状都要能原样存回去。
+    ///
+    /// 它们散落在外观 / 行为两页，而 `set_settings` 是**整份替换**：任何一处只发
+    /// 自己那页的字段，另一页设过的东西就会悄悄回到默认值 —— 表现是「行为页调完，
+    /// 回外观页看一眼，触发方式自己变了」。前端那侧由整份 patch 保证。
+    #[test]
+    fn the_light_params_outline_effect_and_shape_roundtrip() {
+        let raw = r#"{
+            "sign_trigger_state": "error",
+            "sign_trigger_from": 510,
+            "sign_trigger_to": 1215,
+            "sign_light_scale": "thick",
+            "sign_light_alpha": "soft",
+            "sign_light_color": "neutral",
+            "sign_label": "custom",
+            "sign_label_template": "{agent} / {session}",
+            "sign_outline": "leaf",
+            "effect": "sweep",
+            "shape": "diamond",
+            "sign_lights": {"tl": {"kind": "passthrough", "trigger": "state"}}
+        }"#;
+        let settings = serde_json::from_str::<Settings>(raw).unwrap();
+        assert_eq!(settings.sign_trigger_state, "error");
+        assert_eq!(settings.sign_trigger_from, 510);
+        assert_eq!(settings.sign_trigger_to, 1215);
+        assert_eq!(settings.sign_light_scale, LightScale::Thick);
+        assert_eq!(settings.sign_light_alpha, LightAlpha::Soft);
+        assert_eq!(settings.sign_light_color, LightColor::Neutral);
+        assert_eq!(settings.sign_label, SignLabel::Custom);
+        assert_eq!(settings.sign_outline, SignOutline::Leaf);
+        assert_eq!(settings.effect, Effect::Sweep);
+        assert_eq!(settings.shape, Shape::Diamond);
+        assert_eq!(settings.sign_lights.tl.kind, SignCorner::Passthrough);
+
+        let back = serde_json::to_string(&settings).unwrap();
+        for needle in [
+            r#""sign_trigger_state":"error""#,
+            r#""sign_light_scale":"thick""#,
+            r#""sign_light_color":"neutral""#,
+            r#""sign_label":"custom""#,
+            r#""sign_outline":"leaf""#,
+            r#""effect":"sweep""#,
+            r#""shape":"diamond""#,
+            r#""tl":{"kind":"passthrough","trigger":"state"}"#,
+        ] {
+            assert!(back.contains(needle), "序列化漏了 {needle}: {back}");
+        }
+    }
+
+    /// 0.6.4 的配置（一条整轨 + 四角共用一个触发）要能升级成六个独立灯位。
+    /// 不搬的话，用户已经挂好的角灯和边灯会在升级后一夜之间全没了。
+    #[test]
+    fn legacy_light_slots_are_migrated_into_six_slots() {
+        let raw = r#"{
+            "sign_edge": "glow",
+            "sign_edge_trigger": "attention",
+            "sign_corners": {"tl": "state", "tr": "pinned", "br": "stale", "bl": "muted"},
+            "sign_corner_trigger": "quiet"
+        }"#;
+        let settings = migrate_legacy_light_slots(serde_json::from_str(raw).unwrap());
+        assert_eq!(settings.sign_lights.top.kind, EdgeLight::Glow);
+        assert_eq!(settings.sign_lights.bottom.kind, EdgeLight::Glow);
+        assert_eq!(settings.sign_lights.top.trigger, LightTrigger::Attention);
+        assert_eq!(settings.sign_lights.bottom.trigger, LightTrigger::Attention);
+        assert_eq!(settings.sign_lights.tl.kind, SignCorner::State);
+        assert_eq!(settings.sign_lights.bl.kind, SignCorner::Muted);
+        assert_eq!(settings.sign_lights.br.trigger, LightTrigger::Quiet);
+        assert_eq!(settings.sign_lights.corner_count(), 4);
+        // 旧字段在内存里也清掉了，免得被直接序列化带出去
+        assert_eq!(settings.sign_edge, SignEdge::Off);
+        assert_eq!(settings.sign_corners.count(), 0);
+
+        // Top 只走上边 —— 这一档最容易漏
+        let top_only =
+            migrate_legacy_light_slots(serde_json::from_str(r#"{"sign_edge": "top"}"#).unwrap());
+        assert_eq!(top_only.sign_lights.top.kind, EdgeLight::Line);
+        assert_eq!(top_only.sign_lights.bottom.kind, EdgeLight::Off);
+    }
+
+    /// 迁移只能发生一次：新配置里旧字段全是默认值，不能再把它们盖到用户
+    /// 后来调好的新灯位上。
+    #[test]
+    fn migration_never_overwrites_a_written_new_slot_set() {
+        let raw = r#"{
+            "sign_edge": "glow",
+            "sign_lights": {"top": {"kind": "fade", "trigger": "message"}}
+        }"#;
+        let settings = migrate_legacy_light_slots(serde_json::from_str(raw).unwrap());
+        assert_eq!(settings.sign_lights.top.kind, EdgeLight::Fade);
+        assert_eq!(settings.sign_lights.top.trigger, LightTrigger::Message);
+        assert_eq!(settings.sign_lights.bottom.kind, EdgeLight::Off);
+    }
+
+    /// 旧的「灵动效果：关」要变成 `effect=off`；没写这个键的新配置不能被动到。
+    #[test]
+    fn legacy_lively_off_migrates_to_effect_off() {
+        let off = migrate_legacy_effect(
+            serde_json::from_str(r#"{"lively": false, "effect": "pulse"}"#).unwrap(),
+        );
+        assert_eq!(off.effect, Effect::Off, "显式关过就该是静止");
+
+        let fresh = migrate_legacy_effect(serde_json::from_str(r#"{"effect": "fade"}"#).unwrap());
+        assert_eq!(
+            fresh.effect,
+            Effect::Fade,
+            "新配置里 lively 默认 true，不该覆盖效果档"
+        );
     }
 
     /// 手改过的配置里那三个自由值要规整，不能让灯「配了却永远不亮」。
