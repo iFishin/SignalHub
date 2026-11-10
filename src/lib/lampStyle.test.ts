@@ -4,11 +4,11 @@ import {
   resolveAnimations,
   resolveHaloAnimations,
   resolveShapes,
-  signTextNeedsContrast,
   stateOverridden,
-  isQuietDimmed,
   toneOf,
-  SIGN_TRANSLUCENT_BELOW,
+  CALM_ALPHA_FACTOR,
+  CALM_ALPHA_FLOOR,
+  SIGN_OPACITY_MIN,
 } from "./lampStyle";
 import { DEFAULTS, type Settings } from "./useSettings";
 import { SIGNALS } from "./types";
@@ -210,8 +210,39 @@ describe("lampVars", () => {
    * 的话，预览显示的透明度和灯迟早对不上，而「预览和灯不一样」比没有预览更糟。
    */
   it("carries the sign alpha for the settings preview", () => {
-    const vars = lampVars(withSettings({ sign_opacity: 40 })) as Record<string, string>;
-    expect(vars["--sign-alpha"]).toBe("0.4");
+    const vars = lampVars(withSettings({ sign_opacity: 60 })) as Record<string, string>;
+    expect(vars["--sign-alpha"]).toBe("0.6");
+  });
+
+  /**
+   * calm 档的牌底不透明度：`α × 0.72`，**带托底**。
+   *
+   * 托底那半条是本条测试的重点：滑杆到下限 50% 时 `0.5 × 0.72 = 0.36` 会让浅字
+   * 落在桌面上 —— 而「多组 + 低透明度」正是描边时代最难看、也是用户最常遇到的画面。
+   * 期望值按 `max(α × 0.72, 0.45)` 写，不写死具体数字串，改托底值时这里跟着走。
+   */
+  it("dims the calm tone but never below the readable floor", () => {
+    const vars = (opacity: number) =>
+      lampVars(withSettings({ sign_opacity: opacity })) as Record<string, string>;
+    // 默认档：正常压淡，托底不参与（0.86 × 0.72 = 0.6192）
+    expect(vars(86)["--sign-alpha-calm"]).toBe(String(0.86 * CALM_ALPHA_FACTOR));
+    // 滑杆到底：托底接管，仍读得清
+    expect(vars(SIGN_OPACITY_MIN)["--sign-alpha-calm"]).toBe(String(CALM_ALPHA_FLOOR));
+    // 满不透明：还是比 need 档淡，层次在
+    expect(Number(vars(100)["--sign-alpha-calm"])).toBeLessThan(1);
+  });
+
+  /**
+   * 下限必须是**滑杆能停到的最淡值**，而且它得让牌面读得出来：0.5 的深色底托浅字。
+   * 这条常量是前端唯一真值（Rust 的 `config::MIN_SIGN_OPACITY` 是同名同义的一份），
+   * 被改成 20 之类的话，描边删掉之后字就真的没法读了 —— 那正是这次改动要根治的病。
+   *
+   * 托底也跟着这条线走：**最淡的那块牌不能比「用户能手动调到的最淡」更淡**。
+   * 曾经取 0.45，截图对照里浅色壁纸上那块 calm 已经糊了。
+   */
+  it("keeps the opacity floor at a level that still holds the text", () => {
+    expect(SIGN_OPACITY_MIN).toBe(50);
+    expect(CALM_ALPHA_FLOOR).toBe(SIGN_OPACITY_MIN / 100);
   });
 });
 
@@ -233,70 +264,6 @@ describe("stateOverridden", () => {
     // 0 是「常亮」，它是一个**值**而不是「没设」
     expect(stateOverridden({ blink_ms: 0 })).toBe(true);
     expect(stateOverridden({ ttl_ms: 30_000 })).toBe(true);
-  });
-});
-
-describe("signTextNeedsContrast", () => {
-  /**
-   * 钉住那条线本身：**50 不换，49 换**。
-   *
-   * 这条边界是灯（`SignalLamp.tsx` 挂 `data-sign-translucent`）和样式表
-   * （`lamp.css` 里那组「浅字 + 描边」变量）唯一的接口 —— 一边改成 `<=`、另一边
-   * 还是 `<`，表现就是「滑杆停在 50，设置页说字已经带描边了，灯上却没有」。之所以
-   * 判据写在 TS 里而不是 CSS 里：纯 CSS 没法比较数值，而阈值必须跟着设置值走。
-   */
-  it("switches below the line, not at it", () => {
-    expect(signTextNeedsContrast(SIGN_TRANSLUCENT_BELOW - 1)).toBe(true);
-    expect(signTextNeedsContrast(SIGN_TRANSLUCENT_BELOW)).toBe(false);
-  });
-
-  /** 两端：全透明（0）要换，默认那档（86）和满不透明都不换。 */
-  it("covers both ends", () => {
-    expect(signTextNeedsContrast(0)).toBe(true);
-    expect(signTextNeedsContrast(DEFAULTS.sign_opacity)).toBe(false);
-    expect(signTextNeedsContrast(100)).toBe(false);
-  });
-
-  /**
-   * 安静模式把没事的牌压到 ≈15（`QUIET_FADE_OPACITY`，CSS 安静档 `opacity: 0.15`），
-   * 必然低于换字线 50 —— 于是安静里的「没事」照样要换。
-   *
-   * **为什么**：低透明度是「字该不该带描边」的统一判据，不是滑杆的事。安静压暗、滑杆
-   * 压低，底层都是「牌几乎透明、底色透出桌面」；透明度低于一半就换，这是灯的设计线。
-   */
-  it("switches when quiet dimmed the sign below the line", () => {
-    expect(signTextNeedsContrast(DEFAULTS.sign_opacity, true)).toBe(true);
-    expect(signTextNeedsContrast(86, true)).toBe(true);
-  });
-
-  /** 没事时安静不压（working / thinking / done …），不该换。 */
-  it("does not switch when quiet left the sign bright", () => {
-    expect(signTextNeedsContrast(DEFAULTS.sign_opacity, false)).toBe(false);
-    expect(signTextNeedsContrast(86, false)).toBe(false);
-  });
-});
-
-describe("isQuietDimmed", () => {
-  /** 没事的聚合：安静会压暗它们。 */
-  it("dims the not-working aggregates", () => {
-    expect(isQuietDimmed(true, "idle")).toBe(true);
-    expect(isQuietDimmed(true, "stale")).toBe(true);
-    expect(isQuietDimmed(true, "offline")).toBe(true);
-    expect(isQuietDimmed(true, "off")).toBe(true);
-  });
-
-  /** 有事的聚合：安静不压，灯亮着呢。 */
-  it("does not dim working aggregates", () => {
-    expect(isQuietDimmed(true, "thinking")).toBe(false);
-    expect(isQuietDimmed(true, "working")).toBe(false);
-    expect(isQuietDimmed(true, "done")).toBe(false);
-    expect(isQuietDimmed(true, "attention")).toBe(false);
-  });
-
-  /** 不穿透时安静生效；用户开了穿透，灯就是常亮的，安静那道压暗规则被兔住。 */
-  it("ignores quiet while pass-through is on", () => {
-    expect(isQuietDimmed(true, "idle", true)).toBe(false);
-    expect(isQuietDimmed(false, "idle")).toBe(false);
   });
 });
 

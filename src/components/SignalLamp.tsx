@@ -6,7 +6,7 @@ import { inTauri } from "../lib/env";
 import { requestSettingsTab } from "../lib/settingsIntent";
 import { signalLabel, justFinishedLabel } from "../lib/signals";
 import { useLang, useMessages, type Messages, type Lang } from "../lib/i18n";
-import { lampVars, resolveShapes, resolveHaloAnimations, signTextNeedsContrast, isQuietDimmed, toneOf } from "../lib/lampStyle";
+import { lampVars, resolveShapes, resolveHaloAnimations, toneOf } from "../lib/lampStyle";
 import { transitions, type AggregateMap } from "../lib/lampTransitions";
 import { labelOf, orderVisible } from "../lib/lampSort";
 import { nameChanged, withGroupName } from "../lib/groupMeta";
@@ -319,7 +319,7 @@ export function SignalLamp({
   // 用真实条数算留白的话，4 条以上时牌子和气泡会叠在一起 —— 多出来的那几条
   // 本来就不画（见 `ApprovalBubble`）。
   const bubbles = Math.min(pending, MAX_APPROVAL_BUBBLES);
-  const { size, quiet, collapsed, show, sign_opacity, hidden_groups } = settings;
+  const { size, quiet, collapsed, show, hidden_groups } = settings;
   const m = useMessages();
   const lang = useLang();
   // 穿透也能从托盘和全局快捷键改，所以订阅而不是读一次 —— 灯上那枚角标必须跟着变。
@@ -327,10 +327,6 @@ export function SignalLamp({
   // 演示里不继承本机的「点击穿透」：那枚 ⇥ 是这台机器的真实状态，不该出现在
   // 一段和产品无关的剧本里。hook 仍然无条件调用（React 规则），只是读的时候盖掉。
   const passThrough = preview ? false : toggles.pass_through;
-  // 安静模式把没事的牌压暗（lamp.css 的 `[data-quiet][data-aggregate=…]`）时，压暗后
-  // 的透明度（≈15）已经低于换字线 —— 和用户把滑杆压到一半以下是同一条路：浅字 +
-  // 深描边（见 `signTextNeedsContrast` / `isQuietDimmed`）。
-  const quietDimmed = isQuietDimmed(quiet, aggregate, passThrough);
 
   // 形状是逐状态的（一个窗口里多块牌可以不一样），所以先整份算出来，再按每块牌
   // 的状态取。颜色和动画走 lampVars 的 CSS 变量，shape走元素属性 —— 形状不是
@@ -703,10 +699,6 @@ export function SignalLamp({
       data-sign-tint={settings.sign_tint}
       data-sign-text={settings.sign_text}
       data-sign-emphasis={settings.sign_emphasis}
-      /* 牌面淡过一半就把牌里的字换成「浅字 + 深描边」，深浅桌面都读得出来
-         （阈值见 `lampStyle.ts`，颜色和描边在 `lamp.css`）。挂属性而不是推内联变量：
-         和旁边这几个 `data-*` 开关同一套做法，那组颜色也就仍然只有 CSS 一个出处。 */
-      data-sign-translucent={signTextNeedsContrast(sign_opacity, quietDimmed) || undefined}
       data-paused={(!preview && paused) || undefined}
       // 有气泡时窗口要高出一块（Rust 算的），CSS 按同一个数把内容区收上去
       data-approvals={pending || undefined}

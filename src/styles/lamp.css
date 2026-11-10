@@ -11,7 +11,9 @@
  * 牌面按「在等我」分两档（`.sign[data-tone]`，判据在 `lampStyle.ts::toneOf`）：
  * 需要你动手的那几块灯珠更大、牌面更实，其余退后一档 —— 层次只靠明暗和大小，
  * 不加边框、色条或发光。
- * 低透明度下给文字加的那圈对比描边（`[data-sign-translucent]`）是可读性手段。
+ * 低透明度下给文字加对比描边那套（旧的 `[data-sign-translucent]`）已经**删掉**了：
+ * 那圈 `text-shadow` 会把笔画吃掉、小字号糊成一团，观感比「淡一点但干净」差。
+ * 可读性改由**滑杆下限 50%** 保证（见下面那段说明），牌底始终有一半以上的深色。
  * 「灵动效果」开启后（`[data-lively]`，见文件末尾）才多一层柔光与跃迁涟漪 ——
  * 它是可关的观感层，关掉后逐像素回到 0.4.4。
  *
@@ -63,8 +65,9 @@ body,
      于是「角标在灯内」不依赖另写一个魔数。 */
   --lamp-inset: 10px;
 
-  /* 深色牌面，和图标同一套语言。不透明度由用户调（外观页），默认 0.86 ——
-     够看清内容，又能透出一点桌面。
+  /* 深色牌面，和图标同一套语言。不透明度由用户调（外观页），默认 0.86、**下限
+     0.50**（`lampStyle.ts::SIGN_OPACITY_MIN`）—— 够看清内容、又能透出一点桌面，
+     而再往下字就只剩桌面的运气了，所以滑杆到底为止。
      **定义在根上，不是 `.sign` 上**：折叠态一个 `.sign` 都没有，只有一排点，
      而角标正好寄在那儿 —— 挂在牌上的话那两枚取不到 `--sign-line` / `--sign-muted`，
      `var()` 失效后描边退回 currentColor、底色变透明，在透明窗口上一枚都看不清。 */
@@ -101,36 +104,12 @@ body,
   -webkit-user-select: none;
 }
 
-/* 牌面淡过一半：牌里的字换成「浅字 + 深描边」。
-   **阈值不在这里** —— 它是 `lampStyle.ts::SIGN_TRANSLUCENT_BELOW`（`SignalLamp.tsx`
-   按它挂这个属性）。这里只负责「换成哪一套颜色」，数字只有那一份。
-   为什么描边而不是按桌面实时反色：那要读灯后面的桌面像素，macOS 上必须拿「屏幕
-   录制」权限（见 `lampStyle.ts` 那段注释）。描边不依赖背景信息：深色桌面上靠浅字，
-   浅色桌面上靠那圈黑边勾出字形。 */
-.lamp-root[data-sign-translucent] {
-  --sign-fg: #f4f4f7;
-  --sign-muted: #d7d7df;
-  --sign-line: rgba(255, 255, 255, 0.22);
-  --sign-outline: rgba(0, 0, 0, 0.78);
-  /* 描边宽度跟着牌的字号走：默认档（size 22 → 11px 字）≈1px，紧凑档（size 16 →
-     8px 字）收到 0.75px 的下限，免得 1px 的边把细笔画糊死；大档按 0.09em 自然加粗。
-     `em` 在 `.sign` 上解析（这里是自定义属性，用到时才按使用元素的字号算）。 */
-  --sign-outline-w: max(0.75px, 0.09em);
-}
-
-/* 描边只加在牌里的字上（`text-shadow` 会被子元素继承，所以挂在 `.sign` 一处就够）。
-   四向偏移而不是 `0 0 1px` 的模糊阴影：模糊会糊成一圈光晕，那是「发光」，这个项目
-   不要。宽度见 `--sign-outline-w`（默认档约 1px）：0.5px 在浅色背景上仍偏
-   「空心字」，约 1px 在 2× 屏上是两个物理像素，字心还留得住、亮底上却已经像深色勾边字。 */
-.lamp-root[data-sign-translucent] .sign,
-.lamp-root[data-sign-translucent] .lamp-flag,
-.lamp-root[data-sign-translucent] .lamp-dot-more {
-  text-shadow:
-    var(--sign-outline-w) 0 0 var(--sign-outline),
-    calc(-1 * var(--sign-outline-w)) 0 0 var(--sign-outline),
-    0 var(--sign-outline-w) 0 var(--sign-outline),
-    0 calc(-1 * var(--sign-outline-w)) 0 var(--sign-outline);
-}
+/* 牌面淡到什么程度由用户决定，**下限是 50%**（`lampStyle.ts::SIGN_OPACITY_MIN`，
+   Rust 侧同名常量在 `config.rs`）。这里曾经有一段「淡过一半就给字加一圈深色
+   text-shadow 描边」的补救，已经删掉：那圈边会把笔画吃掉、小字号糊成一团，
+   读起来像空心字 —— 用户看到的是「这块牌被救过」，不是「这块牌好看」。
+   可读性现在在下限上回答：牌底永远有一半以上的深色托着浅字。
+   想要更隐形的灯请用安静模式（整盏 `opacity: 0.15`，那时本来就不指望读字）。 */
 
 .lamp-root:active {
   cursor: grabbing;
@@ -190,14 +169,11 @@ body,
   overflow: hidden;
 }
 
-/* 气泡里的字**不跟着牌面换**：牌淡到一半会变成「浅字 + 描边」，而气泡的底色是实的
-   深色 —— 它自己就是「深底浅字」，不需要牌那套描边（描边也只挂在 `.sign` 上，气泡
-   本来继承不到）。这里把颜色钉回气泡自己的一套。 */
-.lamp-root[data-sign-translucent] .approval {
-  --sign-fg: #ececef;
-  --sign-muted: #9b9ba3;
-  --sign-line: rgba(255, 255, 255, 0.14);
-}
+/* 气泡里的字用**根上那套牌面颜色**就够了：气泡底色是实的深色（0.97），它本身就是
+   「深底浅字」，不需要任何额外处理。这里只留一条说明 —— 以前牌面淡到一半会给字
+   加描边，气泡得单独把颜色钉回来；描边那套已经删了，这条覆盖也跟着没用了。
+   （删干净比留着一条「恒等于根值」的规则好：留着的话，以后改根上的颜色会有人
+   以为气泡也要跟着改。） */
 
 .approval-head {
   display: flex;
@@ -443,9 +419,11 @@ body,
  * font-weight。牌宽高仍由 `config.rs` 与这里共享那两个值 —— 多占一个像素就会被
  * `overflow: hidden` 裁掉最后一块牌。
  *
- * **牌底 ×0.72 之后仍然读得清**：0.86 → 0.62，浅字还是落在 62% 的深色上。真正
- * 压到读不清的区间（用户把不透明度滑杆拉到一半以下）走的是原来那套
- * `[data-sign-translucent]` 浅字 + 四向描边，这里不另造一套可读性机制。
+ * **牌底 ×0.72 之后仍然读得清**：0.86 → 0.62，浅字还是落在 62% 的深色上。滑杆拉到
+ * 下限（50%）时这一档会跌破可读线，所以 `lampStyle.ts` 那边给压淡加了托底
+ * （`CALM_ALPHA_FACTOR` / `CALM_ALPHA_FLOOR`，取 `max(α × 0.72, 0.45)`），
+ * 算好的值放在 `--sign-alpha-calm` 里 —— **这里不写乘法**，也就不用再操心
+ * `max()` 能不能出现在 alpha 位上。
  *
  * **只有一块牌时没有 `data-tone`**（见 SignalLamp 的说明）：分层是在多块之间分
  * 先后，一块牌没有比较对象，压淡只换来「整盏灯退一档」。而 `group_by` 默认是
@@ -456,11 +434,11 @@ body,
 }
 
 .sign[data-tone="calm"] {
-  /* 直接覆盖 background，**不改 `--sign-alpha`**：那个变量是「用户设的牌面
-     不透明度」，被 `signTextNeedsContrast` 的阈值判断读着 —— 在这里乘 0.72
-     会让「要不要换浅字 + 描边」的判断跟着失准。
+  /* 用 `--sign-alpha-calm`（lampStyle 算好的「用户值 × 0.72，托底 0.45」），
+     **不在这里做乘法**：乘数只有 `CALM_ALPHA_FACTOR` 一份真值，托底值也只有
+     一处 —— 两边各算一遍的话，改一个忘了另一个，表现是「牌忽然又看不清了」。
      基色取 `--sign-rgb`：牌面的深色只有那一处真值。 */
-  background: rgba(var(--sign-rgb, 28, 28, 32), calc(var(--sign-alpha, 0.86) * 0.72));
+  background: rgba(var(--sign-rgb, 28, 28, 32), var(--sign-alpha-calm, 0.62));
 }
 
 .sign[data-tone="calm"] .sign-name {

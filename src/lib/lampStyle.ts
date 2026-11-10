@@ -170,71 +170,49 @@ export function resolveHaloAnimations(settings: Settings): Record<SignalState, s
 }
 
 /**
- * 牌面淡到这条线以下，牌里的字改成「浅字 + 深描边」（`lamp.css` 的
- * `[data-sign-translucent]`）。
+ * 牌面不透明度滑杆的**下限**（百分比）。前端唯一真值：设置页滑杆的 `min` 读它，
+ * `--sign-alpha` 也由它夹；Rust 那边是 `config::MIN_SIGN_OPACITY`，同一个数字
+ * ——手改 config.json、或旧版本存下的更小值，都会在 `Settings::clamped()` 里被
+ * 夹上来，所以灯永远不会渲染出比这更淡的牌。
  *
- * **为什么需要它**：牌底是 `rgba(28,28,32, α)`，牌里的字是近白的 `#ececef`（组名）
- * / `#9b9ba3`（状态、消息、时长）。α 高的时候那是一块「深色牌 + 浅字」，对比来自
- * 牌面本身；α 低到一半以下，透出来的桌面比牌面还显眼，字其实是画在**桌面**上的
- * —— 浅色桌面或浅色窗口上，近白的字就没了。
+ * **为什么要有下限（而不是继续打补丁）**：牌里的字是浅色的（组名 `#ececef`、
+ * 状态 `#9b9ba3`），它的对比**全部**来自牌面那层深色。α 低于这条线时透出来的桌面
+ * 比牌面还显眼，字其实是画在桌面上 —— 浅色壁纸/浅色窗口上就淡得看不见。
  *
- * **为什么不是按桌面实时反色**：那要读灯后面的像素（macOS 的 CoreGraphics /
- * ScreenCaptureKit），必须先拿到「屏幕录制」权限。这个应用为了一个常驻小灯去要
- * 那种权限不划算，而且它是 ad-hoc 签名、每次更新 cdhash 都会变，授权多半还得重给。
- * 所以改用不依赖背景信息的排法：字本身保持浅色，四周补一圈深色描边。深色桌面上
- * 靠浅字读，浅色桌面上靠描边勾出字形 —— 一套字两边都能读。
+ * 早先的补法是：α < 50 时给牌里的字加一圈深色 `text-shadow` 描边。**那是个坏
+ * 补丁**：笔画被边吃掉、小字号直接糊成一团、近白字心在黑边上读起来像空心字。
+ * 用户一眼就看得出「这是被救过的」，观感比「淡一点但干净」差得多。可读性这件事
+ * 应该在下限上回答掉，而不是渲染时补救。
  *
- * **为什么是 50**：α = 0.5 是「牌面还托得住浅字」和「字已经在桌面上了」的分界。
- * 往上描边只会让字变脏，往下没有描边就只剩桌面的运气。
+ * **50 这条线的来历**：α = 0.5 是「牌面还托得住浅字」的临界。往上（默认 0.86）
+ * 对比来自牌面本身；往下一档就只剩桌面的运气 —— 而桌面长什么样这个应用不知道，
+ * 也不打算为此去要「屏幕录制」权限（见 §3.4 的说明）。
  *
- * **它治不了什么**：极浅背景上浅色字心会和背景融在一起，只剩描边的字形（像空心
- * 字）；字号很小时那圈边也会占掉笔画的宽度。这是在不读桌面的前提下能做到的上限。
+ * **想要隐形效果的人有另一条路**：安静模式（没事时整盏压到 `opacity: 0.15`，
+ * 见 lamp.css）。那条路上本来就不指望你读字，所以也就不存在「字读不清」。
  */
-export const SIGN_TRANSLUCENT_BELOW = 50;
+export const SIGN_OPACITY_MIN = 50;
 
 /**
- * 安静模式把没事的牌压到几乎看不见（`lamp.css` 的 `[data-quiet][data-aggregate=…]`
- * 那档 `opacity: 0.15`）。它和「用户把透明度滑到一半以下」走同一条反转逻辑，只是
- * 触发条件不同：安静时牌面被压暗，**透明度等价值≈15**（CSS `opacity: 0.15` 即 alpha
- * 0.15，和滑杆百分比口径同源），必然低于 [`SIGN_TRANSLUCENT_BELOW`]。
+ * calm 档（[`toneOf`]）牌底相对用户设定值的压淡倍数，以及它的**托底**。
  *
- * **为什么要翻**：低透明度下牌底（`rgba(28, 28, 32, alpha)`）透出来的东西是桌面本身；
- * 近白的字落在浅色桌面上就不可读。安静的 0.15 同理 —— 亮白字在「几乎透明」的
- * 牌上就是没人能读的。和滑杆压低走同一条路：浅字 + 深描边。
+ * `need` 档用用户设的 α 原样；`calm` 档再退一档（见 lamp.css 的
+ * `.sign[data-tone="calm"]`）。这是「谁在等我」的层次，不是可读性手段。
  *
- * **边界**：安静 + 没事时（idle / stale / offline / off）才压暗；有事（thinking /
- * working / done …）时安静不压，不该翻。那层判断在组件里（`SignalLamp` 按
- * `[data-aggregate]` 决定压不压），这里只认「这次牌面是不是处于低透明度」。
+ * **为什么要托底**：默认 0.86 × 0.72 = 0.62 读得清；但滑杆到下限 0.5 时，
+ * 0.5 × 0.72 = 0.36 就跌破可读线了 —— 而「多组 + 低透明度」恰恰是最常见的组合，
+ * 也正是描边时代最难看的那种画面。所以压淡取 `max(α × 0.72, 0.5)`：低端时
+ * 层次差被吃平（calm 与 need 同底，只剩点径 0.55/0.72 和组名字重来分先后），
+ * 换来两块牌都还读得出字。**这个取舍是刻意的**：分层是锦上添花，读不清是硬伤；
+ * 默认档（86%）上两个值差 0.24，层次照旧。
+ *
+ * **乘数为什么在 JS 而不是 CSS 的 `calc()`**：一是没必要去赌各图层的 webview 对
+ * `max()` 出现在 alpha 位上的支持（赌输的表现是整条 `background` 失效、牌底变透明，
+ * 比原来难看十倍）；二是这个数值得有单测。
  */
-export const QUIET_FADE_OPACITY = 15;
-
-/**
- * 安静模式下当前聚合是否被压暗（`lamp.css` 的安静规则一字不差：idle / stale /
- * offline / off；且用户没开「穿透」——穿透时灯是常亮的，安静那道压暗规则被
- * `[data-quiet][data-pass-through]` 兜住）。
- */
-export function isQuietDimmed(
-  quiet: boolean,
-  aggregate: SignalState,
-  passThrough = false,
-): boolean {
-  const DIMMED: readonly SignalState[] = ["idle", "stale", "offline", "off"];
-  return quiet && !passThrough && (DIMMED as readonly string[]).includes(aggregate);
-}
-
-/**
- * 牌面要不要换成「浅字 + 深描边」。**单函数、单真相**：
- *
- * - 用户把滑杆压到一半以下 → `sign_opacity` 本身 < [`SIGN_TRANSLUCENT_BELOW`] → 换。
- * - 安静把牌压到几乎透明 → 视为 [`QUIET_FADE_OPACITY`] → 换。
- *
- * 返回 true 时 `SignalLamp` / `SettingsPanel` 就挂 `data-sign-translucent`
- * （颜色和描边都在 `lamp.css` 里）。
- */
-export function signTextNeedsContrast(sign_opacity: number, quietDimmed = false): boolean {
-  const effective = quietDimmed ? Math.min(sign_opacity, QUIET_FADE_OPACITY) : sign_opacity;
-  return effective < SIGN_TRANSLUCENT_BELOW;
-}
+export const CALM_ALPHA_FACTOR = 0.72;
+/** 和滑杆下限同值：最淡的那块牌也不能比「用户能手动调到的最淡」更淡。 */
+export const CALM_ALPHA_FLOOR = SIGN_OPACITY_MIN / 100;
 
 /**
  * 这个状态有没有被单独设过。
@@ -259,11 +237,15 @@ export function stateOverridden(style: StateStyle | undefined): boolean {
  * 挂根上一次就都生效了：一个窗口里可能有多个状态点（灯球多点、设置面板的
  * 会话列表）。颜色变量由 palettes 产出，这里只补上动画变量。
  *
- * **`--sign-alpha` 也从这里出**（它原来是 `SignalLamp` 自己加在内联样式里的）。
- * 设置面板里那张预览牌要复用同一套变量 —— 两处各写一遍的话，预览显示的透明
- * 度迟早和真正的灯对不上，而「预览和灯不一样」比没有预览更糟。
+ * **`--sign-alpha` / `--sign-alpha-calm` 也从这里出**（前者原来是 `SignalLamp`
+ * 自己加在内联样式里的）。设置面板里那张预览牌要复用同一套变量 —— 两处各写一遍
+ * 的话，预览显示的透明度迟早和真正的灯对不上，而「预览和灯不一样」比没有预览更糟。
  */
 export function lampVars(settings: Settings): React.CSSProperties {
+  // 牌面的两种不透明度：用户设的那档（need + 一切非分层的牌），和 calm 档压淡后
+  // 的那档（带托底，见 [`CALM_ALPHA_FACTOR`]）。两个都在这里算好，CSS 只负责取用
+  // —— `max()` 不放进 alpha 位，理由见上。
+  const alpha = settings.sign_opacity / 100;
   const style: Record<string, string> = {
     ...(colorVars(settings) as Record<string, string>),
     // 牌宽 / 牌高倍率。CSS 那边把它们乘在牌的基础尺寸上（`.sign`），和 Rust 的
@@ -272,7 +254,8 @@ export function lampVars(settings: Settings): React.CSSProperties {
     "--sign-w-mult": String(settings.sign_w_mult),
     "--sign-h-mult": String(settings.sign_h_mult),
     // 背景透明度：CSS 里当 `--sign-bg` 的 alpha 用（0 = 全透明，1 = 不透明）
-    "--sign-alpha": String(settings.sign_opacity / 100),
+    "--sign-alpha": String(alpha),
+    "--sign-alpha-calm": String(Math.max(alpha * CALM_ALPHA_FACTOR, CALM_ALPHA_FLOOR)),
   };
   for (const [state, anim] of Object.entries(resolveAnimations(settings))) {
     style[`--anim-${state}`] = anim;

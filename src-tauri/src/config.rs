@@ -1297,7 +1297,7 @@ pub struct Settings {
     pub collapsed: bool,
     /// 展开的牌上显示哪几段内容
     pub show: SignFields,
-    /// 牌面背景的不透明度（0–100）。调低能看见桌面。
+    /// 牌面背景的不透明度（`MIN_SIGN_OPACITY`–100）。调低能看见桌面。
     pub sign_opacity: u8,
     /// 用户从灯上右键「隐藏」掉的组。
     ///
@@ -1452,6 +1452,24 @@ pub enum GroupBy {
 
 /// 牌面背景的默认不透明度。够看清内容，又能透出一点桌面。
 pub const DEFAULT_SIGN_OPACITY: u8 = 86;
+
+/// 牌面不透明度的**下限**。
+///
+/// 牌里的字是浅色的（组名近白、状态中灰），对比**全部**来自牌面那层深色。α 低于
+/// 一半时从牌面透出来的桌面比牌面本身还显眼，字其实是画在桌面上 —— 浅色壁纸、
+/// 浅色窗口上就淡得看不见。
+///
+/// 以前的做法是渲染时补救：α < 50 就给牌里的字加一圈深色 `text-shadow` 描边。
+/// 那圈边会把笔画吃掉、小字号糊成一团，读起来像空心字，观感比「淡一点但干净」
+/// 差得多 —— 用户第一眼就看得出「这块牌被救过」。所以改成在下限上回答掉这个问题。
+///
+/// 想要更隐形的灯走**安静模式**（没事时整盏压到 `opacity: 0.15`）：那条路上本来
+/// 就不指望读字，不存在「字读不清」。两条路一条管「看得见」，一条管「别打扰」。
+///
+/// **和前端是同一个数字**：`src/lib/lampStyle.ts::SIGN_OPACITY_MIN`。前端用它做
+/// 滑杆的 `min`，这里用它夹手改的 config.json 和旧版本存下的更小值（老配置里有
+/// 0–49 的，加载后会被抬到 50 —— 这是修复，不是数据损坏）。
+pub const MIN_SIGN_OPACITY: u8 = 50;
 
 /// 闪烁节奏的可调范围。上下界都留得住意义：再慢看不出在动，再快只剩烦。
 pub const MIN_BLINK_SPEED: u16 = 50;
@@ -1755,7 +1773,9 @@ impl Settings {
         // 倍率先夹紧再往下走：NaN / 无穷 / 手改的离谱值都在这儿被挡掉
         self.sign_w_mult = clamp_mult(self.sign_w_mult);
         self.sign_h_mult = clamp_mult(self.sign_h_mult);
-        self.sign_opacity = self.sign_opacity.min(100);
+        // 上下界都要夹：下限是「牌面还托得住浅字」的可读线（见 `MIN_SIGN_OPACITY`）。
+        // 旧配置里存过 0–49 的人，读进来会被抬到 50 —— 字变清楚了，牌面也没那么透。
+        self.sign_opacity = self.sign_opacity.clamp(MIN_SIGN_OPACITY, 100);
         self.blink_speed = self.blink_speed.clamp(MIN_BLINK_SPEED, MAX_BLINK_SPEED);
         self.alert_after_secs = self.alert_after_secs.min(MAX_ALERT_DELAY_SECS);
         // 通知状态列表：写坏的项直接丢掉。**全丢光时退回默认** —— 一个都认不出来
@@ -2435,7 +2455,8 @@ mod tests {
                 age: false,
                 message: true,
             },
-            sign_opacity: 40,
+            // 非默认、且在合法区间内（40 已经低于下限了 —— 样本必须是「真可能出现的」）
+            sign_opacity: 62,
             hidden_groups: vec!["noisy".into()],
             blink_speed: 150,
             // 新字段同样设成非默认值：全默认的话「漏了字段」在往返里看不出来
@@ -2987,6 +3008,29 @@ mod tests {
         let raw = r#"{"alert_after_secs": 60000}"#;
         let settings = serde_json::from_str::<Settings>(raw).unwrap().clamped();
         assert_eq!(settings.alert_after_secs, MAX_ALERT_DELAY_SECS);
+    }
+
+    /// 牌面不透明度有**下限**，不只是上限：α 压到一半以下时牌里的浅字就落在桌面上，
+    /// 而描边那套补救已经被删掉了（见 `MIN_SIGN_OPACITY`）。
+    ///
+    /// 这条测试钉的是「老配置能被救回来」：0.6.2 之前的版本允许 0–49，升级上来的人
+    /// 配置文件里就是这些值 —— 读一次设置就该被抬到 50，而不是让灯一直糊着。
+    #[test]
+    fn the_sign_opacity_has_a_floor() {
+        for raw in [r#"{"sign_opacity": 0}"#, r#"{"sign_opacity": 49}"#] {
+            let settings = serde_json::from_str::<Settings>(raw).unwrap().clamped();
+            assert_eq!(settings.sign_opacity, MIN_SIGN_OPACITY, "{raw}");
+        }
+        // 合法值原样保留（别把下限写成了「夹到 50」）
+        let settings = serde_json::from_str::<Settings>(r#"{"sign_opacity": 62}"#)
+            .unwrap()
+            .clamped();
+        assert_eq!(settings.sign_opacity, 62);
+        // 上限照旧
+        let settings = serde_json::from_str::<Settings>(r#"{"sign_opacity": 255}"#)
+            .unwrap()
+            .clamped();
+        assert_eq!(settings.sign_opacity, 100);
     }
 
     // ---- 通知的状态过滤 -------------------------------------------------------

@@ -28,7 +28,7 @@ import { CallMePage } from "./CallMePage";
 import { CallMeMessages } from "./CallMeMessages";
 import { LocalPanel, LocalTabs, PageHeader } from "./settings/SettingsPage";
 import { labelOf } from "../lib/lampSort";
-import { signTextNeedsContrast, stateOverridden, lampVars, resolveShapes } from "../lib/lampStyle";
+import { SIGN_OPACITY_MIN, stateOverridden, lampVars, resolveShapes } from "../lib/lampStyle";
 import {
   commitHeader,
   withoutHeader,
@@ -387,7 +387,6 @@ function LampPreview({ settings }: { settings: Settings }) {
         style={
           { "--size": `${settings.size}px`, ...lampVars(settings) } as React.CSSProperties
         }
-        data-sign-translucent={signTextNeedsContrast(settings.sign_opacity) || undefined}
         /* 预览也跟着「灵动效果」开关走 —— 否则关了开关，预览里还亮着一圈柔光，
            用户会以为开关没生效。这里只借 CSS 的柔光 / 高光，不挂 motion 弹簧：
            预览是静态示意，不该每帧动。 */
@@ -2807,12 +2806,12 @@ export function SettingsPanel({ snapshot }: Props) {
                 </Row>
                 <Row
                   label={m.signOpacity}
-                  hint={signTextNeedsContrast(settings.sign_opacity) ? m.signOpacityHint : undefined}
+                  hint={m.signOpacityHint}
                   onReset={resetFor(settings, "sign_opacity", patch)}
                 >
                   <Slider
                     value={settings.sign_opacity}
-                    min={0}
+                    min={SIGN_OPACITY_MIN}
                     max={100}
                     onChange={(sign_opacity) => patch({ sign_opacity })}
                     format={(value) => `${value}%`}
