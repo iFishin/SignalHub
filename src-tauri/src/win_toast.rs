@@ -212,7 +212,7 @@ mod imp {
         //    图标修好的必要一步（老标记命中就会跳过，图标永远补不上）。
         //    写成功才记标记，中途失败下次启动会重试。
         let recorded = std::fs::read_to_string(&marker).unwrap_or_default();
-        if recorded == marker_text(&exe)
+        if recorded == super::marker_text(&exe)
             && shortcut.exists()
             && icon.exists()
             && registry_ready(identifier)
@@ -234,7 +234,7 @@ mod imp {
             .join()
             .map_err(|_| "注册通知标识的线程崩了".to_string())??;
 
-        std::fs::write(&marker, marker_text(&exe).as_bytes())
+        std::fs::write(&marker, super::marker_text(&exe).as_bytes())
             .map_err(|err| format!("写标记失败（{marker:?}）：{err}"))?;
         Ok(())
     }
@@ -245,7 +245,7 @@ mod imp {
         // 比 `Vec<u8> == &[u8; N]` 更明确：切成切片比，类型一眼能对上。
         // （这条分支只有 Windows 会走，本机编不到，所以宁可写得笨一点。）
         let same = std::fs::read(path)
-            .map(|current| current.as_slice() == ICON_PNG.as_slice())
+            .map(|current| &current[..] == &ICON_PNG[..])
             .unwrap_or(false);
         if same {
             return Ok(());
