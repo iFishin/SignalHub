@@ -4,13 +4,18 @@ import type { Settings, SignFields, StateStyle } from "./useSettings";
 /**
  * 外观预设。
  *
- * 为什么要有：外观页上那几个旋钮（大小、透明度、显示哪几段、闪烁节奏）是互相
- * 牵制的 —— 牌面调透了就得把字调少，字多了就得把牌调大。让用户一个个试，很难
- * 试出一套协调的组合，而「我就想要个安静的小灯」本来也不是四个数字的问题。
+ * 为什么要有：外观页上那几个旋钮（大小、透明度、显示哪几段、闪烁节奏、圆角、
+ * 描边、字号）是互相牵制的 —— 牌面调透了就得把字调少，字多了就得把牌调大。
+ * 让用户一个个试，很难试出一套协调的组合，而「我就想要个安静的小灯」本来也
+ * 不是七个数字的问题。
  *
  * 刻意**不含形状和配色**：那两项是语义性的（形状承载色盲区分，配色承载
  * 「红 = 危险」），和「牌面多大、多透、显示什么」不是一类东西。混进同一个预设里
  * 会让人以为换个风格就会顺手把配色改掉。
+ *
+ * **同理不含牌面底色（`sign_tint`）和分层（`sign_emphasis`）**：底色要和桌面
+ * 协调，换预设时突变会很突兀；分层是「谁在叫我」的语义机制，不是装饰。圆角、
+ * 描边、字号可以被预设接管，正因为它们只是形态 —— 不承载任何含义。
  */
 export interface Preset {
   id: string;
@@ -19,7 +24,14 @@ export interface Preset {
   hint: string;
   apply: Pick<
     Settings,
-    "size" | "collapsed" | "show" | "sign_opacity" | "blink_speed"
+    | "size"
+    | "collapsed"
+    | "show"
+    | "sign_opacity"
+    | "blink_speed"
+    | "sign_radius"
+    | "sign_border"
+    | "sign_text"
   >;
 }
 
@@ -43,6 +55,11 @@ export function presets(m: Messages): Preset[] {
         show: ALL_FIELDS,
         sign_opacity: 86,
         blink_speed: 100,
+        // 折叠态一块牌都没有，质感三项只在切回展开时看得出来 —— 仍然要写全，
+        // 否则「从紧凑切到轻量再展开」会留着上一套的圆角和字号。
+        sign_radius: "standard",
+        sign_border: "hairline",
+        sign_text: "standard",
       },
     },
     {
@@ -55,6 +72,11 @@ export function presets(m: Messages): Preset[] {
         show: { name: true, state: true, age: true, message: false },
         sign_opacity: 80,
         blink_speed: 100,
+        // 小牌配小圆角：0.32×16 只有 5px，但 0.18 更利落。字号收到紧凑档，
+        // 16px 的牌上能多塞两个字 —— 这一档整个诉求就是密度。
+        sign_radius: "soft",
+        sign_border: "hairline",
+        sign_text: "compact",
       },
     },
     {
@@ -67,6 +89,9 @@ export function presets(m: Messages): Preset[] {
         show: ALL_FIELDS,
         sign_opacity: 86,
         blink_speed: 100,
+        sign_radius: "standard",
+        sign_border: "hairline",
+        sign_text: "standard",
       },
     },
     {
@@ -79,6 +104,11 @@ export function presets(m: Messages): Preset[] {
         show: ALL_FIELDS,
         sign_opacity: 100,
         blink_speed: 140,
+        // 大牌 + 强描边：这一档是「隔着一米也要看清」，边缘得立得住。
+        // 圆角只用 soft —— 32px 的牌配 round（0.72×）会圆成一坨，反而不利落。
+        sign_radius: "soft",
+        sign_border: "strong",
+        sign_text: "large",
       },
     },
   ];
@@ -92,12 +122,24 @@ export function presets(m: Messages): Preset[] {
  * 还停留在预设上。
  */
 export function isActivePreset(preset: Preset, settings: Settings): boolean {
-  const { size, collapsed, show, sign_opacity, blink_speed } = preset.apply;
+  const {
+    size,
+    collapsed,
+    show,
+    sign_opacity,
+    blink_speed,
+    sign_radius,
+    sign_border,
+    sign_text,
+  } = preset.apply;
   return (
     settings.size === size &&
     settings.collapsed === collapsed &&
     settings.sign_opacity === sign_opacity &&
     settings.blink_speed === blink_speed &&
+    settings.sign_radius === sign_radius &&
+    settings.sign_border === sign_border &&
+    settings.sign_text === sign_text &&
     (["name", "state", "age", "message"] as const).every(
       (field) => settings.show[field] === show[field],
     )

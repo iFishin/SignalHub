@@ -66,7 +66,7 @@ export const TAB_ALIASES: Record<Tab, string[]> = {
   status: ["状态", "现在", "时间线", "status", "now", "timeline"],
   history: ["历史", "近 7 天", "统计", "今日时长", "history", "stats", "week"],
   messages: ["留言", "收信", "评论", "反馈", "call me", "callme", "message", "feedback"],
-  look: ["外观", "颜色", "形状", "大小", "透明度", "预设", "灵动", "柔光", "呼吸", "光晕", "look", "color", "size", "preset", "lively", "glow"],
+  look: ["外观", "颜色", "形状", "大小", "透明度", "预设", "灵动", "柔光", "呼吸", "光晕", "圆角", "描边", "底色", "字号", "质感", "look", "color", "size", "preset", "lively", "glow", "radius", "border", "tint", "font"],
   behavior: ["行为", "静默超时", "超时", "安静模式", "点击穿透", "behavior", "ttl", "timeout"],
   groups: ["分组", "置顶", "多灯", "每组分灯", "group", "pin", "lamp count"],
   alert: ["提醒", "通知", "勿扰", "提示音", "声音", "状态", "alert", "notify", "dnd", "sound", "state"],

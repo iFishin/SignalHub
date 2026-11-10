@@ -35,7 +35,7 @@ import {
   MAX_HOOK_HEADERS,
 } from "../lib/hookHeaders";
 import { useLang, useMessages, type Lang, type Messages } from "../lib/i18n";
-import { useSettings, updateSettings, DEFAULTS, HTTP_PRESETS, type Settings, type Shape, type Palette, type HttpPreset, type Hook, type Device, type Machine, type MachineHealth, type StateStyle, type GroupMeta } from "../lib/useSettings";
+import { useSettings, updateSettings, DEFAULTS, HTTP_PRESETS, type Settings, type Shape, type Palette, type SignRadius, type SignBorder, type SignTint, type SignText, type SignEmphasis, type HttpPreset, type Hook, type Device, type Machine, type MachineHealth, type StateStyle, type GroupMeta } from "../lib/useSettings";
 import {
   useToggles,
   setAutostart,
@@ -157,6 +157,54 @@ function paletteOptions(m: Messages): { label: string; value: Palette }[] {
     { label: m.paletteDefault, value: "default" },
     { label: m.paletteColorblind, value: "colorblind" },
     { label: m.paletteVivid, value: "vivid" },
+  ];
+}
+
+/*
+ * 质感五档的选项表。
+ *
+ * 这五个函数和上面几组是同一套东西：**一个枚举 ↔ 一个 seg**，选项顺序就是枚举
+ * 在 Rust 里声明的顺序（从最保守到最张扬）。值和 Rust 的 `lowercase` 序列化
+ * 一一对应 —— 改名字要两边一起改，否则表现是「点了没反应」。
+ */
+function radiusOptions(m: Messages): { label: string; value: SignRadius }[] {
+  return [
+    { label: m.radiusSquare, value: "square" },
+    { label: m.radiusSoft, value: "soft" },
+    { label: m.radiusStandard, value: "standard" },
+    { label: m.radiusRound, value: "round" },
+  ];
+}
+
+function borderOptions(m: Messages): { label: string; value: SignBorder }[] {
+  return [
+    { label: m.borderNone, value: "none" },
+    { label: m.borderHairline, value: "hairline" },
+    { label: m.borderStrong, value: "strong" },
+  ];
+}
+
+function tintOptions(m: Messages): { label: string; value: SignTint }[] {
+  return [
+    { label: m.tintGraphite, value: "graphite" },
+    { label: m.tintBlack, value: "black" },
+    { label: m.tintWarm, value: "warm" },
+    { label: m.tintSlate, value: "slate" },
+  ];
+}
+
+function textSizeOptions(m: Messages): { label: string; value: SignText }[] {
+  return [
+    { label: m.textCompact, value: "compact" },
+    { label: m.textStandard, value: "standard" },
+    { label: m.textLarge, value: "large" },
+  ];
+}
+
+function emphasisOptions(m: Messages): { label: string; value: SignEmphasis }[] {
+  return [
+    { label: m.emphasisAuto, value: "auto" },
+    { label: m.emphasisFlat, value: "flat" },
   ];
 }
 
@@ -344,6 +392,13 @@ function LampPreview({ settings }: { settings: Settings }) {
            用户会以为开关没生效。这里只借 CSS 的柔光 / 高光，不挂 motion 弹簧：
            预览是静态示意，不该每帧动。 */
         data-lively={settings.lively || undefined}
+        /* 预览必须跟着质感五档一起变 —— 这一页调的就是它们，预览不跟等于
+           让人对着一个不会变的样机调参数。 */
+        data-sign-radius={settings.sign_radius}
+        data-sign-border={settings.sign_border}
+        data-sign-tint={settings.sign_tint}
+        data-sign-text={settings.sign_text}
+        data-sign-emphasis={settings.sign_emphasis}
       >
         {cards.map((card) => (
           <div
@@ -1376,6 +1431,11 @@ export function SettingsPanel({ snapshot }: Props) {
   const shapes = shapeOptions(m);
   const palettes = paletteOptions(m);
   const fields = fieldOptions(m);
+  const radiusChoices = radiusOptions(m);
+  const borderChoices = borderOptions(m);
+  const tintChoices = tintOptions(m);
+  const textSizeChoices = textSizeOptions(m);
+  const emphasisChoices = emphasisOptions(m);
   const blinkChoices = blinkOptions(m);
   const alertChoices = alertDelayOptions(m);
   const ttlDefaults = useStateTtls();
@@ -1411,6 +1471,14 @@ export function SettingsPanel({ snapshot }: Props) {
   const [connectSub, setConnectSub] = useState<"agents" | "sources" | "network">("agents");
   const [callmeSub, setCallmeSub] = useState<"links" | "server">("links");
   const [systemSub, setSystemSub] = useState<"general" | "update" | "data">("general");
+  /**
+   * 外观页的两个子页。
+   *
+   * 「基础」= 牌子多大、什么形态、什么配色；「质感」= 牌怎么画（圆角 / 描边 /
+   * 底色 / 字号 / 分层）。拆开是因为这一页原本已经九行控件 + 一张十行的逐状态表，
+   * 再加五项会把「预设」和「预览」推出首屏 —— 而那两样才是这一页的入口。
+   */
+  const [lookSub, setLookSub] = useState<"basic" | "texture">("basic");
   // 纸条要在**每次窗口显形时**重读。设置窗启动就以 `visible: false` 建好、之后
   // 只是 `show()`（见 `lib.rs` 的 `reveal_settings`），组件不会重新挂载 —— 只在
   // 初始化时读一次的话，用户点「接入」时写下的纸条永远不会被看到。
@@ -2632,191 +2700,305 @@ export function SettingsPanel({ snapshot }: Props) {
         return (
           <>
             <PageHeader title={m.tabLook} hint={m.pageHint.look} />
-            {/* 预览放最上面：这一页改的就是它。放在最底下的话，调完「牌宽」
-                还得往下滚一次才知道改成了什么。 */}
+            {/* 预览常驻在两个子页之上：无论调「有多大」还是「怎么画」，改的都是
+                它。放进子页的话，切到「质感」就得往下滚才知道效果 —— 而两个子页
+                回答的本来是同一个问题：这块牌长什么样。 */}
             <div className="section-title">{m.previewTitle}</div>
             <LampPreview settings={settings} />
             <p className="hint">{m.previewHint}</p>
-            <Row label={m.presets}>
-              {/* 同上：一组里选一个，所以是 seg 不是 chip。 */}
-              <div className="seg">
-                {presets(m).map((preset) => (
-                  <button
-                    key={preset.id}
-                    type="button"
-                    title={preset.hint}
-                    data-active={isActivePreset(preset, settings)}
-                    onClick={() => patch(preset.apply)}
-                  >
-                    {preset.label}
-                  </button>
-                ))}
-              </div>
-            </Row>
-            <Row label={m.form} onReset={resetFor(settings, "collapsed", patch)}>
-              <div className="seg">
+
+            {/* 拆子页的理由：这一页原本九行控件 + 一张十行的逐状态表，再加五项会
+                把「预设」和「预览」推出首屏，而那两样才是它的入口。
+                预设留在「基础」页最上面 —— 它同时改两页的值（尺寸 + 圆角 + 描边
+                + 字号），所以不能归到其中一页里去。 */}
+            <LocalTabs
+              label={m.tabLook}
+              value={lookSub}
+              onChange={setLookSub}
+              items={[
+                { id: "basic" as const, label: m.lookTabBasic },
+                { id: "texture" as const, label: m.lookTabTexture },
+              ]}
+            />
+
+            {lookSub === "basic" && (
+              <LocalPanel id="basic">
+                <Row label={m.presets}>
+                  {/* 同上：一组里选一个，所以是 seg 不是 chip。 */}
+                  <div className="seg">
+                    {presets(m).map((preset) => (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        title={preset.hint}
+                        data-active={isActivePreset(preset, settings)}
+                        onClick={() => patch(preset.apply)}
+                      >
+                        {preset.label}
+                      </button>
+                    ))}
+                  </div>
+                </Row>
+                <Row label={m.form} onReset={resetFor(settings, "collapsed", patch)}>
+                  <div className="seg">
+                    <button
+                      type="button"
+                      data-active={!settings.collapsed}
+                      onClick={() => patch({ collapsed: false })}
+                    >
+                      {m.expanded}
+                    </button>
+                    <button
+                      type="button"
+                      data-active={settings.collapsed}
+                      onClick={() => patch({ collapsed: true })}
+                    >
+                      {m.singleLight}
+                    </button>
+                  </div>
+                </Row>
+                <Row label={m.size} onReset={resetFor(settings, "size", patch)}>
+                  <div className="seg">
+                    {sizes.map((size) => (
+                      <button
+                        key={size.value}
+                        type="button"
+                        data-active={settings.size === size.value}
+                        onClick={() => patch({ size: size.value })}
+                      >
+                        {size.label}
+                      </button>
+                    ))}
+                  </div>
+                </Row>
+                <Row
+                  label={m.shape}
+                  hint={m.lookHint}
+                  onReset={resetFor(settings, "shape", patch)}
+                >
+                  <div className="seg">
+                    {shapes.map((shape) => (
+                      <button
+                        key={shape.value}
+                        type="button"
+                        data-active={settings.shape === shape.value}
+                        onClick={() => patch({ shape: shape.value })}
+                      >
+                        {shape.label}
+                      </button>
+                    ))}
+                  </div>
+                </Row>
+                {/* 配色方案和形状、节奏倍率是一类东西：都是「没被逐个状态覆盖时用哪个」。
+                    所以放这一页，逐状态的覆盖在「灯效」页。 */}
+                <Row label={m.palette} onReset={resetFor(settings, "palette", patch)}>
+                  <div className="seg">
+                    {palettes.map((palette) => (
+                      <button
+                        key={palette.value}
+                        type="button"
+                        data-active={settings.palette === palette.value}
+                        onClick={() => patch({ palette: palette.value })}
+                      >
+                        {palette.label}
+                      </button>
+                    ))}
+                  </div>
+                </Row>
+                <Row
+                  label={m.signOpacity}
+                  hint={signTextNeedsContrast(settings.sign_opacity) ? m.signOpacityHint : undefined}
+                  onReset={resetFor(settings, "sign_opacity", patch)}
+                >
+                  <Slider
+                    value={settings.sign_opacity}
+                    min={0}
+                    max={100}
+                    onChange={(sign_opacity) => patch({ sign_opacity })}
+                    format={(value) => `${value}%`}
+                  />
+                </Row>
+                {/* 长宽倍率：只放大 / 缩小**展开态**的牌本身（字号、点径、间距仍由
+                    「大小」决定）。窗口尺寸照旧按内容算，所以这两个滑杆不会把窗口
+                    拖成一块空白。折叠态是一排正方形点，不受影响。 */}
+                <Row label={m.signWidth} onReset={resetFor(settings, "sign_w_mult", patch)}>
+                  <Slider
+                    value={settings.sign_w_mult}
+                    min={SIGN_MULT_RANGE.min}
+                    max={SIGN_MULT_RANGE.max}
+                    step={0.1}
+                    onChange={(sign_w_mult) => patch({ sign_w_mult })}
+                    format={(value) => `×${value.toFixed(1)}`}
+                  />
+                </Row>
+                <Row label={m.signHeight} onReset={resetFor(settings, "sign_h_mult", patch)}>
+                  <Slider
+                    value={settings.sign_h_mult}
+                    min={SIGN_MULT_RANGE.min}
+                    max={SIGN_MULT_RANGE.max}
+                    step={0.1}
+                    onChange={(sign_h_mult) => patch({ sign_h_mult })}
+                    format={(value) => `×${value.toFixed(1)}`}
+                  />
+                </Row>
+                <Row label={m.blinkSpeed} onReset={resetFor(settings, "blink_speed", patch)}>
+                  <Slider
+                    value={settings.blink_speed}
+                    min={BLINK_RANGE.min}
+                    max={BLINK_RANGE.max}
+                    onChange={(blink_speed) => patch({ blink_speed })}
+                    format={(value) => `${value}%`}
+                  />
+                </Row>
+                {/* 灵动效果是「怎么动」的总闸，和闪烁节奏同一层。放在节奏下面：改完节奏
+                    立刻能开关柔光，看得出两者是同步的。关掉后 SignalLamp 连 motion 的
+                    弹簧都不挂，逐像素回到旧观感。 */}
+                <Row
+                  label={m.lively}
+                  hint={m.livelyHint}
+                  onReset={resetFor(settings, "lively", patch)}
+                >
+                  <Switch on={settings.lively} onChange={(on) => patch({ lively: on })} />
+                </Row>
+                <Row label={m.onSign} onReset={resetFor(settings, "show", patch)}>
+                  <div className="chips chips-tight">
+                    {fields.map((field) => (
+                      <button
+                        key={field.key}
+                        type="button"
+                        className="chip"
+                        data-active={settings.show[field.key]}
+                        onClick={() => setField(field.key, !settings.show[field.key])}
+                      >
+                        {field.label}
+                      </button>
+                    ))}
+                  </div>
+                </Row>
+                {/* 逐状态覆盖和上面的全局项是**两层**：上面是「没被覆盖时用哪个」，
+                    这里是「某个状态单独长什么样」。默认收起 —— 十行表和上面那九行
+                    不是一个量级，全摊开会把这一页淹掉，而它回答的其实是「外观」的
+                    一个子问题。收起时留一行摘要，免得让人以为这里什么都没有。 */}
                 <button
                   type="button"
-                  data-active={!settings.collapsed}
-                  onClick={() => patch({ collapsed: false })}
+                  className="disclosure"
+                  aria-expanded={perStateOpen}
+                  onClick={() => setPerStateOpen((open) => !open)}
                 >
-                  {m.expanded}
+                  <span className="caret" aria-hidden="true">
+                    {perStateOpen ? "▾" : "▸"}
+                  </span>
+                  <span className="disclosure-title">{m.perStateStyle}</span>
+                  <span className="disclosure-note">
+                    {perStateCount > 0 ? m.perStateSome(perStateCount) : m.perStateNone}
+                  </span>
                 </button>
-                <button
-                  type="button"
-                  data-active={settings.collapsed}
-                  onClick={() => patch({ collapsed: true })}
+                {perStateOpen && (
+                  <PerStateStyles
+                    settings={settings}
+                    patch={patch}
+                    m={m}
+                    lang={lang}
+                    shapes={shapes}
+                    blinkChoices={blinkChoices}
+                    ttlDefaults={ttlDefaults}
+                  />
+                )}
+              </LocalPanel>
+            )}
+
+            {lookSub === "texture" && (
+              <LocalPanel id="texture">
+                <p className="hint">{m.textureHint}</p>
+
+                <Row
+                  label={m.signRadius}
+                  onReset={resetFor(settings, "sign_radius", patch)}
                 >
-                  {m.singleLight}
-                </button>
-              </div>
-            </Row>
-            <Row label={m.size} onReset={resetFor(settings, "size", patch)}>
-              <div className="seg">
-                {sizes.map((size) => (
-                  <button
-                    key={size.value}
-                    type="button"
-                    data-active={settings.size === size.value}
-                    onClick={() => patch({ size: size.value })}
-                  >
-                    {size.label}
-                  </button>
-                ))}
-              </div>
-            </Row>
-            <Row
-              label={m.shape}
-              hint={m.lookHint}
-              onReset={resetFor(settings, "shape", patch)}
-            >
-              <div className="seg">
-                {shapes.map((shape) => (
-                  <button
-                    key={shape.value}
-                    type="button"
-                    data-active={settings.shape === shape.value}
-                    onClick={() => patch({ shape: shape.value })}
-                  >
-                    {shape.label}
-                  </button>
-                ))}
-              </div>
-            </Row>
-            {/* 配色方案和形状、节奏倍率是一类东西：都是「没被逐个状态覆盖时用哪个」。
-                所以放这一页，逐状态的覆盖在「灯效」页。 */}
-            <Row label={m.palette} onReset={resetFor(settings, "palette", patch)}>
-              <div className="seg">
-                {palettes.map((palette) => (
-                  <button
-                    key={palette.value}
-                    type="button"
-                    data-active={settings.palette === palette.value}
-                    onClick={() => patch({ palette: palette.value })}
-                  >
-                    {palette.label}
-                  </button>
-                ))}
-              </div>
-            </Row>
-            <Row
-              label={m.signOpacity}
-              hint={signTextNeedsContrast(settings.sign_opacity) ? m.signOpacityHint : undefined}
-              onReset={resetFor(settings, "sign_opacity", patch)}
-            >
-              <Slider
-                value={settings.sign_opacity}
-                min={0}
-                max={100}
-                onChange={(sign_opacity) => patch({ sign_opacity })}
-                format={(value) => `${value}%`}
-              />
-            </Row>
-            {/* 长宽倍率：只放大 / 缩小**展开态**的牌本身（字号、点径、间距仍由
-                「大小」决定）。窗口尺寸照旧按内容算，所以这两个滑杆不会把窗口
-                拖成一块空白。折叠态是一排正方形点，不受影响。 */}
-            <Row label={m.signWidth} onReset={resetFor(settings, "sign_w_mult", patch)}>
-              <Slider
-                value={settings.sign_w_mult}
-                min={SIGN_MULT_RANGE.min}
-                max={SIGN_MULT_RANGE.max}
-                step={0.1}
-                onChange={(sign_w_mult) => patch({ sign_w_mult })}
-                format={(value) => `×${value.toFixed(1)}`}
-              />
-            </Row>
-            <Row label={m.signHeight} onReset={resetFor(settings, "sign_h_mult", patch)}>
-              <Slider
-                value={settings.sign_h_mult}
-                min={SIGN_MULT_RANGE.min}
-                max={SIGN_MULT_RANGE.max}
-                step={0.1}
-                onChange={(sign_h_mult) => patch({ sign_h_mult })}
-                format={(value) => `×${value.toFixed(1)}`}
-              />
-            </Row>
-            <Row label={m.blinkSpeed} onReset={resetFor(settings, "blink_speed", patch)}>
-              <Slider
-                value={settings.blink_speed}
-                min={BLINK_RANGE.min}
-                max={BLINK_RANGE.max}
-                onChange={(blink_speed) => patch({ blink_speed })}
-                format={(value) => `${value}%`}
-              />
-            </Row>
-            {/* 灵动效果是「怎么动」的总闸，和闪烁节奏同一层。放在节奏下面：改完节奏
-                立刻能开关柔光，看得出两者是同步的。关掉后 SignalLamp 连 motion 的
-                弹簧都不挂，逐像素回到旧观感。 */}
-            <Row
-              label={m.lively}
-              hint={m.livelyHint}
-              onReset={resetFor(settings, "lively", patch)}
-            >
-              <Switch on={settings.lively} onChange={(on) => patch({ lively: on })} />
-            </Row>
-            <Row label={m.onSign} onReset={resetFor(settings, "show", patch)}>
-              <div className="chips chips-tight">
-                {fields.map((field) => (
-                  <button
-                    key={field.key}
-                    type="button"
-                    className="chip"
-                    data-active={settings.show[field.key]}
-                    onClick={() => setField(field.key, !settings.show[field.key])}
-                  >
-                    {field.label}
-                  </button>
-                ))}
-              </div>
-            </Row>
-            {/* 逐状态覆盖和上面的全局项是**两层**：上面是「没被覆盖时用哪个」，
-                这里是「某个状态单独长什么样」。默认收起 —— 十行表和上面那九行
-                不是一个量级，全摊开会把这一页淹掉，而它回答的其实是「外观」的
-                一个子问题。收起时留一行摘要，免得让人以为这里什么都没有。 */}
-            <button
-              type="button"
-              className="disclosure"
-              aria-expanded={perStateOpen}
-              onClick={() => setPerStateOpen((open) => !open)}
-            >
-              <span className="caret" aria-hidden="true">
-                {perStateOpen ? "▾" : "▸"}
-              </span>
-              <span className="disclosure-title">{m.perStateStyle}</span>
-              <span className="disclosure-note">
-                {perStateCount > 0 ? m.perStateSome(perStateCount) : m.perStateNone}
-              </span>
-            </button>
-            {perStateOpen && (
-              <PerStateStyles
-                settings={settings}
-                patch={patch}
-                m={m}
-                lang={lang}
-                shapes={shapes}
-                blinkChoices={blinkChoices}
-                ttlDefaults={ttlDefaults}
-              />
+                  <div className="seg">
+                    {radiusChoices.map((choice) => (
+                      <button
+                        key={choice.value}
+                        type="button"
+                        data-active={settings.sign_radius === choice.value}
+                        onClick={() => patch({ sign_radius: choice.value })}
+                      >
+                        {choice.label}
+                      </button>
+                    ))}
+                  </div>
+                </Row>
+
+                <Row
+                  label={m.signBorder}
+                  onReset={resetFor(settings, "sign_border", patch)}
+                >
+                  <div className="seg">
+                    {borderChoices.map((choice) => (
+                      <button
+                        key={choice.value}
+                        type="button"
+                        data-active={settings.sign_border === choice.value}
+                        onClick={() => patch({ sign_border: choice.value })}
+                      >
+                        {choice.label}
+                      </button>
+                    ))}
+                  </div>
+                </Row>
+
+                <Row label={m.signTint} onReset={resetFor(settings, "sign_tint", patch)}>
+                  <div className="seg">
+                    {tintChoices.map((choice) => (
+                      <button
+                        key={choice.value}
+                        type="button"
+                        data-active={settings.sign_tint === choice.value}
+                        onClick={() => patch({ sign_tint: choice.value })}
+                      >
+                        {choice.label}
+                      </button>
+                    ))}
+                  </div>
+                </Row>
+
+                <Row
+                  label={m.signTextSize}
+                  onReset={resetFor(settings, "sign_text", patch)}
+                >
+                  <div className="seg">
+                    {textSizeChoices.map((choice) => (
+                      <button
+                        key={choice.value}
+                        type="button"
+                        data-active={settings.sign_text === choice.value}
+                        onClick={() => patch({ sign_text: choice.value })}
+                      >
+                        {choice.label}
+                      </button>
+                    ))}
+                  </div>
+                </Row>
+
+                <Row
+                  label={m.signEmphasis}
+                  hint={m.emphasisHint}
+                  onReset={resetFor(settings, "sign_emphasis", patch)}
+                >
+                  <div className="seg">
+                    {emphasisChoices.map((choice) => (
+                      <button
+                        key={choice.value}
+                        type="button"
+                        data-active={settings.sign_emphasis === choice.value}
+                        onClick={() => patch({ sign_emphasis: choice.value })}
+                      >
+                        {choice.label}
+                      </button>
+                    ))}
+                  </div>
+                </Row>
+              </LocalPanel>
             )}
           </>
         );

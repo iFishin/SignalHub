@@ -10,6 +10,21 @@ export type Shape = "circle" | "rounded" | "ring";
 export type Palette = "default" | "colorblind" | "vivid";
 
 /**
+ * 牌面质感五档。取值与 Rust `config.rs` 的同名枚举一一对应（`lowercase`），
+ * 也和外层 `lamp.css` 的 `[data-sign-*]` 规则一一对应 —— **三处必须同名**，
+ * 改名要一起改，否则表现是「设置点了没反应」，界面上看不出任何线索。
+ *
+ * 为什么是枚举而不是滑杆：这五样各自只有几种「本来就好看」的取值（圆角
+ * 0.18 和 0.22 的差别没人看得出来），连续滑杆只会让人反复微调到怀疑自己。
+ */
+export type SignRadius = "square" | "soft" | "standard" | "round";
+export type SignBorder = "none" | "hairline" | "strong";
+export type SignTint = "graphite" | "black" | "warm" | "slate";
+export type SignText = "compact" | "standard" | "large";
+/** `auto` = 需要你动手的那几块牌更实、其余退后一档；`flat` = 所有牌同等分量。 */
+export type SignEmphasis = "auto" | "flat";
+
+/**
  * HTTP 转发的**服务预设**：决定 content-type 和 body 形状。
  *
  * Rust 侧是同名的枚举（`serde(rename_all = "lowercase")`），所以这里的字符串就是
@@ -298,6 +313,17 @@ export interface Settings {
   collect_meeting: boolean;
   shape: Shape;
   palette: Palette;
+  /**
+   * 牌面质感：圆角 / 描边 / 底色 / 字号 / 分层。
+   *
+   * **只改 CSS，不改窗口几何** —— 牌宽高仍由后端按 size 和倍率算，所以这
+   * 五项随便调都不会让窗口裁掉最后一块牌。
+   */
+  sign_radius: SignRadius;
+  sign_border: SignBorder;
+  sign_tint: SignTint;
+  sign_text: SignText;
+  sign_emphasis: SignEmphasis;
   /** 逐个状态的外观覆盖（颜色 / 形状 / 节奏）。没写的项跟随全局。 */
   styles: Record<string, StateStyle>;
   /** 折叠成一颗单纯的灯（只剩灯，没有牌面）。**默认 false = 展开成牌。** */
@@ -440,6 +466,12 @@ export const DEFAULTS: Settings = {
   collect_meeting: false,
   shape: "circle",
   palette: "default",
+  // 五项默认全等于「加这些开关之前」的样子 —— 和后端 `Settings::default` 一致
+  sign_radius: "standard",
+  sign_border: "hairline",
+  sign_tint: "graphite",
+  sign_text: "standard",
+  sign_emphasis: "auto",
   styles: {},
   collapsed: false,
   click_action: "collapse",

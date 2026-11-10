@@ -369,6 +369,105 @@ pub enum Palette {
     Vivid,
 }
 
+/// 牌面圆角档位。
+///
+/// **只改 `border-radius`，不改任何几何。** 牌宽 / 牌高由 `sign_width` /
+/// `sign_height` 算，和这里的圆角无关 —— 所以调它不会让窗口裁掉最后一块牌。
+/// 圆角大到接近牌高一半（`Round` = 0.72×size ≈ 15.8px，牌高 33px）也不会
+/// 啃到文字：`overflow: hidden` 只裁圆角之外的角落，而文字的起点落在圆内。
+///
+/// 取值是**相对 size 的倍数**，写在 `lamp.css` 的 `[data-sign-radius]` 那几条
+/// 规则里。多一档就多一条规则，别把倍数搬进 TS —— 那样像素值就有两处真值了。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SignRadius {
+    /// 直角。牌变成一块纯粹的色块，最硬朗。
+    Square,
+    /// 轻微圆角，几乎像直角但边缘不割手。
+    Soft,
+    /// 现状（v0.4 至今）。**默认** —— 升级不该让任何人的灯换个样子。
+    #[default]
+    Standard,
+    /// 大圆角，接近药丸。
+    Round,
+}
+
+/// 牌面描边强度。
+///
+/// 现状是 1px 白色 14% —— 在深色牌面和浅色桌面之间画一道分界。关掉之后牌就是
+/// 一块靠不透明度立住的色块（浅色桌面上仍然分得清：0.86 不透明度的深色本来就
+/// 够，描边只是让边缘更利），这也是为什么「无描边」值得作为一档存在。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SignBorder {
+    /// 不画描边。牌与桌面之间只剩底色差。
+    None,
+    /// 现状：1px，白色 14%。
+    #[default]
+    Hairline,
+    /// 更明显的一道边（白色 32%）。牌读起来像卡片而不是色块。
+    Strong,
+}
+
+/// 牌面底色。
+///
+/// 只影响 `.sign` 的深色基色（`--sign-rgb`），**不改 `--sign-alpha`** —— 后者是
+/// 用户单独调的不透明度，两条轴互不干扰。灯珠 / 状态色 / 托盘图标一律不受影响：
+/// 那是语义色，不是"材质"。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SignTint {
+    /// 现状：略偏冷的深灰（#1c1c20）。和应用图标是同一套语言。
+    #[default]
+    Graphite,
+    /// 纯黑。在彩色桌面上更沉得住，代价是在深色桌面上边缘更依赖描边。
+    Black,
+    /// 暖黑，带一点棕。和米色 / 木色桌面更协调。
+    Warm,
+    /// 蓝黑。科技感更强，和蓝色系桌面或壁纸更合。
+    Slate,
+}
+
+/// 牌内字号档位。
+///
+/// 是一个**整体的乘数**（0.9 / 1 / 1.12），不是某个字号 —— 组名、状态词、
+/// 消息、时长、`+N` 一起缩放，否则调完只会得到「组名比状态词大得离谱」。
+///
+/// 上限刻意压在 1.12：牌宽固定 `size × 7`，字再大只会让省略号更早出现，
+/// 换不来更多可读信息。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SignText {
+    /// 0.9×：信息更密，一行能多塞两三个字。
+    Compact,
+    /// 现状。
+    #[default]
+    Standard,
+    /// 1.12×：隔着一米也读得清，代价是组名省略得更早。
+    Large,
+}
+
+/// 「谁在叫我」的分层强度。
+///
+/// 多块牌同时存在时，`lampStyle.ts::toneOf` 把授权 / 关注 / 出错划成 `need`、
+/// 其余划成 `calm`，`lamp.css` 据此把 calm 的牌底压到 0.72、组名降到 400 字重、
+/// 灯珠缩到 0.55×。效果是「等你动手的那块」自然抢到注意力。
+///
+/// 但这条规则**界面上原本没有任何解释**：用户看到某块牌比别的淡，第一反应是
+/// 「是不是坏了」。所以给它一个开关 —— 既是个性化（有人就想要所有牌一样重），
+/// 也是一种说明（关掉它能看出差异来自这里）。
+///
+/// **默认 `Auto`**，即保留分层（红线 3：升级不改观感）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SignEmphasis {
+    /// 现状：need / calm 两档分明。
+    #[default]
+    Auto,
+    /// 所有牌同等分量。灯珠一样大、牌底一样实、组名一样粗。
+    Flat,
+}
+
 /// 一条出站钩子：聚合变成 `when` 里的某个状态时，执行 `action`。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hook {
@@ -1160,6 +1259,16 @@ pub struct Settings {
     pub shape: Shape,
     /// 配色方案（用户没单独指定颜色时的默认值）
     pub palette: Palette,
+    /// 牌面圆角 / 描边 / 底色 / 字号 / 分层强度 —— 「质感」那五档。
+    ///
+    /// 全部**只改 CSS**：牌宽高仍由 `sign_width` / `sign_height` 算，
+    /// 灯珠颜色仍归 `palette` 与 `styles[].color`。所以这五项可以随便调，
+    /// 不会出现「窗口裁掉最后一块牌」。
+    pub sign_radius: SignRadius,
+    pub sign_border: SignBorder,
+    pub sign_tint: SignTint,
+    pub sign_text: SignText,
+    pub sign_emphasis: SignEmphasis,
     /// 界面语言偏好。`Auto` 由**前端**解析成具体语言 —— Rust 不知道系统语言。
     pub locale: Locale,
     /// 设置窗口的亮 / 深色偏好。`Auto` = 跟随系统，解析见前端 `lib/theme.ts`。
@@ -1583,6 +1692,12 @@ impl Default for Settings {
             collect_meeting: false,
             shape: Shape::default(),
             palette: Palette::default(),
+            // 五项默认全等于「加这些字段之前」的样子：升级上来观感不变（红线 3）
+            sign_radius: SignRadius::default(),
+            sign_border: SignBorder::default(),
+            sign_tint: SignTint::default(),
+            sign_text: SignText::default(),
+            sign_emphasis: SignEmphasis::default(),
             locale: Locale::default(),
             // 跟随系统：升级上来的旧配置没有这个字段，行为必须和加开关之前一致
             theme: Theme::default(),
@@ -2281,6 +2396,12 @@ mod tests {
             ],
             shape: Shape::Ring,
             palette: Palette::Vivid,
+            // 质感五项同样取非默认值，理由同上
+            sign_radius: SignRadius::Round,
+            sign_border: SignBorder::None,
+            sign_tint: SignTint::Warm,
+            sign_text: SignText::Large,
+            sign_emphasis: SignEmphasis::Flat,
             locale: Locale::En,
             // 同理：`Theme` 默认是 `Auto`，这里用 `Dark` 才验得出「漏了这个字段」
             theme: Theme::Dark,
@@ -3008,6 +3129,50 @@ mod tests {
         assert!(settings.hidden_groups.is_empty(), "默认不藏任何组");
         assert_eq!(settings.sign_opacity, DEFAULT_SIGN_OPACITY);
         assert_eq!(settings.blink_speed, 100, "100 = 原始节奏");
+    }
+
+    /// 质感五项（圆角 / 描边 / 底色 / 字号 / 分层）的默认值必须**等于加这些字段
+    /// 之前的样子** —— 否则升级上来的用户会莫名其妙觉得灯换了张脸。
+    ///
+    /// 这条测试钉的是「默认值」而不是具体像素：像素在 `lamp.css` 的
+    /// `[data-sign-*]` 规则里，这里只保证选中的是那一档。
+    #[test]
+    fn the_sign_texture_defaults_to_the_old_look() {
+        let settings = Settings::default();
+        assert_eq!(settings.sign_radius, SignRadius::Standard, "默认是原来的 0.32×size");
+        assert_eq!(settings.sign_border, SignBorder::Hairline, "默认保留那道 1px 边");
+        assert_eq!(settings.sign_tint, SignTint::Graphite, "默认还是偏冷的深灰");
+        assert_eq!(settings.sign_text, SignText::Standard, "默认字号不动");
+        assert_eq!(settings.sign_emphasis, SignEmphasis::Auto, "默认保留 need / calm 分层");
+
+        // 旧配置里一个字段都没有，也不能因此让整份设置失效
+        let old: Settings = serde_json::from_str(r#"{"size": 22}"#).unwrap();
+        assert_eq!(old.sign_radius, SignRadius::Standard);
+        assert_eq!(old.sign_emphasis, SignEmphasis::Auto);
+    }
+
+    /// 五项都存字符串枚举，改一个值要能原样存回去 —— 序列化往返丢值会让设置
+    /// 「点了没反应」，而那种 bug 在界面上看不出任何线索。
+    #[test]
+    fn the_sign_texture_roundtrips_through_json() {
+        let raw = r#"{
+            "sign_radius": "round",
+            "sign_border": "none",
+            "sign_tint": "slate",
+            "sign_text": "compact",
+            "sign_emphasis": "flat"
+        }"#;
+        let settings = serde_json::from_str::<Settings>(raw).unwrap();
+        assert_eq!(settings.sign_radius, SignRadius::Round);
+        assert_eq!(settings.sign_border, SignBorder::None);
+        assert_eq!(settings.sign_tint, SignTint::Slate);
+        assert_eq!(settings.sign_text, SignText::Compact);
+        assert_eq!(settings.sign_emphasis, SignEmphasis::Flat);
+
+        let back = serde_json::to_string(&settings).unwrap();
+        assert!(back.contains(r#""sign_radius":"round""#));
+        assert!(back.contains(r#""sign_tint":"slate""#));
+        assert!(back.contains(r#""sign_emphasis":"flat""#));
     }
 
     /// 隐藏的组名来自右键菜单、也会被用户手改进配置文件，所以要规整：

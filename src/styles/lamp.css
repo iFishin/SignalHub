@@ -15,6 +15,13 @@
  * 「灵动效果」开启后（`[data-lively]`，见文件末尾）才多一层柔光与跃迁涟漪 ——
  * 它是可关的观感层，关掉后逐像素回到 0.4.4。
  *
+ * 牌面的**圆角 / 描边 / 底色 / 字号 / 分层强度**由 `[data-sign-*]` 驱动（见「质感」
+ * 一节），取值来自 `config.rs` 的同名枚举、经 `useSettings.ts` 的联合类型转一道。
+ * 五档都只改 CSS，**没有一项参与窗口几何** —— 所以它们随便调都不会裁掉内容，
+ * 这也是当初把它们从「尺寸」那一类里分开的原因。改档位名字时三处要一起改
+ * （Rust 枚举 / TS 联合类型 / 这里的 `[data-sign-*]` 选择器），对不上的表现是
+ * 「点了没反应」，界面上没有任何报错可循。
+ *
  * 两条硬性约束：
  * 1) html/body/#root 必须完全透明，否则 webview 会画出白底，透明窗口就白做了。
  * 2) **常驻**动画只动 opacity，交给 GPU 合成，避免这个常驻窗口烧 CPU。
@@ -69,6 +76,12 @@ body,
   --sign-line: rgba(255, 255, 255, 0.14);
   --sign-fg: #ececef;
   --sign-muted: #9b9ba3;
+
+  /* 质感两把标尺的**默认档**，等价于加这几个开关之前的样子。
+     具体的档位在文件后面的 `[data-sign-*]` 那一段里，这里只给基准值 ——
+     零档位属性（比如预览里没挂 data 属性时）也必须画出原来那张牌。 */
+  --sign-radius: 0.32; /* × size */
+  --sign-text: 1; /* × 字号 */
 
   /* 角标 / 审批气泡都绝对定位在这儿。加 relative 只是把它们的包含块明确成
      这层全尺寸的盒子（和之前相对 viewport 等价），不是改布局。 */
@@ -340,14 +353,73 @@ body,
   align-items: center;
   gap: calc(var(--size) * 0.27);
   padding: 0 calc(var(--size) * 0.36);
-  border: 1px solid var(--sign-line);
-  border-radius: calc(var(--size) * 0.32);
+  /* 描边 / 圆角 / 字号都由 `[data-sign-*]` 那一段驱动（见文件后半）。
+     **默认值写在这里的 var() 兜底里**，而不是只在 `.lamp-root` 上定义一次：
+     `.sign` 可以被单独渲染（`LampPreview` 的 DOM 也在 `.lamp-root` 里，但
+     组件测试有时只挂 `.sign`），两处都留一份才不会出现「取不到变量就退回
+     currentColor / 0 圆角」的塌陷。 */
+  border: var(--sign-border-w, 1px) solid var(--sign-border-c, var(--sign-line));
+  border-radius: calc(var(--size) * var(--sign-radius, 0.32));
   background: var(--sign-bg);
   color: var(--sign-fg);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  font-size: calc(var(--size) * 0.5);
+  font-size: calc(var(--size) * 0.5 * var(--sign-text, 1));
   line-height: 1.15;
   overflow: hidden;
+}
+
+/* ---- 质感：圆角 / 描边 / 底色 / 字号 --------------------------------------
+ *
+ * 五档（含下面的分层）都由 `SignalLamp` 挂在 `.lamp-root` 上的 `data-sign-*`
+ * 属性驱动，取值来自 `config.rs` 的同名枚举。
+ *
+ * **没有一档参与窗口几何**：牌宽高仍由 `sign_width` / `sign_height` 算，
+ * 所以这五档随便调都不会出现「窗口裁掉最后一块牌」那种 bug。
+ *
+ * 为什么用属性而不是 CSS 变量：每档对应一条规则，倍数只在这一个文件里，
+ * 用变量的做法得让 TS 拼 `calc()` 或换算成像素 —— 像素值就有了两处真值。
+ */
+
+/* 圆角。Standard 不写规则：`.lamp-root` 上的 `--sign-radius: 0.32` 就是它。 */
+.lamp-root[data-sign-radius="square"] {
+  --sign-radius: 0;
+}
+.lamp-root[data-sign-radius="soft"] {
+  --sign-radius: 0.18;
+}
+.lamp-root[data-sign-radius="round"] {
+  --sign-radius: 0.72;
+}
+
+/* 描边。none 把线宽收成 0 而不是 `border: none`。 */
+.lamp-root[data-sign-border="none"] {
+  --sign-border-w: 0px;
+}
+.lamp-root[data-sign-border="strong"] {
+  --sign-border-c: rgba(255, 255, 255, 0.32);
+}
+
+/* 牌底色。只换 `--sign-rgb`，**不碰 `--sign-alpha`** —— 后者是用户单独调的
+   不透明度，两条轴互不干扰。calm 档的压淡正是乘在 alpha 上的，换底色不能
+   把它覆盖掉。 */
+.lamp-root[data-sign-tint="black"] {
+  --sign-rgb: 0, 0, 0;
+}
+.lamp-root[data-sign-tint="warm"] {
+  /* 比 graphite 亮一点、红绿比偏大，压成暖黑而不是「棕」。 */
+  --sign-rgb: 34, 30, 27;
+}
+.lamp-root[data-sign-tint="slate"] {
+  --sign-rgb: 24, 28, 36;
+}
+
+/* 字号。整体乘数，组名 / 状态词 / 消息 / 时长 / `+N` 一起缩放 ——
+   只放大其中一项会得到「组名比状态词大得离谱」的牌。 */
+.lamp-root[data-sign-text="compact"] {
+  --sign-text: 0.9;
+}
+.lamp-root[data-sign-text="large"] {
+  --sign-text: 1.12;
 }
 
 /* 有消息就多一行 —— 那块牌变高，正好是个「有东西可读」的提示。
@@ -380,7 +452,7 @@ body,
  * `none` —— 默认就是一块牌，不能让最常见的那种用法无故变淡。占位牌同理。
  */
 .sign[data-tone="need"] .dot {
-  --dot: calc(var(--size) * 0.72);
+  --dot-scale: 0.72;
 }
 
 .sign[data-tone="calm"] {
@@ -393,6 +465,24 @@ body,
 
 .sign[data-tone="calm"] .sign-name {
   font-weight: 400;
+}
+
+/* 关掉分层：所有牌同等分量。
+ *
+ * 为什么这值得一个开关：上面那套压淡规则界面上原本没有任何解释 —— 用户看到
+ * 某块牌比别的淡，第一反应是「是不是坏了」。开关既是「有人就想要所有牌一样重」
+ * 的个性化，也是一种说明：关掉它就能看出差异来自这里。
+ *
+ * 三条都要还原（点径 / 牌底 / 组名字重），漏一条就变成半开不开的样子。
+ * `--dot-scale` 归 0.55 是因为 `.dot` 的兜底就是 0.55（见 `.dot` 块）。 */
+.lamp-root[data-sign-emphasis="flat"] .sign[data-tone="need"] .dot {
+  --dot-scale: 0.55;
+}
+.lamp-root[data-sign-emphasis="flat"] .sign[data-tone="calm"] {
+  background: var(--sign-bg);
+}
+.lamp-root[data-sign-emphasis="flat"] .sign[data-tone="calm"] .sign-name {
+  font-weight: 600;
 }
 
 .sign-body {
@@ -438,7 +528,7 @@ body,
   background: transparent;
   color: var(--sign-fg);
   font: inherit;
-  font-size: calc(var(--size) * 0.42);
+  font-size: calc(var(--size) * 0.42 * var(--sign-text, 1));
   line-height: 1.15;
   white-space: nowrap;
   cursor: pointer;
@@ -523,13 +613,13 @@ body,
 .sign-state {
   flex: none;
   color: var(--sign-muted);
-  font-size: calc(var(--size) * 0.45);
+  font-size: calc(var(--size) * 0.45 * var(--sign-text, 1));
 }
 
 .sign-message {
   overflow: hidden;
   color: var(--sign-muted);
-  font-size: calc(var(--size) * 0.45);
+  font-size: calc(var(--size) * 0.45 * var(--sign-text, 1));
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -538,7 +628,7 @@ body,
 .sign-age {
   flex: none;
   color: var(--sign-muted);
-  font-size: calc(var(--size) * 0.45);
+  font-size: calc(var(--size) * 0.45 * var(--sign-text, 1));
   font-variant-numeric: tabular-nums;
 }
 
@@ -557,7 +647,7 @@ body,
   border-radius: calc(var(--size) * 0.16);
   background: rgba(255, 255, 255, 0.1);
   color: var(--sign-muted);
-  font-size: calc(var(--size) * 0.42);
+  font-size: calc(var(--size) * 0.42 * var(--sign-text, 1));
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -711,7 +801,10 @@ body,
    `.dot`（拿到形状、动画、描边那一整套）和 `.lamp-dot`（把直径改成占满 size）。
    这样六个状态的节奏规则只需写一遍 —— 分成两处迟早漏一处。 */
 .dot {
-  --dot: calc(var(--size) * 0.55);
+  /* 点径 = 牌内基准 0.55×size，`need` 那一档翻到 0.72（见 `.sign[data-tone]`）。
+     抽成 `--dot-scale` 而不是直接覆盖 `--dot`，是为了让「关掉分层」只需把
+     乘数改回 0.55 一处 —— 否则得把 0.72 和 0.55 两个像素式子各写一遍。 */
+  --dot: calc(var(--size) * var(--dot-scale, 0.55));
 
   box-sizing: border-box;
   width: var(--dot);

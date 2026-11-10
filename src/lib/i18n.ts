@@ -494,6 +494,34 @@ export interface Messages {
   paletteDefault: string;
   paletteColorblind: string;
   paletteVivid: string;
+  /** 外观页的两个子页。「基础」放尺寸 / 形态 / 配色，「质感」放牌的画法。 */
+  lookTabBasic: string;
+  lookTabTexture: string;
+  /** 质感子页顶上那句「只改画法、不动几何」。 */
+  textureHint: string;
+  signRadius: string;
+  radiusSquare: string;
+  radiusSoft: string;
+  radiusStandard: string;
+  radiusRound: string;
+  signBorder: string;
+  borderNone: string;
+  borderHairline: string;
+  borderStrong: string;
+  signTint: string;
+  tintGraphite: string;
+  tintBlack: string;
+  tintWarm: string;
+  tintSlate: string;
+  signTextSize: string;
+  textCompact: string;
+  textStandard: string;
+  textLarge: string;
+  /** 「谁在叫我」那套压淡的强度。 */
+  signEmphasis: string;
+  emphasisAuto: string;
+  emphasisFlat: string;
+  emphasisHint: string;
   fieldName: string;
   fieldState: string;
   fieldAge: string;
@@ -1214,7 +1242,7 @@ export const MESSAGES: Record<Lang, Messages> = {
       status: "现在怎么样：正在跑什么、最近发生了什么。",
       history: "过去几天发生了什么：今日复盘、洞察、时长和审批记录。",
       messages: "外面的智能体通过 Call Me 链接发来的留言，展开即已读。",
-      look: "灯长什么样：颜色、形状、大小和预设。",
+      look: "灯长什么样：尺寸、形态、配色，以及牌面的质感。",
       behavior: "灯怎么表现：静默超时、安静模式和点击。",
       groups: "会话怎么分组、每组分几盏灯。",
       alert: "什么时候用系统通知提醒你。",
@@ -1460,6 +1488,33 @@ export const MESSAGES: Record<Lang, Messages> = {
     paletteDefault: "默认",
     paletteColorblind: "色盲友好",
     paletteVivid: "高饱和",
+    lookTabBasic: "基础",
+    lookTabTexture: "质感",
+    textureHint:
+      "这几项只改牌面的画法，不改牌子和窗口的大小 —— 怎么调都不会裁掉内容。",
+    signRadius: "圆角",
+    radiusSquare: "直角",
+    radiusSoft: "小",
+    radiusStandard: "标准",
+    radiusRound: "大",
+    signBorder: "描边",
+    borderNone: "无",
+    borderHairline: "细",
+    borderStrong: "明显",
+    signTint: "牌底",
+    tintGraphite: "石墨",
+    tintBlack: "纯黑",
+    tintWarm: "暖黑",
+    tintSlate: "蓝黑",
+    signTextSize: "字号",
+    textCompact: "紧凑",
+    textStandard: "标准",
+    textLarge: "大",
+    signEmphasis: "分层",
+    emphasisAuto: "区分",
+    emphasisFlat: "一致",
+    emphasisHint:
+      "选「区分」时，需要你动手的那几块牌更实、灯珠更大，其余退后一档，好让人一眼知道先看谁。觉得这个差异莫名其妙就选「一致」，所有牌同等分量。",
     fieldName: "组名",
     fieldState: "状态",
     fieldAge: "已持续",
@@ -2131,7 +2186,7 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       status: "What's happening right now: running sessions and recent events.",
       history: "The past few days: today's recap, insights, durations and approvals.",
       messages: "Notes from outside agents via your Call Me links. Expanding marks them read.",
-      look: "What the lamp looks like: color, shape, size and presets.",
+      look: "What the lamp looks like: size, form, colour, and the texture of the sign.",
       behavior: "How the lamp behaves: quiet timeout, calm mode and clicks.",
       groups: "How sessions map to lamps.",
       alert: "When to notify you through the system.",
@@ -2381,6 +2436,33 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     paletteDefault: "Default",
     paletteColorblind: "Colourblind",
     paletteVivid: "Vivid",
+    lookTabBasic: "Basics",
+    lookTabTexture: "Texture",
+    textureHint:
+      "These change how the sign is drawn, not how big it is — the window is sized from the dot size and the multipliers, so nothing here can clip.",
+    signRadius: "Corners",
+    radiusSquare: "Square",
+    radiusSoft: "Soft",
+    radiusStandard: "Standard",
+    radiusRound: "Round",
+    signBorder: "Border",
+    borderNone: "None",
+    borderHairline: "Hairline",
+    borderStrong: "Strong",
+    signTint: "Surface",
+    tintGraphite: "Graphite",
+    tintBlack: "Black",
+    tintWarm: "Warm",
+    tintSlate: "Slate",
+    signTextSize: "Text size",
+    textCompact: "Compact",
+    textStandard: "Standard",
+    textLarge: "Large",
+    signEmphasis: "Emphasis",
+    emphasisAuto: "Tiered",
+    emphasisFlat: "Uniform",
+    emphasisHint:
+      'With "Tiered", the signs that need you are solider and their dots larger while the rest step back, so it is obvious what to look at first. If that difference feels arbitrary, pick "Uniform" — every sign carries the same weight.',
     fieldName: "Group",
     fieldState: "State",
     fieldAge: "Age",

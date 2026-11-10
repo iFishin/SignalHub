@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { applyStylePreset, isActiveStylePreset, type StylePreset } from "./presets";
+import {
+  applyStylePreset,
+  isActivePreset,
+  isActiveStylePreset,
+  presets,
+  type StylePreset,
+} from "./presets";
+import { MESSAGES } from "./i18n";
 import { DEFAULTS, type Settings } from "./useSettings";
 
 /** 预设只该动形状和节奏；颜色与静默超时是用户的东西。 */
@@ -92,5 +99,57 @@ describe("isActiveStylePreset", () => {
         settings({ working: { blink_ms: 1_600 }, idle: { blink_ms: 0 } }),
       ),
     ).toBe(false);
+  });
+});
+
+/**
+ * 外观预设（尺寸 / 折叠 / 显示字段 / 透明度 / 节奏 + 圆角 / 描边 / 字号）。
+ *
+ * 这几条钉的是「点一下能不能回到同一套」：预设是个按钮，它的选中态完全由
+ * 逐字段比对算出来 —— 少比一个字段，用户点完不会高亮，看着像没生效。
+ */
+describe("外观预设", () => {
+  const m = MESSAGES.zh;
+  const apply = (preset: { apply: Partial<Settings> }): Settings => ({
+    ...DEFAULTS,
+    ...preset.apply,
+  });
+
+  it("点完之后每一套都能被认出来", () => {
+    for (const preset of presets(m)) {
+      expect(isActivePreset(preset, apply(preset)), preset.id).toBe(true);
+    }
+  });
+
+  it("默认外观正好落在「标准」这套上", () => {
+    // 第一次打开不该一套都不高亮 —— 那等于告诉用户「你现在什么都不是」
+    const standard = presets(m).find((preset) => preset.id === "standard");
+    expect(standard).toBeDefined();
+    expect(isActivePreset(standard!, DEFAULTS)).toBe(true);
+  });
+
+  it("质感三项也参与判断：改了圆角就不再是这一套", () => {
+    const standard = presets(m).find((preset) => preset.id === "standard")!;
+    expect(isActivePreset(standard, { ...apply(standard), sign_radius: "round" })).toBe(false);
+    expect(isActivePreset(standard, { ...apply(standard), sign_border: "none" })).toBe(false);
+    expect(isActivePreset(standard, { ...apply(standard), sign_text: "large" })).toBe(false);
+  });
+
+  it("不碰牌底色和分层 —— 它们不是风格，是材质和语义", () => {
+    // 关掉分层会改变「谁在叫我」的可读性，换底色会跟桌面打架；
+    // 换个预设顺手把这两样改掉，正是这套预设最该避免的那种意外
+    for (const preset of presets(m)) {
+      expect(preset.apply).not.toHaveProperty("sign_tint");
+      expect(preset.apply).not.toHaveProperty("sign_emphasis");
+    }
+  });
+
+  it("三套展开态预设的质感互不相同，否则换了看不出变化", () => {
+    const expanded = presets(m).filter((preset) => !preset.apply.collapsed);
+    const keys = expanded.map(
+      (preset) =>
+        `${preset.apply.sign_radius}/${preset.apply.sign_border}/${preset.apply.sign_text}`,
+    );
+    expect(new Set(keys).size).toBe(expanded.length);
   });
 });

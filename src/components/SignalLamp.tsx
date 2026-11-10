@@ -695,6 +695,14 @@ export function SignalLamp({
       }
       data-aggregate={aggregate}
       data-quiet={quiet && !passThrough && !guide.show}
+      /* 质感五档。挂属性而不是内联变量 —— 和上面 `data-*` 同一套做法，
+         倍数仍然只有 `lamp.css` 一个出处（见那边「质感」一节）。
+         **菜单形态那棵树不挂**：它只画圆环，一块牌都没有。 */
+      data-sign-radius={settings.sign_radius}
+      data-sign-border={settings.sign_border}
+      data-sign-tint={settings.sign_tint}
+      data-sign-text={settings.sign_text}
+      data-sign-emphasis={settings.sign_emphasis}
       /* 牌面淡过一半就把牌里的字换成「浅字 + 深描边」，深浅桌面都读得出来
          （阈值见 `lampStyle.ts`，颜色和描边在 `lamp.css`）。挂属性而不是推内联变量：
          和旁边这几个 `data-*` 开关同一套做法，那组颜色也就仍然只有 CSS 一个出处。 */
