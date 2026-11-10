@@ -931,6 +931,22 @@ pub enum Locale {
     En,
 }
 
+/// 设置窗口的亮 / 深色偏好。**和 `Locale` 同构**：`Auto` 由**前端**解析成实际外观
+/// —— Rust 这边不知道系统现在用的是亮色还是深色，只有前端的
+/// `matchMedia("(prefers-color-scheme: dark)")` 说得准。
+///
+/// 只作用于设置窗口和演示页：灯球 / 收件箱是透明窗口的固定深色 HUD，刻意不读
+/// 这套主题变量（理由写在 `src/styles/theme.css` 文件头）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    /// 跟随系统外观
+    #[default]
+    Auto,
+    Light,
+    Dark,
+}
+
 /// 解析之后的界面语言。
 ///
 /// **和 `Locale` 放在一起**而不是 `lang.rs`：CLI 也要用它挑自己的文案（`--help`
@@ -1137,6 +1153,8 @@ pub struct Settings {
     pub palette: Palette,
     /// 界面语言偏好。`Auto` 由**前端**解析成具体语言 —— Rust 不知道系统语言。
     pub locale: Locale,
+    /// 设置窗口的亮 / 深色偏好。`Auto` = 跟随系统，解析见前端 `lib/theme.ts`。
+    pub theme: Theme,
     /// 逐组的显示偏好（显示名 / 置顶）。键是**上报方给的原始组名**。
     ///
     /// 与 `hidden_groups` / `muted_groups` 是两回事：那两个管「显不显示 / 要不要
@@ -1503,6 +1521,8 @@ impl Default for Settings {
             shape: Shape::default(),
             palette: Palette::default(),
             locale: Locale::default(),
+            // 跟随系统：升级上来的旧配置没有这个字段，行为必须和加开关之前一致
+            theme: Theme::default(),
             group_meta: BTreeMap::new(),
             styles: BTreeMap::new(),
             colors: BTreeMap::new(),
@@ -2179,6 +2199,8 @@ mod tests {
             shape: Shape::Ring,
             palette: Palette::Vivid,
             locale: Locale::En,
+            // 同理：`Theme` 默认是 `Auto`，这里用 `Dark` 才验得出「漏了这个字段」
+            theme: Theme::Dark,
             group_meta: [(
                 "builds".to_string(),
                 GroupMeta {
@@ -3154,6 +3176,32 @@ mod tests {
         let en = Settings { locale: Locale::En, ..Settings::default() };
         assert_eq!(resolve_lang(&zh), Lang::Zh);
         assert_eq!(resolve_lang(&en), Lang::En);
+    }
+
+    /// `theme` 和 `group_by` 一样是设置里的一个值：线上名字写错会让整份配置
+    /// 反序列化失败（不是「开关点了没反应」这么轻），所以三种值都锁一遍。
+    #[test]
+    fn theme_round_trips_through_json() {
+        for (mode, wire) in [
+            (Theme::Auto, "auto"),
+            (Theme::Light, "light"),
+            (Theme::Dark, "dark"),
+        ] {
+            let json = serde_json::to_string(&mode).unwrap();
+            assert_eq!(json, format!("\"{wire}\""), "{mode:?} 的线上名字变了");
+            assert_eq!(serde_json::from_str::<Theme>(&json).unwrap(), mode);
+        }
+    }
+
+    /// 旧配置里没有 `theme` —— 必须读成 Auto，升级不能悄悄把人切进深色。
+    #[test]
+    fn settings_without_theme_read_as_auto() {
+        let json = serde_json::to_string(&Settings::default()).unwrap();
+        assert!(json.contains(r#""theme":"auto""#), "{json}");
+
+        let legacy = json.replace(r#""theme":"auto","#, "");
+        let parsed: Settings = serde_json::from_str(&legacy).unwrap();
+        assert_eq!(parsed.theme, Theme::Auto);
     }
 
     /// `group_by` 是设置里的一个值，所以它必须能**原样存取** —— 值名字写错了

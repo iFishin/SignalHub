@@ -4686,6 +4686,36 @@ export function SettingsPanel({ snapshot }: Props) {
                   </div>
                 </Row>
 
+                {/* 主题：与语言同构，auto 跟随系统，实际外观由 lib/theme.ts 解析。
+                    下面那行 hint 不能删 —— 灯和收件箱故意不跟主题，不写清楚的话
+                    用户切了开关会以为灯没变色是坏了。 */}
+                <Row label={m.theme} onReset={resetFor(settings, "theme", patch)}>
+                  <div className="seg">
+                    <button
+                      type="button"
+                      data-active={settings.theme === "auto"}
+                      onClick={() => patch({ theme: "auto" })}
+                    >
+                      {m.themeAuto}
+                    </button>
+                    <button
+                      type="button"
+                      data-active={settings.theme === "light"}
+                      onClick={() => patch({ theme: "light" })}
+                    >
+                      {m.themeLight}
+                    </button>
+                    <button
+                      type="button"
+                      data-active={settings.theme === "dark"}
+                      onClick={() => patch({ theme: "dark" })}
+                    >
+                      {m.themeDark}
+                    </button>
+                  </div>
+                </Row>
+                <p className="hint">{m.themeHint}</p>
+
                 <p className="hint">{m.systemHintTray}</p>
                 <p className="hint">
                   {m.systemHintPassThrough(

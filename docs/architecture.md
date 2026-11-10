@@ -1211,6 +1211,57 @@ Programs\SignalHub.lnk` 写入 `System.AppUserModel.ID`，最后 `SHChangeNotify
 `-setup.exe`，要么直接换 0.6.1 的 zip。issue #25 在上面这份真机清单跑完之前保持
 OPEN —— CI 的 windows-latest 只证明这段代码编得过，不证明 Toast 真的弹了。
 
+### 3.31 设置窗口的手动亮 / 深色主题（2026-11-10）
+
+**原本就有一套。** `theme.css` 定义 8 个变量（bg / fg / muted / line / hover /
+accent / danger / danger-line），靠 `@media (prefers-color-scheme: dark)` 整套换值；
+`settings.css` 2273 行里 177 处 `var(--…)`，只剩 5 个硬编码颜色（开关旋钮的白、
+两个状态色兜底、警告黄的深浅两值）。所以这次不是「补一套深色」，而是把一个
+**只能跟随系统**的机制改成「跟随系统 / 强制亮 / 强制深」三选一。
+
+**边界先划清。** 灯球和收件箱是透明窗口上的固定深色 HUD，`theme.css` 和
+`inbox.css` 的文件头都写了「刻意不用这套变量」；只有设置窗和演示页是普通页面，
+跟着主题走。设置界面里那行 hint 不是凑字数的：不写清楚，用户切了开关发现灯没
+变色只会以为开关坏了。状态色 `--state` 来自 TS 的 palette（`state.css`），也与
+主题无关。
+
+**偏好照 `Locale` 抄。** Rust `config.rs` 加 `Theme { Auto, Light, Dark }`，
+`Settings` 带容器级 `#[serde(default)]` —— 旧配置缺字段读成 Auto，升级不改观感，
+单测锁住三种值的线上名字与缺字段回退。Rust **只存偏好、不解析系统外观**：它连
+`prefers-color-scheme` 都看不到，这和 `Locale::Auto` 由前端 `navigator.language`
+解析完全同构。前端 `lib/theme.ts` 的 `resolveTheme(mode, systemDark)` 是唯一一份
+语义。
+
+**CSS 只读结果。** 深色块从 `@media` 改成 `:root[data-theme="dark"]`，
+`settings.css` 那枚警告黄也跟着换选择器。理由不是写法好看：若 CSS 保留媒体查询、
+JS 又写一个强制值，两条路会各自得出答案（系统深色 + 用户强制亮色时必然打架），
+那就是两处真值。
+
+**两个时序坑，都是这轮才发现的。**
+
+1. **首屏闪白。** 生产构建把 CSS 提成 `<head>` 里的 `<link>`，浏览器在 module
+   script / React 挂载之前就应用了。改成 JS 驱动之后，等 `useTheme` 的 effect 再
+   设 `data-theme` 已经晚了。`index.html` 里放一段**同步内联脚本**（不是 module，
+   必须在 CSS 之前执行），读 `localStorage` 里的解析结果缓存
+   (`signalhub-theme-resolved`)，第一帧就定好外观。缓存不是第二份配置，
+   `theme.test.ts` 有一条测试锁住「HTML 里的 key 和 TS 常量一致」。
+2. **React 首屏只有 DEFAULTS。** `useSettings()` 的初始值是 `DEFAULTS`
+   (`theme: auto`)，IPC 回来之前拿它去 `applyTheme` 会用系统外观盖掉首屏按缓存
+   设好的深色 —— 强制深色的用户照样白一帧。所以新增 `useSettingsState()` 带上
+   `loaded`，`useTheme(mode, ready)` 在 `get_settings` 回来前什么都不做。浏览器
+   里的 demo 页没有 IPC，`loaded` 一开始就是 true。
+
+**`color-scheme` 单独收窄。** 原来挂在全局 `:root` 上。若把它写进
+`:root[data-theme="dark"]`，特异性 (0,2,0) 会压过 `inbox.css` 的
+`html[data-window="inbox"]` (0,1,1)，把收件箱的原生控件一起带亮。现在全局兜底
+仍是 light，深色只给 `html[data-window="settings"][data-theme="dark"]` 和
+`html[data-window="demo"][data-theme="dark"]`。
+
+**没做的**：灯球 / 收件箱的主题化（那等于重做两套 HUD 配色并在透明窗口上验
+可读性）；主题不推给 Rust（Rust 不需要知道）；`prefers-reduced-motion` 与主题
+无关，保持原样。真窗口的亮 / 深观感要在 `tauri dev` 里切系统外观验收，Agent
+环境看不了。
+
 ## 4. 悬浮窗实现
 
 ### 4.1 窗口配置

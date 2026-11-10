@@ -4,7 +4,8 @@
  * 同样走朴素简约路线：没有阴影、没有渐变、控件扁平。
  * 分隔靠 1px 细线，视觉层次靠字号与灰度，不靠立体感。
  *
- * 调色板变量在 theme.css。
+ * 调色板变量在 theme.css；亮 / 深由 `<html data-theme>` 决定，三种偏好的解析
+ * 在 lib/theme.ts。这份文件里除了下面那枚警告黄，不该再出现主题判断。
  */
 
 /* 设置窗不是透明窗口，得自己铺底色。
@@ -1864,10 +1865,10 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   background: var(--danger);
 }
 
-@media (prefers-color-scheme: dark) {
-  .health-dot[data-level="warn"] {
-    background: #e3b341;
-  }
+/* 跟着 theme.ts 算出来的结果走，别再开一条 @media —— 用户强制亮色时系统仍是
+   深色，两条路会给出不同的答案。 */
+:root[data-theme="dark"] .health-dot[data-level="warn"] {
+  background: #e3b341;
 }
 
 .health-verdict {

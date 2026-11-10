@@ -3,6 +3,27 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      // 主题必须在第一帧就定下来。生产构建会把 CSS 提成 <head> 里的 <link>，
+      // 浏览器在 module script / React 挂载之前就应用了它；等 useTheme 的 effect
+      // 再设 data-theme，深色系统会先闪一帧白底。
+      //
+      // 这里**只判断「该不该深色」**，不解析 auto / light / dark 三种偏好 ——
+      // 那份语义在 src/lib/theme.ts 的 resolveTheme，此处读的是它写下的解析结果。
+      // 首次启动还没有缓存时才退回问一次系统外观。改 key 要同步 theme.ts，
+      // theme.test.ts 有一条测试守着这件事。
+      (function () {
+        var cached = null;
+        try {
+          cached = localStorage.getItem("signalhub-theme-resolved");
+        } catch (_) {}
+        var dark =
+          cached === null
+            ? window.matchMedia("(prefers-color-scheme: dark)").matches
+            : cached === "dark";
+        document.documentElement.dataset.theme = dark ? "dark" : "light";
+      })();
+    </script>
     <title>SignalHub</title>
   </head>
 

@@ -1,11 +1,17 @@
 /*
- * 主题调色板。设置面板用这一份。
+ * 主题调色板。设置面板和演示页用这一份。
  *
  * 提成独立文件是因为灯球窗口是**透明**的：它里面那些深色牌面不能用这套
  * 主题变量（牌面在任何桌面上都该是深色的），而设置面板需要浅色/深色两套。
  * 两者分开，就不会有人误改一处影响另一处。
  *
- * 这里刻意不定义任何具体的组件样式 —— 只放变量。
+ * 驱动方式（2026-11-10 改）：`<html data-theme="light|dark">` 是唯一开关。
+ * `index.html` 的首屏脚本在 CSS 加载前设好它，`lib/theme.ts` 的 `useTheme`
+ * 把「跟随系统 / 强制亮 / 强制深」以及系统外观变化解析成这个值。**这里不再
+ * 出现 `@media (prefers-color-scheme: dark)`**：三种偏好的语义只在那一处解析，
+ * CSS 只读结果，否则就是两处真值、改一处漏一处。
+ *
+ * 这里刻意不定义任何具体的组件样式 —— 只放变量和 color-scheme。
  */
 
 :root {
@@ -17,19 +23,26 @@
   --accent: #1f6feb;
   --danger: #c0392b;
   --danger-line: #e8c4c0;
+  /* 全局兜底仍是亮色：灯球是透明窗口、收件箱自己声明 dark，两边都没有需要
+     跟随主题的原生控件。**别把 color-scheme 写进 [data-theme="dark"] 那条** ——
+     `:root[data-theme]` 的特异性会压过 inbox.css 的窗口选择器，把收件箱也带亮。 */
   color-scheme: light;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #1c1c1e;
-    --fg: #e8e8ea;
-    --muted: #9aa0a6;
-    --line: #333336;
-    --hover: #2a2a2d;
-    --accent: #4c8dff;
-    --danger: #ff7b72;
-    --danger-line: #5a2f2c;
-    color-scheme: dark;
-  }
+:root[data-theme="dark"] {
+  --bg: #1c1c1e;
+  --fg: #e8e8ea;
+  --muted: #9aa0a6;
+  --line: #333336;
+  --hover: #2a2a2d;
+  --accent: #4c8dff;
+  --danger: #ff7b72;
+  --danger-line: #5a2f2c;
+}
+
+/* color-scheme 只给「普通页面」：设置窗和 ?window=demo。两个属性选择器是为了
+   稳稳压过上面的 :root，同时完全不碰 `html[data-window="inbox"]` 那条 dark。 */
+html[data-window="settings"][data-theme="dark"],
+html[data-window="demo"][data-theme="dark"] {
+  color-scheme: dark;
 }

@@ -830,6 +830,12 @@ export interface Messages {
   langAuto: string;
   langZh: string;
   langEn: string;
+  /** 设置窗口的亮 / 深色偏好（灯球与收件箱不跟随，见 themeHint）。 */
+  theme: string;
+  themeAuto: string;
+  themeLight: string;
+  themeDark: string;
+  themeHint: string;
 
   // 配置导入 / 导出
   configBackup: string;
@@ -1795,6 +1801,12 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     langAuto: "跟随系统",
     langZh: "中文",
     langEn: "English",
+    theme: "界面主题",
+    themeAuto: "跟随系统",
+    themeLight: "亮色",
+    themeDark: "深色",
+    themeHint:
+      "只影响设置窗口和演示页；灯和收件箱是透明的深色悬浮牌，在任何系统外观下都保持原样。",
 
     configBackup: "配置备份",
     exportConfig: "导出…",
@@ -2711,6 +2723,12 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     langAuto: "System",
     langZh: "中文",
     langEn: "English",
+    theme: "Theme",
+    themeAuto: "System",
+    themeLight: "Light",
+    themeDark: "Dark",
+    themeHint:
+      "Only the settings window and the demo page follow this. The lamp and inbox are translucent dark overlays and stay the same under every system appearance.",
 
     configBackup: "Configuration backup",
     exportConfig: "Export…",

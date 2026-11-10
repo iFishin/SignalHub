@@ -345,6 +345,13 @@ export interface Settings {
   tray_follows_state: boolean;
   /** 界面语言。"auto" = 跟随系统。 */
   locale: "auto" | "zh" | "en";
+  /**
+   * 设置窗口的亮 / 深色偏好。"auto" = 跟随系统外观。
+   *
+   * 只作用设置窗和演示页 —— 灯球 / 收件箱是透明窗口的固定深色 HUD，不跟这个开关。
+   * 解析成实际外观的活儿在 `lib/theme.ts`（Rust 不知道系统外观）。
+   */
+  theme: "auto" | "light" | "dark";
   /** 逐组的显示偏好（显示名 / 置顶）。键是**上报方给的原始组名**。 */
   group_meta: Record<string, GroupMeta>;
   /**
@@ -437,6 +444,7 @@ export const DEFAULTS: Settings = {
   rule_meeting: false,
   tray_follows_state: true,
   locale: "auto",
+  theme: "auto",
   group_meta: {},
   group_by: "none",
   lan_access: false,
@@ -449,18 +457,32 @@ export const DEFAULTS: Settings = {
 
 const SETTINGS_EVENT = "signalhub://settings";
 
-export function useSettings(): Settings {
-  const [settings, setSettings] = useState<Settings>(DEFAULTS);
+/** 设置本身 + 「真值到没到」。浏览器里没有 IPC，DEFAULTS 就是真值，直接算已加载。 */
+export interface SettingsState {
+  settings: Settings;
+  loaded: boolean;
+}
+
+/**
+ * 带加载时序的那一份。首屏脚本（见 `index.html`）先按缓存定主题，而 React 一开始
+ * 手里只有 DEFAULTS —— 主题得等 IPC 回来才能覆盖，否则用户选的「深色」会被默认
+ * 的「跟随系统」盖掉，闪一帧白。`useTheme` 用这里的 `loaded` 卡住那一刻。
+ */
+export function useSettingsState(): SettingsState {
+  const [state, setState] = useState<SettingsState>({
+    settings: DEFAULTS,
+    loaded: !inTauri,
+  });
 
   useEffect(() => {
     if (!inTauri) return;
 
     // 先订阅再拉取：反过来的话，两步之间发生的变更会被永久丢掉。
     const pending = listen<Settings>(SETTINGS_EVENT, (event) =>
-      setSettings(event.payload),
+      setState({ settings: event.payload, loaded: true }),
     );
     invoke<Settings>("get_settings")
-      .then(setSettings)
+      .then((settings) => setState({ settings, loaded: true }))
       .catch((err) => console.error("get_settings 失败", err));
 
     return () => {
@@ -468,7 +490,12 @@ export function useSettings(): Settings {
     };
   }, []);
 
-  return settings;
+  return state;
+}
+
+/** 只要设置本身；绝大多数组件用这个，不必关心加载时序。 */
+export function useSettings(): Settings {
+  return useSettingsState().settings;
 }
 
 export function updateSettings(next: Settings): Promise<Settings> {

@@ -5,7 +5,8 @@ import { SettingsPanel } from "./components/SettingsPanel";
 import { InboxWindow } from "./components/InboxWindow";
 import { DemoWindow } from "./components/DemoWindow";
 import { useSignal } from "./lib/useSignal";
-import { useSettings } from "./lib/useSettings";
+import { useSettingsState } from "./lib/useSettings";
+import { useTheme } from "./lib/theme";
 import { usePalettePush } from "./lib/palettes";
 import { useLocalClock } from "./lib/useLocalClock";
 import { useApprovals } from "./lib/useApprovals";
@@ -58,12 +59,14 @@ function useQuitShortcut() {
 export default function App() {
   // 两个窗口共用这套订阅；hook 必须无条件调用，所以放在分支之前。
   const snapshot = useSignal();
-  const settings = useSettings();
+  const { settings, loaded: settingsLoaded } = useSettingsState();
   // 三件「只有前端才知道的事实」推给 Rust：现在几点 + 今天几号（勿扰时段和统计
   // 跨天要用）、每个状态解析出来的颜色（托盘图标要用）。见各自的注释。
+  // 主题是第四件，但它不推给 Rust：Rust 只存偏好，系统外观与最终配色都由前端定。
   useLocalClock();
   usePalettePush(settings);
   useLangPush();
+  useTheme(settings.theme, settingsLoaded);
   useDevKeys();
   useQuitShortcut();
   // 等着你点的审批（从灯上审批）。**两个窗口都会订阅**，但只有灯窗会画 ——
