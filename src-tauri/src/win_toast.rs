@@ -14,6 +14,13 @@
 //! WindowsAppSDK#6821 里「注册成功、权限是 Enabled、就是没有横幅」正是那种情况，
 //! 决定性的因素是快捷方式上的属性。
 //!
+//! **图标必须是图片文件，不能是 exe。** AUMID 键里的 `IconUri` 只认 png / jpg；
+//! 指向 exe 时通知照常弹，只是来源那一栏只有名字、没有图标 —— 0.6.2 的版本写的就是
+//! exe，用户看到的现象是「Windows 通知没有图标」。现在把 `icons/128x128.png`
+//! `include_bytes!` 进二进制、首次注册时落到 `~/.signalhub/toast-icon.png`，再把那个
+//! 路径写进注册表。这条路和 `Microsoft.Toolkit.Uwp.Notifications` 对 unpackaged
+//! 应用的做法一致（它也是把图标解成 `Icon.png` 再写路径）。
+//!
 //! 上游依据：
 //! - <https://learn.microsoft.com/en-us/windows/apps/design/shell/tiles-and-notifications/send-local-toast-other-apps>
 //! - <https://github.com/tauri-apps/winrt-notification/issues/17>（无效 app id 静默失败）
@@ -23,8 +30,32 @@
 //! 「Windows PowerShell」，而且插件的动作按钮 / 点击回调全都不走我们这套了。
 //! 宁可花一次启动把身份注册对，也不要长期挂着一个来源不对的降级通道。
 
+use std::path::Path;
 use std::sync::Mutex;
 use tauri::Manager;
+
+/// 标记文件的内容格式版本。
+///
+/// **改内容格式就必须改这个值。** `ensure` 的幂等判据是「上次记下的内容 == 这次算出来的」，
+/// 而 0.6.2 及更早写进去的是**裸 exe 路径** —— 那时 `IconUri` 指的也是 exe 本身，
+/// 于是通知来源那一栏只有名字、没有图标（Windows 的 `IconUri` 只认图片文件）。
+/// 只改 `IconUri` 的取值是不够的：老用户的标记照样命中，`ensure` 会直接返回，
+/// 升级后仍然没图标。把版本写进标记，等于让每个老安装**重注册一次**。
+#[cfg_attr(not(windows), allow(dead_code))]
+const MARKER_VERSION: &str = "v2";
+
+/// 标记内容：第一行格式版本，第二行 exe 路径。
+///
+/// 单独抽出来是为了能被单测钉住 —— 「版本变了，标记就变了」这条约束是这次
+/// 修复能不能到达老用户的唯一开关，写在 `ensure` 里就没人测得到了。
+///
+/// 非 Windows 上只有单测用它（`ensure` 的 Windows 分支才读），所以那边允许
+/// dead_code：把测试也 cfg 掉的话，这条断言就只在 Windows CI 上跑，而这台机器
+/// （macOS）恰恰是改它的人手边的那一台。
+#[cfg_attr(not(windows), allow(dead_code))]
+fn marker_text(exe: &Path) -> String {
+    format!("{MARKER_VERSION}\n{}", exe.to_string_lossy())
+}
 
 /// 最近一次注册结果。`None` = 已就绪（或非 Windows），`Some` = 失败原因。
 ///
@@ -119,6 +150,12 @@ mod imp {
     const PRODUCT_NAME: &str = "SignalHub";
     /// 记着上次给哪个 exe 建过快捷方式。放在 `~/.signalhub/`，不污染开始菜单。
     const MARKER: &str = "toast-shortcut.txt";
+    /// 通知来源那一栏的小图标。**必须是图片文件**：`IconUri` 写 exe 时 Windows
+    /// 什么都不画（0.6.2 之前的版本就是这么写的，表现正是「通知没有图标」）。
+    const ICON_NAME: &str = "toast-icon.png";
+    /// 图标从二进制里带出来，不依赖安装包 layout：portable 的 zip 只有一个 exe，
+    /// 装完也没有「资源目录」这回事，`include_bytes!` 在哪解压都能拿到同一张图。
+    const ICON_PNG: &[u8] = include_bytes!("../icons/128x128.png");
 
     /// Win32 API 要的是以 0 结尾的 UTF-16。返回一个有所有权的 buffer，调用处
     /// 在用到 `PCWSTR` 的整个表达式里都必须让它活着。
@@ -160,22 +197,32 @@ mod imp {
             .map_err(|err| format!("设置进程 AUMID 失败：{err}"))?;
 
         let exe = std::env::current_exe().map_err(|err| format!("读不到当前 exe 路径：{err}"))?;
-        let marker = config::data_dir()
-            .map_err(|err| format!("读不到数据目录：{err}"))?
-            .join(MARKER);
+        let data = config::data_dir().map_err(|err| format!("读不到数据目录：{err}"))?;
+        let marker = data.join(MARKER);
         let shortcut = start_menu_shortcut()?;
 
-        // 2. 幂等。**portable 目录会被搬走**，所以判据是「上次记的 exe 还是不是这个」，
-        //    不是「快捷方式存在吗」；快捷方式被人删了也要重建。写成功才记标记，
-        //    中途失败下次启动会重试。
+        // 2. 图标先落地。**它在幂等判断之前**：判断要确认图标文件还在（用户可能
+        //    顺手清了 `~/.signalhub`），而写它本身是幂等的（内容一样就跳过）。
+        let icon = data.join(ICON_NAME);
+        write_icon(&icon)?;
+
+        // 3. 幂等。**portable 目录会被搬走**，所以判据是「上次记的 exe 还是不是这个」，
+        //    不是「快捷方式存在吗」；快捷方式被人删了也要重建。标记里带格式版本，
+        //    0.6.2 及更早写的是裸路径，于是**升级后必然重注册一次** —— 那正是把
+        //    图标修好的必要一步（老标记命中就会跳过，图标永远补不上）。
+        //    写成功才记标记，中途失败下次启动会重试。
         let recorded = std::fs::read_to_string(&marker).unwrap_or_default();
-        if recorded == exe.to_string_lossy() && shortcut.exists() && registry_ready(identifier) {
+        if recorded == marker_text(&exe)
+            && shortcut.exists()
+            && icon.exists()
+            && registry_ready(identifier)
+        {
             return Ok(());
         }
 
-        register_display(identifier, &exe)?;
+        register_display(identifier, &icon)?;
 
-        // 3. COM 必须在 STA 线程上初始化。单独起一条线程是有意的：Tauri 主线程
+        // 4. COM 必须在 STA 线程上初始化。单独起一条线程是有意的：Tauri 主线程
         //    可能已经用 MTA 初始化过 COM，那里再 CoInitializeEx(STA) 会拿到
         //    RPC_E_CHANGED_MODE，CoCreateInstance 直接失败。
         let id_owned = identifier.to_string();
@@ -187,9 +234,23 @@ mod imp {
             .join()
             .map_err(|_| "注册通知标识的线程崩了".to_string())??;
 
-        std::fs::write(&marker, exe.to_string_lossy().as_bytes())
+        std::fs::write(&marker, marker_text(&exe).as_bytes())
             .map_err(|err| format!("写标记失败（{marker:?}）：{err}"))?;
         Ok(())
+    }
+
+    /// 把内嵌的 PNG 写到数据目录。内容一致就不重写 —— 每次启动都写一遍 14KB
+    /// 没有意义，而它落在用户目录里，能少一次写就少一次。
+    fn write_icon(path: &Path) -> Result<(), String> {
+        // 比 `Vec<u8> == &[u8; N]` 更明确：切成切片比，类型一眼能对上。
+        // （这条分支只有 Windows 会走，本机编不到，所以宁可写得笨一点。）
+        let same = std::fs::read(path)
+            .map(|current| current.as_slice() == ICON_PNG.as_slice())
+            .unwrap_or(false);
+        if same {
+            return Ok(());
+        }
+        std::fs::write(path, ICON_PNG).map_err(|err| format!("写通知图标失败（{path:?}）：{err}"))
     }
 
     fn registry_ready(identifier: &str) -> bool {
@@ -201,7 +262,13 @@ mod imp {
     /// 通知来源的名字和图标。上游 `tauri-winrt-notification` 的
     /// `examples/unpackaged_app.rs` 就是这三个值；没有它们，Toast 会把
     /// `app.signalhub.desktop` 原样显示给用户。
-    fn register_display(identifier: &str, exe: &Path) -> Result<(), String> {
+    ///
+    /// **`IconUri` 只能给图片文件**（png / jpg），给 exe 等于没给 —— 通知照常弹，
+    /// 左边那一栏只有名字、没有图标。这是 0.6.2 留下的 bug：当时为了让来源显示成
+    /// SignalHub 才写这三个值，`IconUri` 顺手填了 exe。微软那篇 unpackaged toast
+    /// 文档（2026-04 已下架）与 `Microsoft.Toolkit.Uwp.Notifications` 的做法一致：
+    /// 把图标**解出来落到磁盘**，再把那个文件路径写进注册表。
+    fn register_display(identifier: &str, icon: &Path) -> Result<(), String> {
         let key = CURRENT_USER
             .create(format!(r"SOFTWARE\Classes\AppUserModelId\{identifier}"))
             .map_err(|err| format!("写 AUMID 注册表键失败：{err}"))?;
@@ -209,7 +276,7 @@ mod imp {
             .map_err(|err| format!("写 DisplayName 失败：{err}"))?;
         key.set_string("IconBackgroundColor", "0")
             .map_err(|err| format!("写 IconBackgroundColor 失败：{err}"))?;
-        key.set_string("IconUri", exe.to_string_lossy())
+        key.set_string("IconUri", icon.to_string_lossy())
             .map_err(|err| format!("写 IconUri 失败：{err}"))?;
         Ok(())
     }
@@ -274,6 +341,7 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::ToastBackend;
+    use std::path::Path;
 
     /// 失败原因要能被 UI / 诊断报告原样读出来，且在重试成功后清掉。
     #[test]
@@ -284,6 +352,20 @@ mod tests {
         assert_eq!(backend.error(), None);
         backend.set(Some("写快捷方式失败".to_string()));
         assert_eq!(backend.error().as_deref(), Some("写快捷方式失败"));
+    }
+
+    /// 标记里带着格式版本，而且**和 0.6.2 写的裸路径必然不同**。
+    ///
+    /// 这是「修好的 `IconUri` 能不能到达老用户」的唯一开关：老安装的
+    /// `toast-shortcut.txt` 里是裸 exe 路径，两者一旦相等，`ensure` 就会提前
+    /// 返回，注册表里的 `IconUri` 永远停在 exe 上、通知永远没有图标。
+    #[test]
+    fn the_marker_differs_from_the_legacy_bare_path() {
+        let exe = Path::new(r"C:\Apps\SignalHub\signalhub-app.exe");
+        let text = super::marker_text(exe);
+        assert!(text.starts_with(super::MARKER_VERSION), "{text}");
+        assert!(text.contains("signalhub-app.exe"), "{text}");
+        assert_ne!(text, exe.to_string_lossy(), "与旧标记相同就不会重注册");
     }
 
     /// 非 Windows 上 ensure 必须是无副作用的成功，否则 macOS / Linux 的设置页

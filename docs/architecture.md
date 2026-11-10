@@ -1185,9 +1185,9 @@ dev 的 Windows 上把 toast 的 `app_id` 固定设成 `tauri.conf.json` 的 `id
 
 于是 `src-tauri/src/win_toast.rs` 在 `setup` 里、第一条通知之前补上这套身份：
 `SetCurrentProcessExplicitAppUserModelID`、写 `HKCU\Software\Classes\AppUserModelId\
-<identifier>` 的 `DisplayName` / `IconUri`（决定通知来源的名字与图标），再用 COM
-的 `IShellLinkW` + `IPropertyStore` 在 `%APPDATA%\Microsoft\Windows\Start Menu\
-Programs\SignalHub.lnk` 写入 `System.AppUserModel.ID`，最后 `SHChangeNotify
+<identifier>` 的 `DisplayName` / `IconUri` / `IconBackgroundColor`（决定通知来源的名字与
+图标），再用 COM 的 `IShellLinkW` + `IPropertyStore` 在 `%APPDATA%\Microsoft\Windows\
+Start Menu\Programs\SignalHub.lnk` 写入 `System.AppUserModel.ID`，最后 `SHChangeNotify
 (SHCNE_ASSOCCHANGED)` 让 shell 立刻认到。
 
 几个刻意的选择：
@@ -1196,14 +1196,23 @@ Programs\SignalHub.lnk` 写入 `System.AppUserModel.ID`，最后 `SHChangeNotify
   横幅」正是这种情形，决定性的因素是快捷方式上的属性。上游
   `tauri-winrt-notification/examples/unpackaged_app.rs` 那份只写注册表的示例不能当
   通用解。
+- **`IconUri` 必须指向图片文件，不能指向 exe。** 0.6.2 那一版把它填成了 exe 路径，
+  结果通知照常弹、来源那一栏却只有名字没有图标 —— Windows 只认 png / jpg，给 exe
+  等于没给。现在 `icons/128x128.png` 用 `include_bytes!` 带进二进制，注册时落到
+  `~/.signalhub/toast-icon.png`，注册表里写的是那个文件的路径。选内嵌而不是
+  `bundle.resources`：portable 的 zip 只有一个 exe，解压到哪都没有「资源目录」这回事，
+  内嵌到哪都能解出同一张图。`Microsoft.Toolkit.Uwp.Notifications` 对 unpackaged 应用
+  也是这个做法（把图标解成 `Icon.png` 再写路径）。
 - **不用 PowerShell 的 AUMID 兜底。** 那条路能弹，但通知来源会写成「Windows
   PowerShell」，插件的动作按钮 / 点击回调也全都不走我们这套了。宁可花一次启动把
   身份注册对。
 - **COM 放在单独的 STA 线程。** Tauri 主线程可能已经用 MTA 初始化过 COM，在那里再
   `CoInitializeEx(STA)` 会拿到 `RPC_E_CHANGED_MODE`。
 - **幂等判据是「上次记的 exe 路径」而不是「快捷方式存在吗」。** `~/.signalhub/
-  toast-shortcut.txt` 存着路径；portable 目录被搬走、快捷方式被删、注册表键被清，
-  任一种都会触发重建。写成功了才记标记，中途失败下次启动自动重试。
+  toast-shortcut.txt` 存着路径；portable 目录被搬走、快捷方式被删、注册表键被清、
+  图标文件被清，任一种都会触发重建。写成功了才记标记，中途失败下次启动自动重试。
+  **标记里带格式版本**（`MARKER_VERSION`）：0.6.2 写的是裸路径，只改 `IconUri` 的取值
+  对老用户无效（标记命中就直接返回），所以格式一变就让旧标记失配、强制重注册一次。
 - **和 NSIS 用同一个快捷方式路径**（没配 `startMenuFolder` 时就是
   `$SMPROGRAMS\<productName>.lnk`），安装版不会被多塞一个重复的开始菜单项。
 
