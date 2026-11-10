@@ -158,10 +158,30 @@ describe("demo steps", () => {
     expect(nextDemoStep(0)).toBe(1);
   });
 
-  it("场景 id 覆盖四种用法，且默认从「一天的节奏」开始", () => {
-    const ids: DemoScenarioId[] = ["day", "asking", "silence", "tucked"];
+  it("场景 id 覆盖五种用法，且默认从「一天的节奏」开始", () => {
+    const ids: DemoScenarioId[] = ["day", "asking", "silence", "tucked", "look"];
     expect(DEMO_SCENARIOS.map((scenario) => scenario.id)).toEqual(ids);
     expect(scenarioStart("day")).toBe(0);
+  });
+
+  /**
+   * 边灯 / 角灯那一场必须有东西可讲 —— 这两项默认全关，演示是唯一会被新用户
+   * 看到的地方。少一步不会报错，只会让那一场变成一条什么都不演示的空镜头。
+   */
+  it("「用光说话」那一场真的切换了边灯与角灯", () => {
+    const steps = scenarioSteps("look");
+    const edges = steps.map((step) => step.edge).filter(Boolean);
+    expect(edges).toContain("top");
+    expect(edges).toContain("frame");
+    expect(edges).toContain("glow");
+    const withCorners = steps.filter((step) => step.corners);
+    expect(withCorners.length).toBeGreaterThan(0);
+    // 四枚判据同时成立的最后一步：置顶 + 静音 + 沉默 + 状态，缺一条角灯就不亮
+    const meaning = steps.find((step) => step.id === "cornersMeaning");
+    expect(meaning?.pinned).toBe(true);
+    expect(meaning?.muted).toBe(true);
+    expect(meaning?.rows[0].state).toBe("stale");
+    expect(meaning?.rows[0].staleProgress).not.toBeUndefined();
   });
 
   it("demoSnapshot 给出可直接渲染的 GroupView", () => {

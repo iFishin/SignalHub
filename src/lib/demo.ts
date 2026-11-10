@@ -6,8 +6,9 @@
  * 不是不好看，是某一步画出了和产品实际行为不一致的东西（比如把「完成」
  * 画成转沉默），那会变成一份会骗人的说明书。
  *
- * **为什么分成场景而不是一条长剧本**：一盏灯的真实用法有四种互不相干的样子
- * —— 平时干活、有事要你、它不说话了、收起来。串成一条 15 步的线性剧本，
+ * **为什么分成场景而不是一条长剧本**：一盏灯的真实用法有五种互不相干的样子
+ * —— 平时干活、有事要你、它不说话了、收起来、以及「用光说话」（边灯 / 角灯）。
+ * 串成一条 20 步的线性剧本，
  * 想看「折叠长什么样」得先等 40 秒；而按场景切开，每个场景自己循环，点一下
  * 就能反复看同一件事。
  *
@@ -22,13 +23,23 @@
  *   只为演示编出来的。
  */
 import type { GroupView, SignalState } from "./types";
-import type { Shape } from "./useSettings";
+import type { Shape, SignCorners, SignEdge } from "./useSettings";
 
 /** 演示里出现的组。名字是稳定的 id，显示名走 i18n（中英各一份）。 */
 export type DemoGroupId = "build" | "api" | "review";
 
+/**
+ * 「用光说话」那一场里同时被置顶 + 静音的那块牌。
+ *
+ * 角灯的 `pinned` / `muted` 两枚靠 `group_meta` 与 `muted_groups` 判定，而这两个键
+ * 用的是**组 id**（`build`），不是显示名。DemoStage 要按同一条 id 把这两个事实喂给
+ * 灯，所以 id 只能有一处出处 —— 从剧本里念一遍字符串，两边迟早对不上。
+ */
+export const DEMO_CORNER_GROUP: DemoGroupId = "build";
+
 /** 场景 id。文案在 i18n 的 `demoScenario`。 */
-export type DemoScenarioId = "day" | "asking" | "silence" | "tucked";
+export type DemoScenarioId = "day" | "asking" | "silence" | "tucked" | "look";
+
 
 export interface DemoRow {
   id: DemoGroupId;
@@ -62,6 +73,19 @@ export interface DemoStep {
    * `.dot[data-shape="ring"]`）。不填 = 跟随用户设置。
    */
   shape?: Shape;
+  /**
+   * 这一步把边灯换成哪一档。不填 = 跟随用户设置。
+   *
+   * 只有「用光说话」那个场景会填 —— 那一场讲的就是这四个档位，跟着用户的设置走
+   * 就等于什么都没讲。
+   */
+  edge?: SignEdge;
+  /** 这一步四角各挂什么。不填 = 跟随用户设置。 */
+  corners?: SignCorners;
+  /** 这一步把那块牌当成「被置顶」（角灯的 `pinned` 判据）。 */
+  pinned?: boolean;
+  /** 这一步把那块牌当成「被静音」（角灯的 `muted` 判据）。 */
+  muted?: boolean;
 }
 
 export interface DemoScenario {
@@ -239,6 +263,66 @@ export const DEMO_SCENARIOS: DemoScenario[] = [
       },
     ],
   },
+  {
+    // 用光说话：边灯四档 + 四角角灯。这一场存在的理由是**可发现性** ——
+    // 两项默认全关，不进演示，用户根本不会知道设置里有它们。
+    // 每一步都换成「这一档长什么样」，而不是跟着用户当前的设置走。
+    id: "look",
+    steps: [
+      {
+        id: "edgeTop",
+        durationMs: DEMO_STEP_MS,
+        aggregate: "working",
+        rows: [
+          { id: "build", state: "working" },
+          { id: "api", state: "thinking" },
+        ],
+        edge: "top",
+      },
+      {
+        id: "edgeFrame",
+        durationMs: DEMO_STEP_MS,
+        aggregate: "working",
+        rows: [
+          { id: "build", state: "working" },
+          { id: "api", state: "thinking" },
+        ],
+        edge: "frame",
+      },
+      {
+        id: "edgeGlow",
+        durationMs: DEMO_STEP_MS + 800,
+        aggregate: "permission",
+        rows: [
+          { id: "review", state: "permission" },
+          { id: "build", state: "working" },
+        ],
+        edge: "glow",
+      },
+      {
+        id: "cornersState",
+        durationMs: DEMO_STEP_MS,
+        aggregate: "working",
+        rows: [
+          { id: "build", state: "working" },
+          { id: "api", state: "thinking" },
+        ],
+        edge: "off",
+        corners: { tl: "state", tr: "state", br: "state", bl: "state" },
+      },
+      {
+        // 四条判据同时成立，四枚才一起亮 —— 正是「不亮 = 根本不画」的反面。
+        id: "cornersMeaning",
+        durationMs: DEMO_STEP_MS + 1200,
+        aggregate: "stale",
+        rows: [{ id: DEMO_CORNER_GROUP, state: "stale", staleProgress: 0.78 }],
+        edge: "off",
+        corners: { tl: "state", tr: "pinned", br: "muted", bl: "stale" },
+        pinned: true,
+        muted: true,
+      },
+    ],
+  },
 ];
 
 /**
@@ -336,6 +420,13 @@ export function demoSnapshot(
   quiet: boolean;
   /** `undefined` = 跟随用户设置。 */
   shape: Shape | undefined;
+  /** `undefined` = 跟随用户设置。 */
+  edge: SignEdge | undefined;
+  /** `undefined` = 跟随用户设置。 */
+  corners: SignCorners | undefined;
+  /** 这一步是否把 [`DEMO_CORNER_GROUP`] 当作置顶 / 静音。 */
+  pinned: boolean;
+  muted: boolean;
 } {
   const step = DEMO_STEPS[index];
   const groups: GroupView[] = step.rows.map((row) => ({
@@ -355,5 +446,9 @@ export function demoSnapshot(
     collapsed: step.collapsed === true,
     quiet: step.quiet === true,
     shape: step.shape,
+    edge: step.edge,
+    corners: step.corners,
+    pinned: step.pinned === true,
+    muted: step.muted === true,
   };
 }

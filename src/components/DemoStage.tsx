@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SignalLamp } from "./SignalLamp";
 import {
+  DEMO_CORNER_GROUP,
   DEMO_SCENARIOS,
   DEMO_STEPS,
   demoSnapshot,
@@ -80,12 +81,29 @@ export function DemoStage({ compact = false }: Props) {
       // 字体和间距同理 —— 换过等宽 / 宽松间距的人，看演示时该看到默认那张牌。
       sign_font: "system",
       sign_gap: "standard",
-      group_meta: {},
+      // 边灯 / 角灯：**只有「用光说话」那一场由剧本给**，别的场景跟随用户设置。
+      // 那一场讲的就是这两项，跟着用户设置走等于什么都没讲。
+      sign_edge: frame.edge ?? settings.sign_edge,
+      sign_corners: frame.corners ?? settings.sign_corners,
+      // 角灯里 `pinned` / `muted` 两枚要靠这两个事实才亮。喂的是**组 id**，
+      // 出处只有 `demo.ts::DEMO_CORNER_GROUP` 一处。
+      group_meta: frame.pinned ? { [DEMO_CORNER_GROUP]: { order: 0 } } : {},
+      muted_groups: frame.muted ? [DEMO_CORNER_GROUP] : [],
       hidden_groups: [],
       styles: {},
       lamp_layout: "single",
     }),
-    [settings, compact, frame.collapsed, frame.quiet, frame.shape],
+    [
+      settings,
+      compact,
+      frame.collapsed,
+      frame.quiet,
+      frame.shape,
+      frame.edge,
+      frame.corners,
+      frame.pinned,
+      frame.muted,
+    ],
   );
 
   const info = m.demoStep[DEMO_STEPS[step].id];

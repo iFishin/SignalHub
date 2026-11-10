@@ -1283,9 +1283,9 @@ export const MESSAGES: Record<Lang, Messages> = {
     railSearchEmpty: "没有匹配的页签",
     lampFirstRun: "第一次用？",
     lampFirstRunDemo: "看演示",
-    lampFirstRunDemoHint: "不接智能体，先看这盏灯怎么亮（四段场景，每段 10–20 秒）",
+    lampFirstRunDemoHint: "不接智能体，先看这盏灯怎么亮（五段场景，每段 10–20 秒）",
 
-    demoTitle: "看懂 SignalHub 的四种场景",
+    demoTitle: "看懂 SignalHub 的五种场景",
     demoIntro: "按场景循环播放 —— 想看哪一段点哪一段，不用接任何智能体。",
     demoBackToSettings: "返回设置",
     demoNotReal: "演示画面 · 不会改动任何真实状态",
@@ -1295,6 +1295,7 @@ export const MESSAGES: Record<Lang, Messages> = {
       asking: "有事要你",
       silence: "它不说话了",
       tucked: "收起来的样子",
+      look: "用光说话",
     },
     demoStep: {
       idle: {
@@ -1360,6 +1361,26 @@ export const MESSAGES: Record<Lang, Messages> = {
       collapsedDone: {
         title: "收起来也照样会亮",
         body: "完成时这颗灯会闪一下再落定。折叠只是少占桌面，不是把提醒关掉 —— 这也是很多人平时的默认形态。",
+      },
+      edgeTop: {
+        title: "不写字，也能说一句",
+        body: "顶边一道亮线加一小截余晖，颜色跟状态走 —— 远看是一道光，不用读字。这是边灯的第二档，默认是不亮。",
+      },
+      edgeFrame: {
+        title: "整圈描边",
+        body: "同一件事铺到四条边上：1px 的轮廓用状态色。字一个都没多，读起来却是「这一块整体在报警」。",
+      },
+      edgeGlow: {
+        title: "辉光：最张扬的一档",
+        body: "描边之外再加一圈外发光。坐得远、显示器多、或者要它从余光里跳出来时用它；浅色壁纸上会淡一些，那是有意的。",
+      },
+      cornersState: {
+        title: "四个角，四个是非题",
+        body: "每块牌的四角各能挂一枚小灯，分别回答：有状态 / 置顶 / 静音 / 将过期。这里四枚都设成「状态色」，先让你看见它们站在哪。",
+      },
+      cornersMeaning: {
+        title: "条件不成立，就根本不画",
+        body: "这一块牌同时满足四条 —— 有状态、被置顶、被静音、正在沉默，所以四枚都亮。任何一条不成立，那枚角灯就整个消失，而不是留一个暗点：暗点会让人以为「这个位置本来就有东西，只是没亮」，于是永远不会去设置里找。都在外观 → 质感里。",
       },
     },
     demoStepCount: (index, total) => `${index} / ${total}`,
@@ -2257,9 +2278,9 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     lampFirstRun: "New here?",
     lampFirstRunDemo: "See a demo",
     lampFirstRunDemoHint:
-      "See the lamp in action without connecting any agent (four scenes, 10–20s each)",
+      "See the lamp in action without connecting any agent (five scenes, 10–20s each)",
 
-    demoTitle: "SignalHub in four scenes",
+    demoTitle: "SignalHub in five scenes",
     demoIntro: "Four looping scenes — jump to the one you care about, no agent needed.",
     demoBackToSettings: "Back to settings",
     demoNotReal: "Demo only · no real state is changed",
@@ -2269,6 +2290,7 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       asking: "When it wants you",
       silence: "When it goes quiet",
       tucked: "Tucked away",
+      look: "Speaking in light",
     },
     demoStep: {
       idle: {
@@ -2334,6 +2356,26 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       collapsedDone: {
         title: "Collapsed still lights up",
         body: "On completion the light flashes once and settles. Collapsing only saves desktop space — it does not mute anything, which is why many people keep it this way.",
+      },
+      edgeTop: {
+        title: "It can say something without words",
+        body: "One bright line along the top edge, with a short afterglow, in the state colour — read from across the room as a line of light rather than text. This is the second of the four edge-light modes; the default is off.",
+      },
+      edgeFrame: {
+        title: "The whole outline",
+        body: "The same idea on all four sides: a 1px outline in the state colour. Not one extra word, yet the whole card reads as “this one needs attention”.",
+      },
+      edgeGlow: {
+        title: "Glow — the loudest setting",
+        body: "An outer halo on top of the outline. Use it when the lamp sits far away, on a large or multiple displays, or when it has to catch your peripheral vision. It is deliberately softer on light wallpapers.",
+      },
+      cornersState: {
+        title: "Four corners, four yes/no questions",
+        body: "Each corner can carry its own small light, answering: has a state / pinned / muted / about to go stale. Here all four are set to “state colour” so you can see where they sit.",
+      },
+      cornersMeaning: {
+        title: "If the condition does not hold, nothing is drawn",
+        body: "This card satisfies all four — it has a state, it is pinned, it is muted, and it is going quiet — so all four lights show. Let any one of those fail and that light disappears entirely rather than becoming a dim dot: a dim dot would suggest “there is something here, it is just not lit”, which is exactly why nobody would ever look for the setting. All four live under Appearance → Texture.",
       },
     },
     demoStepCount: (index, total) => `${index} / ${total}`,
