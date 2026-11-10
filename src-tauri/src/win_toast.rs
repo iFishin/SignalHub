@@ -202,7 +202,8 @@ mod imp {
         let shortcut = start_menu_shortcut()?;
 
         // 2. 图标先落地。**它在幂等判断之前**：判断要确认图标文件还在（用户可能
-        //    顺手清了 `~/.signalhub`），而写它本身是幂等的（内容一样就跳过）。
+        //    顺手清了 `~/.signalhub`），而写它是无条件的 —— 14KB，顺手把「文件被
+        //    改坏 / 版本没换」这两种脏情况一起自愈。
         let icon = data.join(ICON_NAME);
         write_icon(&icon)?;
 
@@ -239,17 +240,14 @@ mod imp {
         Ok(())
     }
 
-    /// 把内嵌的 PNG 写到数据目录。内容一致就不重写 —— 每次启动都写一遍 14KB
-    /// 没有意义，而它落在用户目录里，能少一次写就少一次。
+    /// 把内嵌的 PNG 落到数据目录，返回它的路径（注册表里写的就是这个）。
+    ///
+    /// **每次都重写**，不做「内容一样就跳过」：14KB 写在启动路径上可以忽略，
+    /// 而那条比较得把 `Vec<u8>` 和 `&[u8; N]` 摆到同一个 `==` 上 —— 这在
+    /// Windows 工具链上先后撞过 `array::as_slice` 未稳定和 clippy 的
+    /// `op_ref` / `redundant_slicing` 两条 lint。省一次本地写不值这份复杂度，
+    /// 重写还顺带保证文件内容和这个二进制永远一致（用户删了、改坏了都自愈）。
     fn write_icon(path: &Path) -> Result<(), String> {
-        // 比 `Vec<u8> == &[u8; N]` 更明确：切成切片比，类型一眼能对上。
-        // （这条分支只有 Windows 会走，本机编不到，所以宁可写得笨一点。）
-        let same = std::fs::read(path)
-            .map(|current| &current[..] == &ICON_PNG[..])
-            .unwrap_or(false);
-        if same {
-            return Ok(());
-        }
         std::fs::write(path, ICON_PNG).map_err(|err| format!("写通知图标失败（{path:?}）：{err}"))
     }
 
