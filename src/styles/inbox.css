@@ -65,22 +65,68 @@ html[data-window="inbox"] body {
   cursor: default;
 }
 
-.inbox-title {
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: 0.01em;
+/* ---- 页签 --------------------------------------------------------------- */
+
+/*
+ * 顶部两个页签：收件箱 / 留言。
+ *
+ * 用页签而不是「标题 + 一条入口」：两页是平级的两个问题（有没有事要我做 /
+ * 刚才有人找我吗），页签能把它们并列摆出来，还顺手把未读数挂在名字旁边。
+ * 窗口只有 420px 宽，标题和页签并排会挤掉徽章，所以标题让位给页签。
+ *
+ * 选中态沿用这个应用里既定的那一套：**浅灰底 + 正文字色 + 500 字重**，不加
+ * 下划线、不加 accent 竖条（那是被否掉过的样子，见 settings.css 文件头）。
+ */
+.inbox-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
 }
 
-.inbox-count {
-  min-width: 18px;
-  padding: 0 5px;
-  border-radius: 9px;
+.inbox-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 9px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: #9b9ba3;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.inbox-tab:hover {
+  color: #ececef;
+}
+
+.inbox-tab[data-active] {
+  background: rgba(255, 255, 255, 0.1);
+  color: #f2f2f5;
+}
+
+/* 未读数。默认是「有新东西」的次级标记（浅灰底），`data-urgent` 才是红色 ——
+   收件箱里的红点意味着「在等你」，留言的红点只是「没读过」，两者不该一样重。 */
+.inbox-tab-badge {
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.16);
+  color: #ececef;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+}
+
+.inbox-tab-badge[data-urgent] {
   background: rgba(208, 52, 44, 0.92);
   color: #fff;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 18px;
-  text-align: center;
 }
 
 .inbox-paused {
@@ -334,6 +380,89 @@ html[data-window="inbox"] body {
   margin-top: 2px;
   color: #b7b7bf;
   font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- 留言 --------------------------------------------------------------- */
+
+/* 留言行复用收件箱行的那套底板与 hover，只覆盖「点是什么色」和正文的展开方式 ——
+   两页的列表读起来得是同一种东西，不然切页签像换了个应用。 */
+.inbox-msg-row {
+  cursor: pointer;
+}
+
+/* 未读用蓝点、已读过就是把点压暗：这里**不用红色**，红在这个窗口里专指
+   「有事在等你」（`--state` 里的 permission / error），留言只是「没读过」。 */
+.inbox-msg-row .inbox-dot {
+  --state: rgba(255, 255, 255, 0.22);
+}
+
+.inbox-msg-row[data-unread] .inbox-dot {
+  --state: #4a7dfa;
+}
+
+.inbox-msg-title {
+  overflow: hidden;
+  margin-top: 3px;
+  color: #d9d9df;
+  font-size: 11.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 正文：收起时两行截断，展开后全文。留言可能很长（智能体贴一段报错），但这个
+   面板的默认用途是「扫一眼说了什么」，全文交给设置里的留言页和「复制」。 */
+.inbox-msg-text {
+  display: -webkit-box;
+  overflow: hidden;
+  margin-top: 2px;
+  color: #b7b7bf;
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.inbox-msg-row[data-open] .inbox-msg-text {
+  display: block;
+  color: #d7d7df;
+}
+
+.inbox-msg-context {
+  min-width: 0;
+  overflow: hidden;
+  color: #86868f;
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 「N 条未读 · 全部已读」。只在真有未读时出现，所以不用常驻一条工具行。 */
+.inbox-msg-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 6px 6px;
+}
+
+.inbox-msg-unread {
+  flex: 1;
+  color: #9b9ba3;
+  font-size: 11.5px;
+}
+
+/* 连不上的原因（可能是很长的 URL / 一串英文错误）。它能被读，但不能把空态
+   撑成一堵墙 —— 换行留给「复制」，这里截断。 */
+.inbox-empty-error {
+  max-width: 100%;
+  margin: 0 0 10px;
+  overflow: hidden;
+  color: #e5b95c;
+  font-size: 10.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

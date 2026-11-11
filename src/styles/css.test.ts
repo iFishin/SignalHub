@@ -118,4 +118,23 @@ describe("样式表", () => {
     // 旧的紧凑内边距不能再回来 —— 3px 9px 是页脚链接的分量
     expect(settingsCss.includes("padding: 3px 9px")).toBe(false);
   });
+
+  /**
+   * 面板顶部那两个页签的选中态只有一处定义。
+   *
+   * 和设置面板的 `seg` / 左栏 `rail-item` 是同一条约定：**浅灰底 + 正文字色 +
+   * 500 字重**。0.6.6 之前这里根本没有页签（收件箱和留言分在两个地方），所以
+   * 「选中态丢了」不会报错、只会在真机上退回成一排分不清的灰字 —— 钉住它。
+   */
+  it("面板页签的选中态是浅灰底而不是透明文字", () => {
+    const active = inboxCss.indexOf(".inbox-tab[data-active] {");
+    expect(active, "inbox.css 里找不到 .inbox-tab[data-active]").toBeGreaterThan(-1);
+    const rule = inboxCss.slice(active, inboxCss.indexOf("}", active));
+    expect(rule).toContain("background: rgba(255, 255, 255, 0.1)");
+
+    // 未读点是蓝的：红在这个窗口里专指「有事在等你」，两种点不能同色
+    expect(inboxCss).toContain(".inbox-msg-row[data-unread] .inbox-dot");
+    // 正文收起时两行截断 —— 少了它，一条长留言会把整列挤成一面墙
+    expect(inboxCss).toContain("-webkit-line-clamp: 2");
+  });
 });

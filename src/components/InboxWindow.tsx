@@ -19,6 +19,9 @@ import {
   type AwaySummary,
 } from "../lib/awaySummary";
 import { dangerLabel, reasonLabel } from "../lib/approvalLabels";
+import { unreadCount } from "../lib/callme";
+import { useCallMe } from "../lib/useCallMe";
+import { InboxMessages } from "./InboxMessages";
 import { HoldButton } from "./HoldButton";
 
 interface Props {
@@ -31,6 +34,10 @@ interface Props {
     custom?: string,
   ) => void;
 }
+
+/** 面板的两个页签。窗口只有一个，页签切换靠这一格 state —— 组件常驻不销毁，
+ *  所以「上次在看留言」这件事天然被记住，再点托盘图标回来还在原处。 */
+type PanelTab = "inbox" | "messages";
 
 /**
  * Rust `jump_to_session` 的返回。`kind` 决定下一步：真正切了窗口就收起收件箱，
@@ -81,19 +88,28 @@ function stop(event: React.MouseEvent) {
 }
 
 /**
- * 收件箱：把「谁需要你」从灯上搬到一个能点的列表里。
+ * 收件箱面板：把「谁需要你」从灯上搬到一个能点的列表里。
  *
  * 它**不是设置面板的另一个页签**：设置是低频的配置，收件箱是高频的操作。把它做成
- * 独立窗口，才能贴着灯出现、Esc 收起、点一行直接跳走 —— 这三件事在设置面板里都
- * 很别扭。
+ * 独立窗口，才能贴着灯 / 托盘图标出现、Esc 收起、点一行直接跳走 —— 这三件事在
+ * 设置面板里都很别扭。
  *
- * 数据仍然只有两个来源：`useSignal` 的快照（会话）和 `useApprovals` 的登记表
- * （待审批）。组件本身不轮询、不另开 IPC。
+ * 窗口里有两页：**收件箱**（待处理的会话与审批）和**留言**（Call Me 收到的消息）。
+ * 它们共用同一个弹层，因为两者回答的是同一个问题 ——「刚才有人找我吗」；分成两个
+ * 窗口就变成要分别记两个快捷键、两个位置。
+ *
+ * 数据仍然只有三个来源：`useSignal` 的快照（会话）、`useApprovals` 的登记表
+ * （待审批）和 `useCallMe` 的拉取状态（留言）。组件本身不轮询、不另开 IPC。
  */
 export function InboxWindow({ snapshot, approvals, decide }: Props) {
   const m = useMessages();
   const lang = useLang();
   const settings = useSettings();
+  const [tab, setTab] = useState<PanelTab>("inbox");
+  // 留言页签上的未读数要用它，所以订阅放在壳里、往下传 state —— 两个页签不会
+  // 各自记一份「读到第几条」。
+  const { state: callmeState, refresh: refreshCallMe } = useCallMe();
+  const messageUnread = unreadCount(callmeState?.messages ?? [], callmeState?.read ?? {});
   const model = useMemo(
     () =>
       buildInbox(snapshot, approvals, settings.group_meta, labelPrefOf(settings)),
@@ -375,6 +391,9 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.metaKey || event.ctrlKey || event.altKey) return;
+      // 留言页只有 Esc 有意义：那一页的列表不是「一条一条处理」，回车跳转、
+      // A / D 审批在那边都无从谈起。
+      if (tab !== "inbox" && event.key !== "Escape") return;
       const index = all.findIndex((row) => row.key === selectedKey);
       const move = (delta: number) => {
         if (all.length === 0) return;
@@ -429,7 +448,7 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [all, decideRow, hide, jump, selected, selectedKey, toggleMute, toggleWatch]);
+  }, [all, decideRow, hide, jump, selected, selectedKey, tab, toggleMute, toggleWatch]);
 
   // 选中的行滚进视野 —— 键盘走到底部时列表要跟着走。
   useEffect(() => {
@@ -714,10 +733,49 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
   return (
     <div className="inbox-window">
       <header className="inbox-head" data-tauri-drag-region>
-        <span className="inbox-title">{m.inbox.title}</span>
-        {model.total > 0 && <span className="inbox-count">{model.total}</span>}
+        {/* 页签代替标题：窗口只有 420px 宽，标题和页签并排会挤掉计数徽章。
+            「收件箱」既是页签名，也是这个窗口的身份。 */}
+        <div className="inbox-tabs" role="tablist" aria-label={m.inbox.title}>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "inbox"}
+            className="inbox-tab"
+            data-active={tab === "inbox" || undefined}
+            onMouseDown={stop}
+            onClick={(event) => {
+              stop(event);
+              setTab("inbox");
+            }}
+          >
+            {m.inbox.title}
+            {model.need.length > 0 && (
+              <span className="inbox-tab-badge" data-urgent="1">
+                {model.need.length}
+              </span>
+            )}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "messages"}
+            className="inbox-tab"
+            data-active={tab === "messages" || undefined}
+            onMouseDown={stop}
+            onClick={(event) => {
+              stop(event);
+              setTab("messages");
+            }}
+          >
+            {m.tabMessages}
+            {messageUnread > 0 && <span className="inbox-tab-badge">{messageUnread}</span>}
+          </button>
+        </div>
         {snapshot.paused && <span className="inbox-paused">{m.inbox.paused}</span>}
-        <span className="inbox-spacer" />
+        {/* 空白处也要能拖窗口：`data-tauri-drag-region` 只对带这个属性的元素本身
+            生效，子元素不继承 —— 光挂在外层 header 上的话，这条被 flex 撑开的
+            空白正好是「拖不动」的那一段。 */}
+        <span className="inbox-spacer" data-tauri-drag-region />
         <button
           type="button"
           className="inbox-icon"
@@ -746,71 +804,84 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
         </button>
       </header>
 
-      {/* 「你离开的这段时间」：一句话、可关掉。放在列表**上方**而不是塞进某一段
-          —— 它说的不是某一条会话，而是「这段时间整体」，混进分段会被当成其中一类。 */}
-      {away && awayParts.length > 0 && (
-        <div className="inbox-away" role="status">
-          <span className="inbox-away-when">
-            {m.inbox.awayFor(formatAge(away.awayMs))}
-          </span>
-          <span
-            className="inbox-away-parts"
-            title={
-              away.need > 0 && away.longestWaitMs > 0
-                ? m.inbox.waiting(formatAge(away.longestWaitMs))
-                : undefined
-            }
-          >
-            {awayParts.join(" · ")}
-          </span>
-          <button
-            type="button"
-            className="inbox-icon"
-            title={m.inbox.awayDismiss}
-            aria-label={m.inbox.awayDismiss}
-            onClick={() => setAway(null)}
-          >
-            ×
-          </button>
-        </div>
-      )}
-
-      <div className="inbox-scroll">
-        {all.length === 0 ? (
-          /* 空态要给下一步。只写「现在没事」的话，第一次打开的人拿到的是一句
-             「所以呢」—— 而这里恰好是他最可能什么都不懂的时候。 */
-          <div className="inbox-empty">
-            <div className="inbox-empty-title">{m.inbox.emptyTitle}</div>
-            <div className="inbox-empty-hint">{m.inbox.emptyHint}</div>
-            <div className="inbox-empty-actions">
+      {tab === "messages" ? (
+        <InboxMessages
+          m={m}
+          state={callmeState}
+          refresh={refreshCallMe}
+          now={now}
+          onConfigure={() => openSettings("connect")}
+        />
+      ) : (
+        <>
+          {/* 「你离开的这段时间」：一句话、可关掉。放在列表**上方**而不是塞进某一段
+              —— 它说的不是某一条会话，而是「这段时间整体」，混进分段会被当成其中一类。
+              只在收件箱页出现：留言页有它自己的「未读几条」，两句话叠在一起会互相打架。 */}
+          {away && awayParts.length > 0 && (
+            <div className="inbox-away" role="status">
+              <span className="inbox-away-when">
+                {m.inbox.awayFor(formatAge(away.awayMs))}
+              </span>
+              <span
+                className="inbox-away-parts"
+                title={
+                  away.need > 0 && away.longestWaitMs > 0
+                    ? m.inbox.waiting(formatAge(away.longestWaitMs))
+                    : undefined
+                }
+              >
+                {awayParts.join(" · ")}
+              </span>
               <button
                 type="button"
-                className="inbox-btn inbox-btn-allow"
-                onClick={() => openSettings("connect")}
+                className="inbox-icon"
+                title={m.inbox.awayDismiss}
+                aria-label={m.inbox.awayDismiss}
+                onClick={() => setAway(null)}
               >
-                {m.inbox.emptyConnect}
-              </button>
-              <button
-                type="button"
-                className="inbox-btn"
-                onClick={() => openSettings("demo")}
-              >
-                {m.inbox.emptyDemo}
+                ×
               </button>
             </div>
+          )}
+
+          <div className="inbox-scroll">
+            {all.length === 0 ? (
+              /* 空态要给下一步。只写「现在没事」的话，第一次打开的人拿到的是一句
+                 「所以呢」—— 而这里恰好是他最可能什么都不懂的时候。 */
+              <div className="inbox-empty">
+                <div className="inbox-empty-title">{m.inbox.emptyTitle}</div>
+                <div className="inbox-empty-hint">{m.inbox.emptyHint}</div>
+                <div className="inbox-empty-actions">
+                  <button
+                    type="button"
+                    className="inbox-btn inbox-btn-allow"
+                    onClick={() => openSettings("connect")}
+                  >
+                    {m.inbox.emptyConnect}
+                  </button>
+                  <button
+                    type="button"
+                    className="inbox-btn"
+                    onClick={() => openSettings("demo")}
+                  >
+                    {m.inbox.emptyDemo}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                {section(m.inbox.need, model.need, "need")}
+                {section(m.inbox.running, model.running)}
+                {section(m.inbox.done, model.done)}
+                {section(m.inbox.quiet, model.quiet)}
+              </>
+            )}
           </div>
-        ) : (
-          <>
-            {section(m.inbox.need, model.need, "need")}
-            {section(m.inbox.running, model.running)}
-            {section(m.inbox.done, model.done)}
-            {section(m.inbox.quiet, model.quiet)}
-          </>
-        )}
-      </div>
+        </>
+      )}
 
       <footer className="inbox-foot">
-        <span>{m.inbox.keys}</span>
+        <span>{tab === "inbox" ? m.inbox.keys : m.inbox.messagesKeys}</span>
         {toast && (
           <div className="inbox-toast" role="status" aria-live="polite">
             {toast}

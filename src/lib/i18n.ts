@@ -1281,6 +1281,14 @@ export interface Messages {
     /** 离开期间什么都没发生。 */
     awayQuiet: string;
     awayDismiss: string;
+
+    /**
+     * 留言页签底部的按键提示。
+     *
+     * 不和收件箱共用一行：那一行写的是「Enter 跳转 · A 允许」，在这页全都不成立。
+     * 这页只有「点开就标为已读」和「Esc 收起」两件事。
+     */
+    messagesKeys: string;
   };
 }
 
@@ -2378,6 +2386,7 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       awayTransientFailed: (count) => `另有 ${count} 个失败后结束了`,
       awayQuiet: "没有新动静",
       awayDismiss: "知道了",
+      messagesKeys: "点开一条即标为已读 · Esc 关闭",
     },
   },
 
@@ -3489,6 +3498,7 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
       awayTransientFailed: (count) => `${count} more failed and cleared`,
       awayQuiet: "Nothing new",
       awayDismiss: "Got it",
+      messagesKeys: "Opening a note marks it read · Esc to close",
     },
   },
 };

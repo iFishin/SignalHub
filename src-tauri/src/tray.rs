@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
-    tray::TrayIconBuilder,
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager,
 };
 
@@ -235,7 +235,22 @@ pub fn init(app: AppHandle) -> tauri::Result<()> {
         .icon_as_template(true)
         .tooltip("SignalHub")
         .menu(&menu)
-        .show_menu_on_left_click(true)
+        // 左键不再弹菜单，而是弹收件箱 / 留言面板 —— 菜单是「这台 app 怎么设置」
+        // 的低频入口，收件箱是每天都点的心跳；把高频那个放在左键上才顺手。
+        // 菜单本身没有消失，右键仍然弹（`menu_on_right_click` 默认开）。
+        .show_menu_on_left_click(false)
+        // 只认左键抬起（Up）：macOS 和 Windows 上按下、抬起各发一次 Click，
+        // 认两次会让面板刚弹出来就被第二次事件收回去。
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                crate::inbox::toggle_from_tray(tray.app_handle());
+            }
+        })
         .on_menu_event(|app, event| match event.id.as_ref() {
             // 「手动状态」那四项：id → 动作的映射只有一处（见 `manual::action_for`），
             // 托盘这边不认识那几个 id。在这里再写一遍字面量的话，写错一个就是
@@ -244,7 +259,10 @@ pub fn init(app: AppHandle) -> tauri::Result<()> {
                 crate::manual::action_for(id).expect("上面刚判断过")(app)
             }
             "quit" => app.exit(0),
-            "inbox" => crate::inbox::toggle(app),
+            // 菜单项也贴托盘图标：右键菜单是从图标那里弹出来的，面板也该从那里长。
+            // 这里不走 `toggle_from_tray`（会吃掉「刚因菜单弹出而失焦收起」的那次
+            // 点击，变成点了没反应），见 `inbox::show_at_tray`。
+            "inbox" => crate::inbox::show_at_tray(app),
             "toggle" => toggle_lamp(app),
             "settings" => crate::reveal_settings(app),
             "pause" => toggle_monitor(app),
