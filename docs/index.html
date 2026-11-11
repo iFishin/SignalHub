@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SignalHub — 给桌面装一盏灯，所有智能体在做什么一眼看得见</title>
+<meta name="description" content="SignalHub 是跨平台的桌面悬浮状态指示器：一组始终置顶的透明状态牌，用颜色和明暗节奏表示当前状态。优先适配 AI 智能体，但不绑定——任何程序发一个 HTTP 请求就能上报。">
+<meta name="theme-color" content="#f4f6f8">
+<meta property="og:type" content="website">
+<meta property="og:title" content="SignalHub — 给桌面装一盏灯">
+<meta property="og:description" content="所有智能体在做什么，一眼就看得见。跨平台的桌面悬浮状态指示器，一处状态机，多个出口。">
+<meta property="og:url" content="https://ifishin.github.io/SignalHub/">
+<meta property="og:image" content="https://ifishin.github.io/SignalHub/assets/icon.png">
+<link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png">
+<link rel="icon" type="image/png" sizes="192x192" href="assets/favicon-192.png">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<a class="skip" href="#main">跳到正文</a>
+
+<header class="top" id="top">
+  <div class="wrap">
+    <a class="brand" href="./">
+      <img src="assets/icon.png" width="28" height="28" alt="">
+      SignalHub <span class="tag">Tauri 2 · v0.6.5</span>
+    </a>
+    <nav aria-label="主导航">
+      <a href="#states">状态</a>
+      <a href="#daily">功能</a>
+      <a href="#personal">个性化</a>
+      <a href="#demo">演示</a>
+      <a href="#start">开始用</a>
+      <a class="nav-cta" href="https://github.com/iFishin/SignalHub/releases/latest">下载</a>
+      <a class="lang" href="en/" lang="en" aria-label="English version">EN</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+  <!-- Hero：右侧不是截图，是用 CSS 照 state.css / lamp.css 复刻的三块状态牌。
+       脚本每 2.8 秒推进一帧，讲的就是「同一盏灯里每块牌各说各的状态」。 -->
+  <section class="hero">
+    <div class="wrap">
+      <div>
+        <p class="eyebrow">AI 智能体 · 桌面悬浮灯 · 一处状态机</p>
+        <h1>智能体在做什么，<br><span class="accent">一眼</span>就看得见。</h1>
+        <p class="lede">
+          SignalHub 是跨平台的桌面悬浮状态指示器。一组始终置顶、可拖拽的透明状态牌，
+          用颜色和明暗节奏表示当前状态。优先适配 AI 智能体，但<strong>不绑定智能体</strong>——
+          任何程序只要能发一个 HTTP 请求就能上报。
+        </p>
+        <div class="actions">
+          <a class="btn" href="https://github.com/iFishin/SignalHub/releases/latest">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+              <path d="M8 2v8m0 0L4.8 6.8M8 10l3.2-3.2M2.6 11.4v1.4a1.2 1.2 0 0 0 1.2 1.2h8.4a1.2 1.2 0 0 0 1.2-1.2v-1.4" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            下载安装包
+          </a>
+          <a class="btn-ghost" href="https://github.com/iFishin/SignalHub">浏览源码</a>
+        </div>
+        <ul class="platforms">
+          <li>macOS</li><li>Windows</li><li>Linux (beta)</li><li>无需额外运行时 · 状态只留在本机</li>
+        </ul>
+      </div>
+
+      <div class="lamp" aria-label="悬浮灯示意：三块牌分别是 api 执行中、build 等待授权、docs 已完成；等待授权的那块更醒目">
+        <div class="lamp-stack lamp-demo">
+          <div class="sign" data-state="working" data-tone="quiet">
+            <span class="dot"></span>
+            <span class="sign-name">api</span>
+            <span class="sign-state">执行</span>
+            <span class="sign-age">02:14</span>
+          </div>
+          <div class="sign" data-state="permission" data-tone="loud">
+            <span class="dot"></span>
+            <span class="sign-name">build</span>
+            <span class="sign-state">授权</span>
+            <span class="sign-age">00:12</span>
+          </div>
+          <div class="sign" data-state="done" data-tone="quiet">
+            <span class="dot"></span>
+            <span class="sign-name">docs</span>
+            <span class="sign-state">完成</span>
+            <span class="sign-age">00:41</span>
+          </div>
+        </div>
+        <p class="lamp-note">
+          <span>同时有多块牌时，在等你的那几块更响。</span>
+          <span>悬浮灯 · 实时</span>
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 状态：四组颜色 + 优先级 + 三处不靠颜色的通道 -->
+  <section class="band on-white" id="states">
+    <div class="wrap">
+      <div class="band-head reveal">
+        <span class="kicker">At a glance</span>
+        <h2>红比绿先看见，不看字也懂</h2>
+        <p class="sub">
+          十种状态压缩成四种颜色。全局取各组里最高的优先级；一块牌是一个组，最紧急的排在最前。
+          状态词在灯上用两字短词，把宽度让给名字。
+        </p>
+      </div>
+
+      <div class="states reveal">
+        <div class="state-row">
+          <div class="state-key"><i class="swatch" style="--c: var(--green)"></i>绿 · 一切正常</div>
+          <div class="state-desc"><code>idle</code> 空闲 · <code>thinking</code> 推理（快闪）· <code>working</code> 执行（慢闪）· <code>done</code> 完成</div>
+        </div>
+        <div class="state-row">
+          <div class="state-key"><i class="swatch" style="--c: var(--yellow)"></i>黄 · 需要关注</div>
+          <div class="state-desc"><code>attention</code> 需要关注，闪</div>
+        </div>
+        <div class="state-row">
+          <div class="state-key"><i class="swatch" style="--c: var(--red)"></i>红 · 等你处理</div>
+          <div class="state-desc"><code>permission</code> 需要授权（平滑闪）· <code>error</code> 出错 / 阻塞（频闪）</div>
+        </div>
+        <div class="state-row">
+          <div class="state-key"><i class="swatch" style="--c: var(--gray)"></i>灰 · 没在说话</div>
+          <div class="state-desc"><code>stale</code> 沉默 · <code>offline</code> 离线 · <code>off</code> 监控暂停</div>
+        </div>
+      </div>
+
+      <p class="priority reveal">
+        <span class="order">红 &gt; 黄 &gt; 绿</span>
+        一组在等授权时，别的组报「正在执行」不会把红灯顶掉；等授权的那一组自己恢复工作后，红又自然消失。
+      </p>
+
+      <ul class="channels reveal">
+        <li><strong>形状</strong><span>需要授权 / 出错的灯珠是圆角方形，其余是圆形。红绿是色盲最难分的一对，而这两档恰好最要紧。</span></li>
+        <li><strong>细环</strong><span>沉默的灯上是一枚细环，按剩余宽限期缩短，一眼看出它已经多久没说话了。</span></li>
+        <li><strong>明暗</strong><span>安静模式下空闲 / 沉默 / 离线的牌几乎透明，只有真有活动或需要你处理时才显形。</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 行式功能表：限制条件照 README 写，不把「默认关」说成开箱即用 -->
+  <section class="band" id="daily">
+    <div class="wrap">
+      <div class="band-head reveal">
+        <span class="kicker">Daily use</span>
+        <h2>每天都会用到的四件事</h2>
+      </div>
+
+      <dl class="spec reveal">
+        <div class="spec-row">
+          <dt>一行接上智能体</dt>
+          <dd>
+            <code>signalhub install hooks claude-code</code> 装完重启即可。Claude Code / Codex / Cursor /
+            Gemini CLI / Goose / WorkBuddy / opencode / Pi / Hermes 都有一键接入；
+            也可以完全不接智能体，用 <code>signalhub working --session demo</code> 或一个 HTTP POST 自己报状态。
+          </dd>
+        </div>
+        <div class="spec-row">
+          <dt>等你批准时，灯会说话</dt>
+          <dd>
+            「从灯上审批」把确认框搬到灯上的气泡里（<strong>默认关</strong>，目前只支持 Claude Code 的 HTTP 接入）。
+            危险命令要按住 800 毫秒才放行，命令看不全就只给拒绝；超时、开关关掉一律什么都不说，
+            <strong>永远不替你说「允许」</strong>，确认框退回终端。
+          </dd>
+        </div>
+        <div class="spec-row">
+          <dt>收件箱与一键跳转</dt>
+          <dd>
+            长按灯呼出圆环菜单，按「需要你 → 运行中 → 刚刚完成 → 空闲」列出所有会话。
+            每行都能允许 / 拒绝、跳转到对应的终端标签页、静音该组或点「跑完叫我」；
+            离开超过十分钟再回来，顶部会一句话说明这段时间发生了什么。
+          </dd>
+        </div>
+        <div class="spec-row">
+          <dt>一条上报，处处可见</dt>
+          <dd>
+            一个 HTTP POST 进<strong>一处状态机</strong>，再分发到悬浮灯、收件箱、系统通知、
+            只读 Web 面板、手机推送、WLED 物理灯和多机汇总。它们走同一条路，
+            所以统计、历史、转发全都自动认，没有第二套状态机。
+          </dd>
+        </div>
+      </dl>
+    </div>
+  </section>
+
+  <!-- 个性化：形状 / 轮廓用真 CSS 画，避免做成一排没有信息量的彩色卡片 -->
+  <section class="band on-white" id="personal">
+    <div class="wrap">
+      <div class="band-head reveal">
+        <span class="kicker">Make it yours</span>
+        <h2>灯长什么样，你说了算</h2>
+        <p class="sub">
+          牌宽就那么点，字已经排到第四行 —— 再加内容只能往面积和形状上走。
+          外观页管「亮起来长什么样」，行为页管「凭什么现在亮」，两页都是同样六行。
+        </p>
+      </div>
+
+      <div class="personal reveal">
+        <div>
+          <h3>灯珠形状 · 六档</h3>
+          <p class="sub-sm">既能全局挑一档，也能逐个状态覆盖颜色、形状和节奏。</p>
+          <div class="shape-grid">
+            <div class="shape-item"><i class="shape-dot" data-shape="circle"></i>圆</div>
+            <div class="shape-item"><i class="shape-dot" data-shape="rounded"></i>圆角</div>
+            <div class="shape-item"><i class="shape-dot" data-shape="ring"></i>环</div>
+            <div class="shape-item"><i class="shape-dot" data-shape="square"></i>方</div>
+            <div class="shape-item"><i class="shape-dot" data-shape="diamond"></i>菱</div>
+            <div class="shape-item"><i class="shape-dot" data-shape="capsule"></i>胶囊</div>
+          </div>
+        </div>
+        <div>
+          <h3>牌的轮廓 · 四档</h3>
+          <p class="sub-sm">只用 <code>border-radius</code> 画 —— 用 <code>clip-path</code> 会把边框四角的小灯一起裁掉。</p>
+          <div class="outline-grid">
+            <div class="outline-item"><i class="outline-chip" data-outline="rect"></i>矩形</div>
+            <div class="outline-item"><i class="outline-chip" data-outline="capsule"></i>胶囊</div>
+            <div class="outline-item"><i class="outline-chip" data-outline="leaf"></i>对角圆</div>
+            <div class="outline-item"><i class="outline-chip" data-outline="arch"></i>拱形</div>
+          </div>
+        </div>
+      </div>
+
+      <p class="skin-line reveal">
+        <strong>五套皮肤</strong>（素净 / 专注 / 霓虹 / 纸感 / 信号）一键换配色、牌底、圆角描边、
+        形状、动效和边框光；<strong>六个独立灯位</strong> —— 上边、下边，以及左上 / 右上 / 右下 / 左下四角 ——
+        各自挑画法<strong>和</strong>九档触发条件，上边可以常亮、下边只在出错时亮，互不牵连。
+        换肤会连六行触发一起覆盖，界面里写明了，不做静默覆盖。
+        <strong>效果五档</strong>：关闭 / 柔光呼吸 / 脉冲 / 扫光 / 渐隐，系统要求减少动态效果时一律降级。
+      </p>
+    </div>
+  </section>
+
+  <!-- 演示：两张已入库的现成素材，不做额外图片处理 -->
+  <section class="band" id="demo">
+    <div class="wrap">
+      <div class="band-head reveal">
+        <span class="kicker">In action</span>
+        <h2>它跑起来是什么样</h2>
+      </div>
+
+      <div class="figures">
+        <figure class="reveal">
+          <img src="assets/demo.gif" loading="lazy" width="880" height="480"
+               alt="SignalHub 悬浮灯循环演示：从空闲、推理、执行到等待授权，气泡里点允许后灯变回绿色">
+          <figcaption>
+            <strong>图 1　默认灯效与「从灯上审批」。</strong>
+            这段动图不是录屏：颜色与闪烁节奏直接取自 <code>state.css</code> / <code>lamp.css</code>
+            （绿 <code>#16a34a</code>、红 <code>#d0342c</code>，640 / 1600 / 900 ms），
+            连等待授权的圆角方灯珠和危险命令要按住 800 毫秒都照着代码画。
+          </figcaption>
+        </figure>
+        <figure class="reveal">
+          <img src="assets/overview.svg" loading="lazy" width="880" height="230"
+               alt="信号流示意图：多种输入源汇入一处状态机，再分发到灯、收件箱、通知、Web 面板、手机推送、WLED 和多机汇总">
+          <figcaption>
+            <strong>图 2　一条上报，处处可见。</strong>
+            输入侧可以是智能体的 hook、任意程序、系统采集器，甚至是托盘里的「专注 25 分钟」；
+            它们走同一条路，所以没有一处需要重新解释「现在到底是什么状态」。
+          </figcaption>
+        </figure>
+      </div>
+
+      <p class="flow-note reveal">
+        还没装也能先看一眼：设置 →「演示」有五段循环场景，渲染的是<strong>真实的灯牌组件</strong>，
+        只是喂进去剧本数据 —— 不碰真实状态、不弹通知、不写历史。可以暂停、单步、重播。
+      </p>
+    </div>
+  </section>
+
+  <!-- 开始用 -->
+  <section class="band on-white" id="start">
+    <div class="wrap">
+      <div class="band-head reveal">
+        <span class="kicker">Get started</span>
+        <h2>开始用</h2>
+        <p class="sub">
+          四个平台的安装包由同一条流水线产出。安装包<strong>没有代码签名</strong>，
+          第一次打开会被系统拦一道；下面有 macOS 的处理办法。
+        </p>
+      </div>
+
+      <div class="install reveal">
+        <div class="install-item">
+          <h3>下载安装包</h3>
+          <p>macOS 的 <code>.dmg</code>（Apple Silicon 选 aarch64、Intel 选 x64）、Windows 的 <code>-setup.exe</code> 或免安装 zip、Linux 的 <code>.AppImage</code> / <code>.deb</code>。</p>
+          <pre><code>github.com/iFishin/SignalHub/releases/latest</code></pre>
+        </div>
+        <div class="install-item">
+          <h3>一行接上智能体</h3>
+          <p><code>signalhub</code> 命令已经打包在应用里，不用另外装；装完记得重启智能体。</p>
+          <pre><code><span class="cm"># 装 hook，一行接上</span>
+signalhub install hooks claude-code
+<span class="cm"># 或者自己报一条状态</span>
+signalhub working --session demo</code></pre>
+        </div>
+        <div class="install-item">
+          <h3>macOS 首次打开被拦下</h3>
+          <p>递归清掉整个包的隔离标记，连打包在里面的 <code>signalhub</code> 命令一起覆盖到。</p>
+          <pre><code>xattr -dr com.apple.quarantine /Applications/SignalHub.app</code></pre>
+        </div>
+        <div class="install-item">
+          <h3>从源码运行</h3>
+          <p>需要 Node.js 与 Rust 稳定版；Windows 还要装 Visual Studio C++ 生成工具。</p>
+          <pre><code>git clone https://github.com/iFishin/SignalHub.git
+cd SignalHub
+npm install
+npm run tauri dev</code></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <div class="foot-brand"><img src="assets/icon.png" width="30" height="30" alt="">SignalHub</div>
+    <div class="foot-links">
+      <a href="https://github.com/iFishin/SignalHub">GitHub 仓库</a>
+      <a href="https://github.com/iFishin/SignalHub/releases">更新日志</a>
+      <a href="https://github.com/iFishin/SignalHub/issues">问题反馈</a>
+      <a href="https://github.com/iFishin/SignalHub/blob/main/docs/architecture.md">架构文档</a>
+      <a href="https://github.com/iFishin/SignalHub/blob/main/LICENSE">MIT 许可</a>
+      <a href="en/" lang="en">English</a>
+    </div>
+    <p class="foot-note">
+      用 Tauri 2、Rust 与 TypeScript 写的桌面悬浮状态指示器：一处状态机，多个出口。
+      状态只留在本机；只读 Web 面板、手机推送、转发钩子这些「出去」的开关默认全关，要你自己打开。
+      当前版本 0.6.5 · MIT 许可。
+    </p>
+  </div>
+</footer>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

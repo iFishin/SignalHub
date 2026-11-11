@@ -1,0 +1,550 @@
+/*
+ * SignalHub 介绍页样式 —— 中英两页共用这一份。
+ *
+ * 设计上下文：给「正在考虑装不装」的开发者看的一页产品介绍，场景是
+ * 从 GitHub / 分享链接点进来、几十秒内决定这东西是不是自己要的。
+ * 语气按应用本身的性格来：工程化、克制、不替你做判断。参照 SCOM-T
+ * 介绍页的版式（sticky 顶栏 → Hero → 眉题+大标题的章节 → 行式功能表 →
+ * 演示 → 开始用 → 页脚），但**配色不复用 SCOM-T 的绿**：状态色取自
+ * src/styles/state.css 的默认兜底值，牌面取 lamp.css 里那块深色 HUD。
+ *
+ * 两条硬约定：
+ * 1. 中英两页共享一个样式文件。两页各写一份 CSS 会立刻变成两处真值，
+ *    改一页忘另一页的表现是「只有中文页好看」，而且没有任何报错。
+ * 2. 扁平：层次靠字号、字重和灰度，分隔靠 1px 细线。不叠卡片、不加
+ *    渐变 / 发光 / accent 竖条 —— 那套装饰会把「一盏灯在看状态」这件
+ *    事情的注意力抢走。唯一的投影给 Hero 里那块模拟悬浮窗，因为它本来
+ *    就该是浮在桌面上的；唯一的循环动画只动 opacity（同 lamp.css 的约束）。
+ *
+ * 资源路径全是相对路径：中文页在站点根、英文页在 en/ 子目录，
+ * 各自按自己所在层级引 assets/，不需要 /SignalHub/ 这种写死的绝对路径，
+ * 因此 `file://` 和本地起静态服务器都能直接预览。
+ */
+
+:root {
+  /* 页面：冷灰底 + 近白面，和 SCOM-T 的浅色工程风同族 */
+  --bg: #f4f6f8;
+  --surface: #ffffff;
+  --surface-soft: #fafbfc;
+  --ink: #1b2430;
+  --ink-2: #465363;
+  --muted: #6a7887;
+  --faint: #94a1ae;
+  --border: #e2e7ec;
+  --border-strong: #cbd4dd;
+
+  /* 状态色：逐字对应 state.css 的 var(--c-x, 兜底) */
+  --green: #16a34a;
+  --yellow: #d99a06;
+  --red: #d0342c;
+  --gray: #9ca3af;
+
+  /* 深色牌：lamp.css 的 HUD 语言，和应用图标同一套 */
+  --sign: #232329;
+  --sign-2: #2b2b32;
+  --sign-ink: #f2f2f5;
+  --sign-muted: #c2c2cb;
+  --sign-line: #3b3b44;
+
+  --sans: system-ui, -apple-system, "SF Pro Text", "Segoe UI", "PingFang SC",
+          "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --mono: "SF Mono", ui-monospace, "Cascadia Code", Consolas, Menlo,
+          "PingFang SC", "Microsoft YaHei", monospace;
+
+  --accent: var(--green);
+  --accent-deep: #15803d;
+}
+
+* { box-sizing: border-box; }
+
+html {
+  -webkit-text-size-adjust: 100%;
+  scroll-behavior: smooth;
+  scroll-padding-top: 84px; /* sticky 顶栏不盖住锚点标题 */
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 400 16px/1.75 var(--sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+a { color: inherit; }
+
+:focus-visible {
+  outline: 2px solid var(--accent-deep);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+
+.wrap {
+  width: min(1140px, calc(100% - 48px));
+  margin-inline: auto;
+}
+
+.skip {
+  position: absolute;
+  left: 12px;
+  top: -60px;
+  z-index: 60;
+  padding: 10px 16px;
+  background: var(--sign);
+  color: #fff;
+  text-decoration: none;
+  border-radius: 6px;
+}
+.skip:focus { top: 12px; }
+
+/* ── 顶栏 ─────────────────────────────────────────────────────────── */
+.top {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  border-bottom: 1px solid transparent;
+  transition: border-color .2s, background-color .2s;
+}
+.top.stuck {
+  border-bottom-color: var(--border);
+  background: rgba(244, 246, 248, .96);
+}
+.top .wrap {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  height: 68px;
+}
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+  font-weight: 680;
+  letter-spacing: -.015em;
+  white-space: nowrap;
+}
+.brand img { width: 28px; height: 28px; border-radius: 6px; }
+.brand .tag {
+  margin-left: 2px;
+  padding: 2px 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  font: 500 11px/1.5 var(--mono);
+  color: var(--muted);
+  letter-spacing: 0;
+}
+.top nav {
+  display: flex;
+  align-items: center;
+  gap: 26px;
+  font-size: 14px;
+  color: var(--ink-2);
+}
+.top nav a { text-decoration: none; white-space: nowrap; }
+.top nav a:hover { color: var(--accent-deep); }
+.top nav .lang {
+  padding: 4px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  font: 500 12px/1.5 var(--mono);
+  color: var(--muted);
+}
+.top nav .lang:hover { border-color: var(--accent-deep); color: var(--accent-deep); }
+
+/* ── Hero ─────────────────────────────────────────────────────────── */
+.hero { padding: clamp(56px, 7vw, 96px) 0 clamp(64px, 8vw, 104px); }
+.hero .wrap {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, .95fr);
+  gap: clamp(40px, 6vw, 80px);
+  align-items: center;
+}
+.eyebrow {
+  margin: 0 0 22px;
+  font: 500 12px/1.6 var(--mono);
+  letter-spacing: .1em;
+  color: var(--muted);
+}
+.hero h1 {
+  margin: 0;
+  font-size: clamp(2.5rem, 5.1vw, 4rem);
+  line-height: 1.18;
+  letter-spacing: -.035em;
+  font-weight: 720;
+}
+.hero h1 .accent { color: var(--accent-deep); }
+.lede {
+  margin: 24px 0 0;
+  max-width: 46ch;
+  font-size: 17px;
+  line-height: 1.85;
+  color: var(--ink-2);
+}
+.actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 34px; }
+.btn, .btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 11px 20px;
+  border-radius: 6px;
+  font-size: 15px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background-color .18s, border-color .18s, color .18s;
+}
+.btn { background: var(--ink); color: #fff; border: 1px solid var(--ink); }
+.btn:hover { background: #34404f; border-color: #34404f; }
+.btn svg { width: 15px; height: 15px; }
+.btn-ghost { border: 1px solid var(--border-strong); color: var(--ink-2); background: transparent; }
+.btn-ghost:hover { border-color: var(--ink-2); color: var(--ink); }
+.platforms {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin: 26px 0 0;
+  padding: 0;
+  list-style: none;
+  font: 500 12px/1.7 var(--mono);
+  color: var(--faint);
+}
+
+/* Hero 主视觉：用 HTML/CSS 复刻三块真实状态牌。
+   不截图、不引外部图片 —— 状态色和节奏直接照 state.css 的默认值写，
+   改了应用里的默认配色时这里也一眼看得出该同步。 */
+.lamp {
+  background: #e9edf1;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 30px 26px 22px;
+}
+.lamp-stack { display: grid; gap: 10px; }
+.sign {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 10px 15px;
+  border-radius: 8px;
+  background: var(--sign);
+  border: 1px solid var(--sign-line);
+  color: var(--sign-ink);
+  box-shadow: 0 10px 24px -16px rgba(16, 22, 32, .7);
+  transition: opacity .35s;
+}
+.sign[data-tone="quiet"] { opacity: .72; }
+.sign[data-tone="loud"] { background: var(--sign-2); }
+.dot {
+  flex: 0 0 auto;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--state);
+  animation: blink var(--blink, 0) ease-in-out infinite;
+}
+.sign[data-tone="loud"] .dot { width: 14px; height: 14px; }
+.sign[data-state="permission"] .dot,
+.sign[data-state="error"] .dot { border-radius: 3px; }
+.sign[data-state="idle"] { --state: var(--green); --blink: 0; }
+.sign[data-state="thinking"] { --state: var(--green); --blink: 640ms; }
+.sign[data-state="working"] { --state: var(--green); --blink: 1600ms; }
+.sign[data-state="done"] { --state: var(--green); --blink: 0; }
+.sign[data-state="attention"] { --state: var(--yellow); --blink: 900ms; }
+.sign[data-state="permission"] { --state: var(--red); --blink: 900ms; }
+.sign[data-state="error"] { --state: var(--red); --blink: 400ms; }
+.sign[data-state="stale"],
+.sign[data-state="offline"],
+.sign[data-state="off"] { --state: var(--gray); --blink: 0; }
+/* 常亮的那几档不挂动画：duration 归零仍是一次「无限循环」的动画，
+   既没必要也白白多一个合成层。闪烁只给真正在动的状态。 */
+.sign[data-state="idle"] .dot,
+.sign[data-state="done"] .dot,
+.sign[data-state="stale"] .dot,
+.sign[data-state="offline"] .dot,
+.sign[data-state="off"] .dot { animation: none; }
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .28; }
+}
+.sign-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+}
+.sign-state { font-size: 13px; color: var(--sign-ink); white-space: nowrap; }
+.sign-age {
+  min-width: 44px;
+  text-align: right;
+  font: 500 12px/1.5 var(--mono);
+  color: var(--sign-muted);
+}
+.lamp-note {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 16px 2px 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.lamp-note span:last-child { font-family: var(--mono); color: var(--faint); white-space: nowrap; }
+
+/* ── 章节骨架 ─────────────────────────────────────────────────────── */
+.band { padding: clamp(64px, 8vw, 96px) 0; }
+.band.on-white {
+  background: var(--surface);
+  border-block: 1px solid var(--border);
+}
+.band-head { max-width: 66ch; margin-bottom: 44px; }
+.kicker {
+  display: block;
+  margin-bottom: 14px;
+  font: 500 12px/1.5 var(--mono);
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.band h2 {
+  margin: 0;
+  font-size: clamp(1.7rem, 3vw, 2.3rem);
+  line-height: 1.32;
+  letter-spacing: -.028em;
+  font-weight: 700;
+}
+.sub { margin: 18px 0 0; color: var(--ink-2); font-size: 16px; }
+.prose { max-width: 72ch; margin-top: 30px; color: var(--ink-2); }
+.prose p { margin: 0 0 14px; }
+code {
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-soft);
+  font: 500 .88em/1.5 var(--mono);
+  color: var(--ink);
+}
+pre {
+  margin: 0;
+  max-width: 100%;
+  padding: 16px 18px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-soft);
+  font: 500 13px/1.85 var(--mono);
+  color: var(--ink);
+}
+pre code { padding: 0; border: 0; background: none; font: inherit; }
+pre .cm { color: var(--faint); }
+
+/* 状态色带：四组「颜色 → 哪些状态 → 什么意思」，不用彩色卡片 */
+.states { display: grid; gap: 0; }
+.state-row {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 20px;
+  align-items: baseline;
+  padding: 18px 0;
+  border-top: 1px solid var(--border);
+}
+.state-row:last-child { border-bottom: 1px solid var(--border); }
+.state-key { display: flex; align-items: center; gap: 12px; font-size: 15px; font-weight: 650; }
+.state-key .swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--c);
+}
+.state-desc { color: var(--ink-2); font-size: 15px; }
+.state-desc code { margin-right: 2px; }
+.priority {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 26px 0 0;
+  font-size: 14px;
+  color: var(--muted);
+}
+.priority .order { font: 600 13px/1.6 var(--mono); color: var(--ink); }
+.channels {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0 28px;
+  margin: 42px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.channels li { padding: 16px 0; border-top: 1px solid var(--border); }
+.channels strong { display: block; font-size: 14px; margin-bottom: 4px; }
+.channels span { font-size: 14px; color: var(--muted); }
+
+/* 行式功能表（SCOM-T 同款 dl.spec）：比四张卡片更扁平，也更像规格说明 */
+.spec { margin: 0; }
+.spec-row {
+  display: grid;
+  grid-template-columns: minmax(0, 270px) minmax(0, 1fr);
+  gap: 28px;
+  padding: 26px 0;
+  border-top: 1px solid var(--border);
+}
+.spec-row:last-child { border-bottom: 1px solid var(--border); }
+.spec-row dt { font-size: 17px; font-weight: 650; letter-spacing: -.015em; }
+.spec-row dd { margin: 0; color: var(--ink-2); font-size: 15px; }
+
+/* 个性化：形状与轮廓用真 CSS 画，不插图 */
+.personal { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 44px; }
+.personal h3 { margin: 0 0 6px; font-size: 16px; font-weight: 650; }
+.personal .sub-sm { margin: 0 0 22px; font-size: 14px; color: var(--muted); }
+.shape-grid, .outline-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.outline-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.shape-item, .outline-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 58px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-soft);
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.shape-dot {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  /* 默认是「圆」：ring 也靠这个 50% 才是圆环。
+     漏掉它的话第一档会画成方块，和「方」那档一模一样。 */
+  border-radius: 50%;
+  background: var(--green);
+}
+.shape-dot[data-shape="rounded"] { border-radius: 6px; }
+.shape-dot[data-shape="ring"] { background: none; border: 5px solid var(--green); }
+.shape-dot[data-shape="square"] { border-radius: 2px; }
+.shape-dot[data-shape="diamond"] { border-radius: 0; clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); }
+.shape-dot[data-shape="capsule"] { width: 30px; height: 16px; border-radius: 999px; }
+.outline-chip {
+  flex: 0 0 auto;
+  width: 42px;
+  height: 26px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+}
+.outline-chip[data-outline="rect"] { border-radius: 3px; }
+.outline-chip[data-outline="capsule"] { border-radius: 999px; }
+.outline-chip[data-outline="leaf"] { border-radius: 14px 3px 14px 3px; }
+.outline-chip[data-outline="arch"] { border-radius: 14px 14px 3px 3px; }
+.skin-line {
+  margin: 34px 0 0;
+  padding-top: 22px;
+  border-top: 1px solid var(--border);
+  color: var(--ink-2);
+  font-size: 15px;
+}
+.skin-line strong { color: var(--ink); }
+
+/* 演示图版 */
+.figures { display: grid; gap: 44px; }
+figure { margin: 0; }
+figure img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+figcaption {
+  margin-top: 14px;
+  font-size: 14px;
+  color: var(--muted);
+}
+figcaption strong { color: var(--ink); font-weight: 650; }
+.flow-note { margin: 26px 0 0; color: var(--ink-2); font-size: 15px; }
+
+/* 开始用：三栏不叠卡片，1px 分隔 + 代码块 */
+.install {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 44px;
+}
+.install-item { padding: 24px 0; border-top: 1px solid var(--border); }
+.install-item h3 { margin: 0 0 12px; font-size: 16px; font-weight: 650; }
+.install-item p { margin: 0 0 14px; font-size: 14px; color: var(--muted); }
+.install-item.wide { grid-column: 1 / -1; }
+
+/* 页脚 */
+.foot { padding: 52px 0 60px; background: var(--sign); color: var(--sign-ink); }
+.foot .wrap { display: grid; gap: 24px; }
+.foot-brand { display: flex; align-items: center; gap: 12px; font-weight: 680; font-size: 18px; }
+.foot-brand img { width: 30px; height: 30px; border-radius: 6px; }
+.foot-links { display: flex; flex-wrap: wrap; gap: 12px 28px; font-size: 14px; }
+.foot-links a { color: var(--sign-muted); text-decoration: none; }
+.foot-links a:hover { color: #fff; text-decoration: underline; }
+.foot-note {
+  margin: 0;
+  padding-top: 20px;
+  border-top: 1px solid var(--sign-line);
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--sign-muted);
+}
+
+/* 入场：只淡入几像素，不做花哨位移。
+   隐藏用的 .armed 由 site.js 自己加 —— 万一脚本没加载或抛错，元素仍是可见的，
+   不会把整页内容变成一片空白。 */
+.reveal.armed { opacity: 0; transform: translateY(10px); transition: opacity .5s ease, transform .5s ease; }
+.reveal.armed.in { opacity: 1; transform: none; }
+
+@media (max-width: 940px) {
+  .hero .wrap { grid-template-columns: 1fr; gap: 44px; }
+  .lamp { max-width: 560px; }
+  .personal { grid-template-columns: 1fr; gap: 36px; }
+  .top nav { gap: 16px; }
+  .top nav a:not(.lang):not(.nav-cta) { display: none; }
+  .state-row { grid-template-columns: 150px minmax(0, 1fr); }
+  .channels { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 620px) {
+  .wrap { width: min(1140px, calc(100% - 32px)); }
+  .top .wrap { height: 60px; }
+  .brand .tag { display: none; }
+  .hero { padding-top: 40px; }
+  .hero h1 { font-size: clamp(2.1rem, 9vw, 2.8rem); }
+  /* 必须是 minmax(0, 1fr)：裸 1fr 的最小尺寸是 auto，会被 pre 里那行
+     长命令撑出几像素，整页跟着出现横向滚动条。 */
+  .states .state-row,
+  .spec-row,
+  .install { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .state-row { padding: 16px 0; }
+  .spec-row { padding: 20px 0; }
+  .install { gap: 0; }
+  .install-item { min-width: 0; }
+  .install-item.wide { grid-column: auto; }
+  .shape-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .lamp { padding: 20px 14px 16px; }
+  .sign { padding: 9px 11px; gap: 9px; }
+  .sign-name { font-size: 13px; }
+  .sign-state { font-size: 12px; }
+  .sign-age { min-width: 38px; font-size: 11px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .dot { animation: none !important; }
+  .reveal.armed { opacity: 1 !important; transform: none !important; transition: none !important; }
+  .sign, .btn, .btn-ghost, .top { transition: none !important; }
+}

@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SignalHub — a lamp for your desktop: see what every agent is doing at a glance</title>
+<meta name="description" content="SignalHub is a cross-platform, always-on-top status lamp for your desktop: translucent, draggable signs that show what is happening through colour and blink rhythm. Built for AI agents, but anything that can send one HTTP request can report a state.">
+<meta name="theme-color" content="#f4f6f8">
+<meta property="og:type" content="website">
+<meta property="og:title" content="SignalHub — a lamp for your desktop">
+<meta property="og:description" content="See what every agent is doing at a glance. One state machine, many surfaces.">
+<meta property="og:url" content="https://ifishin.github.io/SignalHub/en/">
+<meta property="og:image" content="https://ifishin.github.io/SignalHub/assets/icon.png">
+<link rel="icon" type="image/png" sizes="32x32" href="../assets/favicon-32.png">
+<link rel="icon" type="image/png" sizes="192x192" href="../assets/favicon-192.png">
+<link rel="apple-touch-icon" href="../assets/apple-touch-icon.png">
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="top" id="top">
+  <div class="wrap">
+    <a class="brand" href="./">
+      <img src="../assets/icon.png" width="28" height="28" alt="">
+      SignalHub <span class="tag">Tauri 2 · v0.6.5</span>
+    </a>
+    <nav aria-label="Main navigation">
+      <a href="#states">States</a>
+      <a href="#daily">Features</a>
+      <a href="#personal">Personalise</a>
+      <a href="#demo">In action</a>
+      <a href="#start">Get started</a>
+      <a class="nav-cta" href="https://github.com/iFishin/SignalHub/releases/latest">Download</a>
+      <a class="lang" href="../" lang="zh-CN" aria-label="中文版">中文</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+  <!-- Same three signs as the Chinese page; site.js picks the English state
+       labels from <html lang> and both pages share one demo script. -->
+  <section class="hero">
+    <div class="wrap">
+      <div>
+        <p class="eyebrow">AI agents · desktop lamp · one state machine</p>
+        <h1>Everything your agents are doing,<br><span class="accent">at a glance.</span></h1>
+        <p class="lede">
+          SignalHub is a cross-platform, always-on-top status lamp for your desktop.
+          A stack of translucent, draggable signs shows what is happening through colour
+          and blink rhythm. Built with AI agents in mind, but <strong>not tied to them</strong> —
+          anything that can send one HTTP request can report a state.
+        </p>
+        <div class="actions">
+          <a class="btn" href="https://github.com/iFishin/SignalHub/releases/latest">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+              <path d="M8 2v8m0 0L4.8 6.8M8 10l3.2-3.2M2.6 11.4v1.4a1.2 1.2 0 0 0 1.2 1.2h8.4a1.2 1.2 0 0 0 1.2-1.2v-1.4" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            Download
+          </a>
+          <a class="btn-ghost" href="https://github.com/iFishin/SignalHub">Browse the source</a>
+        </div>
+        <ul class="platforms">
+          <li>macOS</li><li>Windows</li><li>Linux (beta)</li><li>No runtime needed · state stays local</li>
+        </ul>
+      </div>
+
+      <div class="lamp" aria-label="Lamp preview: three signs — api working, build waiting for permission, docs done; the one waiting for you is more prominent">
+        <div class="lamp-stack lamp-demo">
+          <div class="sign" data-state="working" data-tone="quiet">
+            <span class="dot"></span>
+            <span class="sign-name">api</span>
+            <span class="sign-state">Working</span>
+            <span class="sign-age">02:14</span>
+          </div>
+          <div class="sign" data-state="permission" data-tone="loud">
+            <span class="dot"></span>
+            <span class="sign-name">build</span>
+            <span class="sign-state">Permission</span>
+            <span class="sign-age">00:12</span>
+          </div>
+          <div class="sign" data-state="done" data-tone="quiet">
+            <span class="dot"></span>
+            <span class="sign-name">docs</span>
+            <span class="sign-state">Done</span>
+            <span class="sign-age">00:41</span>
+          </div>
+        </div>
+        <p class="lamp-note">
+          <span>When several signs are up, the ones waiting for you stand out.</span>
+          <span>Lamp · live</span>
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section class="band on-white" id="states">
+    <div class="wrap">
+      <div class="band-head reveal">
+        <span class="kicker">At a glance</span>
+        <h2>Red outranks green — no reading required</h2>
+        <p class="sub">
+          Ten states collapse into four colours. The lamp takes the highest priority across
+          all groups; each sign is one group, with the most urgent first. State labels are
+          deliberately short so the name gets the width.
+        </p>
+      </div>
+
+      <div class="states reveal">
+        <div class="state-row">
+          <div class="state-key"><i class="swatch" style="--c: var(--green)"></i>Green · all good</div>
+          <div class="state-desc"><code>idle</code> · <code>thinking</code> (fast blink) · <code>working</code> (slow blink) · <code>done</code></div>
+        </div>
+        <div class="state-row">
+          <div class="state-key"><i class="swatch" style="--c: var(--yellow)"></i>Amber · needs a look</div>
+          <div class="state-desc"><code>attention</code> — blinking</div>
+        </div>
+        <div class="state-row">
+          <div class="state-key"><i class="swatch" style="--c: var(--red)"></i>Red · waiting on you</div>
+          <div class="state-desc"><code>permission</code> (smooth blink) · <code>error</code> (rapid blink)</div>
+        </div>
+        <div class="state-row">
+          <div class="state-key"><i class="swatch" style="--c: var(--gray)"></i>Grey · gone quiet</div>
+          <div class="state-desc"><code>stale</code> · <code>offline</code> · <code>off</code> (monitoring paused)</div>
+        </div>
+      </div>
+
+      <p class="priority reveal">
+        <span class="order">Red &gt; Amber &gt; Green</span>
+        A group waiting for approval is not pushed off the lamp by another group reporting
+        "working"; once that group resumes, the red clears on its own.
+      </p>
+
+      <ul class="channels reveal">
+        <li><strong>Shape</strong><span>Permission and error dots are rounded squares; every other state is a circle. Red and green are the hardest pair to tell apart — and these are the two that matter most.</span></li>
+        <li><strong>A thin ring</strong><span>A stale sign shows a ring that shrinks with the remaining grace period, so "how long has it been quiet" is visible without reading a clock.</span></li>
+        <li><strong>Dimming</strong><span>In quiet mode, idle / stale / offline signs are almost transparent; only real activity or something waiting on you stands out.</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="band" id="daily">
+    <div class="wrap">
+      <div class="band-head reveal">
+        <span class="kicker">Daily use</span>
+        <h2>Four things you'll use every day</h2>
+      </div>
+
+      <dl class="spec reveal">
+        <div class="spec-row">
+          <dt>One line to wire up an agent</dt>
+          <dd>
+            <code>signalhub install hooks claude-code</code>, then restart the agent.
+            Claude Code / Codex / Cursor / Gemini CLI / Goose / WorkBuddy / opencode / Pi / Hermes
+            all have one-click integrations. You can also skip agents entirely and report
+            state yourself with <code>signalhub working --session demo</code> or a single HTTP POST.
+          </dd>
+        </div>
+        <div class="spec-row">
+          <dt>Ask for approval from the lamp</dt>
+          <dd>
+            "Approve from the lamp" moves the confirmation prompt into a bubble on the lamp
+            (<strong>off by default</strong>; currently Claude Code's HTTP integration only).
+            Dangerous commands need an 800 ms hold before Allow, and a truncated command can
+            only be rejected. On timeout, or with the switch off, it says nothing at all and
+            <strong>never answers "Allow" on your behalf</strong> — the prompt returns to the terminal.
+          </dd>
+        </div>
+        <div class="spec-row">
+          <dt>Inbox and jump to terminal</dt>
+          <dd>
+            Long-press the lamp for a radial menu, then an inbox ordered
+            "waiting on you → running → just finished → idle". Each row can allow / reject,
+            jump to its terminal tab, mute the group, or be watched with "tell me when it's done".
+            Come back after ten minutes away and the top line summarises what happened while you were gone.
+          </dd>
+        </div>
+        <div class="spec-row">
+          <dt>One report, every surface</dt>
+          <dd>
+            One HTTP POST goes into <strong>one state machine</strong>, then fans out to the lamp,
+            inbox, system notifications, a read-only web panel, phone pushes, a WLED light
+            and multi-machine aggregation. They all take the same path, so statistics,
+            history and forwarding work automatically — there is no second state machine.
+          </dd>
+        </div>
+      </dl>
+    </div>
+  </section>
+
+  <section class="band on-white" id="personal">
+    <div class="wrap">
+      <div class="band-head reveal">
+        <span class="kicker">Make it yours</span>
+        <h2>The lamp is yours to shape</h2>
+        <p class="sub">
+          A sign is only so wide, and the text already runs to four lines — more information
+          has to go into area and shape instead. Appearance decides what a lit lamp looks like;
+          Behavior decides why it is lit right now. Both pages list the same six light slots.
+        </p>
+      </div>
+
+      <div class="personal reveal">
+        <div>
+          <h3>Dot shapes · six</h3>
+          <p class="sub-sm">Pick one globally, or override colour, shape and rhythm per state.</p>
+          <div class="shape-grid">
+            <div class="shape-item"><i class="shape-dot" data-shape="circle"></i>Circle</div>
+            <div class="shape-item"><i class="shape-dot" data-shape="rounded"></i>Rounded</div>
+            <div class="shape-item"><i class="shape-dot" data-shape="ring"></i>Ring</div>
+            <div class="shape-item"><i class="shape-dot" data-shape="square"></i>Square</div>
+            <div class="shape-item"><i class="shape-dot" data-shape="diamond"></i>Diamond</div>
+            <div class="shape-item"><i class="shape-dot" data-shape="capsule"></i>Capsule</div>
+          </div>
+        </div>
+        <div>
+          <h3>Sign outlines · four</h3>
+          <p class="sub-sm">Built with <code>border-radius</code> only — <code>clip-path</code> would cut off the little lights on the four corners.</p>
+          <div class="outline-grid">
+            <div class="outline-item"><i class="outline-chip" data-outline="rect"></i>Rectangle</div>
+            <div class="outline-item"><i class="outline-chip" data-outline="capsule"></i>Capsule</div>
+            <div class="outline-item"><i class="outline-chip" data-outline="leaf"></i>Diagonal</div>
+            <div class="outline-item"><i class="outline-chip" data-outline="arch"></i>Arch</div>
+          </div>
+        </div>
+      </div>
+
+      <p class="skin-line reveal">
+        <strong>Five skins</strong> (Plain / Focus / Neon / Paper / Signal) switch palette, sign
+        tint, radius and border, dot shape, motion and frame lighting in one click.
+        <strong>Six independent light slots</strong> — top edge, bottom edge and all four corners —
+        each pick a drawing style <strong>and</strong> one of nine trigger conditions: the top edge
+        can stay on while the bottom only lights on errors. Skins overwrite those six trigger rows
+        too; the interface says so explicitly rather than doing it silently.
+        <strong>Five effects</strong>: off / breathing halo / pulse / sweep / fade, all dialled
+        down to stillness when the system asks for reduced motion.
+      </p>
+    </div>
+  </section>
+
+  <section class="band" id="demo">
+    <div class="wrap">
+      <div class="band-head reveal">
+        <span class="kicker">In action</span>
+        <h2>What it looks like when it runs</h2>
+      </div>
+
+      <div class="figures">
+        <figure class="reveal">
+          <img src="../assets/demo.gif" loading="lazy" width="880" height="480"
+               alt="SignalHub lamp loop: idle, thinking, working, waiting for permission, then green again after Allow is clicked in the bubble">
+          <figcaption>
+            <strong>Fig. 1　Default light cycle and "approve from the lamp".</strong>
+            Not a screen recording: the colours and blink rhythm are taken straight from
+            <code>state.css</code> / <code>lamp.css</code>
+            (green <code>#16a34a</code>, red <code>#d0342c</code>, 640 / 1600 / 900 ms) —
+            even the rounded-square dot for permission and the 800 ms hold for dangerous commands.
+          </figcaption>
+        </figure>
+        <figure class="reveal">
+          <img src="../assets/overview.svg" loading="lazy" width="880" height="230"
+               alt="Signal flow: many inputs into one state machine, then out to the lamp, inbox, notifications, web panel, phone pushes, WLED and multi-machine aggregation">
+          <figcaption>
+            <strong>Fig. 2　One report, every surface.</strong>
+            Inputs can be agent hooks, any program, system collectors, or even the tray's
+            "focus for 25 minutes". They all take the same path, so nowhere does the app
+            have to explain "what state is it really in" a second time.
+          </figcaption>
+        </figure>
+      </div>
+
+      <p class="flow-note reveal">
+        You can look before installing: Settings → Demo plays five looping scenarios using the
+        <strong>real lamp component</strong> fed with scripted data — no real state touched,
+        no notifications, no history written. Pause, step and replay are all there.
+      </p>
+    </div>
+  </section>
+
+  <section class="band on-white" id="start">
+    <div class="wrap">
+      <div class="band-head reveal">
+        <span class="kicker">Get started</span>
+        <h2>Get started</h2>
+        <p class="sub">
+          All four platforms are built by the same pipeline. The binaries are
+          <strong>not code-signed</strong>, so the first launch gets stopped by the OS once;
+          the macOS workaround is below.
+        </p>
+      </div>
+
+      <div class="install reveal">
+        <div class="install-item">
+          <h3>Download a build</h3>
+          <p><code>.dmg</code> for macOS (aarch64 for Apple Silicon, x64 for Intel), <code>-setup.exe</code> or a portable zip for Windows, <code>.AppImage</code> / <code>.deb</code> for Linux.</p>
+          <pre><code>github.com/iFishin/SignalHub/releases/latest</code></pre>
+        </div>
+        <div class="install-item">
+          <h3>Wire up an agent</h3>
+          <p>The <code>signalhub</code> command ships inside the app — nothing else to install. Restart the agent afterwards.</p>
+          <pre><code><span class="cm"># install the hook</span>
+signalhub install hooks claude-code
+<span class="cm"># or report a state by hand</span>
+signalhub working --session demo</code></pre>
+        </div>
+        <div class="install-item">
+          <h3>macOS blocks the first launch</h3>
+          <p>Clear quarantine recursively so it covers the bundled <code>signalhub</code> command too.</p>
+          <pre><code>xattr -dr com.apple.quarantine /Applications/SignalHub.app</code></pre>
+        </div>
+        <div class="install-item">
+          <h3>Run from source</h3>
+          <p>Needs Node.js and stable Rust; on Windows also the Visual Studio C++ build tools.</p>
+          <pre><code>git clone https://github.com/iFishin/SignalHub.git
+cd SignalHub
+npm install
+npm run tauri dev</code></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <div class="foot-brand"><img src="../assets/icon.png" width="30" height="30" alt="">SignalHub</div>
+    <div class="foot-links">
+      <a href="https://github.com/iFishin/SignalHub">GitHub repo</a>
+      <a href="https://github.com/iFishin/SignalHub/releases">Changelog</a>
+      <a href="https://github.com/iFishin/SignalHub/issues">Issues</a>
+      <a href="https://github.com/iFishin/SignalHub/blob/main/docs/architecture.md">Architecture</a>
+      <a href="https://github.com/iFishin/SignalHub/blob/main/LICENSE">MIT license</a>
+      <a href="../" lang="zh-CN">中文</a>
+    </div>
+    <p class="foot-note">
+      A desktop status lamp built with Tauri 2, Rust and TypeScript: one state machine, many
+      surfaces. State stays on your machine; the read-only web panel, phone pushes and outbound
+      hooks are all off by default and have to be switched on by you. Version 0.6.5 · MIT.
+    </p>
+  </div>
+</footer>
+
+<script src="../assets/site.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,70 @@
+name: Deploy Landing Page
+
+# 介绍页在 docs/ 下：中文 docs/index.html、英文 docs/en/index.html，
+# 两页共用 docs/assets/site.css 与 site.js。和 SCOM-T 的 pages.yml 同构。
+#
+# 这里**只组装明确列出的文件**再上传，不整目录上传 docs/ —— 那里面还有几十份
+# .md 架构文档（不该出现在站点上），而且工作树在外接 exFAT 卷上，
+# 会带出 ._icon.png 这类 AppleDouble 噪声文件。
+#
+# 路径过滤也照此收窄：改架构文档不该触发一次站点部署。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/index.html'
+      - 'docs/en/index.html'
+      - 'docs/assets/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同一时间只跑一个部署，新的推送取消排队中的旧任务
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: 组装站点
+        run: |
+          set -euo pipefail
+          mkdir -p _site/en _site/assets
+          cp docs/index.html _site/
+          cp docs/en/index.html _site/en/
+          for f in site.css site.js icon.png demo.gif overview.svg \
+                   favicon-32.png favicon-192.png apple-touch-icon.png; do
+            cp "docs/assets/$f" "_site/assets/"
+          done
+          echo "站点内容："
+          find _site -type f -printf '%p  %k KB\n' | sort
+          echo "合计：$(du -sh _site | cut -f1)"
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
