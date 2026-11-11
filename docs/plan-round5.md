@@ -83,6 +83,11 @@
   移到实时预览正下方并吸顶，每格带一行说明字。旧的 12.5px 透明文字按钮读起来像
   「普通按钮」，用户根本不会注意它是整页的切换。
   详见 `architecture.md` §3.16 / §3.25 / §3.35.3，真窗口待验项在 `backlog.md` §2。
+  **已发布**：`v0.6.6` 于 2026-11-11 公开，四个平台 14 个产物齐全（macOS 双架构 dmg +
+  更新包、Windows NSIS + portable、Linux deb + AppImage），`latest.json` 指向 0.6.6，
+  自动更新链路核过三个平台的下载地址。首次运行时 Linux 那台在 `apt-get` 装系统库上
+  因 runner 的 DNS 解析失败（`azure.archive.ubuntu.com`）耗掉 67 分钟后报错，
+  **重跑同一 job 即成功** —— 与代码无关，但这也是 ubuntu job 反复最慢的环节。
 - **v0.6.5**（2026-11-11）：用户嫌「整合在一起了，不好个性化设置」，于是把边框光从
   「一条轨 + 两行触发」拆成**六个独立灯位**：`Settings.sign_lights` 的 `top / bottom /
   tl / tr / br / bl` 各存 `{ kind, trigger }`，外观页六行管画法、行为页同名六行管触发，

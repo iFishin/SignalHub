@@ -52,12 +52,25 @@ jobs:
       # 字段，所以 v5 起那个「自动开缓存」不会和我们显式写的 `cache: npm` 打架。
       - uses: actions/checkout@v7
 
-      # tauri 在 Linux 上要链 webkit2gtk / gtk，缺了连 `cargo test` 都编不过
+      # tauri 在 Linux 上要链 webkit2gtk / gtk，缺了连 `cargo test` 都编不过。
+      #
+      # **为什么要自己写重试**：runner 的 DNS 偶尔会抽风（2026-11-11 就遇到过 ——
+      # 解析不到 `azure.archive.ubuntu.com`，apt 默认配置会一条条 URL 硬等，整步
+      # 拖了 67 分钟才退出）。加上连接超时与整轮重试之后，坏在解析上时几分钟就能
+      # 重来一次，而不是白等一小时。`ok` 那个标志是因为 Actions 的 bash 带 `-e`，
+      # 用 `for` 循环里裸跑失败命令会直接中断，拿不到「重试」的机会。
       - name: 安装 Linux 上编译 tauri 需要的系统库
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
+          APT_OPTS=(-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
+          ok=0
+          for i in 1 2 3; do
+            if sudo apt-get "${APT_OPTS[@]}" update; then ok=1; break; fi
+            echo "apt-get update 第 $i 次失败，10s 后重试"
+            sleep 10
+          done
+          [ "$ok" = 1 ] || { echo "apt-get update 三次都失败"; exit 1; }
+          sudo apt-get "${APT_OPTS[@]}" install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
             libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev \
             build-essential curl wget file
 

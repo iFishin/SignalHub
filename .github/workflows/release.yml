@@ -195,8 +195,19 @@ jobs:
       - name: 装 Linux 系统依赖
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          # runner 的 DNS 偶尔抽风（2026-11-11：解析不到 azure.archive.ubuntu.com，
+          # 默认配置一条条 URL 硬等，这一步跑了 67 分钟才失败）。加连接超时 +
+          # 整轮重试；`ok` 标志是因为 Actions 的 bash 带 `-e`，`for` 里裸跑失败
+          # 命令会直接中断，重试就轮不上了。
+          APT_OPTS=(-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
+          ok=0
+          for i in 1 2 3; do
+            if sudo apt-get "${APT_OPTS[@]}" update; then ok=1; break; fi
+            echo "apt-get update 第 $i 次失败，10s 后重试"
+            sleep 10
+          done
+          [ "$ok" = 1 ] || { echo "apt-get update 三次都失败"; exit 1; }
+          sudo apt-get "${APT_OPTS[@]}" install -y \
             build-essential \
             curl \
             file \
