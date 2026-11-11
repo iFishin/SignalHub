@@ -342,17 +342,21 @@ export interface Skin {
 /** 六个灯位全关的骨架。皮肤只写自己要改的那几个槽，其余保持默认。 */
 function lights(patch: Partial<SignLights>): SignLights {
   return {
-    top: { kind: "off", trigger: "always" },
-    bottom: { kind: "off", trigger: "always" },
-    tl: { kind: "empty", trigger: "always" },
-    tr: { kind: "empty", trigger: "always" },
-    br: { kind: "empty", trigger: "always" },
-    bl: { kind: "empty", trigger: "always" },
+    top: { kind: "off", trigger: "always", blink: false },
+    bottom: { kind: "off", trigger: "always", blink: false },
+    tl: { kind: "empty", trigger: "always", blink: false },
+    tr: { kind: "empty", trigger: "always", blink: false },
+    br: { kind: "empty", trigger: "always", blink: false },
+    bl: { kind: "empty", trigger: "always", blink: false },
     ...patch,
   };
 }
 
-const edge = (kind: EdgeLight, trigger: LightTrigger = "always") => ({ kind, trigger });
+const edge = (
+  kind: EdgeLight,
+  trigger: LightTrigger = "always",
+  blink = false,
+) => ({ kind, trigger, blink });
 
 export function skins(m: Messages): Skin[] {
   return [
@@ -391,8 +395,8 @@ export function skins(m: Messages): Skin[] {
         sign_light_color: "neutral",
         sign_lights: lights({
           top: edge("line", "attention"),
-          tl: { kind: "pinned", trigger: "always" },
-          tr: { kind: "muted", trigger: "always" },
+          tl: { kind: "pinned", trigger: "always", blink: false },
+          tr: { kind: "muted", trigger: "always", blink: false },
         }),
       },
     },
@@ -414,10 +418,10 @@ export function skins(m: Messages): Skin[] {
         sign_lights: lights({
           top: edge("glow", "active"),
           bottom: edge("glow", "active"),
-          tl: { kind: "state", trigger: "always" },
-          tr: { kind: "state", trigger: "always" },
-          br: { kind: "state", trigger: "always" },
-          bl: { kind: "state", trigger: "always" },
+          tl: { kind: "state", trigger: "always", blink: false },
+          tr: { kind: "state", trigger: "always", blink: false },
+          br: { kind: "state", trigger: "always", blink: false },
+          bl: { kind: "state", trigger: "always", blink: false },
         }),
       },
     },
@@ -457,8 +461,8 @@ export function skins(m: Messages): Skin[] {
         sign_lights: lights({
           top: edge("fade", "message"),
           bottom: edge("line", "attention"),
-          tl: { kind: "passthrough", trigger: "always" },
-          br: { kind: "stale", trigger: "always" },
+          tl: { kind: "passthrough", trigger: "always", blink: false },
+          br: { kind: "stale", trigger: "always", blink: false },
         }),
       },
     },

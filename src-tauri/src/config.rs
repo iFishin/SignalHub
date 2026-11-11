@@ -743,12 +743,17 @@ pub enum EdgeLight {
     Fade,
 }
 
-/// 一条边的灯位：画法 + 触发。
+/// 一条边的灯位：画法 + 触发 + 闪不闪。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EdgeSlot {
     pub kind: EdgeLight,
     pub trigger: LightTrigger,
+    /// 这条边跟着这块牌的**状态节奏**闪（见 [`crate::config::SignLights`] 的注释）。
+    ///
+    /// 默认 `false` = 常亮。升级上来的旧配置没有这个字段，`serde(default)` 把它
+    /// 读成 `false`，观感一个像素都不变。
+    pub blink: bool,
 }
 
 /// 一个角的灯位：挂什么 + 触发。
@@ -760,6 +765,8 @@ pub struct EdgeSlot {
 pub struct CornerSlot {
     pub kind: SignCorner,
     pub trigger: LightTrigger,
+    /// 这枚角灯闪不闪。语义与 [`EdgeSlot::blink`] 相同。
+    pub blink: bool,
 }
 
 /// 六个灯位：上边 / 下边 + 左上 / 右上 / 右下 / 左下。
@@ -2587,15 +2594,19 @@ fn migrate_legacy_light_slots(mut settings: Settings) -> Settings {
     settings.sign_lights.top = EdgeSlot {
         kind: top,
         trigger: edge_trigger,
+        // 旧模型没有「闪」这一档，迁移出来的灯一律常亮 —— 升级不改观感。
+        blink: false,
     };
     settings.sign_lights.bottom = EdgeSlot {
         kind: bottom,
         trigger: edge_trigger,
+        blink: false,
     };
 
     let slot = |kind: SignCorner| CornerSlot {
         kind,
         trigger: corner_trigger,
+        blink: false,
     };
     settings.sign_lights.tl = slot(corners.tl);
     settings.sign_lights.tr = slot(corners.tr);
@@ -3018,31 +3029,38 @@ mod tests {
             sign_corners: SignCorners::default(),
             sign_edge_trigger: LightTrigger::Always,
             sign_corner_trigger: LightTrigger::Always,
-            // 六个灯位全部取非默认：漏一个槽、漏一个 trigger，往返里就该现形
+            // 六个灯位全部取非默认：漏一个槽、漏一个 trigger，往返里就该现形。
+            // 闪烁故意有开有关 —— 全开或全关都验不出「写回时被统一成同一个值」。
             sign_lights: SignLights {
                 top: EdgeSlot {
                     kind: EdgeLight::Glow,
                     trigger: LightTrigger::Attention,
+                    blink: true,
                 },
                 bottom: EdgeSlot {
                     kind: EdgeLight::Fade,
                     trigger: LightTrigger::Schedule,
+                    blink: false,
                 },
                 tl: CornerSlot {
                     kind: SignCorner::State,
                     trigger: LightTrigger::Always,
+                    blink: true,
                 },
                 tr: CornerSlot {
                     kind: SignCorner::Pinned,
                     trigger: LightTrigger::Pinned,
+                    blink: false,
                 },
                 br: CornerSlot {
                     kind: SignCorner::Stale,
                     trigger: LightTrigger::Stale,
+                    blink: true,
                 },
                 bl: CornerSlot {
                     kind: SignCorner::Muted,
                     trigger: LightTrigger::Message,
+                    blink: false,
                 },
             },
             // 三个触发参数 + 两个标题字段也全部非默认
@@ -3921,6 +3939,10 @@ mod tests {
             EdgeLight::Off,
             "没写的边是关"
         );
+        assert!(
+            !settings.sign_lights.top.blink,
+            "没写的闪烁是常亮 —— 0.6.6 之前写下的配置读进来不能突然开始闪"
+        );
         assert_eq!(settings.sign_lights.br.kind, SignCorner::Muted);
         assert_eq!(settings.sign_lights.br.trigger, LightTrigger::Pinned);
         assert_eq!(
@@ -3937,10 +3959,10 @@ mod tests {
     fn the_six_light_slots_roundtrip_through_json() {
         let raw = r#"{
             "sign_lights": {
-                "top": {"kind": "fade", "trigger": "attention"},
+                "top": {"kind": "fade", "trigger": "attention", "blink": true},
                 "bottom": {"kind": "glow", "trigger": "schedule"},
                 "tl": {"kind": "state", "trigger": "always"},
-                "tr": {"kind": "pinned", "trigger": "pinned"},
+                "tr": {"kind": "pinned", "trigger": "pinned", "blink": true},
                 "br": {"kind": "stale", "trigger": "stale"},
                 "bl": {"kind": "passthrough", "trigger": "active"}
             }
@@ -3950,13 +3972,19 @@ mod tests {
         assert_eq!(settings.sign_lights.bottom.trigger, LightTrigger::Schedule);
         assert_eq!(settings.sign_lights.bl.kind, SignCorner::Passthrough);
         assert_eq!(settings.sign_lights.corner_count(), 4);
+        // 闪烁是逐槽的开关：写了的要读回来，没写的保持常亮。两边都对，
+        // 「给一角打开闪烁，四个角一起闪」才算真的不存在。
+        assert!(settings.sign_lights.top.blink);
+        assert!(settings.sign_lights.tr.blink);
+        assert!(!settings.sign_lights.bottom.blink);
+        assert!(!settings.sign_lights.br.blink);
 
         let back = serde_json::to_string(&settings).unwrap();
         for needle in [
             r#""sign_lights":{"#,
-            r#""top":{"kind":"fade","trigger":"attention"}"#,
-            r#""bottom":{"kind":"glow","trigger":"schedule"}"#,
-            r#""bl":{"kind":"passthrough","trigger":"active"}"#,
+            r#""top":{"kind":"fade","trigger":"attention","blink":true}"#,
+            r#""bottom":{"kind":"glow","trigger":"schedule","blink":false}"#,
+            r#""bl":{"kind":"passthrough","trigger":"active","blink":false}"#,
         ] {
             assert!(back.contains(needle), "序列化漏了 {needle}: {back}");
         }
@@ -4018,7 +4046,7 @@ mod tests {
             r#""sign_outline":"leaf""#,
             r#""effect":"sweep""#,
             r#""shape":"diamond""#,
-            r#""tl":{"kind":"passthrough","trigger":"state"}"#,
+            r#""tl":{"kind":"passthrough","trigger":"state","blink":false}"#,
         ] {
             assert!(back.contains(needle), "序列化漏了 {needle}: {back}");
         }

@@ -57,6 +57,12 @@ describe("样式表", () => {
       '.dot[data-shape="diamond"]', // 六档灯珠形状里唯一靠 clip-path 画的
       '[data-sign-outline="leaf"]', // 四档牌轮廓
       '[data-effect="sweep"]', // 五档动效
+      // 0.6.6：边灯 / 角灯的闪烁。少了 @keyframes 或那两条选择器，
+      // 「外观页打开发光项」会变成一次静默无效 —— 开关亮着，灯纹丝不动。
+      "@keyframes light-blink",
+      ".sign[data-blink-top]::before",
+      ".sign-corner[data-blink]",
+      "--blink-a", // 闪烁两端的透明度基线，丢了闪起来会抹平明暗档
       "--corner-arc", // 角灯落点跟着圆角算，写死就又会缩回牌内
       "data-sign-light-scale", // 粗细尺子
       "overflow: hidden", // 裁掉超出牌面的内容
@@ -72,6 +78,14 @@ describe("样式表", () => {
     // 穿透那枚常驻 `ban` 角标已经删掉了：CSS 里不该再留「穿透时给 .lamp-flag
     // 换描边色」那条规则（留着的话暂停角标会在穿透时莫名变色，而图标还是暂停）
     expect(lampCss.includes("[data-pass-through] .lamp-flag")).toBe(false);
+    // 状态色角灯必须取 `--state` 而不是 `--light-c`：后者在中性档下是灰的，
+    // 而「灰的状态点」不表达任何状态（0.6.6 修的就是这个）。整条规则单独取出来
+    // 判，避免用到别处（比如注释里）的同名文本。
+    const stateCorner =
+      /\.sign-corner\[data-kind="state"\]\s*\{[^}]*\}/.exec(lampCss)?.[0] ?? "";
+    expect(stateCorner, "lamp.css 里找不到状态色角灯的规则").not.toBe("");
+    expect(stateCorner).toContain("var(--state");
+    expect(stateCorner).not.toContain("--light-c");
     // 文件以 `}` 收尾：尾巴被吞掉时，最后几行会是一条没结束的注释或声明
     expect(lampCss.trimEnd().endsWith("}")).toBe(true);
   });

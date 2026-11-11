@@ -493,6 +493,21 @@ html[data-window="settings"] #root {
   gap: 6px;
 }
 
+/* 灯位那一行：下拉 + 闪烁开关并排。两样都是「这一格画成什么样」，
+   所以贴在一起，不做成两行（六行变十二行，还会让人以为它们无关）。 */
+.settings .slot-ctl {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 灯位没选任何画法时，闪烁开关禁用：一枚不画的灯没有「闪」这回事。
+   不禁用的话，用户会打开一个毫无反应的开关，然后以为它坏了。 */
+.settings .switch[disabled] {
+  opacity: 0.4;
+  cursor: default;
+}
+
 /* 状态圆点，颜色来自 state.css 的 --state。
    类名刻意不叫 .dot：灯球（lamp.css）用的是 .dot，而两个样式表在同一个
    bundle 里全局加载，同名会互相覆盖 —— 之前就因此把灯球的点压成了 9px。 */

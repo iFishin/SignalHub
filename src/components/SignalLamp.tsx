@@ -6,7 +6,7 @@ import { inTauri } from "../lib/env";
 import { requestSettingsTab } from "../lib/settingsIntent";
 import { signalLabel, justFinishedLabel } from "../lib/signals";
 import { useLang, useMessages, type Messages, type Lang } from "../lib/i18n";
-import { lampVars, resolveShapes, resolveHaloAnimations, toneOf, cornerLights, edgeLightKinds, type LightContext } from "../lib/lampStyle";
+import { lampVars, resolveShapes, resolveHaloAnimations, toneOf, cornerLights, edgeLightKinds, edgeBlinks, lightBlink, type LightContext } from "../lib/lampStyle";
 import { transitions, type AggregateMap } from "../lib/lampTransitions";
 import { labelOf, labelPrefOf, orderVisible, type LabelPref } from "../lib/lampSort";
 import { useNow } from "../lib/useNow";
@@ -764,6 +764,9 @@ export function SignalLamp({
           pinned,
         };
         const edges = edgeLightKinds(settings.sign_lights, lightCtx);
+        // 闪不闪和「画成什么样」是两件事，但都按**这块牌自己的**状态节奏走：
+        // 同一盏灯里可以有牌在闪、有牌常亮。见 `lampStyle.ts::lightBlink`。
+        const edgeBlink = edgeBlinks(settings.sign_lights, lightCtx);
 
         // 四角小灯：哪几枚该亮。判据在 `lampStyle.ts::cornerLights`（纯函数、有单测）
         // —— 它只返回**该亮**的那些，「不亮」是根本不画，而不是画一个暗点。
@@ -828,9 +831,21 @@ export function SignalLamp({
                没开边灯的牌。 */
             data-edge-top={edges.top}
             data-edge-bottom={edges.bottom}
+            /* 要闪的边 / 角在牌上只挂一个存在性的属性：动画本身是一条 `--light-blink`
+               变量（见下面的 `style`），CSS 只负责「挂了才播」。所以关掉闪烁时
+               连一条动画声明都不存在，而不是播一条 0 时长的空动画。 */
+            data-blink-top={edgeBlink.top || undefined}
+            data-blink-bottom={edgeBlink.bottom || undefined}
             /* `--progress` 也挂到牌上：沉默进度那枚角灯要用它，而它原来只挂在
-               灯珠的 style 里。同一个变量、同一个来源，两者不会给出不同的答案。 */
-            style={progressStyle(group)}
+               灯珠的 style 里。同一个变量、同一个来源，两者不会给出不同的答案。
+               `--light-blink` 同理挂在牌上：边的两个伪元素和四枚角灯都从这一层
+               继承，于是「这一块牌什么节奏」只有一处答案。 */
+            style={
+              {
+                ...progressStyle(group),
+                "--light-blink": lightBlink(settings, group.aggregate),
+              } as React.CSSProperties
+            }
             // 刚换了状态就闪一下（`pulses` 是这一帧跃迁的组名）。折叠态的点不带
             // 这个 —— 点的状态动画本身就会重放，重复闪反而糊。
             data-pulse={pulses.includes(group.name) || undefined}
@@ -922,6 +937,8 @@ export function SignalLamp({
                 className="sign-corner"
                 data-pos={corner.pos}
                 data-kind={corner.kind}
+                // 只有这一枚自己开了闪烁才挂；值不存在 = 常亮（CSS 靠存在性选）。
+                data-blink={corner.blink || undefined}
               />
             ))}
           </div>

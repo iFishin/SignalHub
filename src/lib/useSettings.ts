@@ -47,14 +47,24 @@ export type SignCorner =
   | "stale"
   | "passthrough";
 
-/** 六个灯位里的一个：画成什么样 + 凭什么亮。 */
+/** 六个灯位里的一个：画成什么样 + 凭什么亮 + 闪不闪。 */
 export interface EdgeSlot {
   kind: EdgeLight;
   trigger: LightTrigger;
+  /**
+   * 跟着这块牌的**状态节奏**闪。
+   *
+   * 值是「闪不闪」而不是一个毫秒数：灯珠的节奏已经有一套（逐个状态的
+   * `blink_ms`、全局倍率、减少动态效果），这里再存一份时长就会出现两个
+   * 互相打架的节奏。默认 `false` = 常亮，和 0.6.5 的观感一致。
+   */
+  blink: boolean;
 }
 export interface CornerSlot {
   kind: SignCorner;
   trigger: LightTrigger;
+  /** 见 `EdgeSlot.blink`。 */
+  blink: boolean;
 }
 
 /**
@@ -605,12 +615,12 @@ export const DEFAULTS: Settings = {
   sign_gap: "standard",
   // 六个灯位默认全关 / 全空、触发全常亮，合起来等于「加这些字段之前」
   sign_lights: {
-    top: { kind: "off", trigger: "always" },
-    bottom: { kind: "off", trigger: "always" },
-    tl: { kind: "empty", trigger: "always" },
-    tr: { kind: "empty", trigger: "always" },
-    br: { kind: "empty", trigger: "always" },
-    bl: { kind: "empty", trigger: "always" },
+    top: { kind: "off", trigger: "always", blink: false },
+    bottom: { kind: "off", trigger: "always", blink: false },
+    tl: { kind: "empty", trigger: "always", blink: false },
+    tr: { kind: "empty", trigger: "always", blink: false },
+    br: { kind: "empty", trigger: "always", blink: false },
+    bl: { kind: "empty", trigger: "always", blink: false },
   },
   // 触发参数与标题档。标题的默认值**是观感改动**（不再拼智能体名），
   // 其余四项都等于「没加过」。

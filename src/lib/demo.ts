@@ -46,12 +46,12 @@ export const DEMO_CORNER_GROUP: DemoGroupId = "build";
  */
 function demoLights(patch: Partial<SignLights>): SignLights {
   return {
-    top: { kind: "off", trigger: "always" },
-    bottom: { kind: "off", trigger: "always" },
-    tl: { kind: "empty", trigger: "always" },
-    tr: { kind: "empty", trigger: "always" },
-    br: { kind: "empty", trigger: "always" },
-    bl: { kind: "empty", trigger: "always" },
+    top: { kind: "off", trigger: "always", blink: false },
+    bottom: { kind: "off", trigger: "always", blink: false },
+    tl: { kind: "empty", trigger: "always", blink: false },
+    tr: { kind: "empty", trigger: "always", blink: false },
+    br: { kind: "empty", trigger: "always", blink: false },
+    bl: { kind: "empty", trigger: "always", blink: false },
     ...patch,
   };
 }
@@ -302,7 +302,7 @@ export const DEMO_SCENARIOS: DemoScenario[] = [
           { id: "api", state: "thinking" },
         ],
         // 只亮上边 —— 下边仍是独立的「不亮」。这正是 0.6.4 那一条轨做不到的。
-        lights: demoLights({ top: { kind: "line", trigger: "always" } }),
+        lights: demoLights({ top: { kind: "line", trigger: "always", blink: false } }),
       },
       {
         id: "edgeBoth",
@@ -313,8 +313,8 @@ export const DEMO_SCENARIOS: DemoScenario[] = [
           { id: "api", state: "thinking" },
         ],
         lights: demoLights({
-          top: { kind: "line", trigger: "always" },
-          bottom: { kind: "line", trigger: "always" },
+          top: { kind: "line", trigger: "always", blink: false },
+          bottom: { kind: "line", trigger: "always", blink: false },
         }),
       },
       {
@@ -326,8 +326,8 @@ export const DEMO_SCENARIOS: DemoScenario[] = [
           { id: "build", state: "working" },
         ],
         lights: demoLights({
-          top: { kind: "glow", trigger: "always" },
-          bottom: { kind: "glow", trigger: "always" },
+          top: { kind: "glow", trigger: "always", blink: false },
+          bottom: { kind: "glow", trigger: "always", blink: false },
         }),
       },
       {
@@ -339,10 +339,10 @@ export const DEMO_SCENARIOS: DemoScenario[] = [
           { id: "api", state: "thinking" },
         ],
         lights: demoLights({
-          tl: { kind: "state", trigger: "always" },
-          tr: { kind: "state", trigger: "always" },
-          br: { kind: "state", trigger: "always" },
-          bl: { kind: "state", trigger: "always" },
+          tl: { kind: "state", trigger: "always", blink: false },
+          tr: { kind: "state", trigger: "always", blink: false },
+          br: { kind: "state", trigger: "always", blink: false },
+          bl: { kind: "state", trigger: "always", blink: false },
         }),
       },
       {
@@ -352,10 +352,10 @@ export const DEMO_SCENARIOS: DemoScenario[] = [
         aggregate: "stale",
         rows: [{ id: DEMO_CORNER_GROUP, state: "stale", staleProgress: 0.78 }],
         lights: demoLights({
-          tl: { kind: "state", trigger: "always" },
-          tr: { kind: "pinned", trigger: "always" },
-          br: { kind: "muted", trigger: "always" },
-          bl: { kind: "stale", trigger: "always" },
+          tl: { kind: "state", trigger: "always", blink: false },
+          tr: { kind: "pinned", trigger: "always", blink: false },
+          br: { kind: "muted", trigger: "always", blink: false },
+          bl: { kind: "stale", trigger: "always", blink: false },
         }),
         pinned: true,
         muted: true,
@@ -371,7 +371,7 @@ export const DEMO_SCENARIOS: DemoScenario[] = [
           { id: "build", state: "working" },
         ],
         lights: demoLights({
-          top: { kind: "line", trigger: "attention" },
+          top: { kind: "line", trigger: "attention", blink: false },
         }),
       },
       {
@@ -385,9 +385,9 @@ export const DEMO_SCENARIOS: DemoScenario[] = [
           { id: "api", state: "thinking" },
         ],
         lights: demoLights({
-          top: { kind: "line", trigger: "always" },
-          tl: { kind: "passthrough", trigger: "always" },
-          tr: { kind: "state", trigger: "always" },
+          top: { kind: "line", trigger: "always", blink: false },
+          tl: { kind: "passthrough", trigger: "always", blink: false },
+          tr: { kind: "state", trigger: "always", blink: false },
         }),
         passThrough: true,
       },
@@ -403,12 +403,12 @@ export const DEMO_SCENARIOS: DemoScenario[] = [
           { id: "build", state: "working" },
         ],
         lights: demoLights({
-          top: { kind: "line", trigger: "state" },
-          bottom: { kind: "line", trigger: "always" },
-          tl: { kind: "state", trigger: "always" },
-          tr: { kind: "state", trigger: "always" },
-          br: { kind: "state", trigger: "always" },
-          bl: { kind: "state", trigger: "always" },
+          top: { kind: "line", trigger: "state", blink: false },
+          bottom: { kind: "line", trigger: "always", blink: false },
+          tl: { kind: "state", trigger: "always", blink: false },
+          tr: { kind: "state", trigger: "always", blink: false },
+          br: { kind: "state", trigger: "always", blink: false },
+          bl: { kind: "state", trigger: "always", blink: false },
         }),
         triggerState: "error",
       },

@@ -669,13 +669,19 @@ body,
 
 /* `--light-c` 必须**在 `.sign` 这一层**取值，不能从 `.lamp-root` 往下传：状态色是
    逐块牌的（`--state` 挂在 `.sign` 上），自定义属性里的 `var()` 在声明它的元素上
-   就求值完了，根上写 `--light-c: var(--state)` 拿到的是根上的空值。 */
+   就求值完了，根上写 `--light-c: var(--state)` 拿到的是根上的空值。
+   `--blink-a` 是闪烁时的「亮着那一端」的透明度基线：不闪时就是明暗档本身，
+   闪起来的两端都从它派生（见文件末尾的 `light-blink`）。 */
 .sign {
   --light-c: var(--state, transparent);
+  --blink-a: var(--light-a);
 }
 
-/* 中性档：让边框只负责「形状」，不抢灯珠那点颜色。取次级灰而不是正文字色，
-   是为了和 `pinned` 那枚近白实心点还留一档差距。 */
+/* 中性档：让边框线只负责「形状」，不抢灯珠那点颜色。取次级灰而不是正文字色，
+   是为了和 `pinned` 那枚近白实心点还留一档差距。
+   **只作用于边线，不作用于「状态色」角灯**（见 `.sign-corner[data-kind]`）：
+   那枚灯存在的唯一理由就是颜色 —— 中性档把它压成灰，等于把一枚灯变成一粒灰尘，
+   关掉圆点之后整块牌就没有任何颜色可读了。 */
 .lamp-root[data-sign-light-color="neutral"] .sign {
   --light-c: var(--sign-muted);
 }
@@ -783,7 +789,9 @@ body,
 
 /* 角灯：边框四个转角上的**灯位**，不是牌内散点。落点 `--corner-inset` 跟着
    圆角半径算（见文件头），所以四档圆角里它都紧贴边灯那条线。
-   **常亮、不闪** —— 节奏是灯珠的活，四角再闪就是一处画面里好几个东西在动。
+   **默认常亮**：闪不闪由每个槽自己的 `blink` 决定（0.6.6，见下方「闪烁」一节）。
+   0.6.5 里这里写死「不闪」，理由是「一处画面里别有好几个东西在动」；用下来
+   那条理由只在四枚角灯**同时**闪的时候成立，而默认全关，所以现在交给用户。
    用 `data-pos` 定位而不是四套类名：位置只有四个，值只有六个，两个维度分开写
    才不会有 24 条规则。 */
 .sign-corner {
@@ -791,7 +799,7 @@ body,
   width: var(--corner-d);
   height: var(--corner-d);
   border-radius: 50%;
-  opacity: var(--light-a);
+  opacity: var(--blink-a);
   /* 它只负责「看」：牌上按下要能拖窗口，右键要能弹组菜单 */
   pointer-events: none;
 }
@@ -816,10 +824,12 @@ body,
   bottom: var(--corner-inset);
 }
 
-/* 状态色：和边灯那条轨、和灯珠细环取同一个 `--light-c`。关掉牌上那颗圆点之后，
-   这是唯一的颜色来源 —— 「我只要一块纯文字卡，但还得一眼看出颜色」就靠它。 */
+/* 状态色：和灯珠细环取同一个 `--state`，**不跟 `--light-c` 走**。
+   关掉牌上那颗圆点之后，这是唯一的颜色来源 —— 「我只要一块纯文字卡，但还得
+   一眼看出颜色」就靠它。所以「颜色来源 = 中性」那一档（它管的是边线）不能把
+   这枚灯也压成灰：灰的状态点不表达任何状态。 */
 .sign-corner[data-kind="state"] {
-  background: var(--light-c, transparent);
+  background: var(--state, transparent);
 }
 
 /* 置顶：正文字色实心点。**不取 `--light-c`** —— 它是「我把它钉在最前面了」的
@@ -837,19 +847,25 @@ body,
   box-sizing: border-box;
   border: 1px solid var(--sign-fg);
   background: transparent;
-  opacity: calc(var(--light-a) * 0.78);
+  /* 空心环比实心点更细，压到和实心点同一透明度会显得「没挂上」；闪起来时
+     基线也用它，不闪时两处取的是同一个数。 */
+  --blink-a: calc(var(--light-a) * 0.78);
+  opacity: var(--blink-a);
 }
 
 /* 沉默进度：越接近过期越淡。`--progress` 和灯珠那个细环是**同一个变量**
    （`SignalLamp` 把它挂在 `.sign` 上），所以两者永远不会给出不同的答案。
    不沉默时不画（由 `lampStyle.ts::cornerLights` 过滤），所以这里不必判状态。
    展开乘式而不是写 `calc(var(--light-a) * (...))` —— 括号在 calc 里的支持面
-   比想象中窄，乘开之后每个浏览器都一样。 */
+   比想象中窄，乘开之后每个浏览器都一样。
+   取 `--state` 而不是 `--light-c`：它说的是「还要沉默多久」，和状态色角灯是
+   同一类信息，同样不该被中性档抹掉。 */
 .sign-corner[data-kind="stale"] {
-  background: var(--light-c, transparent);
-  opacity: calc(
+  --blink-a: calc(
     var(--light-a) * 0.2 + var(--light-a) * 0.7 * var(--progress, 1)
   );
+  background: var(--state, transparent);
+  opacity: var(--blink-a);
 }
 
 /* 点击穿透：**空心方**。圆的（实心点 / 空心环）全部是「这一组的属性」，只有
@@ -863,6 +879,39 @@ body,
   border: 1px solid var(--sign-fg);
   border-radius: 2px;
   background: transparent;
+}
+
+/* ---- 闪烁（0.6.6）--------------------------------------------------------
+ *
+ * 0.6.5 的角灯写的是「常亮、不闪」—— 当时的判断是「节奏是灯珠的活，四角再闪
+ * 就是一处画面里好几个东西在动」。用下来这个判断只对一半：角灯本来就是为了
+ * 在**不看牌面**的时候也能远远认出来，而「不动」恰好把它降级成了一颗色点，
+ * 错过的还是错过的。于是 0.6.6 把「闪不闪」交回给每个槽自己（`blink`），
+ * 默认仍为 false —— 升级上来不会突然多出几个在动的东西。
+ *
+ * 节奏**跟着这块牌的状态走**（`lampStyle.ts::lightBlink` 算好挂在 `--light-blink`
+ * 上）：状态是 `error` 就按 error 那档硬闪，是 `working` 就按它那档呼吸，和灯珠
+ * 说的是同一句话。两端透明度从 `--blink-a` 取，所以「明暗」档、静音环的 0.78、
+ * 沉默进度那枚的渐淡在闪的时候都不会被抹成同一个亮度。
+ *
+ * **只是属性动画**：`opacity` 走合成层，不触发重排，也不动牌宽高（红线：常驻
+ * 窗口不能为动画改几何）。
+ */
+@keyframes light-blink {
+  0%,
+  100% {
+    opacity: var(--blink-a, 1);
+  }
+  50% {
+    opacity: calc(var(--blink-a, 1) * 0.25);
+  }
+}
+
+/* 挂了 `data-blink-*` 才播；不挂时连一条动画声明都没有（而不是播一条空动画）。 */
+.sign[data-blink-top]::before,
+.sign[data-blink-bottom]::after,
+.sign-corner[data-blink] {
+  animation: var(--light-blink, none);
 }
 
 /* 四角小灯曾经要给右上角那枚悬停出现的「清除该组」按钮让路（当时的判断是
@@ -1599,6 +1648,14 @@ body,
   }
   .lamp-root[data-effect="sweep"] .sign,
   .lamp-root[data-effect="fade"] .sign {
+    animation: none !important;
+  }
+  /* 0.6.6：边灯 / 角灯开了闪烁也一律常亮。这条必须在这里再写一遍 ——
+     上面的 `.dot` 规则管不到它们，而 `--light-blink` 只是一条变量，
+     真正的 `animation` 声明在普通规则里，不标 !important 压不住。 */
+  .sign[data-blink-top]::before,
+  .sign[data-blink-bottom]::after,
+  .sign-corner[data-blink] {
     animation: none !important;
   }
 }

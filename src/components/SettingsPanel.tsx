@@ -29,7 +29,7 @@ import { CallMePage } from "./CallMePage";
 import { CallMeMessages } from "./CallMeMessages";
 import { LocalPanel, LocalTabs, PageHeader } from "./settings/SettingsPage";
 import { labelOf, labelPrefOf } from "../lib/lampSort";
-import { SIGN_OPACITY_MIN, stateOverridden, lampVars, resolveShapes, cornerLights, edgeLightKinds, minutesToClock, clockToMinutes } from "../lib/lampStyle";
+import { SIGN_OPACITY_MIN, stateOverridden, lampVars, resolveShapes, cornerLights, edgeLightKinds, edgeBlinks, lightBlink, minutesToClock, clockToMinutes } from "../lib/lampStyle";
 import {
   commitHeader,
   withoutHeader,
@@ -314,14 +314,15 @@ function slotLabel(id: SlotId, m: Messages): string {
  *
  * 六个灯位共用一个 Settings 字段，所以这里不能直接 `resetFor(settings,
  * "sign_lights", patch)` —— 那会把六行一起拉回默认，表现是「我只改了上边的
- * 触发，四个角却全被清空了」。类型上收成 `Record<string, string>` 是因为
- * `EdgeSlot.kind` 与 `CornerSlot.kind` 是两个不同的枚举，用联合类型当值写回
- * 时 TS 推不出「这个键属于哪一类」；最终写回的字段在两个结构体里都同名同义。
+ * 触发，四个角却全被清空了」。类型上收成 `Record<string, string | boolean>`
+ * 是因为 `EdgeSlot.kind` 与 `CornerSlot.kind` 是两个不同的枚举，用联合类型
+ * 当值写回时 TS 推不出「这个键属于哪一类」；而 `blink` 是布尔，值域里得容得下
+ * 它。最终写回的字段在两个结构体里都同名同义。
  */
 function withLightSlot(
   lights: SignLights,
   id: SlotId,
-  next: Record<string, string>,
+  next: Record<string, string | boolean>,
 ): SignLights {
   return { ...lights, [id]: { ...lights[id], ...next } } as SignLights;
 }
@@ -508,7 +509,21 @@ interface Props {
  */
 const RowLabel = createContext<string | undefined>(undefined);
 
-function Switch({ on, onChange }: { on: boolean; onChange: (on: boolean) => void }) {
+function Switch({
+  on,
+  onChange,
+  disabled,
+  title,
+  label,
+}: {
+  on: boolean;
+  onChange: (on: boolean) => void;
+  /** 这一行暂时画不出效果时禁用（例如灯位本身没选任何画法）。 */
+  disabled?: boolean;
+  title?: string;
+  /** 覆盖无障碍名字。一行里有几个控件时，默认取整行标签会读错。 */
+  label?: string;
+}) {
   const labelId = useContext(RowLabel);
   return (
     <button
@@ -516,8 +531,10 @@ function Switch({ on, onChange }: { on: boolean; onChange: (on: boolean) => void
       className="switch"
       role="switch"
       aria-checked={on}
-      aria-labelledby={labelId}
+      {...(label ? { "aria-label": label } : { "aria-labelledby": labelId })}
       data-on={on}
+      disabled={disabled}
+      title={title}
       onClick={() => onChange(!on)}
     >
       <span className="knob" />
@@ -584,6 +601,9 @@ function LampPreview({ settings }: { settings: Settings }) {
   });
   // 上下两条边同理：预览只看画法（line / glow / fade），不看「什么时候亮」。
   const previewEdges = edgeLightKinds(settings.sign_lights);
+  // 闪烁是**画法**的一部分（不是触发），所以预览跟着走：在这里打开它，预览里
+  // 立刻就能看到那枚灯在闪，不用切回真灯去确认。节奏取这张牌自己的状态。
+  const previewBlink = edgeBlinks(settings.sign_lights);
 
   return (
     <div className="lamp-preview">
@@ -625,6 +645,9 @@ function LampPreview({ settings }: { settings: Settings }) {
                「行为」页看。上下两条边各挂各的画法。 */
             data-edge-top={previewEdges.top}
             data-edge-bottom={previewEdges.bottom}
+            data-blink-top={previewBlink.top || undefined}
+            data-blink-bottom={previewBlink.bottom || undefined}
+            style={{ "--light-blink": lightBlink(settings, card.state) } as React.CSSProperties}
             data-has-message={settings.show.message && card.message ? "true" : "false"}
           >
             {/* 和真灯同一处判断：关掉圆点之后预览也必须是纯文字卡，
@@ -651,6 +674,7 @@ function LampPreview({ settings }: { settings: Settings }) {
                 className="sign-corner"
                 data-pos={corner.pos}
                 data-kind={corner.kind}
+                data-blink={corner.blink || undefined}
               />
             ))}
           </div>
@@ -3120,23 +3144,42 @@ export function SettingsPanel({ snapshot }: Props) {
                 label={slotLabel(pos, m)}
                 onReset={resetSlotFor(settings, pos, "kind", patch)}
               >
-                <select
-                  className="select"
-                  value={settings.sign_lights[pos].kind}
-                  onChange={(event) =>
-                    patch({
-                      sign_lights: withLightSlot(settings.sign_lights, pos, {
-                        kind: event.target.value,
-                      }),
-                    })
-                  }
-                >
-                  {edgeChoices.map((choice) => (
-                    <option key={choice.value} value={choice.value}>
-                      {choice.label}
-                    </option>
-                  ))}
-                </select>
+                {/* 画法 + 闪烁并排：两样都是「这条边画成什么样」，分到两行会让
+                    六行变十二行，而它们回答的是同一个问题。 */}
+                <span className="slot-ctl">
+                  <select
+                    className="select"
+                    value={settings.sign_lights[pos].kind}
+                    onChange={(event) =>
+                      patch({
+                        sign_lights: withLightSlot(settings.sign_lights, pos, {
+                          kind: event.target.value,
+                        }),
+                      })
+                    }
+                  >
+                    {edgeChoices.map((choice) => (
+                      <option key={choice.value} value={choice.value}>
+                        {choice.label}
+                      </option>
+                    ))}
+                  </select>
+                  {/* 不亮的那条边没有「闪」这回事，开关直接禁用 —— 打开一个
+                      毫无反应的开关，正是这一版要修的那类问题。 */}
+                  <Switch
+                    on={settings.sign_lights[pos].blink}
+                    onChange={(on) =>
+                      patch({
+                        sign_lights: withLightSlot(settings.sign_lights, pos, {
+                          blink: on,
+                        }),
+                      })
+                    }
+                    disabled={settings.sign_lights[pos].kind === "off"}
+                    label={`${slotLabel(pos, m)} · ${m.slotBlink}`}
+                    title={m.slotBlinkHint}
+                  />
+                </span>
               </Row>
             ))}
             {CORNER_SLOTS.map((pos) => (
@@ -3145,23 +3188,38 @@ export function SettingsPanel({ snapshot }: Props) {
                 label={slotLabel(pos, m)}
                 onReset={resetSlotFor(settings, pos, "kind", patch)}
               >
-                <select
-                  className="select"
-                  value={settings.sign_lights[pos].kind}
-                  onChange={(event) =>
-                    patch({
-                      sign_lights: withLightSlot(settings.sign_lights, pos, {
-                        kind: event.target.value,
-                      }),
-                    })
-                  }
-                >
-                  {cornerChoices.map((choice) => (
-                    <option key={choice.value} value={choice.value}>
-                      {choice.label}
-                    </option>
-                  ))}
-                </select>
+                <span className="slot-ctl">
+                  <select
+                    className="select"
+                    value={settings.sign_lights[pos].kind}
+                    onChange={(event) =>
+                      patch({
+                        sign_lights: withLightSlot(settings.sign_lights, pos, {
+                          kind: event.target.value,
+                        }),
+                      })
+                    }
+                  >
+                    {cornerChoices.map((choice) => (
+                      <option key={choice.value} value={choice.value}>
+                        {choice.label}
+                      </option>
+                    ))}
+                  </select>
+                  <Switch
+                    on={settings.sign_lights[pos].blink}
+                    onChange={(on) =>
+                      patch({
+                        sign_lights: withLightSlot(settings.sign_lights, pos, {
+                          blink: on,
+                        }),
+                      })
+                    }
+                    disabled={settings.sign_lights[pos].kind === "empty"}
+                    label={`${slotLabel(pos, m)} · ${m.slotBlink}`}
+                    title={m.slotBlinkHint}
+                  />
+                </span>
               </Row>
             ))}
             <p className="hint">{m.slotsHint}</p>

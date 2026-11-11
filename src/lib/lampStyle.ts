@@ -378,6 +378,8 @@ export interface CornerFacts {
 export interface CornerLight {
   pos: CornerPos;
   kind: SignCorner;
+  /** 这一枚要不要闪（槽里的 `blink`）。关掉的灯根本不返回，所以这里恒为「亮着且要闪」。 */
+  blink: boolean;
 }
 
 /**
@@ -440,9 +442,65 @@ export function cornerLights(
     // 穿透是全局状态：开着的时候**每块牌**都挂，不是只挂第一块。它和 pinned /
     // muted 一样是「条件不成立就不画」，所以没开穿透时牌上连一个空心方都没有。
     if (kind === "passthrough" && facts.passThrough !== true) continue;
-    out.push({ pos, kind });
+    out.push({ pos, kind, blink: slot.blink });
   }
   return out;
+}
+
+/**
+ * 上下两条边现在要不要闪。
+ *
+ * 和 [`edgeLightKinds`] 分开而不是合成一个对象：那边回答「画成什么样」（CSS 用
+ * `data-edge-top="line"` 这种值直接选规则），这边只是一个开关。合成之后调用方
+ * 每处都要多拆一层 `.kind`，而真正需要这两样一起看的地方只有渲染那一处。
+ *
+ * **不亮就不闪**：`kind` 是 `off` 时返回值恒为 `false` —— 没画出来的东西不存在
+ * 「闪」这回事，也不用让 CSS 去判「有没有边灯」。
+ */
+export function edgeBlinks(
+  lights: SignLights,
+  ctx?: LightContext,
+): Record<EdgePos, boolean> {
+  const on = (kind: EdgeLight, blink: boolean, trigger: LightTrigger): boolean =>
+    kind !== "off" && blink && (!ctx || lightOn(trigger, ctx));
+  return {
+    top: on(lights.top.kind, lights.top.blink, lights.top.trigger),
+    bottom: on(lights.bottom.kind, lights.bottom.blink, lights.bottom.trigger),
+  };
+}
+
+/**
+ * 边灯 / 角灯闪烁的兜底周期。
+ *
+ * 闪的节奏**跟着这块牌的状态走**（`working` 1600ms、`error` 340ms 硬闪……），
+ * 这样两个灯与灯珠说的是同一件事。但 `done` / `idle` 这类状态本来没有节奏 ——
+ * 那时候给一个兜底周期，而不是「什么都不发生」：用户明确打开了某一枚灯的闪烁，
+ * 打开之后纹丝不动会被当成开关坏了（0.6.5 的角灯就吃过这个亏）。
+ */
+export const LIGHT_BLINK_FALLBACK_MS = 1400;
+
+/**
+ * 这个状态该给边灯 / 角灯用哪条 `animation` 简写。
+ *
+ * 取值顺序与灯珠一致（用户单独设的节奏 > 基础配方），差别只在 keyframe：
+ * 灯珠用 `pulse`（1 ↔ 0.25），这里用 `light-blink` —— 它把两端的透明度挂在
+ * `--blink-a` 上，于是「明暗」那一档、以及静音角灯的 0.78、沉默角灯的进度淡出
+ * 都不会在闪的时候被抹平。
+ *
+ * 用户把某个状态显式设成常亮（`blink_ms = 0`）时**仍然会闪**：那个 0 说的是
+ * 「灯珠别闪」，而这枚灯的开关是它自己槽里的 `blink`，两者不是一回事。
+ */
+export function lightBlink(settings: Settings, state: SignalState): string {
+  const speed = settings.blink_speed / 100;
+  const explicit = settings.styles[state]?.blink_ms;
+  if (typeof explicit === "number" && explicit > 0) {
+    return `light-blink ${explicit}ms ease-in-out infinite`;
+  }
+  const recipe = BASE_ANIMATION[state];
+  if (recipe) {
+    return `light-blink ${Math.round(recipe.ms / speed)}ms ${recipe.timing} infinite`;
+  }
+  return `light-blink ${Math.round(LIGHT_BLINK_FALLBACK_MS / speed)}ms ease-in-out infinite`;
 }
 
 /**

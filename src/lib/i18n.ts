@@ -621,6 +621,9 @@ export interface Messages {
   slotBottom: string;
   slotKind: string;
   slotTrigger: string;
+  /** 「闪烁」开关：六行灯位各一枚。 */
+  slotBlink: string;
+  slotBlinkHint: string;
   slotsHint: string;
   /** 「谁在叫我」那套压淡的强度。 */
   signEmphasis: string;
@@ -1751,6 +1754,9 @@ export const MESSAGES: Record<Lang, Messages> = {
     slotBottom: "下边",
     slotKind: "画法",
     slotTrigger: "触发",
+    slotBlink: "闪烁",
+    slotBlinkHint:
+      "跟着这块牌的状态节奏闪，和灯珠说的是同一件事。这盏灯本身不画东西时无从闪，开关会变灰。",
     slotsHint:
       "六个灯位各自挑画法和触发条件：上边可以常亮、下边只在出错时亮，四个角也能各挂各的、各判各的 —— 不再是一整条轨一起开关。判定逐块牌进行，同一盏灯里可以有牌亮、有牌不亮。",
     signEmphasis: "分层",
@@ -2842,6 +2848,9 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     slotBottom: "Bottom edge",
     slotKind: "Look",
     slotTrigger: "Trigger",
+    slotBlink: "Blink",
+    slotBlinkHint:
+      "Blinks on this card's state rhythm — the same rhythm its dot uses. When the light draws nothing there is nothing to blink, so the switch greys out.",
     slotsHint:
       "Each of the six slots picks its own look and its own trigger: the top edge can stay on while the bottom lights up only on errors, and the four corners can each hang and judge something different. Judgement is per sign, so one lamp can have lit and unlit cards at once.",
     signEmphasis: "Emphasis",

@@ -15,6 +15,9 @@ import {
   CALM_ALPHA_FACTOR,
   CALM_ALPHA_FLOOR,
   SIGN_OPACITY_MIN,
+  edgeBlinks,
+  lightBlink,
+  LIGHT_BLINK_FALLBACK_MS,
   type LightContext,
 } from "./lampStyle";
 import { DEFAULTS, SLOT_IDS, type SignLights, type Settings } from "./useSettings";
@@ -380,9 +383,9 @@ describe("cornerLights", () => {
   it("drops the conditional corners when the condition is false", () => {
     const lit = cornerLights(
       lights({
-        tl: { kind: "pinned", trigger: "always" },
-        tr: { kind: "muted", trigger: "always" },
-        br: { kind: "stale", trigger: "always" },
+        tl: { kind: "pinned", trigger: "always", blink: false },
+        tr: { kind: "muted", trigger: "always", blink: false },
+        br: { kind: "stale", trigger: "always", blink: false },
       }),
       { pinned: false, muted: false, staleProgress: null },
     );
@@ -392,16 +395,16 @@ describe("cornerLights", () => {
   it("keeps them when the condition is true", () => {
     const lit = cornerLights(
       lights({
-        tl: { kind: "pinned", trigger: "always" },
-        tr: { kind: "muted", trigger: "always" },
-        br: { kind: "stale", trigger: "always" },
+        tl: { kind: "pinned", trigger: "always", blink: false },
+        tr: { kind: "muted", trigger: "always", blink: false },
+        br: { kind: "stale", trigger: "always", blink: false },
       }),
       facts,
     );
     expect(lit).toEqual([
-      { pos: "tl", kind: "pinned" },
-      { pos: "tr", kind: "muted" },
-      { pos: "br", kind: "stale" },
+      { pos: "tl", kind: "pinned", blink: false },
+      { pos: "tr", kind: "muted", blink: false },
+      { pos: "br", kind: "stale", blink: false },
     ]);
   });
 
@@ -410,12 +413,12 @@ describe("cornerLights", () => {
    * 仍然一眼看得出这是什么颜色」。所以哪怕其他条件全假，它照样亮。
    */
   it("always lights the state corner", () => {
-    const lit = cornerLights(lights({ bl: { kind: "state", trigger: "always" } }), {
+    const lit = cornerLights(lights({ bl: { kind: "state", trigger: "always", blink: false } }), {
       pinned: false,
       muted: false,
       staleProgress: null,
     });
-    expect(lit).toEqual([{ pos: "bl", kind: "state" }]);
+    expect(lit).toEqual([{ pos: "bl", kind: "state", blink: false }]);
   });
 
   /** 默认设置六槽全空 —— 加这个功能之前，边框光是全关的。 */
@@ -428,10 +431,10 @@ describe("cornerLights", () => {
   it("returns the corners in clockwise order", () => {
     const lit = cornerLights(
       lights({
-        bl: { kind: "state", trigger: "always" },
-        br: { kind: "state", trigger: "always" },
-        tr: { kind: "state", trigger: "always" },
-        tl: { kind: "state", trigger: "always" },
+        bl: { kind: "state", trigger: "always", blink: false },
+        br: { kind: "state", trigger: "always", blink: false },
+        tr: { kind: "state", trigger: "always", blink: false },
+        tl: { kind: "state", trigger: "always", blink: false },
       }),
       facts,
     );
@@ -441,17 +444,17 @@ describe("cornerLights", () => {
   /** 点击穿透是**全局**事实：开着时每块牌都挂，没开时连空心方都不画。 */
   it("lights the click-through corner only while pass-through is on", () => {
     const withCorner = lights({
-      tr: { kind: "passthrough", trigger: "always" },
-      bl: { kind: "state", trigger: "always" },
+      tr: { kind: "passthrough", trigger: "always", blink: false },
+      bl: { kind: "state", trigger: "always", blink: false },
     });
     const noFacts = { pinned: false, muted: false, staleProgress: null };
     expect(cornerLights(withCorner, { ...noFacts, passThrough: false })).toEqual([
-      { pos: "bl", kind: "state" },
+      { pos: "bl", kind: "state", blink: false },
     ]);
-    expect(cornerLights(withCorner, noFacts)).toEqual([{ pos: "bl", kind: "state" }]);
+    expect(cornerLights(withCorner, noFacts)).toEqual([{ pos: "bl", kind: "state", blink: false }]);
     expect(cornerLights(withCorner, { ...noFacts, passThrough: true })).toEqual([
-      { pos: "tr", kind: "passthrough" },
-      { pos: "bl", kind: "state" },
+      { pos: "tr", kind: "passthrough", blink: false },
+      { pos: "bl", kind: "state", blink: false },
     ]);
   });
 
@@ -463,8 +466,8 @@ describe("cornerLights", () => {
    */
   it("lets each corner apply its own trigger", () => {
     const mixed = lights({
-      tl: { kind: "state", trigger: "attention" },
-      tr: { kind: "state", trigger: "always" },
+      tl: { kind: "state", trigger: "attention", blink: false },
+      tr: { kind: "state", trigger: "always", blink: false },
     });
     const working: LightContext = { state: "working", quiet: false };
     const asking: LightContext = { state: "permission", quiet: false };
@@ -472,7 +475,7 @@ describe("cornerLights", () => {
     expect(cornerLights(mixed, facts, asking).map((c) => c.pos)).toEqual(["tl", "tr"]);
     // 触发排在事实判据之前：连无条件亮的 `state` 那枚也得消失
     expect(cornerLights(mixed, facts, { ...working, quiet: true })).toEqual([
-      { pos: "tr", kind: "state" },
+      { pos: "tr", kind: "state", blink: false },
     ]);
   });
 });
@@ -480,8 +483,8 @@ describe("cornerLights", () => {
 describe("edgeLightKinds", () => {
   const mixed = () =>
     lights({
-      top: { kind: "line", trigger: "state" },
-      bottom: { kind: "glow", trigger: "always" },
+      top: { kind: "line", trigger: "state", blink: false },
+      bottom: { kind: "glow", trigger: "always", blink: false },
     });
 
   /** 上下两条边各存各的画法。0.6.4 整盏灯只有一个 `data-edge`。 */
@@ -494,10 +497,10 @@ describe("edgeLightKinds", () => {
     expect(edgeLightKinds(mixed())).toEqual({ top: "line", bottom: "glow" });
     expect(
       cornerLights(
-        lights({ tl: { kind: "state", trigger: "state" } }),
+        lights({ tl: { kind: "state", trigger: "state", blink: false } }),
         facts,
       ),
-    ).toEqual([{ pos: "tl", kind: "state" }]);
+    ).toEqual([{ pos: "tl", kind: "state", blink: false }]);
   });
 
   /** 真灯上每条边各判各的：出错时上边才亮，下边始终亮。 */
@@ -511,12 +514,12 @@ describe("edgeLightKinds", () => {
   /** 六个槽共用一份「指定状态 / 指定时段」参数，不各存一份。 */
   it("shares one parameter set across all six slots", () => {
     const six = lights({
-      top: { kind: "line", trigger: "state" },
-      bottom: { kind: "line", trigger: "state" },
-      tl: { kind: "state", trigger: "schedule" },
-      tr: { kind: "state", trigger: "schedule" },
-      br: { kind: "state", trigger: "schedule" },
-      bl: { kind: "state", trigger: "schedule" },
+      top: { kind: "line", trigger: "state", blink: false },
+      bottom: { kind: "line", trigger: "state", blink: false },
+      tl: { kind: "state", trigger: "schedule", blink: false },
+      tr: { kind: "state", trigger: "schedule", blink: false },
+      br: { kind: "state", trigger: "schedule", blink: false },
+      bl: { kind: "state", trigger: "schedule", blink: false },
     });
     const ctx: LightContext = {
       state: "error",
@@ -626,5 +629,80 @@ describe("time helpers", () => {
   it("keeps the boundary half-open so 18:00 is outside 09:00–18:00", () => {
     expect(inTimeWindow(9 * 60, 9 * 60, 18 * 60)).toBe(true);
     expect(inTimeWindow(18 * 60, 9 * 60, 18 * 60)).toBe(false);
+  });
+});
+
+/**
+ * 0.6.6：边灯 / 角灯可以闪了。
+ *
+ * 两条判据必须一起成立才播动画：**这个槽自己打开了**，且**它此刻真的亮着**。
+ * 少判一条的表现分别是「没开的灯也在闪」和「开了却没反应」—— 后者正是 0.6.5
+ * 角灯写死常亮时用户遇到的那个问题。
+ */
+describe("边灯 / 角灯的闪烁", () => {
+  const mixed = () =>
+    lights({
+      top: { kind: "line", trigger: "always", blink: true },
+      bottom: { kind: "glow", trigger: "attention", blink: true },
+    });
+
+  it("只在槽打开了闪烁、且这条边亮着时才闪", () => {
+    const working: LightContext = { state: "working", quiet: false };
+    expect(edgeBlinks(mixed(), working)).toEqual({ top: true, bottom: false });
+    const asking: LightContext = { state: "permission", quiet: false };
+    expect(edgeBlinks(mixed(), asking)).toEqual({ top: true, bottom: true });
+  });
+
+  it("边本身不画时不算闪 —— 没画出来的东西没有节奏", () => {
+    const off = lights({ top: { kind: "off", trigger: "always", blink: true } });
+    expect(edgeBlinks(off).top).toBe(false);
+  });
+
+  it("槽没开闪烁时一条动画都不播", () => {
+    const steady = lights({ top: { kind: "line", trigger: "always", blink: false } });
+    expect(edgeBlinks(steady).top).toBe(false);
+  });
+
+  it("角灯把槽里的 blink 原样带出来", () => {
+    const withBlink = lights({
+      tl: { kind: "state", trigger: "always", blink: true },
+      tr: { kind: "muted", trigger: "always", blink: false },
+    });
+    expect(cornerLights(withBlink, { pinned: false, muted: true, staleProgress: null })).toEqual([
+      { pos: "tl", kind: "state", blink: true },
+      { pos: "tr", kind: "muted", blink: false },
+    ]);
+  });
+
+  /** 节奏跟着状态走：和灯珠用同一个配方，只是换 keyframe。 */
+  it("按状态节奏给时长", () => {
+    const settings = withSettings({});
+    expect(lightBlink(settings, "working")).toBe("light-blink 1600ms ease-in-out infinite");
+    // error 是硬闪（steps），边灯同样该硬闪 —— 报警不该读成呼吸
+    expect(lightBlink(settings, "error")).toBe("light-blink 340ms steps(2, end) infinite");
+  });
+
+  it("全局倍率作用于配方，也作用于兜底周期", () => {
+    const fast = withSettings({ blink_speed: 200 });
+    expect(lightBlink(fast, "working")).toBe("light-blink 800ms ease-in-out infinite");
+    expect(lightBlink(fast, "done")).toBe(
+      `light-blink ${Math.round(LIGHT_BLINK_FALLBACK_MS / 2)}ms ease-in-out infinite`,
+    );
+  });
+
+  /** 常亮状态（done / idle）本来没有节奏，但开关打开后必须动起来。 */
+  it("常亮状态给兜底周期，而不是什么都不发生", () => {
+    const settings = withSettings({});
+    expect(lightBlink(settings, "done")).toBe(
+      `light-blink ${LIGHT_BLINK_FALLBACK_MS}ms ease-in-out infinite`,
+    );
+  });
+
+  /** 逐个状态设的节奏优先于配方 —— 和灯珠的优先级一致。 */
+  it("用户单独设过节奏就照那个来", () => {
+    const settings = withSettings({
+      styles: { working: { color: null, shape: null, blink_ms: 500, ttl_ms: null } },
+    });
+    expect(lightBlink(settings, "working")).toBe("light-blink 500ms ease-in-out infinite");
   });
 });
