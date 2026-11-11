@@ -89,4 +89,33 @@ describe("样式表", () => {
     // 文件以 `}` 收尾：尾巴被吞掉时，最后几行会是一条没结束的注释或声明
     expect(lampCss.trimEnd().endsWith("}")).toBe(true);
   });
+
+  /**
+   * 设置页那条子页切换（`LocalTabs`）必须是**分区条**，不能退回成一排小字。
+   *
+   * 0.6.6 的起因是用户根本没看出「基础 / 质感」是个会换掉大半页内容的开关 ——
+   * 它当时是 12.5px 的透明文字。让它退回去只需要删几行样式，而「顺手简化掉
+   * 一个看着多余的控件」正是这类回归最常见的来路，所以拿测试钉住那三个特征：
+   * 吸顶、等宽铺满、细线轨道。
+   */
+  it("子页切换是等宽分区条，不是一排链接", () => {
+    const start = settingsCss.indexOf(".settings .local-tabs {");
+    expect(start, "settings.css 里找不到 .local-tabs").toBeGreaterThan(-1);
+    const rule = settingsCss.slice(start, settingsCss.indexOf("}", start));
+    // 吸顶：子页比一屏长时，另一边还有一页这件事得一直看得见
+    expect(rule).toContain("position: sticky");
+    // 细线轨道：有它才像「分区边界」，没它就是一排漂浮的文字
+    expect(rule).toContain("border-top: 1px solid var(--line)");
+
+    // 等宽铺满：靠 flex 让每一格自己撑开，而不是按文字长度挤在左边
+    const btnStart = settingsCss.indexOf(".settings .local-tabs button {");
+    expect(btnStart, "settings.css 里找不到 .local-tabs button").toBeGreaterThan(-1);
+    const btn = settingsCss.slice(btnStart, settingsCss.indexOf("}", btnStart));
+    expect(btn).toContain("flex: 1 1 0");
+
+    // 每格下面的那行说明（三个子页靠它区分）
+    expect(settingsCss).toContain(".settings .local-tabs .tab-hint");
+    // 旧的紧凑内边距不能再回来 —— 3px 9px 是页脚链接的分量
+    expect(settingsCss.includes("padding: 3px 9px")).toBe(false);
+  });
 });

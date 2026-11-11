@@ -494,6 +494,10 @@ export interface Messages {
   /** 外观页的两个子页。「基础」放尺寸 / 形态 / 配色，「质感」放牌的画法。 */
   lookTabBasic: string;
   lookTabTexture: string;
+  /** 两个子页各自那句「这页放什么」。光看「基础 / 质感」猜不出差别，得写出来。 */
+  lookTabBasicHint: string;
+  lookTabTextureHint: string;
+  lookTabLightsHint: string;
   /** 质感子页顶上那句「只改画法、不动几何」。 */
   textureHint: string;
   signRadius: string;
@@ -1628,6 +1632,9 @@ export const MESSAGES: Record<Lang, Messages> = {
     paletteVivid: "高饱和",
     lookTabBasic: "基础",
     lookTabTexture: "质感",
+    lookTabBasicHint: "大小、形态、配色",
+    lookTabTextureHint: "圆角、描边、底色、字号",
+    lookTabLightsHint: "六个灯位、粗细、明暗",
     textureHint:
       "这几项只改牌面的画法，不改牌子和窗口的大小 —— 怎么调都不会裁掉内容。",
     signRadius: "圆角",
@@ -2719,6 +2726,9 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     paletteVivid: "Vivid",
     lookTabBasic: "Basics",
     lookTabTexture: "Texture",
+    lookTabBasicHint: "Size, form, palette",
+    lookTabTextureHint: "Corners, border, fill, type",
+    lookTabLightsHint: "Six slots, weight, opacity",
     textureHint:
       "These change how the sign is drawn, not how big it is — the window is sized from the dot size and the multipliers, so nothing here can clip.",
     signRadius: "Corners",

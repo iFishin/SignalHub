@@ -1751,13 +1751,19 @@ export function SettingsPanel({ snapshot }: Props) {
   const [callmeSub, setCallmeSub] = useState<"links" | "server">("links");
   const [systemSub, setSystemSub] = useState<"general" | "update" | "data">("general");
   /**
-   * 外观页的两个子页。
+   * 外观页的三个子页。
    *
-   * 「基础」= 牌子多大、什么形态、什么配色；「质感」= 牌怎么画（圆角 / 描边 /
-   * 底色 / 字号 / 分层）。拆开是因为这一页原本已经九行控件 + 一张十行的逐状态表，
-   * 再加五项会把「预设」和「预览」推出首屏 —— 而那两样才是这一页的入口。
+   * 「基础」= 牌子多大、什么形态、什么配色（含整套皮肤）；「质感」= 牌怎么画
+   * （圆角 / 描边 / 底色 / 字号 / 分层）；「边框光」= 边和角上那六个灯位，外加
+   * 粗细 / 明暗 / 取色三把尺。
+   *
+   * 拆开是因为这一页原本已经十五行控件 + 一张十行的逐状态表，一屏完全装不下，
+   * 而「预设」和「预览」才是入口。**三个平级子页 + 一条醒目的切换条**，不是
+   * 两个子页 + 一段夹在中间的常驻控件：0.6.6 之前边框光常驻、基础 / 质感只是
+   * 一个夹在它下面的小标签，用户根本注意不到后半页还有东西（原话：「明明是
+   * 大的功能切换，但这里就是普通的按钮，很容易忽略掉」）。
    */
-  const [lookSub, setLookSub] = useState<"basic" | "texture">("basic");
+  const [lookSub, setLookSub] = useState<"basic" | "texture" | "lights">("basic");
   // 纸条要在**每次窗口显形时**重读。设置窗启动就以 `visible: false` 建好、之后
   // 只是 `show()`（见 `lib.rs` 的 `reveal_settings`），组件不会重新挂载 —— 只在
   // 初始化时读一次的话，用户点「接入」时写下的纸条永远不会被看到。
@@ -1857,9 +1863,10 @@ export function SettingsPanel({ snapshot }: Props) {
   // 逐状态那张表默认收起（十行表和上面九行不是一个量级）。它记的是**用户**的
   // 展开意图，所以放在 state 里；切走再切回来会保留（组件没卸载）。
   const [perStateOpen, setPerStateOpen] = useState(false);
-  // 六灯位控件**常驻，不折叠**。0.6.3 那轮把四角收在「质感」子页末尾，用户
-  // 进「外观」根本找不到（原话：「外观里无法设置和查看」）；0.6.5 六行比四行
-  // 更需要一眼看全，折叠只会把「上下边能各调各的」这件新事重新藏起来。
+  // 六灯位控件**常驻、不折叠**。0.6.3 那轮把四角收在「质感」子页末尾，用户
+  // 进「外观」根本找不到（原话：「外观里无法设置和查看」）。0.6.6 给了它们
+  // 专属的一页「边框光」，切换条上就有这个名字 —— 一整页，不是子页里的一个小节，
+  // 也不再折叠：六行比四行更需要一眼看全。
   // 发布说明默认收起：它是**可选阅读**（想知道改了什么才看），不该把系统页撑长
   const [notesOpen, setNotesOpen] = useState(false);
   // 收起时那一行摘要要用：有几个状态被单独设过。判据和表里那个 `stateOverridden`
@@ -3102,202 +3109,57 @@ export function SettingsPanel({ snapshot }: Props) {
         return (
           <>
             <PageHeader title={m.tabLook} hint={m.pageHint.look} />
-            {/* 预览常驻在两个子页之上：无论调「有多大」还是「怎么画」，改的都是
-                它。放进子页的话，切到「质感」就得往下滚才知道效果 —— 而两个子页
-                回答的本来是同一个问题：这块牌长什么样。 */}
+            {/* 预览常驻在三个子页之上：无论调「有多大」「怎么画」还是「边和角上
+                放什么灯」，改的都是它。放进子页的话，切到「质感」就得往下滚才
+                知道效果 —— 而三个子页回答的本来是同一个问题：这块牌长什么样。 */}
             <div className="section-title">{m.previewTitle}</div>
             <LampPreview settings={settings} />
             <p className="hint">{m.previewHint}</p>
 
-            {/* ---- 皮肤 ----------------------------------------------------------
-                放在预览正下方：一次改十一项，是这一页「动作最大」的一下，必须和
-                预览同屏才看得出换成了什么。和下面那四套「外观预设」不是一回事：
-                预设只管大小 / 透明度 / 显示哪几段，皮肤管的是整套主题（配色、牌底、
-                形状、轮廓、动效，以及六个灯位的画法**和**触发）。
-                换肤会覆盖六行触发条件 —— 这句写在文案里，不让它变成一次静默覆盖。 */}
-            <div className="section-title">{m.skinTitle}</div>
-            <p className="hint">{m.skinHint}</p>
-            <div className="seg">
-              {skinChoices.map((skin) => (
-                <button
-                  key={skin.id}
-                  type="button"
-                  title={skin.hint}
-                  data-active={isActiveSkin(skin, settings)}
-                  onClick={() => patch(skin.apply)}
-                >
-                  {skin.label}
-                </button>
-              ))}
-            </div>
-
-            {/* ---- 六个灯位画成什么样 --------------------------------------------
-                0.6.4 的「一条轨 + 四个角共用一个 gate」让用户没法分别给上下边、
-                四个角挑东西（原话：「整合在一起了，不好个性化设置」）。现在六行
-                常驻在预览下面：改的就是预览里那两块牌的边和角，控件与效果同屏。
-                「什么时候亮」不在这儿，在「行为」页 —— 那是另一类问题。 */}
-            <div className="section-title">{m.frameLight}</div>
-            <p className="hint">{m.frameLightHint}</p>
-            {EDGE_SLOTS.map((pos) => (
-              <Row
-                key={pos}
-                label={slotLabel(pos, m)}
-                onReset={resetSlotFor(settings, pos, "kind", patch)}
-              >
-                {/* 画法 + 闪烁并排：两样都是「这条边画成什么样」，分到两行会让
-                    六行变十二行，而它们回答的是同一个问题。 */}
-                <span className="slot-ctl">
-                  <select
-                    className="select"
-                    value={settings.sign_lights[pos].kind}
-                    onChange={(event) =>
-                      patch({
-                        sign_lights: withLightSlot(settings.sign_lights, pos, {
-                          kind: event.target.value,
-                        }),
-                      })
-                    }
-                  >
-                    {edgeChoices.map((choice) => (
-                      <option key={choice.value} value={choice.value}>
-                        {choice.label}
-                      </option>
-                    ))}
-                  </select>
-                  {/* 不亮的那条边没有「闪」这回事，开关直接禁用 —— 打开一个
-                      毫无反应的开关，正是这一版要修的那类问题。 */}
-                  <Switch
-                    on={settings.sign_lights[pos].blink}
-                    onChange={(on) =>
-                      patch({
-                        sign_lights: withLightSlot(settings.sign_lights, pos, {
-                          blink: on,
-                        }),
-                      })
-                    }
-                    disabled={settings.sign_lights[pos].kind === "off"}
-                    label={`${slotLabel(pos, m)} · ${m.slotBlink}`}
-                    title={m.slotBlinkHint}
-                  />
-                </span>
-              </Row>
-            ))}
-            {CORNER_SLOTS.map((pos) => (
-              <Row
-                key={pos}
-                label={slotLabel(pos, m)}
-                onReset={resetSlotFor(settings, pos, "kind", patch)}
-              >
-                <span className="slot-ctl">
-                  <select
-                    className="select"
-                    value={settings.sign_lights[pos].kind}
-                    onChange={(event) =>
-                      patch({
-                        sign_lights: withLightSlot(settings.sign_lights, pos, {
-                          kind: event.target.value,
-                        }),
-                      })
-                    }
-                  >
-                    {cornerChoices.map((choice) => (
-                      <option key={choice.value} value={choice.value}>
-                        {choice.label}
-                      </option>
-                    ))}
-                  </select>
-                  <Switch
-                    on={settings.sign_lights[pos].blink}
-                    onChange={(on) =>
-                      patch({
-                        sign_lights: withLightSlot(settings.sign_lights, pos, {
-                          blink: on,
-                        }),
-                      })
-                    }
-                    disabled={settings.sign_lights[pos].kind === "empty"}
-                    label={`${slotLabel(pos, m)} · ${m.slotBlink}`}
-                    title={m.slotBlinkHint}
-                  />
-                </span>
-              </Row>
-            ))}
-            <p className="hint">{m.slotsHint}</p>
-
-            {/* 三把尺子：边灯的线宽和角灯的直径**共用一档**，取色和明暗也共用。
-                分开设四行只会让人调出「一条粗线配四颗小芝麻」。 */}
-            <Row
-              label={m.lightScale}
-              hint={m.lightScaleHint}
-              onReset={resetFor(settings, "sign_light_scale", patch)}
-            >
-              <div className="seg">
-                {scaleChoices.map((choice) => (
-                  <button
-                    key={choice.value}
-                    type="button"
-                    data-active={settings.sign_light_scale === choice.value}
-                    onClick={() => patch({ sign_light_scale: choice.value })}
-                  >
-                    {choice.label}
-                  </button>
-                ))}
-              </div>
-            </Row>
-
-            <Row
-              label={m.lightAlpha}
-              onReset={resetFor(settings, "sign_light_alpha", patch)}
-            >
-              <div className="seg">
-                {alphaChoices.map((choice) => (
-                  <button
-                    key={choice.value}
-                    type="button"
-                    data-active={settings.sign_light_alpha === choice.value}
-                    onClick={() => patch({ sign_light_alpha: choice.value })}
-                  >
-                    {choice.label}
-                  </button>
-                ))}
-              </div>
-            </Row>
-
-            <Row
-              label={m.frameColor}
-              hint={m.frameColorHint}
-              onReset={resetFor(settings, "sign_light_color", patch)}
-            >
-              <div className="seg">
-                {lightColorChoices.map((choice) => (
-                  <button
-                    key={choice.value}
-                    type="button"
-                    data-active={settings.sign_light_color === choice.value}
-                    onClick={() => patch({ sign_light_color: choice.value })}
-                  >
-                    {choice.label}
-                  </button>
-                ))}
-              </div>
-            </Row>
-
-            {/* 拆子页的理由：这一页原本九行控件 + 一张十行的逐状态表，再加五项会
-                把「预设」和「预览」推出首屏，而那两样才是它的入口。
-                预设留在「基础」页最上面 —— 它同时改两页的值（尺寸 + 圆角 + 描边
-                + 字号），所以不能归到其中一页里去。 */}
+            {/* 三个子页是这一页的**入口**，就贴在预览下面：预览之上没有任何控件，
+                所以它是第一屏里第一个能点的地方。0.6.6 之前它夹在「边框光」那六行
+                之后，长得又是一排 12.5px 的透明文字 —— 用户原话「明明是大的功能
+                切换，但这里就是普通的按钮，很容易忽略掉」。
+                三个子页各自回答一个问题：多大、什么形态（基础）；牌怎么画（质感）；
+                边和角上的灯（边框光）。标签用各自的节标题，点上去和页里的标题是
+                同一个词，不用猜。 */}
             <LocalTabs
               label={m.tabLook}
               value={lookSub}
               onChange={setLookSub}
               items={[
-                { id: "basic" as const, label: m.lookTabBasic },
-                { id: "texture" as const, label: m.lookTabTexture },
+                { id: "basic" as const, label: m.lookTabBasic, hint: m.lookTabBasicHint },
+                { id: "texture" as const, label: m.lookTabTexture, hint: m.lookTabTextureHint },
+                { id: "lights" as const, label: m.frameLight, hint: m.lookTabLightsHint },
               ]}
             />
 
             {lookSub === "basic" && (
               <LocalPanel id="basic">
+                {/* ---- 皮肤 ----------------------------------------------------------
+                    放在「基础」页最上面：一次改十一项，是这一页「动作最大」的一
+                    下，也是所有细调的起点 —— 先挑一套，再进另外两页改。它横跨三页
+                    的内容（大小 / 圆角 / 描边 / 牌底 / 字号 / 六灯位的画法与触发），
+                    所以只能挂在其中一页；挂「基础」是因为「换一套样子」本来就是这
+                    一页的主语。和下面那四套「外观预设」不是一回事：预设只管大小 /
+                    透明度 / 显示哪几段。换肤会覆盖六个灯位的触发条件 —— 这句写在
+                    文案里，不让它变成一次静默覆盖。 */}
+                <div className="section-title">{m.skinTitle}</div>
+                <p className="hint">{m.skinHint}</p>
+                <div className="seg">
+                  {skinChoices.map((skin) => (
+                    <button
+                      key={skin.id}
+                      type="button"
+                      title={skin.hint}
+                      data-active={isActiveSkin(skin, settings)}
+                      onClick={() => patch(skin.apply)}
+                    >
+                      {skin.label}
+                    </button>
+                  ))}
+                </div>
+
                 <Row label={m.presets}>
                   {/* 同上：一组里选一个，所以是 seg 不是 chip。 */}
                   <div className="seg">
@@ -3701,6 +3563,165 @@ export function SettingsPanel({ snapshot }: Props) {
                 </Row>
 
                 {/* 「角灯」也搬走了，理由同上。这一子页现在只管牌面本身的质感。 */}
+              </LocalPanel>
+            )}
+
+            {/* 「边框光」单列一页，而不是塞回「质感」：0.6.3 把它收在「质感」子页
+                末尾，用户的反馈是「外观里无法设置和查看」。现在切换条上就有这个词，
+                它是与「基础 / 质感」平级的一页，六行 + 三把尺正好一屏。 */}
+            {lookSub === "lights" && (
+              <LocalPanel id="lights">
+                {/* ---- 六个灯位画成什么样 --------------------------------------------
+                    0.6.4 的「一条轨 + 四个角共用一个 gate」让用户没法分别给上下边、
+                    四个角挑东西（原话：「整合在一起了，不好个性化设置」）。这一页
+                    就是六行常驻的地方：控件与预览里的边、角同屏。
+                    不再写一行「边框光」节标题 —— 上面那格切换已经写着这个词了。
+                    「什么时候亮」不在这儿，在「行为」页 —— 那是另一类问题。 */}
+                <p className="hint">{m.frameLightHint}</p>
+                {EDGE_SLOTS.map((pos) => (
+                  <Row
+                    key={pos}
+                    label={slotLabel(pos, m)}
+                    onReset={resetSlotFor(settings, pos, "kind", patch)}
+                  >
+                    {/* 画法 + 闪烁并排：两样都是「这条边画成什么样」，分到两行会让
+                        六行变十二行，而它们回答的是同一个问题。 */}
+                    <span className="slot-ctl">
+                      <select
+                        className="select"
+                        value={settings.sign_lights[pos].kind}
+                        onChange={(event) =>
+                          patch({
+                            sign_lights: withLightSlot(settings.sign_lights, pos, {
+                              kind: event.target.value,
+                            }),
+                          })
+                        }
+                      >
+                        {edgeChoices.map((choice) => (
+                          <option key={choice.value} value={choice.value}>
+                            {choice.label}
+                          </option>
+                        ))}
+                      </select>
+                      {/* 不亮的那条边没有「闪」这回事，开关直接禁用 —— 打开一个
+                          毫无反应的开关，正是这一版要修的那类问题。 */}
+                      <Switch
+                        on={settings.sign_lights[pos].blink}
+                        onChange={(on) =>
+                          patch({
+                            sign_lights: withLightSlot(settings.sign_lights, pos, {
+                              blink: on,
+                            }),
+                          })
+                        }
+                        disabled={settings.sign_lights[pos].kind === "off"}
+                        label={`${slotLabel(pos, m)} · ${m.slotBlink}`}
+                        title={m.slotBlinkHint}
+                      />
+                    </span>
+                  </Row>
+                ))}
+                {CORNER_SLOTS.map((pos) => (
+                  <Row
+                    key={pos}
+                    label={slotLabel(pos, m)}
+                    onReset={resetSlotFor(settings, pos, "kind", patch)}
+                  >
+                    <span className="slot-ctl">
+                      <select
+                        className="select"
+                        value={settings.sign_lights[pos].kind}
+                        onChange={(event) =>
+                          patch({
+                            sign_lights: withLightSlot(settings.sign_lights, pos, {
+                              kind: event.target.value,
+                            }),
+                          })
+                        }
+                      >
+                        {cornerChoices.map((choice) => (
+                          <option key={choice.value} value={choice.value}>
+                            {choice.label}
+                          </option>
+                        ))}
+                      </select>
+                      <Switch
+                        on={settings.sign_lights[pos].blink}
+                        onChange={(on) =>
+                          patch({
+                            sign_lights: withLightSlot(settings.sign_lights, pos, {
+                              blink: on,
+                            }),
+                          })
+                        }
+                        disabled={settings.sign_lights[pos].kind === "empty"}
+                        label={`${slotLabel(pos, m)} · ${m.slotBlink}`}
+                        title={m.slotBlinkHint}
+                      />
+                    </span>
+                  </Row>
+                ))}
+                <p className="hint">{m.slotsHint}</p>
+
+                {/* 三把尺子：边灯的线宽和角灯的直径**共用一档**，取色和明暗也共用。
+                    分开设四行只会让人调出「一条粗线配四颗小芝麻」。 */}
+                <Row
+                  label={m.lightScale}
+                  hint={m.lightScaleHint}
+                  onReset={resetFor(settings, "sign_light_scale", patch)}
+                >
+                  <div className="seg">
+                    {scaleChoices.map((choice) => (
+                      <button
+                        key={choice.value}
+                        type="button"
+                        data-active={settings.sign_light_scale === choice.value}
+                        onClick={() => patch({ sign_light_scale: choice.value })}
+                      >
+                        {choice.label}
+                      </button>
+                    ))}
+                  </div>
+                </Row>
+
+                <Row
+                  label={m.lightAlpha}
+                  onReset={resetFor(settings, "sign_light_alpha", patch)}
+                >
+                  <div className="seg">
+                    {alphaChoices.map((choice) => (
+                      <button
+                        key={choice.value}
+                        type="button"
+                        data-active={settings.sign_light_alpha === choice.value}
+                        onClick={() => patch({ sign_light_alpha: choice.value })}
+                      >
+                        {choice.label}
+                      </button>
+                    ))}
+                  </div>
+                </Row>
+
+                <Row
+                  label={m.frameColor}
+                  hint={m.frameColorHint}
+                  onReset={resetFor(settings, "sign_light_color", patch)}
+                >
+                  <div className="seg">
+                    {lightColorChoices.map((choice) => (
+                      <button
+                        key={choice.value}
+                        type="button"
+                        data-active={settings.sign_light_color === choice.value}
+                        onClick={() => patch({ sign_light_color: choice.value })}
+                      >
+                        {choice.label}
+                      </button>
+                    ))}
+                  </div>
+                </Row>
+
               </LocalPanel>
             )}
           </>

@@ -1849,28 +1849,56 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   padding-top: 1px;
 }
 
-/* ---- 复杂页面的第二层导航 -------------------------------------------------- */
+/* ---- 复杂页面的第二层导航（页内分区切换） ---------------------------------- */
 
-/* 只给接入 / Call Me / 系统三页用，不再往下嵌一层（原因见 SettingsPage.tsx）。
-   选中态沿用 `.rail-item` / `.seg` / `.chip` 那一套：浅灰底 + 正文字色 + 500
-   字重。不给它加下划线或 accent 指示条 —— 那会和左栏的选中态打架，让人以为
-   这是两个不同层级的控件。 */
+/* 接入 / Call Me / 系统 / 外观四页共用，只这一层，不再往下嵌（原因见
+   SettingsPage.tsx）。
+
+   它是**页内的分区切换**，不是一排链接：等宽铺满、细线轨道、选中格换底色。
+   0.6.6 之前这里是 12.5px 的透明文字按钮 —— 用户原话「明明是大的功能切换，
+   但这里就是普通的按钮，很容易忽略掉」。一个切换换掉大半页控件，长得却和
+   页脚链接一个分量，是这个控件最贵的一处误导。
+
+   选中态仍是 `.rail-item` / `.seg` / `.chip` 那一套（浅灰底 + 正文字色 + 500），
+   不给它加上下划线或 accent 竖条：左栏已经有选中态，两种指示语言并排出现，
+   会让人以为这是两个不同层级的控件。
+
+   方角、贴边，是刻意的：它是**分界线**，不是卡片。四角磨圆会像一枚飘在内容上
+   的浮层，滚起来时圆角缺口还会漏出底下的字。 */
 .settings .local-tabs {
   display: flex;
-  flex-wrap: wrap;
-  gap: 2px;
-  margin-bottom: 12px;
+  /* 吸顶：子页比一屏长时，滚到「质感」中间也看得见「基础」还在。`--bg` 是必需的
+     —— 不铺底色，下面的控件会从条子里透出来。`top: 0` 贴着 `.page` 的滚动口，
+     也就是内容区顶端，而不是窗口顶端（标题区和左栏不收滚动）。 */
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  /* 和下一段留白：轨道自己就是分隔线，再加 margin-top 会变成两条平行的细线。 */
+  margin-bottom: 14px;
 }
 
 .settings .local-tabs button {
-  padding: 3px 9px;
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+  padding: 7px 11px 8px;
   border: 0;
-  border-radius: 5px;
   background: transparent;
   color: var(--muted);
   font: inherit;
   font-size: 12.5px;
+  text-align: left;
   cursor: pointer;
+}
+
+/* 格与格之间也只用 1px 细线，不加 gap —— 有缝就成了三枚独立按钮。 */
+.settings .local-tabs button + button {
+  border-left: 1px solid var(--line);
 }
 
 .settings .local-tabs button:hover {
@@ -1881,7 +1909,26 @@ input[type="color"].style-swatch::-webkit-color-swatch {
 .settings .local-tabs button[data-active="true"] {
   background: var(--hover);
   color: var(--fg);
+}
+
+/* 标题行加粗一点点，小字保持灰：层次靠字重与灰度，不靠第二种颜色。 */
+.settings .local-tabs .tab-label {
   font-weight: 500;
+}.settings .local-tabs .tab-hint {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.35;
+  /* 窄窗 / 英文长句换行，不截断：三格等高（flex 默认 stretch），换行比省略号
+     诚实 —— 「Corners, border, fill, …」省掉的正是它区别于旁边那格的那半句。 */
+  white-space: normal;
+}
+
+/* 切换条自己就是一道分隔线：紧跟在它后面的第一个 `.section` 去掉自己的上边线，
+   否则会出现两条相隔 14px 的平行细线（「接入」页的子页就是这么开头的）。 */
+.settings .local-tabs + .local-panel > .section:first-child {
+  padding-top: 0;
+  border-top: 0;
 }
 
 .settings .demo-tab .hint {
