@@ -134,11 +134,15 @@ pub struct NativeText {
     pub menu_collapse: &'static str,
     pub menu_expand: &'static str,
     pub menu_settings: &'static str,
+    /// 「打开项目目录」。点通知本体做的是同一件事，但通知上不再有这枚按钮 ——
+    /// 见 `alerts.rs::wire_actions`。文案只留这一份，两处不会各写各的。
+    pub menu_open_dir: &'static str,
 
-    // ---- 系统通知 ----
-    // `action_reveal` 组右键菜单里那一项也用：两处做的是同一件事（在文件管理器里
-    // 打开该组的项目目录），文案分开写迟早会漂移。
-    pub action_reveal: &'static str,
+    // ---- 系统通知上的动作按钮 ----
+    /// 「已知晓」：**只收起这条通知**，不改灯、不静音、也不碰重复提醒链。
+    /// 它在动作列表里排第一个是刻意的（macOS 点「选项」会上报第一个动作），
+    /// 详见 `alerts.rs::ACTION_ACK`。
+    pub action_ack: &'static str,
     pub action_mute: &'static str,
     pub pass_through_title: &'static str,
 
@@ -271,8 +275,9 @@ static ZH: NativeText = NativeText {
     menu_collapse: "折叠成一颗灯",
     menu_expand: "展开牌面",
     menu_settings: "打开设置…",
+    menu_open_dir: "打开项目目录",
 
-    action_reveal: "打开项目目录",
+    action_ack: "已知晓",
     action_mute: "静音该组",
     pass_through_title: "已进入点击穿透模式",
 
@@ -309,8 +314,9 @@ static EN: NativeText = NativeText {
     menu_collapse: "Collapse to a light",
     menu_expand: "Expand signs",
     menu_settings: "Open settings…",
+    menu_open_dir: "Open project folder",
 
-    action_reveal: "Open project folder",
+    action_ack: "Got it",
     action_mute: "Mute this group",
     pass_through_title: "Click-through mode is on",
 
@@ -402,7 +408,8 @@ mod tests {
             en.menu_collapse,
             en.menu_expand,
             en.menu_settings,
-            en.action_reveal,
+            en.menu_open_dir,
+            en.action_ack,
             en.action_mute,
             en.pass_through_title,
             en.manual_title,

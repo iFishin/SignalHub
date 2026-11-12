@@ -3205,7 +3205,7 @@ pub fn run() {
             }
 
             alerts::ensure_permission(app.handle(), &settings);
-            // 通知上的动作按钮（打开项目目录 / 静音该组）。注册类型和挂处理函数
+            // 通知上的动作按钮（已知晓 / 静音该组）。注册类型和挂处理函数
             // 必须一起做，只做一半的表现是「按钮从来没见过」且不报错。
             alerts::wire_actions(app.handle());
 

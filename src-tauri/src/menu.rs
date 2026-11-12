@@ -86,7 +86,7 @@ pub fn show(app: &AppHandle, window: &WebviewWindow, group: &str) -> Result<(), 
     let open_dir = MenuItem::with_id(
         app,
         OPEN_DIR,
-        t.action_reveal,
+        t.menu_open_dir,
         project_dir.is_some(),
         None::<&str>,
     )

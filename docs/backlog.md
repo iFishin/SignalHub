@@ -105,7 +105,7 @@ D2（ntfy / Bark 预设）已作为**转发 preset** 落地（`plan-hub-round2.m
 | **AppImage 解包跑 `--version`** | macOS 上打不开 squashfs，这轮没做 | `plan-round3.md:402-405` |
 | **`releases/latest` 端到端更新** | 要真发一版更高版本才能验；下一次正常发版就是那次验收 | `plan-round3.md:372-374` |
 | **Linux 包真机** | 没有 Linux 真机；`.deb` 只解包看过 | `plan-round3.md:39`、`:396` |
-| **通知动作按钮** | dev 跑的是裸二进制，`UNUserNotificationCenter` 需要 bundle id；「按钮出现且点了触发」无实证 | `architecture.md:753` |
+| **通知动作按钮** | dev 跑的是裸二进制，`UNUserNotificationCenter` 需要 bundle id；「按钮出现且点了触发」无实证。**本轮（未发版）按钮换成「已知晓 / 静音该组」**，另要真机确认：① Windows 上点「已知晓」是否真的收起 toast（依赖系统 foreground 激活，处理函数刻意是空的）；② 点通知本体是否仍打开项目目录；③ macOS 上误触「选项」菜单不再弹出 Finder | `architecture.md` §3.19 |
 | **Windows 灯球拖拽** | 窗口配了 `focus: false`，理论可行但没真机试过；**拖动是基本操作，优先验** | `architecture.md:1204` |
 | **CSC 真机（#22）** | 适配器写了，没在真机上跑过 | `plan-round5.md:95` |
 | **B4 预设 2 / 会议蓝配色（#21）** | 真窗口视觉验收 | `plan-round5.md:94` |

@@ -309,9 +309,17 @@ fn sound_name(sound: bool) -> Option<&'static str> {
 /// `UNNotificationCategory` 那一套，插件在三个桌面上都抹平了。
 const ACTION_TYPE_ID: &str = "signalhub.alert";
 
-/// 「打开项目目录」。**放第一个是刻意的**：macOS 上按钮收在「选项」菜单里，
-/// 而点「选项」本身会上报第一个动作，所以第一个必须是点了也无害的那个。
-const ACTION_REVEAL: &str = "reveal";
+/// 「已知晓」—— **只收起这条通知**，不改灯、不静音、不碰重复提醒链。
+///
+/// **放第一个是刻意的**：macOS 上两个及以上的动作会收进「选项」菜单，而点
+/// 「选项」本身会上报第一个动作。旧版第一个是「打开项目目录」，于是展开菜单
+/// 会莫名开一个 Finder 窗口；换成「已知晓」之后，这个误触只剩「收起通知」，
+/// 连状态都不变 —— 它正是那个「点了也无害」的动作。
+///
+/// 为什么处理函数是空的：Windows 上动作按钮是 foreground 激活，点下去系统自己
+/// 收起 toast；而插件的 `remove_active` 在 macOS / Windows 是空实现（2.6.0 的
+/// 文档明写），应用没有可以主动调的关闭接口。想真的不再被打扰，用「静音该组」。
+const ACTION_ACK: &str = "ack";
 
 /// 「静音该组」
 const ACTION_MUTE: &str = "mute";
@@ -451,6 +459,34 @@ fn show(
     }
 }
 
+/// 通知上两枚按钮的 id 与文案。**数组的顺序是契约，不是排版**：第一个动作会被
+/// macOS 的「选项」菜单误触（见 `ACTION_ACK`），所以必须是那个什么也不改的。
+///
+/// 抽成纯函数是为了能单测这条约束 —— `wire_actions` 要 `AppHandle`，测试里造不出来。
+fn action_defs(t: &crate::lang::NativeText) -> [(&'static str, &'static str); 2] {
+    [(ACTION_ACK, t.action_ack), (ACTION_MUTE, t.action_mute)]
+}
+
+/// 一次通知交互要做什么。同样抽成纯函数，让「点本体仍打开项目目录」和
+/// 「已知晓不落到任何有副作用的分支」这两条能被测到。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AlertAction {
+    Reveal,
+    Acknowledge,
+    Mute,
+}
+
+fn classify(action_id: &str) -> Option<AlertAction> {
+    match action_id {
+        // 点通知本体 = 「知道了，我去看看」。按钮里已经没有这一项了，但主操作
+        // 仍在卡面上 —— 什么都不做会让人觉得点了没反应。
+        "tap" => Some(AlertAction::Reveal),
+        ACTION_ACK => Some(AlertAction::Acknowledge),
+        ACTION_MUTE => Some(AlertAction::Mute),
+        _ => None,
+    }
+}
+
 /// 注册通知上的动作按钮，以及它们被点之后怎么处理。
 ///
 /// **两件事必须一起做**：插件在「没有注册处理函数」时会干脆不显示按钮（否则点
@@ -464,10 +500,11 @@ pub fn wire_actions(app: &tauri::AppHandle) {
     let notification = app.notification();
     let t = crate::lang::text(crate::current_lang(app));
 
-    let actions = vec![
-        Action::builder(ACTION_REVEAL, t.action_reveal).build(),
-        Action::builder(ACTION_MUTE, t.action_mute).build(),
-    ];
+    // **顺序有约束**：macOS 上点「选项」会上报第一个动作，见 ACTION_ACK。
+    let actions = action_defs(t)
+        .into_iter()
+        .map(|(id, title)| Action::builder(id, title).build())
+        .collect();
     let action_type = ActionType::builder(ACTION_TYPE_ID).actions(actions).build();
 
     if let Err(err) = notification.register_action_types(vec![action_type]) {
@@ -480,12 +517,13 @@ pub fn wire_actions(app: &tauri::AppHandle) {
         let Some(target) = handle.state::<LastAlert>().get() else {
             return;
         };
-        match performed.action_id() {
-            // 点通知本体等同于「打开项目目录」—— 「知道了，我去看看」是最自然的
-            // 那件事，而什么都不做会让人觉得点了没反应
-            "tap" | ACTION_REVEAL => reveal(&target),
-            ACTION_MUTE => mute(&handle, &target),
-            _ => {}
+        match classify(performed.action_id()) {
+            Some(AlertAction::Reveal) => reveal(&target),
+            // 空分支是刻意的：系统点按钮时已经把这条通知收起来了，应用这边
+            // 没有状态要改。不静音、不清灯、也不取消重复提醒 —— 见 ACTION_ACK。
+            Some(AlertAction::Acknowledge) => {}
+            Some(AlertAction::Mute) => mute(&handle, &target),
+            None => {}
         }
     }) {
         eprintln!("[signalhub] 注册通知动作处理函数失败: {err}");
@@ -1216,5 +1254,29 @@ mod tests {
             (20 * 60_000..21 * 60_000).contains(&ms),
             "该取真实会话的 20 分钟，实际 {ms}"
         );
+    }
+
+    /// macOS 上点「选项」菜单本身会上报第一个动作。这一条钉住「第一个动作
+    /// 什么也不改」—— 旧版是「打开项目目录」，误触会平白开一个 Finder 窗口。
+    #[test]
+    fn the_first_notification_action_is_the_harmless_acknowledgement() {
+        let defs = action_defs(crate::lang::text(crate::config::Lang::Zh));
+        assert_eq!(defs[0].1, "已知晓");
+        assert_eq!(classify(defs[0].0), Some(AlertAction::Acknowledge));
+        assert_ne!(classify(defs[0].0), Some(AlertAction::Reveal));
+        assert_ne!(classify(defs[0].0), Some(AlertAction::Mute));
+        assert_eq!(classify(defs[1].0), Some(AlertAction::Mute));
+
+        // 按钮里没有「打开项目目录」了，但点通知本体仍要能过去看看。
+        assert_eq!(classify("tap"), Some(AlertAction::Reveal));
+        assert_eq!(classify("reveal"), None, "旧的按钮 id 不该再被接住");
+        assert_eq!(classify("something else"), None);
+    }
+
+    /// 两种语言都得有这枚按钮，且不能把中文漏进英文界面。
+    #[test]
+    fn the_acknowledgement_button_has_both_languages() {
+        assert_eq!(action_defs(crate::lang::text(crate::config::Lang::Zh))[0].1, "已知晓");
+        assert_eq!(action_defs(crate::lang::text(crate::config::Lang::En))[0].1, "Got it");
     }
 }
