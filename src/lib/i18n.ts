@@ -456,10 +456,26 @@ export interface Messages {
   form: string;
   expanded: string;
   singleLight: string;
+  foldAxis: string;
+  foldVertical: string;
+  foldHorizontal: string;
+  foldAxisHint: string;
+  foldLabel: string;
+  foldNone: string;
+  foldName: string;
+  foldIndex: string;
+  foldState: string;
+  foldLabelHint: string;
+  foldPreviewTitle: string;
   lampLayout: string;
   layoutSingle: string;
   layoutPerGroup: string;
   layoutHint: string;
+  resetLamps: string;
+  resetLampsAction: string;
+  resetLampsDone: string;
+  resetLampsEmpty: string;
+  resetLampsHint: string;
   size: string;
   shape: string;
   palette: string;
@@ -479,8 +495,7 @@ export interface Messages {
   /** 外观页里那张「牌长这样」的实时预览的标题。 */
   previewTitle: string;
   previewHint: string;
-  /** 预览牌里那个示例组名 / 示例消息（就是画出来的样子，不是真的数据）。 */
-  previewGroup: string;
+  /** 预览牌里那段示例消息（组名不再写死：走真灯的 `labelOf`，见 `LampPreview`）。 */
   previewMessage: string;
   sizeSmall: string;
   sizeMedium: string;
@@ -529,10 +544,10 @@ export interface Messages {
   gapTight: string;
   gapStandard: string;
   gapLoose: string;
-  /** 一条边怎么亮。`edgeOff` / `edgeGlow` 是 0.6.4 留下的短词，沿用不改名。 */
+  /** 一条边怎么亮。0.6.7 起四档是同一枚行沿短刻线的长短 / 明暗；key 沿用 0.6.4 的旧名，旧设置读盘不迁移。 */
   edgeOff: string;
   edgeGlow: string;
-  /** 四角在设置里的名字（左上 / 右上 / 右下 / 左下），键和 `CornerPos` 一致。 */
+  /** 行尾四格在设置里的名字（第 1～4 格，从上到下）；键仍是 `CornerPos` 的 tl/tr/br/bl。 */
   cornerPos: { tl: string; tr: string; br: string; bl: string };
   /** 每枚角灯能表达什么。`empty` = 不挂。 */
   cornerKind: Record<
@@ -617,7 +632,7 @@ export interface Messages {
   effectPulse: string;
   effectSweep: string;
   effectFade: string;
-  /** 上下两条边的画法档位；`edgeOff` / `edgeGlow` 沿用旧 key。 */
+  /** 上下两枚行沿刻线的画法档位；`off` / `line` / `fade` / `glow` 沿用旧 key，界面叫法 0.6.7 已换。 */
   edgeLine: string;
   edgeFade: string;
   /** 行为页六行灯位控件共用的标签。 */
@@ -1448,8 +1463,8 @@ export const MESSAGES: Record<Lang, Messages> = {
         body: "空闲、静默、没上报时整块压到很淡，只剩一颗浅点；一有事就恢复原来的分量。它让这盏灯平时不占注意力，而不是把提醒关掉。",
       },
       collapsed: {
-        title: "收起来，只剩一颗灯",
-        body: "单击（设置 →「行为」里可以改成打开收件箱或什么都不做）把整叠牌收成一颗灯。三组聚合成一颗点：只要有一组在等你，它就是红的。",
+        title: "收起来，默认竖排",
+        body: "单击（设置 →「行为」里可以改成打开收件箱或什么都不做）把整叠牌收成几颗灯，默认竖成一列，只占桌面一条窄边。想横着排，或让每颗灯带上组名 / 序号 / 状态，在「外观 → 基础」的「折叠排列」「折叠内容」里挑。三组聚合成一颗点：只要有一组在等你，它就是红的。",
       },
       collapsedDone: {
         title: "收起来也照样会亮",
@@ -1457,39 +1472,39 @@ export const MESSAGES: Record<Lang, Messages> = {
       },
       edgeLine: {
         title: "上边亮，下边可以仍然不亮",
-        body: "上边一道状态色的亮线，下边留着「不亮」—— 上下两条边是两个独立灯位，不再是一条轨一起开关。颜色、粗细和明暗在「外观 → 边框光」里一起调，字一个都没多。",
+        body: "上沿一枚状态色短刻线，下沿留着「不亮」—— 上下是两个独立灯位，不再是一整圈彩线一起开关。粗细、明暗和颜色在「外观 → 边框光」里一起调，牌上不多一个字。",
       },
       edgeBoth: {
         title: "上下各挑各的",
-        body: "这次上下都设成实线，但它们是两行、两个下拉：想让下边只在出错时亮、上边常亮，也只要各挑一次。四档画法还有辉光和两端淡出。",
+        body: "这次上下都挑成「刻线」，但它们是两行、两个下拉：想让下沿只在出错时亮、上沿常亮，也只要各挑一次。另外两档是「短刻」和「长刻」—— 只改这枚线的长短与明暗，没有渐变和发光。",
       },
       edgeGlow: {
-        title: "辉光：最张扬的一档",
-        body: "上下两条边都换成辉光，牌外再散一圈光。坐得远、显示器多、或者要它从余光里跳出来时用它；浅色壁纸上会淡一些，那是有意的。",
+        title: "长刻：最显眼的一档",
+        body: "上下都换成「长刻」，行沿那枚状态色短线加长到约两成行宽、亮到满。坐得远、显示器多、或者要它从余光里跳出来时用它；它仍然是一枚方头短线，不会在牌外散一圈光。",
       },
       cornersState: {
-        title: "四个角，四个是非题",
-        body: "四枚小灯就落在边框的四个转角上，跟着轮廓走，不占牌面。分别回答：有状态 / 置顶 / 静音 / 将过期。这里四枚都设成「状态色」，先让你看见它们站在哪 —— 四角在「外观」里也是四行、四个下拉。",
+        title: "行尾四格，四个是非题",
+        body: "四枚小记号竖排在每行右端，从上到下就是第 1～4 格；一律方 / 短横 / 竖条，只有主信号灯才是圆的。分别回答：有状态 / 置顶 / 静音 / 将过期。这里四格都设成「状态色」，先让你看见它们站在哪 —— 设置里也是四行、四个下拉。",
       },
       cornersMeaning: {
         title: "条件不成立，就根本不画",
-        body: "这一块牌同时满足四条 —— 有状态、被置顶、被静音、正在沉默，所以四枚都亮。任何一条不成立，那枚角灯就整个消失，而不是留一个暗点：暗点会让人以为「这个位置本来就有东西，只是没亮」，于是永远不会去设置里找。四角各自的触发还能在「行为」页单独挑。",
+        body: "这一行同时满足四条 —— 有状态、被置顶、被静音、正在沉默，所以四格都亮。任何一条不成立，那枚记号就整个消失，而不是留一个暗点：暗点会让人以为「这个位置本来就有东西，只是没亮」，于是永远不会去设置里找。四格各自的触发还能在「行为」页单独挑。",
       },
       lightTrigger: {
         title: "什么时候亮，是另一回事",
-        body: "两块牌并排：上边被设成「只在要你处理时亮」，于是等批准的那块亮、正在跑的那块不亮。外观管亮起来长什么样，行为管凭什么现在亮 —— 六个灯位各有自己的九档条件。",
+        body: "同一块板上的两行：上沿被设成「只在要你处理时亮」，于是等批准的那行亮、正在跑的那行不亮。外观管亮起来长什么样，行为管凭什么现在亮 —— 六个灯位各有自己的九档条件。",
       },
       cornerPassthrough: {
-        title: "连「点不进去」也能挂在角上",
-        body: "左上那枚空心方是「点击穿透」：开着的时候它出现，关掉就整个消失。原先窗口右上角那枚常驻的禁止图标已经撤掉了 —— 要不要看这个状态、放在哪个角，现在由你在「外观 → 边框光」的六行里定。状态本身仍在 tooltip 和托盘菜单里。",
+        title: "连「点不进去」也能占一格",
+        body: "第 1 格那枚近白竖条是「点击穿透」：开着的时候它出现，关掉就整个消失。原先窗口右上角那枚常驻的禁止图标已经撤掉了 —— 要不要看这个状态、放在第几格，现在由你在「外观 → 边框光」的六行里定。状态本身仍在 tooltip 和托盘菜单里。",
       },
       lightTriggerState: {
         title: "九种条件，六行各判各的",
-        body: "上边挑「达到指定状态 → 出错」，下边常亮，四角也常亮：出错那块上下都亮、正在跑那块只剩一条下边，四枚状态角灯两块牌都挂着。除了指定状态，还能按指定时段、沉默将尽、有没有消息、是否置顶来触发 —— 六行共用同一张条件表，但各存各的一档。",
+        body: "上沿挑「达到指定状态 → 出错」，下沿常亮，行尾四格也常亮：出错那行上下都亮、正在跑那行只剩一道下沿刻线，四枚状态色记号两行都挂着。除了指定状态，还能按指定时段、沉默将尽、有没有消息、是否置顶来触发 —— 六行共用同一张条件表，但各存各的一档。",
       },
       lookSkin: {
         title: "也能一键换整套",
-        body: "这一步是「霓虹」皮肤：配色、牌底、圆角、描边、灯珠形状、牌的轮廓、动效，以及六个灯位的画法和触发，一次全换。「外观 → 皮肤」里一共五套；只想改大小或透明度的话，下面那四套外观预设不动这些。",
+        body: "这一步是「霓虹」皮肤：配色、牌底、圆角、描边、灯珠形状、牌的轮廓、动效，以及上下长刻与行尾四格，一次全换。「外观 → 皮肤」里一共五套；只想改大小或透明度的话，下面那四套外观预设不动这些。",
       },
     },
     demoStepCount: (index, total) => `${index} / ${total}`,
@@ -1604,11 +1619,30 @@ export const MESSAGES: Record<Lang, Messages> = {
     form: "形态",
     expanded: "展开牌面",
     singleLight: "一颗灯",
+    foldAxis: "折叠排列",
+    foldVertical: "竖排",
+    foldHorizontal: "横排",
+    foldAxisHint:
+      "折叠后几颗灯往哪个方向排。默认竖排，只占桌面一条窄边；想回到旧版那样横着排就选横排。只在折叠时生效。",
+    foldLabel: "折叠内容",
+    foldNone: "只有灯",
+    foldName: "组名",
+    foldIndex: "序号",
+    foldState: "状态",
+    foldLabelHint:
+      "不想完全缩成一颗灯时，给每颗灯配一个词。带文字时几格拼成一条窄板，板宽按档位固定、比展开牌窄得多：组名约 5 个字、状态约 4 个字，再长就显示省略号，鼠标悬停能看全；横排也照样带字。只在折叠时生效。",
+    foldPreviewTitle: "折叠后",
     lampLayout: "灯的数量",
     layoutSingle: "一盏灯",
     layoutPerGroup: "每组分灯",
     layoutHint:
       "上面那一项定的是有哪些组，这一项定的是它们摆成几盏灯。「每组分灯」让每个组各有一盏能单独拖动的灯，主灯只剩全局状态；每盏灯第一次出现在屏幕右缘，拖到想要的地方后各自记住。超过 8 个组会自动变回一盏灯。",
+    resetLamps: "灯的位置",
+    resetLampsAction: "全部归位",
+    resetLampsDone: "已归位",
+    resetLampsEmpty: "已清空位置",
+    resetLampsHint:
+      "把散落在桌面各处的组灯收回屏幕右缘的默认一列，同时清掉拖过的位置记忆；下次新开的灯也会接着这列往下排。不会改变自由拖动的用法，随时可以再拖走。当前没有开着的组灯时只清记忆。灯上右键菜单（空白处或灯珠上）也有同一项。",
     size: "大小",
     shape: "形状",
     palette: "配色方案",
@@ -1627,7 +1661,6 @@ export const MESSAGES: Record<Lang, Messages> = {
     resetToDefault: "恢复默认",
     previewTitle: "预览",
     previewHint: "改上面的东西，这里立刻跟着变 —— 灯被挡住、收起来、或在另一块屏上时，这里是唯一看得见效果的地方。画的是「有活动时」的样子：安静模式压暗只在真的灯上发生。",
-    previewGroup: "订单服务",
     previewMessage: "正在跑测试",
     sizeSmall: "小",
     sizeMedium: "中",
@@ -1670,13 +1703,13 @@ export const MESSAGES: Record<Lang, Messages> = {
     fontMono: "等宽",
     signGap: "牌间距",
     signGapHint:
-      "牌竖着叠，这一项只管它们之间留多宽。它会让窗口跟着变高，所以只有三档。",
+      "多组时共享一块板，这一项管每行之间留多宽 —— 留白也是牌面，不再露出桌面。它会让窗口跟着变高，所以只有三档。",
     gapTight: "紧凑",
     gapStandard: "标准",
     gapLoose: "宽松",
     edgeOff: "不亮",
-    edgeGlow: "辉光",
-    cornerPos: { tl: "左上", tr: "右上", br: "右下", bl: "左下" },
+    edgeGlow: "长刻",
+    cornerPos: { tl: "第 1 格", tr: "第 2 格", br: "第 3 格", bl: "第 4 格" },
     cornerKind: {
       empty: "不挂",
       state: "状态色",
@@ -1687,10 +1720,10 @@ export const MESSAGES: Record<Lang, Messages> = {
     },
     frameLight: "边框光",
     frameLightHint:
-      "上下两条边和四个角是六个独立灯位，共用同一套粗细、明暗和颜色。每个灯位在「行为」页各有自己的九档触发条件；四角还能挂「点击穿透」。上面两块预览牌始终按常亮画 —— 它们是一张静态样机，不跟着触发条件走。",
+      "上下两枚行沿短刻线 + 行尾四格微记号，共六个独立灯位，共用一套粗细、明暗和颜色。行尾四格从上到下就是第 1～4 格（旧版的左上 / 右上 / 右下 / 左下），点击穿透挂在其中一格；每个灯位在「行为」页各有自己的九档触发条件。上面两行预览始终按常亮画 —— 它们是一张静态样机，不跟着触发条件走。",
     lightScale: "粗细",
     lightScaleHint:
-      "边灯的线宽和角灯的大小一起变。分开调很容易调出「一条粗线配四颗小芝麻」 —— 它们本来就是同一条轨上的东西。",
+      "刻线的高度和四格记号的大小一起变。分开调很容易调出「一条粗线配四颗小芝麻」 —— 它们本来就是同一组微记号。",
     scaleThin: "细",
     scaleNormal: "标准",
     scaleThick: "粗",
@@ -1700,12 +1733,12 @@ export const MESSAGES: Record<Lang, Messages> = {
     alphaStrong: "亮",
     frameColor: "颜色",
     frameColorHint:
-      "「状态色」跟着每块牌自己的状态走；「中性」让边框只负责形状，不抢灯珠那点颜色。",
+      "「状态色」跟着每行自己的状态走；「中性」让刻线只负责形状，不抢灯珠那点颜色。",
     frameColorState: "状态色",
     frameColorNeutral: "中性",
     lightBehavior: "边框光什么时候亮",
     lightBehaviorHint:
-      "「外观」那节管亮起来长什么样，这六行管凭什么现在亮。**六行是同一张九档条件表**：上边可以常亮、下边只在出错时亮、四个角各挂各的，互不牵连。判定逐块牌进行，同一盏灯里可以有牌亮、有牌不亮。",
+      "「外观」那节管亮起来长什么样，这六行管凭什么现在亮。**六行是同一张九档条件表**：上沿可以常亮、下沿只在出错时亮、行尾四格各挂各的，互不牵连。判定逐行进行，同一块板上可以有行亮、有行不亮。",
     triggerAlways: "常亮",
     triggerAttention: "只在要你处理时",
     triggerActive: "只在有活动时",
@@ -1737,9 +1770,9 @@ export const MESSAGES: Record<Lang, Messages> = {
     skinPlain: "素净",
     skinPlainHint: "回到最初的样子：默认配色、圆形灯珠、柔光呼吸，边框光全关。",
     skinFocus: "专注",
-    skinFocusHint: "平时不吵，只在要你处理时上边亮一道细线；左上挂置顶、右上挂静音，动效全关。",
+    skinFocusHint: "平时不吵，只在要你处理时上沿亮一枚短刻；行尾前两格挂置顶 / 静音，动效全关。",
     skinNeon: "霓虹",
-    skinNeonHint: "高饱和配色 + 纯黑牌底 + 胶囊轮廓，上下辉光、四角状态色，灯珠随节奏脉冲。",
+    skinNeonHint: "高饱和配色 + 纯黑牌底 + 胶囊轮廓，上下长刻、行尾四格状态色，灯珠随节奏脉冲。",
     skinPaper: "纸感",
     skinPaperHint: "暖黑牌底、明显描边、大圆角和拱形轮廓，方灯珠，整块牌轻轻淡入淡出。",
     skinSignal: "信号",
@@ -1750,7 +1783,7 @@ export const MESSAGES: Record<Lang, Messages> = {
     shapeCapsule: "胶囊",
     outlineTitle: "牌的轮廓",
     outlineHint:
-      "在圆角之外换整块牌的形状。四档都只用圆角画，不会裁掉四角上的小灯；每档的角灯落点会跟着轮廓一起走。",
+      "在圆角之外换整块板的形状。四档都只用圆角画，不会裁掉行沿刻线与行尾记号；外框归整块板，行自己没有框。",
     outlineRect: "矩形",
     outlineCapsule: "胶囊",
     outlineLeaf: "对角圆",
@@ -1763,8 +1796,8 @@ export const MESSAGES: Record<Lang, Messages> = {
     effectPulse: "脉冲",
     effectSweep: "扫光",
     effectFade: "渐隐",
-    edgeLine: "实线",
-    edgeFade: "两端淡出",
+    edgeLine: "刻线",
+    edgeFade: "短刻",
     slotTop: "上边",
     slotBottom: "下边",
     slotKind: "画法",
@@ -1773,12 +1806,12 @@ export const MESSAGES: Record<Lang, Messages> = {
     slotBlinkHint:
       "跟着这块牌的状态节奏闪，和灯珠说的是同一件事。这盏灯本身不画东西时无从闪，开关会变灰。",
     slotsHint:
-      "六个灯位各自挑画法和触发条件：上边可以常亮、下边只在出错时亮，四个角也能各挂各的、各判各的 —— 不再是一整条轨一起开关。判定逐块牌进行，同一盏灯里可以有牌亮、有牌不亮。",
+      "六个灯位各自挑画法和触发条件：上沿可以常亮、下沿只在出错时亮，行尾四格也能各挂各的、各判各的 —— 不再是一整条轨一起开关。判定逐行进行，同一块板上可以有行亮、有行不亮。",
     signEmphasis: "分层",
     emphasisAuto: "区分",
     emphasisFlat: "一致",
     emphasisHint:
-      "选「区分」时，需要你动手的那几块牌更实、灯珠更大，其余退后一档，好让人一眼知道先看谁。觉得这个差异莫名其妙就选「一致」，所有牌同等分量。",
+      "选「区分」时，需要你动手的那几行灯珠更大、组名更重，其余浮一层薄雾并退到灰字，好让人一眼知道先看谁。觉得这个差异莫名其妙就选「一致」，所有行同等分量。",
     fieldDot: "圆点",
     fieldName: "组名",
     fieldState: "状态",
@@ -2540,8 +2573,8 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
         body: "Idle, silent or not reporting, the whole stack fades to a faint dot; the moment something happens it comes back to full weight. It keeps the lamp out of your way without turning notifications off.",
       },
       collapsed: {
-        title: "Collapsed to a single light",
-        body: "A click (Settings → Behavior can make that click open the inbox or do nothing) folds the stack into one light. Three groups become one dot: if any group wants you, that dot is red.",
+        title: "Collapsed, vertical by default",
+        body: "A click (Settings → Behavior can make that click open the inbox or do nothing) folds the stack into a vertical column of lights that takes only a narrow strip of the desktop. Fold direction and what each light carries — group name, number or state — are both under Appearance → Basic. Three groups become one dot: if any group wants you, that dot is red.",
       },
       collapsedDone: {
         title: "Collapsed still lights up",
@@ -2549,39 +2582,39 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       },
       edgeLine: {
         title: "Light the top, leave the bottom dark",
-        body: "One state-coloured line along the top edge; the bottom stays off. The two edges are independent slots now, no longer one rail switched together. Weight, brightness and colour are shared under Appearance → Frame light — not one extra word on the sign.",
+        body: "One short state-coloured tick on the top edge; the bottom stays off. The two edges are independent slots now, no longer a coloured line around the whole card. Weight, brightness and colour are shared under Appearance → Frame light — not one extra word on the sign.",
       },
       edgeBoth: {
         title: "Two edges, two dropdowns",
-        body: "Here both are solid lines, but they are two separate rows: to keep the top always on and light the bottom only on an error, you just pick once in each. The four looks also include glow and a line that fades at both ends.",
+        body: "Here both are ticks, but they are two separate rows: to keep the top always on and light the bottom only on an error, you just pick once in each. The other two looks are Short tick and Long tick — only the length and brightness change, no gradient and no glow.",
       },
       edgeGlow: {
-        title: "Glow — the loudest setting",
-        body: "Both edges switch to glow, spreading a halo outside the card. Use it when the lamp sits far away, across multiple displays, or when it has to catch your peripheral vision. It is deliberately softer on light wallpapers.",
+        title: "Long tick — the loudest setting",
+        body: "Both edges switch to the long tick: the state-coloured mark grows to about a fifth of the row and goes fully bright. Use it when the lamp sits far away, across multiple displays, or when it has to catch your peripheral vision. It is still a square-ended tick — no halo outside the card.",
       },
       cornersState: {
-        title: "Four corners, four yes/no questions",
-        body: "The four little lights sit on the corners of the outline and follow its shape, so they take no space from the text. Each answers: has a state / pinned / muted / about to go stale. All four are set to “state colour” here so you can see where they sit — and in Appearance they are four separate dropdowns.",
+        title: "Four end slots, four yes/no questions",
+        body: "Four micro-marks sit in a vertical column at the right end of each row, top to bottom as Slot 1–4. All of them are square, short bars or thin strips — only the main signal light is round. Each answers: has a state / pinned / muted / about to go stale. All four are set to “state colour” here so you can see where they sit — four separate dropdowns in Appearance.",
       },
       cornersMeaning: {
         title: "If the condition does not hold, nothing is drawn",
-        body: "This card satisfies all four — it has a state, it is pinned, it is muted, and it is going quiet — so all four lights show. Let any one of those fail and that light disappears entirely rather than becoming a dim dot: a dim dot would suggest “there is something here, it is just not lit”, which is exactly why nobody would ever look for the setting. Each corner also has its own trigger under Behavior.",
+        body: "This row satisfies all four — it has a state, it is pinned, it is muted, and it is going quiet — so all four slots show. Let any one of those fail and that mark disappears entirely rather than becoming a dim dot: a dim dot would suggest “there is something here, it is just not lit”, which is exactly why nobody would ever look for the setting. Each slot also has its own trigger under Behavior.",
       },
       lightTrigger: {
         title: "When it lights up is a separate question",
-        body: "Two signs side by side with the top edge set to “when you're needed”: the one waiting for approval lights up, the one still working does not. Appearance decides what it looks like lit; Behavior decides why it is lit now — all six slots have their own pick from the same nine-condition list.",
+        body: "Two rows on the same board with the top tick set to “when you're needed”: the one waiting for approval lights up, the one still working does not. Appearance decides what it looks like lit; Behavior decides why it is lit now — all six slots have their own pick from the same nine-condition list.",
       },
       cornerPassthrough: {
-        title: "Even “you can't click it” fits in a corner",
-        body: "The hollow square at the top left is click-through: it appears while enabled and vanishes entirely when off. The old always-on ban badge in the window corner is gone — whether to show this state, and in which corner, is now one of the six rows under Appearance → Frame light. The state is still in the tooltip and tray menu.",
+        title: "Even “you can't click it” gets a slot",
+        body: "The near-white vertical strip in Slot 1 is click-through: it appears while enabled and vanishes entirely when off. The old always-on ban badge in the window corner is gone — whether to show this state, and in which slot, is now one of the six rows under Appearance → Frame light. The state is still in the tooltip and tray menu.",
       },
       lightTriggerState: {
         title: "Nine conditions, six independent rows",
-        body: "The top edge is “in a chosen state → error”, the bottom edge is always on, and so are the four corners: the error card lights both edges, the working one keeps only the bottom line, and four state corners show on both. Besides a chosen state you can trigger on a time window, silence nearly over, a message being shown, or a pinned group — the six rows share one condition list but store their own pick.",
+        body: "The top tick is “in a chosen state → error”, the bottom one is always on, and so are the four end slots: the error row lights both edges, the working one keeps only the bottom tick, and four state-coloured marks show on both. Besides a chosen state you can trigger on a time window, silence nearly over, a message being shown, or a pinned group — the six rows share one condition list but store their own pick.",
       },
       lookSkin: {
         title: "Or swap the whole look at once",
-        body: "This step is the Neon skin: palette, card tint, radius and border, dot shape, card outline, motion, and the look and trigger of all six frame-light slots change together. There are five skins under Appearance → Skin; the four look presets below only touch size, opacity and which fields show.",
+        body: "This step is the Neon skin: palette, card tint, radius and border, dot shape, card outline, motion, long ticks and all four end slots change together. There are five skins under Appearance → Skin; the four look presets below only touch size, opacity and which fields show.",
       },
     },
     demoStepCount: (index, total) => `${index} / ${total}`,
@@ -2697,11 +2730,30 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     form: "Form",
     expanded: "Expanded",
     singleLight: "Single light",
+    foldAxis: "Fold direction",
+    foldVertical: "Vertical",
+    foldHorizontal: "Horizontal",
+    foldAxisHint:
+      "How the lights line up when folded. Vertical is the default — it takes only a narrow strip of the desktop; pick Horizontal for the old row. Folded state only.",
+    foldLabel: "Folded content",
+    foldNone: "Light only",
+    foldName: "Group name",
+    foldIndex: "Number",
+    foldState: "State",
+    foldLabelHint:
+      "If a bare dot is too little, give each light one word. Labelled lights share one narrow board, fixed width per option and much narrower than the expanded sign — about five characters for a group name, four for a state. Longer text is ellipsized; hover to read it all. Horizontal keeps the words too. Folded state only.",
+    foldPreviewTitle: "When collapsed",
     lampLayout: "Lamps",
     layoutSingle: "One lamp",
     layoutPerGroup: "One per group",
     layoutHint:
       "The row above decides which groups exist; this one decides how many lamps they sit on. \"One per group\" gives each group its own draggable lamp and leaves the main lamp showing global state; new lamps appear along the right edge and each remembers where you drag it. More than 8 groups falls back to a single lamp.",
+    resetLamps: "Lamp positions",
+    resetLampsAction: "Reset positions",
+    resetLampsDone: "Reset",
+    resetLampsEmpty: "Cleared",
+    resetLampsHint:
+      "Bring scattered group lamps back to the default column along the right edge and forget every dragged position; new lamps will join the bottom of that column. Free dragging still works — move them again whenever you like. When no group lamp is open, this only clears the remembered positions. The same action is in the lamp's right-click menu, both on empty space and on a dot.",
     size: "Size",
     shape: "Shape",
     palette: "Palette",
@@ -2722,7 +2774,6 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     previewTitle: "Preview",
     previewHint:
       "Change anything above and this follows immediately — it is the only place you can see the effect while the lamp is hidden, collapsed, or on another screen. This draws the active look; quiet mode dimming only happens on the real lamp.",
-    previewGroup: "orders",
     previewMessage: "running tests",
     sizeSmall: "Small",
     sizeMedium: "Medium",
@@ -2765,13 +2816,13 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     fontMono: "Mono",
     signGap: "Spacing",
     signGapHint:
-      "Signs stack vertically; this only sets the gap between them. It changes the window height, so there are just three steps.",
+      "With several groups the rows share one board; this sets how much breathing room each row gets — the gap is still board, not desktop. It changes the window height, so there are just three steps.",
     gapTight: "Tight",
     gapStandard: "Standard",
     gapLoose: "Loose",
     edgeOff: "Off",
-    edgeGlow: "Glow",
-    cornerPos: { tl: "Top left", tr: "Top right", br: "Bottom right", bl: "Bottom left" },
+    edgeGlow: "Long tick",
+    cornerPos: { tl: "Slot 1", tr: "Slot 2", br: "Slot 3", bl: "Slot 4" },
     cornerKind: {
       empty: "None",
       state: "State colour",
@@ -2782,10 +2833,10 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     },
     frameLight: "Frame light",
     frameLightHint:
-      "The top and bottom edges plus the four corners are six independent slots, sharing one width, one brightness and one colour. Each slot has its own nine-condition trigger under Behavior; click-through is one of the corner options. The two preview signs above are always drawn lit — they are a static mock-up and deliberately ignore the triggers.",
+      "Two short ticks on the row edges plus four micro-marks at the row end: six independent slots sharing one weight, one brightness and one colour. The four end slots run top to bottom as Slot 1–4 (formerly top left / top right / bottom right / bottom left); click-through can hang on any one of them. Each slot has its own nine-condition trigger under Behavior. The two preview rows above are always drawn lit — they are a static mock-up and deliberately ignore the triggers.",
     lightScale: "Weight",
     lightScaleHint:
-      "The rail's line width and the corner lights' size move together. Set separately they drift into a thick line with four tiny dots — and they are the same rail.",
+      "Tick height and the four end marks move together. Set separately they drift into a thick line with four tiny dots — they are one set of marks.",
     scaleThin: "Thin",
     scaleNormal: "Normal",
     scaleThick: "Thick",
@@ -2795,12 +2846,12 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     alphaStrong: "Strong",
     frameColor: "Colour",
     frameColorHint:
-      '"State" follows each sign\'s own state; "Neutral" lets the outline carry only the shape and leaves the colour to the dot.',
+      '"State" follows each row\'s own state; "Neutral" lets the tick carry only the shape and leaves the colour to the dot.',
     frameColorState: "State",
     frameColorNeutral: "Neutral",
     lightBehavior: "When the frame light comes on",
     lightBehaviorHint:
-      "Appearance sets what it looks like when lit; these six rows set why each slot is lit now. All six draw from the same nine conditions: the top edge can stay on while the bottom lights only on errors, and the four corners each decide for themselves. Decisions are per sign, so some cards on the lamp can be lit while others stay dark.",
+      "Appearance sets what it looks like when lit; these six rows set why each slot is lit now. All six draw from the same nine conditions: the top tick can stay on while the bottom lights only on errors, and the four end slots each decide for themselves. Decisions are per row, so some rows on one board can be lit while others stay dark.",
     triggerAlways: "Always",
     triggerAttention: "When you're needed",
     triggerActive: "While active",
@@ -2833,10 +2884,10 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     skinPlainHint: "Back to the original: default palette, round dots, breathing halo, frame light off.",
     skinFocus: "Focus",
     skinFocusHint:
-      "Quiet by default — a thin top edge only when you're needed, pinned / muted on the top corners, no motion.",
+      "Quiet by default — a short top tick only when you're needed, pinned / muted in the first two end slots, no motion.",
     skinNeon: "Neon",
     skinNeonHint:
-      "Vivid palette, black card, capsule outline, glowing top and bottom edges, state dots in all four corners, pulsing dots.",
+      "Vivid palette, black card, capsule outline, long ticks top and bottom, state colour in all four end slots, pulsing dots.",
     skinPaper: "Paper",
     skinPaperHint:
       "Warm black card, strong border, large radius and an arched outline, square dots, a gentle fade in and out.",
@@ -2848,7 +2899,7 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     shapeCapsule: "Capsule",
     outlineTitle: "Card outline",
     outlineHint:
-      "Change the overall silhouette beyond corner radius. All four are drawn with border-radius only, so corner lights are never clipped; their anchor follows the outline.",
+      "Change the board's silhouette beyond corner radius. All four are drawn with border-radius only, so the edge ticks and end marks are never clipped; the outline belongs to the whole board, not to a row.",
     outlineRect: "Rectangle",
     outlineCapsule: "Capsule",
     outlineLeaf: "Diagonal round",
@@ -2861,8 +2912,8 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     effectPulse: "Pulse",
     effectSweep: "Sweep",
     effectFade: "Fade",
-    edgeLine: "Solid line",
-    edgeFade: "Fade at ends",
+    edgeLine: "Tick",
+    edgeFade: "Short tick",
     slotTop: "Top edge",
     slotBottom: "Bottom edge",
     slotKind: "Look",
@@ -2871,12 +2922,12 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     slotBlinkHint:
       "Blinks on this card's state rhythm — the same rhythm its dot uses. When the light draws nothing there is nothing to blink, so the switch greys out.",
     slotsHint:
-      "Each of the six slots picks its own look and its own trigger: the top edge can stay on while the bottom lights up only on errors, and the four corners can each hang and judge something different. Judgement is per sign, so one lamp can have lit and unlit cards at once.",
+      "Each of the six slots picks its own look and its own trigger: the top tick can stay on while the bottom lights up only on errors, and the four end slots can each hang and judge something different. Judgement is per row, so one board can have lit and unlit rows at once.",
     signEmphasis: "Emphasis",
     emphasisAuto: "Tiered",
     emphasisFlat: "Uniform",
     emphasisHint:
-      'With "Tiered", the signs that need you are solider and their dots larger while the rest step back, so it is obvious what to look at first. If that difference feels arbitrary, pick "Uniform" — every sign carries the same weight.',
+      'With "Tiered", rows that need you get a larger dot and a heavier name while the rest get a faint mist and muted text, so it is obvious what to look at first. If that difference feels arbitrary, pick "Uniform" — every row carries the same weight.',
     fieldDot: "Dot",
     fieldName: "Group",
     fieldState: "State",

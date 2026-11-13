@@ -12,12 +12,11 @@ import {
   inTimeWindow,
   minutesToClock,
   clockToMinutes,
-  CALM_ALPHA_FACTOR,
-  CALM_ALPHA_FLOOR,
   SIGN_OPACITY_MIN,
   edgeBlinks,
   lightBlink,
   LIGHT_BLINK_FALLBACK_MS,
+  FOLD_WIDTH_MULT,
   type LightContext,
 } from "./lampStyle";
 import { DEFAULTS, SLOT_IDS, type SignLights, type Settings } from "./useSettings";
@@ -238,21 +237,15 @@ describe("lampVars", () => {
   });
 
   /**
-   * calm 档的牌底不透明度：`α × 0.72`，**带托底**。
-   *
-   * 托底那半条是本条测试的重点：滑杆到下限 65% 时 `0.65 × 0.72 = 0.468` 会让次要
-   * 文字落在桌面上 —— 而「多组 + 低透明度」正是描边时代最难看、也是用户最常遇到
-   * 的画面。期望值按 `max(α × 0.72, 0.6)` 写，不写死具体数字串，改托底值时跟着走。
+   * 牌面不透明度只有用户设的那一档。0.6.7 之前还有一个 `--sign-alpha-calm`
+   * （calm 档把 α 再乘 0.72 并托底）—— 共享底板后那套压淡会让行比板更实、把
+   * 连续的一块板切成深浅横带，所以整个删掉了。这条断言钉住它别被悄悄加回来：
+   * 层次现在由薄雾 / 字重 / 点径表达，不再有一个「第二透明度」。
    */
-  it("dims the calm tone but never below the readable floor", () => {
-    const vars = (opacity: number) =>
-      lampVars(withSettings({ sign_opacity: opacity })) as Record<string, string>;
-    // 默认档：正常压淡，托底不参与（0.86 × 0.72 = 0.6192）
-    expect(vars(86)["--sign-alpha-calm"]).toBe(String(0.86 * CALM_ALPHA_FACTOR));
-    // 滑杆到底：托底接管，仍读得清
-    expect(vars(SIGN_OPACITY_MIN)["--sign-alpha-calm"]).toBe(String(CALM_ALPHA_FLOOR));
-    // 满不透明：还是比 need 档淡，层次在
-    expect(Number(vars(100)["--sign-alpha-calm"])).toBeLessThan(1);
+  it("has a single sign opacity variable", () => {
+    const vars = lampVars(withSettings({ sign_opacity: 72 })) as Record<string, string>;
+    expect(vars["--sign-alpha"]).toBe("0.72");
+    expect(vars["--sign-alpha-calm"]).toBeUndefined();
   });
 
   /**
@@ -262,16 +255,9 @@ describe("lampVars", () => {
    *
    * **65 是拿对照图量出来的**：50% 时在近白窗口上次要文字对比只有约 1.1:1（等于消失），
    * 60% 余量太小，65% 才稳。这条断言的作用是「别有人为了更透，悄悄把它调回去」。
-   *
-   * 托底必须**低于**下限：图省事让两者相等的话，下限 65 时托底（0.65）会高过默认档的
-   * 乘积（0.619），把最常见那档的 calm 分层直接吃掉。
    */
   it("keeps the opacity floor at a level that still holds the text", () => {
     expect(SIGN_OPACITY_MIN).toBe(65);
-    expect(CALM_ALPHA_FLOOR).toBe(0.6);
-    expect(CALM_ALPHA_FLOOR).toBeLessThan(SIGN_OPACITY_MIN / 100);
-    // 默认档的 calm 必须仍明显淡于 need —— 托底不能吃掉日常的分层
-    expect(0.86 * CALM_ALPHA_FACTOR).toBeGreaterThan(CALM_ALPHA_FLOOR);
   });
 
   /**
@@ -704,5 +690,70 @@ describe("边灯 / 角灯的闪烁", () => {
       styles: { working: { color: null, shape: null, blink_ms: 500, ttl_ms: null } },
     });
     expect(lightBlink(settings, "working")).toBe("light-blink 500ms ease-in-out infinite");
+  });
+});
+
+/**
+ * 折叠几何的四个 CSS 变量是 `config::folded_size` 的另一处真值。这里逐档核对
+ * 「格宽 / 格高 / 点距」的算法，尤其是取整方向：Rust 先算整数 `size*3/2` 再乘
+ * 倍率、最后向上取整，少一个 floor 就会在奇数 size 下高出 1px。
+ */
+describe("折叠几何变量", () => {
+  const vars = (patch: Partial<Settings>) =>
+    lampVars(withSettings(patch)) as Record<string, string>;
+
+  it("默认档：格子就是一颗 size 见方的点", () => {
+    const v = vars({ size: 22 });
+    expect(v["--fold-cell-w"]).toBe("22px");
+    expect(v["--fold-cell-h"]).toBe("22px");
+    expect(v["--fold-gap"]).toBe("7px"); // Rust 的 size / 3 是整除
+    expect(v["--fold-pad"]).toBe("5px");
+  });
+
+  it("四档格宽与 Rust FoldLabel::width_mult 对齐", () => {
+    for (const [label, mult] of [
+      ["none", 1],
+      ["index", 2.4],
+      ["state", 3.5],
+      ["name", 4],
+    ] as const) {
+      expect(FOLD_WIDTH_MULT[label]).toBe(mult);
+      const v = vars({ size: 22, fold_label: label });
+      expect(v["--fold-cell-w"]).toBe(`${label === "none" ? 22 : Math.ceil(22 * mult)}px`);
+      // 带文字时格高 = 一块单行牌（22 × 3/2 = 33）
+      expect(v["--fold-cell-h"]).toBe(label === "none" ? "22px" : "33px");
+    }
+  });
+
+  it("倍率的取整方向和 sign_width / sign_height 一致", () => {
+    const v = vars({
+      size: 21,
+      fold_label: "name",
+      sign_w_mult: 1.3,
+      sign_h_mult: 1.2,
+    });
+    expect(v["--fold-cell-w"]).toBe(`${Math.ceil(21 * 4 * 1.3)}px`);
+    expect(v["--fold-cell-h"]).toBe(`${Math.ceil(Math.floor((21 * 3) / 2) * 1.2)}px`);
+    expect(v["--fold-gap"]).toBe("7px");
+  });
+
+  /**
+   * 折叠的全部意义是让出桌面。组名档曾经是 `6 × size`（22px 档 132px），
+   * 只比展开牌 154px 窄 22px —— 用户看到的是「选了组名，宽度还是没缩」。
+   * 钉一条比例：改宽回去时这条会红，而不是又一次靠眼睛发现。
+   */
+  it("组名档的格宽明显窄于展开牌", () => {
+    const size = 22;
+    const cell = Number.parseFloat(vars({ size, fold_label: "name" })["--fold-cell-w"]);
+    const sign = size * 7 * 1; // config::sign_width，w_mult = 1
+    expect(cell / sign).toBeLessThan(0.65);
+  });
+
+  it("老配置没带新字段时兜底成只有灯，不产出 NaNpx", () => {
+    const old = { ...DEFAULTS } as Partial<Settings>;
+    delete (old as { fold_label?: Settings["fold_label"] }).fold_label;
+    const v = lampVars(old as Settings) as Record<string, string>;
+    expect(v["--fold-cell-w"]).toBe("22px");
+    expect(v["--fold-cell-h"]).toBe("22px");
   });
 });

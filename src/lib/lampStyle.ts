@@ -1,4 +1,4 @@
-import { CORNER_SLOTS, type Settings, type Shape, type StateStyle, type SignGap, type SignCorner, type CornerPos, type SignLights, type EdgeLight, type EdgePos, type LightTrigger } from "./useSettings";
+import { CORNER_SLOTS, type Settings, type Shape, type StateStyle, type SignGap, type SignCorner, type CornerPos, type SignLights, type EdgeLight, type EdgePos, type LightTrigger, type FoldLabel } from "./useSettings";
 import { SIGNALS, type SignalState } from "./types";
 import { colorVars } from "./palettes";
 
@@ -306,43 +306,35 @@ export function resolveHaloAnimations(settings: Settings): Record<SignalState, s
 export const SIGN_OPACITY_MIN = 65;
 
 /**
- * calm 档（[`toneOf`]）牌底相对用户设定值的压淡倍数，以及它的**托底**。
- *
- * `need` 档用用户设的 α 原样；`calm` 档再退一档（见 lamp.css 的
- * `.sign[data-tone="calm"]`）。这是「谁在等我」的层次，不是可读性手段。
- *
- * **为什么要托底**：默认 0.86 × 0.72 = 0.62 读得清；但滑杆到下限 0.65 时，
- * 0.65 × 0.72 = 0.468 就跌破可读线了 —— 而「多组 + 低透明度」恰恰是最常见的组合，
- * 也正是描边时代最难看的那种画面。所以压淡取 `max(α × 0.72, 0.6)`：低端时
- * 层次差被吃平（calm 与 need 只差 0.05，主要靠点径 0.55/0.72 和组名字重分先后），
- * 换来两块牌都还读得出字。**这个取舍是刻意的**：分层是锦上添花，读不清是硬伤；
- * 默认档（86%）上是 0.86 vs 0.619，层次照旧。
- *
- * **托底必须低于下限**：一开始图省事写成 `= SIGN_OPACITY_MIN / 100`，结果下限抬到
- * 65 之后托底变成 0.65 > 默认档的 0.619 —— 反而把最常见的那档 calm 牌拉实了，
- * 分层在默认设置下就没了。两个数是一个「乘积的下界」和一个「滑块的下界」，不是
- * 同一件事，别合并。
- *
- * **乘数为什么在 JS 而不是 CSS 的 `calc()`**：一是没必要去赌各图层的 webview 对
- * `max()` 出现在 alpha 位上的支持（赌输的表现是整条 `background` 失效、牌底变透明，
- * 比原来难看十倍）；二是这个数值得有单测。
- */
-export const CALM_ALPHA_FACTOR = 0.72;
-/** calm 档自身的可读下界（见上：必须低于 `SIGN_OPACITY_MIN`，否则吃掉默认档的层次）。 */
-export const CALM_ALPHA_FLOOR = 0.6;
-
-/**
  * 多块牌之间的间距档位 → 相对 `size / 2` 的倍率。
  *
  * **外观里唯一影响窗口几何的一项**：牌竖着叠，间距变大窗口就变高，所以
  * `config.rs::window_size` 必须用同一个倍率算总高（那边是 `SignGap::px`）。
- * 两处真值：这里给 CSS 的 `--sign-gap`（`lamp.css` 的 `.lamp-signs { gap }`），
+ * 两处真值：这里给 CSS 的 `--sign-gap`（`lamp.css` 里 `.sign` 的 `--row-gap`），
  * Rust 那边给窗口尺寸。`standard` 是 1.0 = 恒等，默认档不许改变任何现有几何。
+ * 0.6.7 起它是「板内每行的底部留白」，不再是 `.lamp-root` 的 flex gap。
  */
 export const SIGN_GAP_MULT: Record<SignGap, number> = {
   tight: 0.5,
   standard: 1,
   loose: 2,
+};
+
+/**
+ * 折叠窄板一格宽度相对 `size` 的倍率。**和 Rust `config::FoldLabel::width_mult`
+ * 是两处真值**，改一处必须同步另一处。`none` 不画板，格子就是一颗 `size` 见方的点。
+ *
+ * 数字是按「一格还能放下几个汉字」反推的，不是按「组名排完」——折叠的用途是
+ * 让出桌面，一格只要够认出是哪一组。组名档 4.0（22px 档 88px、窗口 116px）
+ * 对展开牌 154px / 窗口 182px 窄 36%；6.0 那版只窄 22px，等于没折叠。
+ *
+ * 窗口宽只由设置决定，组名 / 状态词再长也不会让窗口跳一下（超长一律省略号）。
+ */
+export const FOLD_WIDTH_MULT: Record<FoldLabel, number> = {
+  none: 1,
+  index: 2.4,
+  state: 3.5,
+  name: 4,
 };
 
 /**
@@ -526,14 +518,13 @@ export function stateOverridden(style: StateStyle | undefined): boolean {
  * 挂根上一次就都生效了：一个窗口里可能有多个状态点（灯球多点、设置面板的
  * 会话列表）。颜色变量由 palettes 产出，这里只补上动画变量。
  *
- * **`--sign-alpha` / `--sign-alpha-calm` 也从这里出**（前者原来是 `SignalLamp`
- * 自己加在内联样式里的）。设置面板里那张预览牌要复用同一套变量 —— 两处各写一遍
- * 的话，预览显示的透明度迟早和真正的灯对不上，而「预览和灯不一样」比没有预览更糟。
+ * **`--sign-alpha` 也从这里出**（原来是 `SignalLamp` 自己加在内联样式里的）。
+ * 设置面板里那张预览牌要复用同一套变量 —— 两处各写一遍的话，预览显示的透明度
+ * 迟早和真正的灯对不上，而「预览和灯不一样」比没有预览更糟。
+ * 0.6.7 起不再有 `--sign-alpha-calm`：共享底板后 calm 档改由薄雾 / 字重 / 点径
+ * 表达层次（见 lamp.css 的「视觉分量」一节）。
  */
 export function lampVars(settings: Settings): React.CSSProperties {
-  // 牌面的两种不透明度：用户设的那档（need + 一切非分层的牌），和 calm 档压淡后
-  // 的那档（带托底，见 [`CALM_ALPHA_FACTOR`]）。两个都在这里算好，CSS 只负责取用
-  // —— `max()` 不放进 alpha 位，理由见上。
   const alpha = settings.sign_opacity / 100;
   const style: Record<string, string> = {
     ...(colorVars(settings) as Record<string, string>),
@@ -547,8 +538,27 @@ export function lampVars(settings: Settings): React.CSSProperties {
     "--sign-gap": String(SIGN_GAP_MULT[settings.sign_gap] ?? 1),
     // 背景透明度：CSS 里当 `--sign-bg` 的 alpha 用（0 = 全透明，1 = 不透明）
     "--sign-alpha": String(alpha),
-    "--sign-alpha-calm": String(Math.max(alpha * CALM_ALPHA_FACTOR, CALM_ALPHA_FLOOR)),
   };
+  // 折叠态的四个几何数**在这里算成整数 px**，CSS 不再用小数 `calc` 重算一遍：
+  // 旧的 `gap: calc(size / 3)` 与 Rust 的 `size / 3` 整除最多差 2/3 px，多点时
+  // 累加起来会把最外侧那颗点削掉一线。两处真值是这里 ↔ `config::folded_size`。
+  // 带文字时格宽 = size × 档位倍率 × 宽倍率（向上取整，方向和 sign_width 一致），
+  // 格高直接取一块单行牌的高度 —— 折叠窄板和展开的行是同一把尺子。
+  // 老配置 / 演示帧可能没带这两个新字段，兜底成默认值，别算出 "NaNpx"。
+  const foldLabel = settings.fold_label ?? "none";
+  const hasFoldText = foldLabel !== "none";
+  const cellW = hasFoldText
+    ? Math.ceil(settings.size * FOLD_WIDTH_MULT[foldLabel] * settings.sign_w_mult)
+    : settings.size;
+  const cellH = hasFoldText
+    ? Math.ceil(Math.floor((settings.size * 3) / 2) * settings.sign_h_mult)
+    : settings.size;
+  style["--fold-cell-w"] = `${cellW}px`;
+  style["--fold-cell-h"] = `${cellH}px`;
+  style["--fold-gap"] = `${Math.floor(settings.size / 3)}px`;
+  // 板内一格的水平内边距。它只作用在固定宽度的格子里，不进窗口几何，
+  // 所以不必和 Rust 对齐 —— 取整只是为了让小尺寸下左右完全对称。
+  style["--fold-pad"] = `${Math.floor(settings.size / 4)}px`;
   for (const [state, anim] of Object.entries(resolveAnimations(settings))) {
     style[`--anim-${state}`] = anim;
   }

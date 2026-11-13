@@ -78,7 +78,7 @@ CI 三平台（macOS/Windows/Ubuntu）跑 `cargo test` + `clippy -D warnings` +
 | 主题 | 位置 | 现状 |
 |---|---|---|
 | 全局尺度 | `Settings.size` | 一个标量同时定字号、点径、牌宽（×7）、牌高（3/2、5/2）、折叠点径、间距；`MIN_SIZE..MAX_SIZE` 在 `Settings::clamped()`（`config.rs:840`）夹紧 |
-| 窗口尺寸 | `apply_window_size`（`lib.rs:925` 附近） | 按内容算：展开 `settings.window_size(&sign_heights(...))`、折叠 `collapsed_window_size(size, dots, badges)`；只在真变了才 `set_size`，随后 `keep_on_screen`（`lib.rs:1064`） |
+| 窗口尺寸 | `apply_window_size`（`lib.rs:925` 附近） | 按内容算：展开 `settings.window_size(&sign_heights(...))`、折叠 `settings.folded_size(dots, badges)`（0.6.7 起内部再按 `FoldAxis` / `FoldLabel` 分档，见 `architecture.md` §3.35.5）；只在真变了才 `set_size`，随后 `keep_on_screen`（`lib.rs:1064`） |
 | 窗口位置 | `tauri-plugin-window-state` | `StateFlags::POSITION` 只记位置（`lib.rs:1216`）；**尺寸永远由内容决定**，这是刻意设计（位置记住、尺寸算出） |
 | 分组 | `Settings.group_by`（none/cwd/session）+ 显式 `group` 优先 | `resolve_group`（`config.rs:890` 附近）服务端兜底；一窗多牌 `MAX_SIGNS=4`，超出 +N 角标；前端 `orderVisible`（`lib/lampSort.ts`）叠置顶 |
 | 点击/拖拽 | `useDragOrClick`（`SignalLamp.tsx:122`） | 自实现（不能用 `data-tauri-drag-region`，要区分单击）；单击 = `toggle_collapsed`；右键 = `openGroupMenu` / `openLampMenu`（Rust `menu.rs`） |
@@ -144,8 +144,9 @@ pub sign_h_mult: f32,   // 0.8 ..= 2.5
   **两处真值同步，红线 1。**
 - **UI**：设置面板「外观」页，两个小号滑杆（0.8–2.5，步进 0.1，显示 ×1.2 这样）
   —— 样式抄现有 `blink_speed` / `sign_opacity` 那两行，别发明新控件。
-- **作用范围**：只作用于**展开态**的牌。折叠态是一排正方形点，长宽倍率对它
-  没有意义（写了也只会让点变椭圆）。
+- **作用范围**：展开态的牌；折叠态只有**带文字**的窄板用到它（裸点档是一排 /
+  一列正方形点，长宽倍率对它没有意义，写了只会让点变椭圆）。0.6.7 的
+  「折叠内容」四档是在这个前提上叠的，倍率定义见 `FoldLabel::width_mult`。
 
 ### 3.3 可选进阶：拖了就记住（语义化的「自由 resize」）
 
@@ -249,6 +250,13 @@ percent-decode）；`SignalLamp` 收到的 `groups` 先
 文案里写明「每盏灯第一次出现的位置是默认摆放，拖到想要的地方后**各自**记住」
 （首次没有历史位置的排布：屏幕右缘纵向堆叠，间距 `size/2`，从上往下，
 `keep_on_screen` 兜底）。
+
+> **0.6.7 补记**（见 `architecture.md` §3.35.6）：后来用户觉得「多盏灯散落各处」
+> 看着没章法，但明确选了**保持自由散落、只加归位**。所以上面这套默认摆放、自定义
+> 拖动、`lamp-positions.json` 记忆一个像素都没改，只多了设置页和两张右键菜单共用
+> 的 `reset_lamp_positions`；归位会清掉记忆并摆回默认堆叠，几何与首次摆放共用
+> `lamps.rs::stack_position`（混合高度用 `stack_column` 游标累加）。别把「归位」误
+> 读成「默认吸附成列」或「限制拖动范围」—— 那两样用户都否掉了。
 
 ### 4.2 明确不做的（写下来防止实施时顺手做了）
 

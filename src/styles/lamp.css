@@ -2,10 +2,11 @@
  * 悬浮灯样式。
  *
  * 两种形态，共用同一批积木：
- *   展开（默认）—— 一叠「交通牌」，每块 = 一颗彩点 + 组名 + 状态 + 已持续，
- *                  有消息时多一行。深色牌面刻意和**应用图标**是同一套语言
- *                  （深色圆角方块 + 彩点），这样悬浮灯和图标看起来是一个东西。
- *   折叠        —— 每组一颗裸灯，没有牌面。点一下就切回展开。
+ *   展开（默认）—— 一块「灯牌」，每行 = 一颗彩点 + 组名 + 状态 + 已持续，
+ *                  有消息时多一行。多行共享同一个外框与圆角，行间只用 1px 细线
+ *                  分隔；深色牌面和**应用图标**仍是同一套语言。
+ *   折叠        —— 默认一列裸灯（可改横排）；也可以给每颗灯带一段词（组名 /
+ *                  序号 / 状态），这时几格共享一条窄板。点一下就切回展开。
  *
  * 基础形态是朴素简约的：要的是**结构**（外框、底色、文字位），不是装饰。
  * 牌面按「在等我」分两档（`.sign[data-tone]`，判据在 `lampStyle.ts::toneOf`）：
@@ -26,11 +27,12 @@
  * （Rust 枚举 / TS 联合类型 / 这里的 `[data-sign-*]` 选择器），对不上的表现是
  * 「点了没反应」，界面上没有任何报错可循。
  *
- * **边框光是六个独立灯位**（`data-edge-top` / `data-edge-bottom` 两条边的伪元素，
- * 加 `.sign-corner` 四枚绝对定位子元素）：只画在已经存在的那块牌上，都不参与
- * flex 布局，也都不改盒 —— 所以窗口尺寸同样不必为它们加一个像素（见「边框光」一节）。
- * 三把尺子（`data-sign-light-scale` / `-alpha` / `-color`）同样只改画法，六槽共用；
- * 「什么时候亮」逐块牌、逐槽判定，判据在 `lightOn()` 与 `edgeLightKinds()`。
+ * **边框光是六个独立灯位**（上 / 下两枚行沿短刻线 + 行尾四格微记号）：都只画在
+ * 已经存在的那一行里，不参与 flex 布局，也不改盒 —— 所以窗口尺寸不必为它们加
+ * 一个像素（见「边框光」一节）。**形状词汇刻意分开**：圆只归主信号灯，刻线和
+ * 记号一律方形 / 短线，免得一块牌上出现好几个同色的圆。三把尺子
+ * （`data-sign-light-scale` / `-alpha` / `-color`）只改画法，六槽共用；「什么时候亮」
+ * 逐行、逐槽判定，判据在 `lightOn()` 与 `edgeLightKinds()`。
  *
  * 两条硬性约束：
  * 1) html/body/#root 必须完全透明，否则 webview 会画出白底，透明窗口就白做了。
@@ -42,10 +44,16 @@
  *   牌宽     = size × 7 × 宽倍率         (sign_width)
  *   牌高     = size × 3/2 × 高倍率（一行）(sign_height(size, false, h))
  *            = size × 5/2 × 高倍率（两行）(sign_height(size, true, h))
- *   牌间距   = size / 2 × 间距倍率      (window_size 里的 gap；1.0 = 原样)
- *   折叠点径 = size                    (collapsed_window_size)
- *   折叠点距 = size / 3
- *   折叠点数 = 组数 + `+N` 角标数       (collapsed_window_size 的 dots + badges)
+ *   行距     = size / 2 × 间距倍率      (window_size 里的 gap；1.0 = 原样)
+ *              ↑ 0.6.7 起由 `.sign-board` 消化成每行底部留白，不再是两张卡之间
+ *                露出桌面的空隙；总高公式仍是 stacked + gap×(N−1) + 28。
+ *   折叠格径 = size（只有灯）           (fold_cell_size)
+ *   折叠格宽 = size × 3 / 4 / 6（序号 / 状态 / 组名）× 宽倍率
+ *   折叠格高 = 一块单行牌高（带文字时）
+ *   折叠格距 = size / 3（只有灯；带文字时归 0，板内只画 1px 细线）
+ *   折叠格数 = 组数 + `+N` 角标数       (collapsed_window_size 的 dots + badges)
+ *   ↑ 四个数由 `lampVars` 算成整数 px 挂在根上（--fold-*），CSS 不再自己用
+ *     小数 calc 重算；Rust `Settings::folded_size` 是另一处真值。
  *   留白     = 14px 一侧                (LAMP_MARGIN 总量 28，--lamp-inset)
  *   暂停那枚角标不参与上面任何一条几何：它绝对定位在**牌的右上角外侧**
  *   （`.lamp-flag`，top = 1px、right = --lamp-inset，右边缘与牌右边缘齐平），
@@ -102,29 +110,30 @@ body,
   --sign-radius: 0.32; /* × size */
   --sign-text: 1; /* × 字号 */
 
-  /* ---- 边框光：上下两条边 + 四角 = 六个灯位，共用三把尺子 ------------------
+  /* ---- 边框光：行沿刻线 + 行尾四格，共用三把尺子 --------------------------
    *
-   * **槽可以各挑各的画法与触发**（0.6.5），但线宽 / 直径 / 取色 / 明暗仍是六槽共用
-   * 一份：边灯的线宽和角灯的直径共用 `--light-w` / `--corner-d`，取色和明暗共用
-   * `--light-c` / `--light-a`。这两组再拆开，用户十有八九会调出「一条粗线配四颗
-   * 小芝麻」—— 那正是 0.6.3 之前「灯看起来不协调」的根因：各画各的。
+   * **槽可以各挑各的画法与触发**（0.6.5），但刻线高度 / 记号尺寸 / 取色 / 明暗
+   * 仍是六槽共用一份：刻线用 `--light-w`，记号用 `--mark-d`，两者一起随
+   * `data-sign-light-scale` 变；取色和明暗共用 `--light-c` / `--light-a`。
+   * 再拆开，用户十有八九会调出「一条粗线配四颗小芝麻」—— 那是 0.6.3 之前
+   * 「灯看起来不协调」的根因：各画各的。
    *
    * 默认档写在下面，三档覆盖在文件后面的 `[data-sign-light-*]` 一段里。
-   * **没有一档参与窗口几何**：两条边是 `::before` / `::after` 伪元素，角灯绝对定位。
+   * **没有一档参与窗口几何**：刻线是伪元素，记号绝对定位。
    */
   --light-w: calc(var(--size) * 0.068);
   --light-a: 0.72;
-  --corner-d: calc(var(--size) * 0.16);
-
-  /* 角灯的落点**跟着圆角算**，这是「角灯应该在边框的四角」的关键。
-     圆角弧上 45° 那个点到牌角的距离是 r·(1 − 1/√2) ≈ 0.293r；圆点左上角只要
-     不比它更靠内，整颗就落在圆角弧内侧、不会被 `.sign` 的 `overflow: hidden`
-     切掉一块。
-     旧版写死 `0.24 × size`，那是为了迁就最大圆角（0.72 × size）取的**上界**：
-     默认圆角只有 0.32 × size，于是角灯离边框足有 5px，读起来是「牌内四个散点」
-     而不是「边框四角的灯」。跟着 r 算之后，四档圆角里它都紧贴边框。 */
-  --corner-arc: calc(var(--size) * var(--sign-radius, 0.32) * 0.293);
-  --corner-inset: calc(var(--corner-arc) + 1px);
+  --mark-d: calc(var(--size) * 0.16);
+  --mark-gap: calc(var(--size) * 0.07);
+  /* 记号列离牌右边多远。0.1 档只剩 1.2px（还压着 1px 描边），四枚小方贴在边上
+     读起来像碎屑；让到 0.22×size 之后它与描边之间约有 0.12×size 的空隙，整列
+     才像是「牌上的一列记号」。`.sign` 的右内边距同步加到 0.54×size ——
+     两者是同一个间距的两半，只改一处会让记号列撞上时长。 */
+  --mark-inset: calc(var(--size) * 0.22);
+  /* 四格竖排一列的总高。整列宽度只有 `mark-inset + mark-d` ≈ 0.38×size，
+     比行的右内边距（0.54×size）还窄 —— 于是**一个字都不用挤**。
+     2×2 那版要额外腾出 11px，实测把组名截掉了三四个字符，得不偿失。 */
+  --mark-stack-h: calc(var(--mark-d) * 4 + var(--mark-gap) * 3);
 
   /* 牌内字体。默认是系统无衬线；`[data-sign-font="mono"]` 把整块牌换成等宽
      —— 组名、状态词、消息、时长一起换，牌读起来像一段终端日志。
@@ -143,10 +152,10 @@ body,
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  /* 牌间距 = size / 2 × 间距档位（`lampStyle.ts::SIGN_GAP_MULT`）。
-     **和 Rust 的 `window_size` 是两处真值**：那边用 `SignGap::px` 算同一个值，
-     默认档 1.0 逐字等于旧公式 `size / 2`（见文件头）。 */
-  gap: calc(var(--size) / 2 * var(--sign-gap, 1));
+  /* 展开态的行距搬到 `.sign-board` 里去了 —— 它现在是每行自己的底部留白，
+     而不是根上两张卡之间露出桌面的空隙。折叠态下面那条规则仍然按 `size / 3`
+     排点（它和 `collapsed_window_size` 才是两处真值）。 */
+  gap: 0;
   cursor: grab;
   /* 拖窗口时不要顺手选中文本，也不要触发原生文本拖拽 */
   user-select: none;
@@ -164,13 +173,120 @@ body,
   cursor: grabbing;
 }
 
-/* 折叠态：一组一颗点，横着排。间距和 vertical 模式一起对齐 config.rs。
-   **点距不吃「牌间距」档位**：那是牌与牌之间的事，折叠态没有牌；而
-   `collapsed_window_size` 也只认 `size / 3` 这一套几何 —— 跟着变的话，
-   折叠态就会和 Rust 算的窗口对不上。 */
+/* 折叠态：一组一格，**默认竖着排**，横排要用户自己在「外观 → 基础」里挑。
+   间距用 `--fold-gap`（`lampVars` 算出的整数 px，== Rust 的 `size / 3`），
+   不再写 `calc(var(--size) / 3)` —— 那个小数在 22px 下是 7.33px，四个间隙
+   累加起来会比 Rust 算的窗口宽 1.3px，最外侧那颗点被削掉一线。
+   **点距不吃「牌间距」档位**：那是展开态板内每行的事，折叠态没有牌。 */
 .lamp-root[data-collapsed="true"] {
+  flex-direction: column;
+  gap: var(--fold-gap);
+}
+.lamp-root[data-collapsed="true"][data-fold-axis="horizontal"] {
   flex-direction: row;
-  gap: calc(var(--size) / 3);
+}
+
+/* ---- 折叠态带文字：一条共享窄板 ----------------------------------------
+ *
+ * 用户不想每次都「完全缩成一颗灯」时，给每颗灯配一个词。四档（只有灯 /
+ * 组名 / 序号 / 状态词）里后三档走这里，共用一块和展开态同源的板：
+ * 连续外框 + 圆角 + 1px 格间细线，浅色壁纸上字也读得清。**不带文字的档
+ * 不画板** —— 一颗孤零零的点套个框反而像按钮。
+ *
+ * 板宽 = 格数 × 格宽（竖排）或一格宽，板高同理；`width: max-content` 让
+ * flex 自己把格子加起来，和 Rust `folded_size` 的公式是同一个数。带文字时
+ * 格距归 0，因为连续的板不该再被透明缝切成几条。
+ */
+.fold-board {
+  box-sizing: border-box;
+  width: max-content;
+  display: flex;
+  flex-direction: column;
+  /* **圆角封在「标准」档（0.32×size ≈ 7px）**，不跟牌轮廓的大圆角走。
+     轮廓那四档的倍率是按**展开牌**的宽度调的（叶片 0.62×size ≈ 13.6px），
+     可折叠板只有一格宽、行高才 1.5×size，13.6px 的弧会横跨第一行的整个左上角 ——
+     灯珠左边距只有 5px，于是看起来像「左边边框缺了一块、灯珠被削掉」。
+     封顶之后四种轮廓仍表达「哪几个角圆」（叶片左圆右方、拱形上圆下方），
+     不再表达「圆多少」；胶囊那种满圆角（0.75×size）在窄板上同样退到这一档，
+     因为 16.5px 的弧会把灯珠整个包进去。 */
+  --fold-radius: calc(var(--size) * min(var(--sign-radius, 0.32), 0.32));
+  border-radius: var(--fold-radius);
+  /* 和 `.sign-board` 同一条理由：用不占布局的 inset 描边，真 border 会多出
+     上下各 1px、被窗口削掉一线。 */
+  box-shadow: inset 0 0 0 var(--sign-border-w, 1px)
+    var(--sign-border-c, var(--sign-line));
+  background: var(--sign-bg);
+  overflow: hidden;
+  position: relative;
+}
+
+.lamp-root[data-sign-outline="leaf"] .fold-board {
+  border-radius: var(--fold-radius) calc(var(--size) * 0.1) var(--fold-radius)
+    calc(var(--size) * 0.1);
+}
+
+.lamp-root[data-sign-outline="arch"] .fold-board {
+  border-radius: var(--fold-radius) var(--fold-radius) calc(var(--size) * 0.1)
+    calc(var(--size) * 0.1);
+}
+
+.fold-board[data-axis="horizontal"] {
+  flex-direction: row;
+}
+
+/* 一格 = 一颗灯珠 + 一段词。宽高都是 `lampVars` 给的整数 px，绝不跟着
+   文字长度走；`min-width: 0` + ellipsis 是长组名不撑破窗口的关键。
+   间距 0.22×size（≈5px）：0.18 那版点几乎贴着字，三行连看像一列「点+小字」
+   挤在一起。 */
+.fold-row {
+  box-sizing: border-box;
+  flex: none;
+  width: var(--fold-cell-w, var(--size));
+  height: var(--fold-cell-h, var(--size));
+  display: flex;
+  align-items: center;
+  gap: calc(var(--size) * 0.22);
+  padding: 0 var(--fold-pad, 5px);
+  color: var(--sign-fg);
+  font-family: var(--sign-font, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif);
+  font-size: calc(var(--size) * 0.5 * var(--sign-text, 1));
+  line-height: 1.15;
+}
+
+/* **带文字的折叠格里，灯珠按 0.8×size 画**（22px 档 ≈ 17.6px）。
+   展开牌里的点只有 0.55–0.72×size（12–16px），而折叠格的行高是 1.5×size ——
+   点若仍占满 size，就占掉格子高度的三分之二、上下只剩 5.5px，看起来是一颗
+   「顶满格子的大圆」而不是一盏灯；顺带给文字腾回 4.4px。
+   **只有灯**那一档不在这里：那时窗口就是按 size 算的，点必须占满，缩了会留空。 */
+.fold-row > .lamp-dot {
+  --dot: calc(var(--size) * 0.8);
+}
+
+.fold-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--sign-muted);
+}
+
+/* 组名是这一行的主语，取正文字色 + 500 字重；序号 / 状态词是注解，保持灰字。
+   序号用等宽数字，1 和 12 不会让文字左右跳。 */
+.fold-board[data-label="name"] .fold-text {
+  color: var(--sign-fg);
+  font-weight: 500;
+}
+.fold-board[data-label="index"] .fold-text {
+  font-variant-numeric: tabular-nums;
+}
+
+.fold-board > .fold-row:not(:last-child) {
+  border-bottom: 1px solid var(--sign-line);
+}
+.fold-board[data-axis="horizontal"] > .fold-row:not(:last-child) {
+  border-bottom: 0;
+  border-right: 1px solid var(--sign-line);
 }
 
 /* ---- 待审批的气泡（C3）---------------------------------------------------- */
@@ -366,9 +482,79 @@ body,
   padding-right: calc(var(--size) * 0.3);
 }
 
-/* ---- 一块牌 -------------------------------------------------------------- */
+/* ---- 一整块灯牌（0.6.7）--------------------------------------------------
+ *
+ * 多个组不再各画一张圆角卡片，而是共享一个外框：`.sign-board` 负责描边 / 圆角 /
+ * 裁切与底色，里面的 `.sign` 是它的行。**几何一个像素没改**：以前「牌间距」是
+ * 窗口里两张卡之间的透明空隙，现在把它消化成每行自己的底部留白（行画在板的
+ * 底色上，所以留白处也是牌面），窗口总高仍是 `stacked + gap×(N−1) + 28` ——
+ * `config.rs::window_size` 和 `SignGap::px` 一个字都不用动。
+ *
+ * **只有一行时不留白、不画行间线**，外观和 0.6.6 逐像素一致：默认 `group_by`
+ * 就是一块牌，不能为了多组让最常见的那种用法变样。
+ *
+ * 折叠态不渲染 board —— 那一排裸点本来就没有框。
+ */
+.sign-board {
+  box-sizing: border-box;
+  /* **按内容宽，不是 100%**。真窗口里两者等价（窗口宽 = 牌宽 + `LAMP_MARGIN`，
+     所以 100% 恰好就是一块牌的宽），但设置页的预览把 `.lamp-root` 放进一块
+     宽画布里 —— 100% 会把整块板拉成一面墙、行却还停在 154px，右边留一片空的
+     深色，看着就像「预览里的牌比真灯胖一截」。按内容宽之后两边同宽。
+     `flex: none` 防它被父级拉伸或挤扁（根是 flex column）。 */
+  width: max-content;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  /* 描边用 **inset box-shadow 而不是 border**：board 没有显式 height，真 border
+     会给它上下各多 1px，整块板就比 Rust 算的内容区高 2px，居中的结果是被窗口
+     削掉一线描边。inset 画在圆角内、完全不占布局，窗口高度仍逐像素对齐。
+     `[data-sign-border="none"]` 把线宽收成 0，这里自然也一起消失。 */
+  box-shadow: inset 0 0 0 var(--sign-border-w, 1px)
+    var(--sign-border-c, var(--sign-line));
+  border-radius: calc(var(--size) * var(--sign-radius, 0.32));
+  background: var(--sign-bg);
+  overflow: hidden;
+  position: relative;
+}
+
+/* 行距 = 每行底部多出来的一段留白。**最后一行不加**，于是 N 行总共只多
+   `gap × (N−1)`，和 Rust 的窗口高度公式逐像素对齐。两行消息牌同理。 */
+.sign-board > .sign:not(:last-child) {
+  height: calc(
+    var(--size) * 3 / 2 * var(--sign-h-mult, 1) + var(--row-gap, 0px)
+  );
+  /* 上下各半，内容仍居中在整行里 —— 全压在下面会让字看着偏上、留一大块空。
+     也正因为是对称的，行中心没被行距推走：绝对定位的行尾四格不需要再减一次
+     行距（那正是它原来偏上半个行距的原因，见 `.sign-corner`）。 */
+  padding-top: calc(var(--row-gap, 0px) / 2);
+  padding-bottom: calc(var(--row-gap, 0px) / 2);
+}
+
+.sign-board > .sign:not(:last-child)[data-has-message="true"] {
+  height: calc(
+    var(--size) * 5 / 2 * var(--sign-h-mult, 1) + var(--row-gap, 0px)
+  );
+}
+
+/* 行间只用一条 1px 细线，不另起一圈框。`border-bottom` 落在行的盒内
+   （`box-sizing: border-box`、行高固定），所以不撑高任何东西。 */
+.sign-board > .sign:not(:last-child) {
+  border-bottom: 1px solid var(--sign-line);
+}
+
+/* 行自己不再画外框：圆角、描边、裁切都在板上。方角的行被板的 `overflow`
+   裁成整块板该有的形状。 */
+.sign-board > .sign {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+/* ---- 一行的几何 ---------------------------------------------------------- */
 
 .sign {
+  --row-gap: calc(var(--size) / 2 * var(--sign-gap, 1));
   box-sizing: border-box;
   /* 牌尾那几枚小动作绝对定位挂在这儿 —— **绝不能参与 flex 布局**：牌的宽高是
      Rust（`config.rs::sign_width` / `sign_height`）和这里算出的同一个值，多一个
@@ -380,12 +566,19 @@ body,
   display: flex;
   align-items: center;
   gap: calc(var(--size) * 0.27);
-  padding: 0 calc(var(--size) * 0.36);
+  /* 右内边距比左侧多留 0.18×size（约 4px）：竖排记号列落在里面，与 `12s`
+     之间还隔得开，不至于读成「12s▮」。左侧维持原值，组名几乎不让宽度。
+     **这一条和 `--mark-inset` 是一对**：记号列在右边距里居中，只改一边会让
+     它要么贴边、要么撞上时长。 */
+  padding: 0 calc(var(--size) * 0.54) 0 calc(var(--size) * 0.36);
   /* 描边 / 圆角 / 字号都由 `[data-sign-*]` 那一段驱动（见文件后半）。
      **默认值写在这里的 var() 兜底里**，而不是只在 `.lamp-root` 上定义一次：
      `.sign` 可以被单独渲染（`LampPreview` 的 DOM 也在 `.lamp-root` 里，但
      组件测试有时只挂 `.sign`），两处都留一份才不会出现「取不到变量就退回
      currentColor / 0 圆角」的塌陷。 */
+  /* 圆角 / 描边 / 底色由 `.sign-board` 统一提供（见上面那一节）。单独渲染
+     `.sign` 的组件测试里没有板，所以这两条在 `.sign` 上仍是有效兜底 ——
+     有板时 `.sign-board > .sign` 会覆盖掉它们。 */
   border: var(--sign-border-w, 1px) solid var(--sign-border-c, var(--sign-line));
   border-radius: calc(var(--size) * var(--sign-radius, 0.32));
   background: var(--sign-bg);
@@ -422,45 +615,29 @@ body,
 /* ---- 牌的轮廓（0.6.5） ----------------------------------------------------
  *
  * 和上面的「圆角」是两件事：圆角调四个角**多圆**，轮廓换整块牌**什么形状**。
- * 四档都只用 `border-radius`，**绝不能用 `clip-path`** —— 角灯和边框光是绝对
- * 定位在牌的 bounding box 四角 / 四边上的，clip-path 会把它们一起裁掉。
+ * 四档都只用 `border-radius`，**绝不能用 `clip-path`** —— 行沿刻线和行尾记号都在
+ * 板的 bounding box 里，裁掉就看不见了。0.6.7 起整块板只有一个轮廓，所以这些
+ * 规则作用在 `.sign-board` 上；以前逐块牌各画一次、四角还要跟着圆角算落点，
+ * 那套 `--corner-inset` 已随角灯移位一起删掉。
  *
  * `rect` 不写规则：沿用 `[data-sign-radius]` 给的 `--sign-radius`。`capsule` 只要
- * 把倍率抬到牌高的一半（1.5×size / 2 = 0.75），`--corner-arc` 会自己跟着算。
- * 非对称的两档（leaf / arch）必须**逐角**覆盖 `--corner-inset`：靠近直角的那一枚
- * 若沿用大圆角的落点，会飘到弧线内侧、离边框老远。 */
+ * 把倍率抬到牌高的一半（1.5×size / 2 = 0.75）即可。
+ *
+ * **只作用于 `.sign-board`**：折叠板（`.fold-board`）另有一套按自己宽度封顶的
+ * 圆角，见文件前面「折叠态带文字」那一节。这两条大圆角是按**牌宽**调的，
+ * 套到一格宽的折叠板上会横跨整个左上角、压到灯珠。 */
 .lamp-root[data-sign-outline="capsule"] {
   --sign-radius: 0.75;
 }
 
-.lamp-root[data-sign-outline="leaf"] .sign {
+.lamp-root[data-sign-outline="leaf"] .sign-board {
   border-radius: calc(var(--size) * 0.62) calc(var(--size) * 0.1)
     calc(var(--size) * 0.62) calc(var(--size) * 0.1);
 }
 
-.lamp-root[data-sign-outline="leaf"] .sign-corner[data-pos="tl"],
-.lamp-root[data-sign-outline="leaf"] .sign-corner[data-pos="br"] {
-  --corner-inset: calc(var(--size) * 0.62 * 0.293 + 1px);
-}
-
-.lamp-root[data-sign-outline="leaf"] .sign-corner[data-pos="tr"],
-.lamp-root[data-sign-outline="leaf"] .sign-corner[data-pos="bl"] {
-  --corner-inset: calc(var(--size) * 0.1 * 0.293 + 1px);
-}
-
-.lamp-root[data-sign-outline="arch"] .sign {
+.lamp-root[data-sign-outline="arch"] .sign-board {
   border-radius: calc(var(--size) * 0.6) calc(var(--size) * 0.6)
     calc(var(--size) * 0.1) calc(var(--size) * 0.1);
-}
-
-.lamp-root[data-sign-outline="arch"] .sign-corner[data-pos="tl"],
-.lamp-root[data-sign-outline="arch"] .sign-corner[data-pos="tr"] {
-  --corner-inset: calc(var(--size) * 0.6 * 0.293 + 1px);
-}
-
-.lamp-root[data-sign-outline="arch"] .sign-corner[data-pos="br"],
-.lamp-root[data-sign-outline="arch"] .sign-corner[data-pos="bl"] {
-  --corner-inset: calc(var(--size) * 0.1 * 0.293 + 1px);
 }
 
 /* 描边。none 把线宽收成 0 而不是 `border: none`。 */
@@ -512,24 +689,25 @@ body,
 /* ---- 视觉分量：谁在等我 -------------------------------------------------- */
 
 /*
- * 灯上同时有好几块牌，抢的是同一份余光。早先四块同底、同点径、同字重 ——
- * 「等你授权的那块」和「刚跑完的那块」读起来一样响，只能逐块读字才知道该先看谁。
+ * 一整块板上同时有好几行，抢的是同一份余光。早先四行同底、同点径、同字重 ——
+ * 「等你授权的那行」和「刚跑完的那行」读起来一样响，只能逐行读字才知道该先看谁。
  * 现在只分两档（判据在 `lampStyle.ts::toneOf`，有单测）：
  *
- *   need  —— 授权 / 关注 / 出错（真的在等你动手）：点径 0.72×，牌底不动
- *   calm  —— 其余七个（只是「现在怎么样」）：点径 0.55×，牌底 ×0.72，组名 400
+ *   need  —— 授权 / 关注 / 出错（真的在等你动手）：点径 0.72×，行底不动
+ *   calm  —— 其余七个（只是「现在怎么样」）：点径 0.55×，行底浮一层薄雾，组名 400
  *
- * **三样都不参与布局**：点径是 `.dot` 的 `--dot`，牌底是 background，字重是
- * font-weight。牌宽高仍由 `config.rs` 与这里共享那两个值 —— 多占一个像素就会被
- * `overflow: hidden` 裁掉最后一块牌。
+ * **0.6.7 起 calm 不再压淡牌底。** 以前每行是一张独立卡片，底下就是桌面，把牌底
+ * alpha 乘 0.72 就能「退后一档」；现在底色由 `.sign-board` 统一画，行再叠一层
+ * 半透明深色只会比板更实（两层同色叠加），压淡反成了加重，而且会把连续的一块板
+ * 切成深浅相间的横带。所以退后改由**一层极薄的白雾 + 灰字 + 小点径**表达：
+ * 层次仍在，板的连续性不受影响，滑杆拉到下限也不再有读不清的行。
+ * 相应地 `lampStyle.ts` 里那套 `CALM_ALPHA_*` / `--sign-alpha-calm` 已整个删掉。
  *
- * **牌底 ×0.72 之后仍然读得清**：0.86 → 0.62，浅字还是落在 62% 的深色上。滑杆拉到
- * 下限（65%）时这一档会跌破可读线，所以 `lampStyle.ts` 那边给压淡加了托底
- * （`CALM_ALPHA_FACTOR` / `CALM_ALPHA_FLOOR`，取 `max(α × 0.72, 0.6)`），
- * 算好的值放在 `--sign-alpha-calm` 里 —— **这里不写乘法**，也就不用再操心
- * `max()` 能不能出现在 alpha 位上。
+ * **三样都不参与布局**：点径是 `.dot` 的 `--dot`，雾是 background，字重是
+ * font-weight。行宽高仍由 `config.rs` 与这里共享那两个值 —— 多占一个像素就会被
+ * `overflow: hidden` 裁掉最后一行。
  *
- * **只有一块牌时没有 `data-tone`**（见 SignalLamp 的说明）：分层是在多块之间分
+ * **只有一块牌时没有 `data-tone`**（见 SignalLamp 的说明）：分层是在多行之间分
  * 先后，一块牌没有比较对象，压淡只换来「整盏灯退一档」。而 `group_by` 默认是
  * `none` —— 默认就是一块牌，不能让最常见的那种用法无故变淡。占位牌同理。
  */
@@ -538,33 +716,36 @@ body,
 }
 
 .sign[data-tone="calm"] {
-  /* 用 `--sign-alpha-calm`（lampStyle 算好的「用户值 × 0.72，托底 0.6」），
-     **不在这里做乘法**：乘数只有 `CALM_ALPHA_FACTOR` 一份真值，托底值也只有
-     一处 —— 两边各算一遍的话，改一个忘了另一个，表现是「牌忽然又看不清了」。
-     基色取 `--sign-rgb`：牌面的深色只有那一处真值。 */
-  background: rgba(var(--sign-rgb, 28, 28, 32), var(--sign-alpha-calm, 0.62));
+  background: rgba(255, 255, 255, 0.045);
 }
 
 .sign[data-tone="calm"] .sign-name {
   font-weight: 400;
 }
 
-/* 关掉分层：所有牌同等分量。
+.sign[data-tone="calm"] .sign-state {
+  color: var(--sign-muted);
+}
+
+/* 关掉分层：所有行同等分量。
  *
- * 为什么这值得一个开关：上面那套压淡规则界面上原本没有任何解释 —— 用户看到
- * 某块牌比别的淡，第一反应是「是不是坏了」。开关既是「有人就想要所有牌一样重」
- * 的个性化，也是一种说明：关掉它就能看出差异来自这里。
+ * 为什么这值得一个开关：上面那套规则界面上原本没有任何解释 —— 用户看到某一行
+ * 比别的淡，第一反应是「是不是坏了」。开关既是「有人就想要所有行一样重」的
+ * 个性化，也是一种说明：关掉它就能看出差异来自这里。
  *
- * 三条都要还原（点径 / 牌底 / 组名字重），漏一条就变成半开不开的样子。
- * `--dot-scale` 归 0.55 是因为 `.dot` 的兜底就是 0.55（见 `.dot` 块）。 */
+ * 四条都要还原（点径 / 薄雾 / 组名字重 / 状态词颜色），漏一条就变成半开不开的
+ * 样子。`--dot-scale` 归 0.55 是因为 `.dot` 的兜底就是 0.55（见 `.dot` 块）。 */
 .lamp-root[data-sign-emphasis="flat"] .sign[data-tone="need"] .dot {
   --dot-scale: 0.55;
 }
 .lamp-root[data-sign-emphasis="flat"] .sign[data-tone="calm"] {
-  background: var(--sign-bg);
+  background: transparent;
 }
 .lamp-root[data-sign-emphasis="flat"] .sign[data-tone="calm"] .sign-name {
   font-weight: 600;
+}
+.lamp-root[data-sign-emphasis="flat"] .sign[data-tone="calm"] .sign-state {
+  color: inherit;
 }
 
 .sign-body {
@@ -574,7 +755,8 @@ body,
 
 /* 牌上原来有一块「右上角动作区」（`.sign-actions` / `.sign-action`），悬停时出现
    一枚 ×。2026-11-10 整块撤掉：常驻窗口上的一枚 × 读起来是「关掉这块牌」，而它只清
-   一个状态；那个角落也正是四角小灯 `tr` 的落点，悬停就把灯盖住。清除改走右键菜单。
+   一个状态；那个角落也正是当年 `tr` 那枚角灯的落点（0.6.7 起挪到行尾第 2 格），
+   悬停就把灯盖住。清除改走右键菜单。
    **这里不再留任何按钮样式** —— 牌上唯一的可点元素只剩「看演示」chip（`.sign-guide`）。 */
 
 /* 占位牌里的「看演示」小 chip。**绝不能把牌撑高**：牌高由 Rust 算好，
@@ -647,54 +829,54 @@ body,
   font-variant-numeric: tabular-nums;
 }
 
-/* ---- 边框光：六个独立灯位 -------------------------------------------------
+/* ---- 边框光：行沿刻线 + 行尾四格（0.6.7）--------------------------------
  *
- * 0.6.5 之前是**一条整轨**（`data-edge`）加四角共用的一个 gate：上下边永远一样、
- * 四枚角灯一起亮灭，想「上边常亮、下边只在出错时亮」根本没地方设。现在六个槽
- * 各存「画成什么样 + 凭什么亮」：
+ * 0.6.6 之前是「整条状态色 border + 四枚同色小圆点」：一块牌上五个圆、三条
+ * 彩线，主信号灯淹没在装饰里；`glow` 还在牌外散一圈光，`fade` 用渐变把线截短，
+ * 两端都是这次要去掉的塑料感。现在六个灯位收成**两种形状词汇**：
  *
- *   `.sign::before` = **上边**那条线（`data-edge-top`）
- *   `.sign::after`  = **下边**那条线（`data-edge-bottom`）
- *   `.sign-corner`  = 轨上四个转角处的灯位（只画该亮的那些）
+ *   `.sign::before` / `::after` = 行沿的一枚短刻线（上 / 下各一，方头、约 1px 高）
+ *   `.sign-corner`              = 行尾四格微记号（竖排一列，一律方形 / 短线 / 竖条）
  *
- * 四档画法（不亮 / 实线 / 辉光 / 两端淡出）都是同一条 `border` 的变体，不引入
- * 第二层线。开哪条边就让**那条边**的中性描边让位 —— 左右两截描边保留，不像旧版
- * 那样把整圈一起抹掉。六个槽共用 `--light-w` / `--light-a` / `--light-c` 三把
- * 尺子；辉光画在 `.sign` 自己身上（伪元素会被 `overflow: hidden` 裁掉，散不出去）。
+ * **圆只归主信号灯**：左侧不再有和灯珠同色同形的小点，右侧时长文字也不再被
+ * 角灯压住。四档画法（不亮 / 刻线 / 短刻 / 长刻）只是同一条线在长度与明暗上
+ * 的差异 —— 没有渐变、没有发光、没有第二圈线。配置里的 id
+ * （`off` / `line` / `fade` / `glow`）一个没改，旧设置读盘照旧；改的只是界面
+ * 上叫什么，以及它们长什么样。
  *
- * **不动一个像素的几何**：牌宽高仍由 `config.rs::sign_width` / `sign_height` 算。
- * `data-edge-*` 挂在每块 `.sign` 上而不是根上 —— 触发条件逐块牌判定，一盏灯里
- * 几块牌状态不同。判据在 `lampStyle.ts::lightOn` / `edgeLightKinds` / `cornerLights`。
+ * 四格按 `data-pos` 竖排成一列：tl → tr → br → bl 从上到下（顺时针语义
+ * 保留在设置页的四个下拉里）。2×2 要额外占 11px，实测会把组名截掉几个字；
+ * 竖排一列比右内边距还窄，一个字符都不用让。**不动一个像素的几何**：刻线和记号都是绝对定位、
+ * 不参与 flex；判据仍是 `lightOn()` / `edgeLightKinds()` / `cornerLights()`，
+ * 逐行逐槽判定。
  */
 
 /* `--light-c` 必须**在 `.sign` 这一层**取值，不能从 `.lamp-root` 往下传：状态色是
-   逐块牌的（`--state` 挂在 `.sign` 上），自定义属性里的 `var()` 在声明它的元素上
+   逐行的（`--state` 挂在 `.sign` 上），自定义属性里的 `var()` 在声明它的元素上
    就求值完了，根上写 `--light-c: var(--state)` 拿到的是根上的空值。
-   `--blink-a` 是闪烁时的「亮着那一端」的透明度基线：不闪时就是明暗档本身，
-   闪起来的两端都从它派生（见文件末尾的 `light-blink`）。 */
+   `--blink-a` 是闪烁时「亮着那一端」的透明度基线。 */
 .sign {
   --light-c: var(--state, transparent);
   --blink-a: var(--light-a);
 }
 
-/* 中性档：让边框线只负责「形状」，不抢灯珠那点颜色。取次级灰而不是正文字色，
-   是为了和 `pinned` 那枚近白实心点还留一档差距。
-   **只作用于边线，不作用于「状态色」角灯**（见 `.sign-corner[data-kind]`）：
-   那枚灯存在的唯一理由就是颜色 —— 中性档把它压成灰，等于把一枚灯变成一粒灰尘，
-   关掉圆点之后整块牌就没有任何颜色可读了。 */
+/* 中性档：让刻线只负责「有东西在读」，不抢灯珠那点颜色。取次级灰而不是正文字色，
+   是为了和 `pinned` 那枚近白记号还留一档差距。
+   **只作用于刻线，不作用于状态色记号**（见 `.sign-corner[data-kind]`）：那枚记号
+   存在的唯一理由就是颜色，中性档把它压成灰等于把它变成一粒灰尘。 */
 .lamp-root[data-sign-light-color="neutral"] .sign {
   --light-c: var(--sign-muted);
 }
 
 /* 粗细与明暗的三档。默认档写在 `.lamp-root` 里（见文件头），这里只写两端。 */
 .lamp-root[data-sign-light-scale="thin"] {
-  --light-w: calc(var(--size) * 0.045);
-  --corner-d: calc(var(--size) * 0.12);
+  --light-w: 1px;
+  --mark-d: calc(var(--size) * 0.12);
 }
 
 .lamp-root[data-sign-light-scale="thick"] {
   --light-w: calc(var(--size) * 0.1);
-  --corner-d: calc(var(--size) * 0.22);
+  --mark-d: calc(var(--size) * 0.22);
 }
 
 .lamp-root[data-sign-light-alpha="soft"] {
@@ -705,26 +887,45 @@ body,
   --light-a: 0.95;
 }
 
-/* 上 / 下两条边各用一个绝对定位伪元素。`inset: 0` 相对内边距盒定位，天然落在
-   牌自己的描边里面；`border-radius: inherit` 让线跟着圆角与轮廓走。
-   `pointer-events: none`：它盖在整块牌上，绝不能抢走拖拽和右键。 */
+/* 刻线：贴在行沿的一枚状态色短横。`top/bottom: 0` 贴住行的上 / 下沿；
+   **方头、不绕圆角**（圆角属于整块板，不属于某一行）。
+   它盖在行底之上，但绝不能抢走拖拽和右键。
+
+   **水平居中，按整块牌的宽算。** 它原来是左对齐到内容左边距（`0.36 × size`）的，
+   起因是躲板的圆角：`0.068 × size` 高的一条横线紧贴 `left: 0` 时整段压在圆角里，
+   `overflow: hidden` 会把它切成斜口。但那次「让位」顺手把参照系也换错了 ——
+
+   ① 躲圆角不需要靠边距：居中之后它离两侧圆角各有半块牌远，根本碰不到；
+   ② 更要紧的是**两套坐标混了**。`0.36 × size` 是**文字**的左边距，而刻线是
+      **边**上的记号；边上的东西却去对齐文字起点，于是这条线既不是边框光（不在边
+      上铺开）、也不是对称记号（不在中点）、也读不出它在标记谁 —— 用户看到的就是
+      「一条悬在左上方的短线，说不上歪，但就是不优雅」。而它只画在首行上沿 / 末行
+      下沿（见下面那条规则），本来就属于**整块牌**，属于整牌的东西唯一自洽的水平
+      参照就是整牌的中点。
+
+   居中用 `left/right: 0` + `margin-inline: auto`，**不用 `translateX(-50%)`**：
+   transform 会和任何一条将来给刻线做位移的动画抢同一个属性；现在 `[data-blink-*]`
+   只动 `opacity`，两不相干。 */
 .sign::before,
 .sign::after {
   content: "";
   position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  border: 0 solid var(--light-c, transparent);
+  left: 0;
+  right: 0;
+  margin-inline: auto;
+  width: 16%;
+  height: var(--light-w);
+  background: var(--light-c, transparent);
   opacity: var(--light-a);
   pointer-events: none;
 }
 
 .sign::before {
-  border-top-width: var(--light-w);
+  top: 0;
 }
 
 .sign::after {
-  border-bottom-width: var(--light-w);
+  bottom: 0;
 }
 
 /* 不亮 = 根本不画，连一个空伪元素都不留（少一层合成）。 */
@@ -733,133 +934,104 @@ body,
   display: none;
 }
 
-/* 「两端淡出」：用 mask 让线从中间向两头渐隐，**不是**真把线截短 —— 截短之后
-   两个端点和圆角就接不上了，读起来会像一条没画完的线。 */
+/* **上下两条边属于整块牌，不属于某一行。**
+   这两条原来每行都画，于是「N 行的牌」有 2N 条刻线：中间每道 1px 分隔线的两侧各压
+   着一条 —— 上一行的「下」和下一行的「上」。颜色跟着各自那行的状态走（可能一黄一
+   绿）、长度跟着各自的档走（14% / 22%），左端对齐、右端错开，看起来就是两截不同
+   颜色的短线粘在同一道缝上，像画歪了。只有一行时看不出来（这也是它一直没被发现的
+   原因）—— 而设置页的预览恒是两行，桌面上一组以上也常见。
+   语义上它们本来就叫「上边 / 下边」：一整块牌只有最上面和最下面那一条。所以这里把
+   「上」收进首行、「下」收进末行，中间的行一条也不画。只影响**哪一行**画，不管画
+   成什么样 —— 三档长短、闪烁、取色仍由上面那几条规则和 `data-edge-*` 决定。 */
+.sign-board > .sign:not(:first-child)::before,
+.sign-board > .sign:not(:last-child)::after {
+  display: none;
+}
+
+/* 三档 = 同一条刻线的长短与明暗。旧的 `fade`（两端渐隐）和 `glow`（牌外发光）
+   都删了：前者是渐变，后者是阴影，两者在半透明深色牌上只会糊成一圈脏边。
+   id 沿用是为了不迁移配置，界面文案已改成「刻线 / 短刻 / 长刻」。 */
+.sign[data-edge-top="line"]::before,
+.sign[data-edge-bottom="line"]::after {
+  width: 14%;
+}
+
 .sign[data-edge-top="fade"]::before,
 .sign[data-edge-bottom="fade"]::after {
-  -webkit-mask-image: linear-gradient(
-    90deg,
-    transparent 0%,
-    #000 18%,
-    #000 82%,
-    transparent 100%
-  );
-  mask-image: linear-gradient(
-    90deg,
-    transparent 0%,
-    #000 18%,
-    #000 82%,
-    transparent 100%
-  );
+  width: 8%;
+  opacity: calc(var(--light-a) * 0.55);
 }
 
-/* 开边灯时**对应那条边**的中性描边让位：否则会同时有一条中性线和一条状态线，
-   两条差 1px、谁也看不清。旧版把整圈 `border-color` 一起抹掉，左右两截就空了；
-   现在只让上 / 下，左右照旧。描边档只是被盖住，关掉边灯立刻原样回来。 */
-.sign[data-edge-top]:not([data-edge-top="off"]) {
-  border-top-color: transparent;
+.sign[data-edge-top="glow"]::before,
+.sign[data-edge-bottom="glow"]::after {
+  width: 22%;
+  opacity: 1;
 }
 
-.sign[data-edge-bottom]:not([data-edge-bottom="off"]) {
-  border-bottom-color: transparent;
-}
+/* 行尾四格：**绝对定位、不参与 flex**，所以行宽高一个像素都不变。
+   竖排一列（tl → tr → br → bl 从上到下），整列在行内垂直居中。
+   只挂一两枚时它们仍待在自己那一格 —— 读起来就是「指示灯列里亮了两格」，
+   而不是四个散点。一律 `border-radius: 1px` 的方角，形状上和灯珠彻底分开。
 
-/* 辉光：在边线之外，再从牌**外面**散一圈同色柔光。阴影必须画在 `.sign` 自己
-   身上 —— 伪元素会被 `overflow: hidden` 裁掉，光散不出去。上下各给一个方向；
-   两边都选了辉光就写两条，后写的那条不能把前一条覆盖掉。
-   `box-shadow` 是这一类效果里唯一挂 `.sign` 的属性，所以「效果」那几档一律
-   改用 `background-image` 做牌面高光，不去抢它（见文件末尾）。 */
-.sign[data-edge-top="glow"] {
-  box-shadow: 0 calc(var(--size) * -0.18) calc(var(--size) * 0.45)
-    calc(var(--size) * -0.12) var(--light-c, transparent);
-}
-
-.sign[data-edge-bottom="glow"] {
-  box-shadow: 0 calc(var(--size) * 0.18) calc(var(--size) * 0.45)
-    calc(var(--size) * -0.12) var(--light-c, transparent);
-}
-
-.sign[data-edge-top="glow"][data-edge-bottom="glow"] {
-  box-shadow:
-    0 calc(var(--size) * -0.18) calc(var(--size) * 0.45) calc(var(--size) * -0.12)
-      var(--light-c, transparent),
-    0 calc(var(--size) * 0.18) calc(var(--size) * 0.45) calc(var(--size) * -0.12)
-      var(--light-c, transparent);
-}
-
-/* 角灯：边框四个转角上的**灯位**，不是牌内散点。落点 `--corner-inset` 跟着
-   圆角半径算（见文件头），所以四档圆角里它都紧贴边灯那条线。
-   **默认常亮**：闪不闪由每个槽自己的 `blink` 决定（0.6.6，见下方「闪烁」一节）。
-   0.6.5 里这里写死「不闪」，理由是「一处画面里别有好几个东西在动」；用下来
-   那条理由只在四枚角灯**同时**闪的时候成立，而默认全关，所以现在交给用户。
-   用 `data-pos` 定位而不是四套类名：位置只有四个，值只有六个，两个维度分开写
-   才不会有 24 条规则。 */
+   **不要再减一次行距。** 行距（`.sign-board > .sign:not(:last-child)`）是上下
+   各分一半加进 padding 的，行中心因此没动 —— 这里若再减掉一次，非末行的整列
+   就会**整体偏上行距的一半**（22px 档 5.5px），和末行对不上；一块两行的牌看起来
+   就是「上面那枚浮在行的上半截、下面那枚居中」。0.6.7 之前一直这样，因为一行
+   （只有末行）时没有行距，看不出来。绝对定位的 `100%` 量的是 padding box，
+   本来就已经是居中所需的那个高度。 */
 .sign-corner {
   position: absolute;
-  width: var(--corner-d);
-  height: var(--corner-d);
-  border-radius: 50%;
+  box-sizing: border-box;
+  right: var(--mark-inset);
+  top: calc(
+    (100% - var(--mark-stack-h)) / 2 +
+    var(--mark-i, 0) * (var(--mark-d) + var(--mark-gap))
+  );
+  width: var(--mark-d);
+  height: var(--mark-d);
+  border-radius: 1px;
   opacity: var(--blink-a);
-  /* 它只负责「看」：牌上按下要能拖窗口，右键要能弹组菜单 */
+  /* 它只负责「看」：行上按下要能拖窗口，右键要能弹组菜单 */
   pointer-events: none;
 }
 
-.sign-corner[data-pos="tl"] {
-  left: var(--corner-inset);
-  top: var(--corner-inset);
-}
-
-.sign-corner[data-pos="tr"] {
-  right: var(--corner-inset);
-  top: var(--corner-inset);
-}
-
-.sign-corner[data-pos="br"] {
-  right: var(--corner-inset);
-  bottom: var(--corner-inset);
-}
-
-.sign-corner[data-pos="bl"] {
-  left: var(--corner-inset);
-  bottom: var(--corner-inset);
-}
+.sign-corner[data-pos="tl"] { --mark-i: 0; }
+.sign-corner[data-pos="tr"] { --mark-i: 1; }
+.sign-corner[data-pos="br"] { --mark-i: 2; }
+.sign-corner[data-pos="bl"] { --mark-i: 3; }
 
 /* 状态色：和灯珠细环取同一个 `--state`，**不跟 `--light-c` 走**。
-   关掉牌上那颗圆点之后，这是唯一的颜色来源 —— 「我只要一块纯文字卡，但还得
-   一眼看出颜色」就靠它。所以「颜色来源 = 中性」那一档（它管的是边线）不能把
-   这枚灯也压成灰：灰的状态点不表达任何状态。 */
+   关掉牌上那颗圆点之后，这是唯一的状态色来源；中性档（它管的是刻线）不能把
+   这枚记号也压成灰。形状是实心小方，和灯珠的圆形成对比。 */
 .sign-corner[data-kind="state"] {
   background: var(--state, transparent);
 }
 
-/* 置顶：正文字色实心点。**不取 `--light-c`** —— 它是「我把它钉在最前面了」的
-   记号，和状态无关；取同一路颜色会和 `state` 那枚混淆。中性档下 `--light-c` 是
-   次级灰，和这里的近白仍差一档，不会糊成一枚。 */
-.sign-corner[data-kind="pinned"] {
-  background: var(--sign-fg);
+/* 置顶：近白的实心短横。和「静音」的空心方、「状态色」的实心方靠形状区分，
+   不用再靠圆 / 环那套在 3.5px 上勉强分辨。 */
+.sign-corner[data-kind="pinned"],
+.sign-corner[data-kind="stale"] {
+  height: 2px;
+  margin-top: calc((var(--mark-d) - 2px) / 2);
 }
 
-/* 静音：**空心环**。实心 / 空心是这两种角灯唯一能在一枚 3.5px 的点上分辨出来的
-   差别，所以静音用它 —— 语义上也对：「关掉了声音」＝ 中间是空的。
-   环用近白而不是 `--sign-muted`：3.5px 的一个 1px 圈，用灰线在深牌上几乎看不见，
-   而「看不见的角灯」比不挂更糟（用户会以为设置没生效）。 */
+.sign-corner[data-kind="pinned"] {
+  background: var(--sign-muted);
+}
+
+/* 静音：**空心方**。短横 / 实心方全是「这一组的属性」，空心才读得出「关掉了」。
+   环用近白而不是 `--sign-muted`：3.5px 的一个 1px 圈，用灰线在深牌上几乎看不见。 */
 .sign-corner[data-kind="muted"] {
-  box-sizing: border-box;
-  border: 1px solid var(--sign-fg);
+  border: 1px solid var(--sign-muted);
   background: transparent;
-  /* 空心环比实心点更细，压到和实心点同一透明度会显得「没挂上」；闪起来时
-     基线也用它，不闪时两处取的是同一个数。 */
   --blink-a: calc(var(--light-a) * 0.78);
   opacity: var(--blink-a);
 }
 
-/* 沉默进度：越接近过期越淡。`--progress` 和灯珠那个细环是**同一个变量**
-   （`SignalLamp` 把它挂在 `.sign` 上），所以两者永远不会给出不同的答案。
-   不沉默时不画（由 `lampStyle.ts::cornerLights` 过滤），所以这里不必判状态。
+/* 沉默进度：越接近过期越淡。`--progress` 和灯珠那个细环是**同一个变量**，
+   取 `--state` 而不是 `--light-c`：它说的是「还要沉默多久」，同样不该被中性档抹掉。
    展开乘式而不是写 `calc(var(--light-a) * (...))` —— 括号在 calc 里的支持面
-   比想象中窄，乘开之后每个浏览器都一样。
-   取 `--state` 而不是 `--light-c`：它说的是「还要沉默多久」，和状态色角灯是
-   同一类信息，同样不该被中性档抹掉。 */
+   比想象中窄，乘开之后每个浏览器都一样。 */
 .sign-corner[data-kind="stale"] {
   --blink-a: calc(
     var(--light-a) * 0.2 + var(--light-a) * 0.7 * var(--progress, 1)
@@ -868,34 +1040,23 @@ body,
   opacity: var(--blink-a);
 }
 
-/* 点击穿透：**空心方**。圆的（实心点 / 空心环）全部是「这一组的属性」，只有
-   穿透说的是**整个窗口**此刻的状态 —— 形状换一类，不用读字也不会和静音的空心环
-   搞混。方角只有 2px，在 3.5px 的尺寸上仍然看得出不是圆。
-   0.6.4 之前它是窗口右上角一枚常驻的 `ban` 角标；现在挂不挂、挂哪个角都由用户在
-   「外观 → 四角挂什么」里定，没挂就不画。真实性仍然有：开启穿透时的一次性系统
-   通知、tooltip 那行字和托盘菜单都在。 */
+/* 点击穿透：**近白竖条**。圆的（灯珠）和横的（置顶 / 沉默）都在说某一组，
+   只有穿透说的是整个窗口此刻的状态 —— 换一类形状，不用读字也不会混淆。 */
 .sign-corner[data-kind="passthrough"] {
-  box-sizing: border-box;
-  border: 1px solid var(--sign-fg);
-  border-radius: 2px;
-  background: transparent;
+  width: 2px;
+  margin-left: calc((var(--mark-d) - 2px) / 2);
+  background: var(--sign-muted);
 }
 
 /* ---- 闪烁（0.6.6）--------------------------------------------------------
  *
- * 0.6.5 的角灯写的是「常亮、不闪」—— 当时的判断是「节奏是灯珠的活，四角再闪
- * 就是一处画面里好几个东西在动」。用下来这个判断只对一半：角灯本来就是为了
- * 在**不看牌面**的时候也能远远认出来，而「不动」恰好把它降级成了一颗色点，
- * 错过的还是错过的。于是 0.6.6 把「闪不闪」交回给每个槽自己（`blink`），
- * 默认仍为 false —— 升级上来不会突然多出几个在动的东西。
+ * 闪不闪由每个槽自己的 `blink` 决定，默认全关。节奏**跟着这一行的状态走**
+ * （`lampStyle.ts::lightBlink` 算好挂在 `--light-blink` 上）：状态是 `error`
+ * 就按 error 那档硬闪，是 `working` 就按它那档呼吸，和灯珠说的是同一句话。
+ * 两端透明度从 `--blink-a` 取，所以「明暗」档、静音格的 0.78、沉默进度那枚的
+ * 渐淡在闪的时候都不会被抹成同一个亮度。
  *
- * 节奏**跟着这块牌的状态走**（`lampStyle.ts::lightBlink` 算好挂在 `--light-blink`
- * 上）：状态是 `error` 就按 error 那档硬闪，是 `working` 就按它那档呼吸，和灯珠
- * 说的是同一句话。两端透明度从 `--blink-a` 取，所以「明暗」档、静音环的 0.78、
- * 沉默进度那枚的渐淡在闪的时候都不会被抹成同一个亮度。
- *
- * **只是属性动画**：`opacity` 走合成层，不触发重排，也不动牌宽高（红线：常驻
- * 窗口不能为动画改几何）。
+ * **只是属性动画**：`opacity` 走合成层，不触发重排，也不动行宽高。
  */
 @keyframes light-blink {
   0%,
@@ -914,10 +1075,7 @@ body,
   animation: var(--light-blink, none);
 }
 
-/* 四角小灯曾经要给右上角那枚悬停出现的「清除该组」按钮让路（当时的判断是
-   「hover 意味着手已经在这块牌上，角灯让一让可以接受」）。现在按钮撤了，四个角
-   没有谁会被盖住 —— 角灯也不再需要这条让步说明。角灯自己不接收事件，
-   所以它们不会让牌的哪一块变得点不动。 */
+/* 四枚记号都只负责「看」，不接收事件，所以牌上没有任何一块会因此点不动。 */
 
 /* ---- 牌尾的小角标 -------------------------------------------------------- */
 
@@ -942,8 +1100,8 @@ body,
 /* 暂停监控的**持续可见**提示。
    **必须是持续的**：只看颜色的话 `off`（暂停）和 `offline` 是两个都很淡的灰，
    根本分不出来。0.6.4 之前这枚角标还兼职画「点击穿透」（`ban` 图标，穿透优先），
-   现在那一枚挪进了四角角灯（`.sign-corner[data-kind="passthrough"]`）：挂不挂由
-   用户在「外观 → 四角挂什么」里定，于是这枚方块只剩暂停一种语义，也不用再抢
+   现在那一枚挪进了行尾四格（`.sign-corner[data-kind="passthrough"]`）：挂不挂由
+   用户在「外观 → 行尾四格」里定，于是这枚方块只剩暂停一种语义，也不用再抢
    谁优先。穿透的真实性由一次性系统通知、tooltip 那行字和托盘菜单共同保证。
 
    ⚠️ **绝不能参与布局**。它原来是牌里的一个 flex 子项，硬挤掉 `.sign-body`
@@ -994,8 +1152,7 @@ body,
    指针事件，hover 永不成立 —— 于是灯变成一颗永远压暗、点不到也拖不动的点。
    前端已经把 `data-quiet` 一起收掉了（见 SignalLamp.tsx），这里再留一道 CSS 兜底：
    万一将来有别的路径把它设成 true，压暗仍然不该发生。 */
-.lamp-root[data-quiet][data-pass-through] .sign,
-.lamp-root[data-quiet][data-pass-through] .lamp-dot {
+.lamp-root[data-quiet][data-pass-through] :is(.sign, .lamp-dot, .fold-board) {
   opacity: 1;
 }
 
@@ -1024,15 +1181,22 @@ body,
   -webkit-user-select: none;
 }
 
-/* `+N` 是「还有几组没画出来」——**信息，不是状态**，所以不取状态色，
-   跟展开态那枚 `.sign-more` 走同一档中性外观。外框留着（尺寸必须和上一枚一样），
-   只是画成透明 —— 不然在浅色主题下会和刚画好的圆点混成一片。 */
+/* `+N` 是「还有几组没画出来」——**信息，不是状态**，所以不取状态色。
+   早先把它画成透明底 + 浅灰字，本意是别和彩点混成一片；但透明窗口底下是
+   用户的壁纸，浅壁纸上这枚 `#c2c2cb` 几乎看不见（折叠默认竖排后它落在列尾，
+   更显眼）。现在铺一层和牌面同源的深色底 —— 深壁纸上看得见轮廓，浅壁纸上
+   看得见字。它仍只有 `size` 见方，不占更多几何。 */
 .lamp-dot-more {
-  border-color: transparent;
-  background: transparent;
+  border-color: var(--sign-line);
+  background: var(--sign-bg);
   color: var(--sign-muted);
   font-size: calc(var(--size) * 0.42);
   font-variant-numeric: tabular-nums;
+}
+/* 带文字的窄板本身已经是深色，板里那枚再铺一层牌底只会多出一个圆斑。 */
+.fold-board .lamp-dot-more {
+  border-color: transparent;
+  background: transparent;
 }
 
 /* ---- 折叠 / 展开的一次性反馈 --------------------------------------------- */
@@ -1041,9 +1205,7 @@ body,
    **只动 opacity**：本项目对这个常驻窗口有一条硬约束是「动画只动 opacity，
    交给 GPU 合成」（见文件头第 2 条），动 transform 会让它每帧重排。
    `data-flash` 由前端在形态变化时挂上、420ms 后摘掉。 */
-.lamp-root[data-flash] .sign,
-.lamp-root[data-flash] .lamp-dot,
-.lamp-root[data-flash] .lamp-dot-more {
+.lamp-root[data-flash] :is(.sign, .lamp-dot, .lamp-dot-more, .fold-board) {
   animation: flash 420ms ease-out 1;
 }
 
@@ -1062,25 +1224,25 @@ body,
 /* ---- 跃迁脉冲：哪块牌刚换了状态就闪一下 -------------------------------- */
 
 /* 判据在前端（`lib/lampTransitions.ts`），它把「这一帧变了的组」翻成 `data-pulse`。
-   **闪的是描边，不是整块牌。** 早先是 opacity 0.35 → 1：在透明窗口上整块牌淡进来，
-   读起来像「这块牌消失了一下」，而不是「这一格刚更新」；而且它和灯珠自己的状态
-   动画叠成两层闪，越紧急越糊。现在描边从状态色淡回常态色 —— 余光里看到的是
-   「这块牌的边框亮了一下」，指向的正是那一块。
-   只动 border-color（paint，不走合成层）：它是一次性的 420ms，不是红线 2 管的
-   常驻循环；牌才 154×33，这点重绘可以忽略。
+   **闪的是一圈内描边，不是整块牌。** 早先是 opacity 0.35 → 1：在透明窗口上整块牌
+   淡进来，读起来像「这块牌消失了一下」，而不是「这一格刚更新」；而且它和灯珠
+   自己的状态动画叠成两层闪，越紧急越糊。余光里看到的是「这一行的轮廓亮了一下」，
+   指向的正是那一行。
+   0.6.7 起行自己没有外框了（描边归 `.sign-board`），所以从 `border-color` 改成
+   `box-shadow: inset` —— 否则只有「非末行」那条 1px 分隔线会闪，末行毫无反馈。
+   它是一次性的 420ms，不是红线 2 管的常驻循环；牌才 154×33，这点重绘可以忽略。
    这里原来是 `done` 那条 `pop`（`transform: scale`）——**本项目唯一的 transform
-   违例**，会令牌这个常驻窗口每帧重排。现在「完成」的落定观感由这条描边闪承担，
-   `pop` 整个删掉。 */
+   违例**，会令牌这个常驻窗口每帧重排。现在「完成」的落定观感由这圈闪承担。 */
 .lamp-root .sign[data-pulse] {
   animation: edge-flash 420ms ease-out 1;
 }
 
 @keyframes edge-flash {
   0% {
-    border-color: var(--state, var(--sign-line));
+    box-shadow: inset 0 0 0 1px var(--state, var(--sign-line));
   }
   100% {
-    border-color: var(--sign-line);
+    box-shadow: none;
   }
 }
 
@@ -1233,14 +1395,17 @@ body,
 /* 没事时把牌压到几乎看不见，只有真正有活动或需要你注意时才完全显形。
    从「一个常驻的牌子」变成「只在有事时存在的牌子」。
    done 也算「有事」—— 它是任务完成的确认，压暗就失去意义了。 */
-[data-quiet="true"][data-aggregate="idle"] .sign,
-[data-quiet="true"][data-aggregate="idle"] .lamp-dot,
-[data-quiet="true"][data-aggregate="stale"] .sign,
-[data-quiet="true"][data-aggregate="stale"] .lamp-dot,
-[data-quiet="true"][data-aggregate="offline"] .sign,
-[data-quiet="true"][data-aggregate="offline"] .lamp-dot,
-[data-quiet="true"][data-aggregate="off"] .sign,
-[data-quiet="true"][data-aggregate="off"] .lamp-dot {
+/* 带文字的窄板整块压暗一次就够 —— 板里的灯珠若也匹配这条规则，两级 0.15
+   相乘会变成 0.0225，等于直接消失。裸点是 `.lamp-root` 的**直接**子元素，
+   所以用 `> .lamp-dot` 把它们和板里的点分开。 */
+[data-quiet="true"][data-aggregate="idle"] :is(.sign, .fold-board),
+[data-quiet="true"][data-aggregate="stale"] :is(.sign, .fold-board),
+[data-quiet="true"][data-aggregate="offline"] :is(.sign, .fold-board),
+[data-quiet="true"][data-aggregate="off"] :is(.sign, .fold-board),
+[data-quiet="true"][data-aggregate="idle"] > .lamp-dot,
+[data-quiet="true"][data-aggregate="stale"] > .lamp-dot,
+[data-quiet="true"][data-aggregate="offline"] > .lamp-dot,
+[data-quiet="true"][data-aggregate="off"] > .lamp-dot {
   opacity: 0.15;
 }
 
@@ -1249,8 +1414,7 @@ body,
    **只恢复不透明度，不动字色和描边**：安静压暗是 `opacity: .15`，拉回 1 之后牌面
    按用户设的 alpha 显形；而「低透明度 + 悬停」时牌面仍然是淡的（滑杆决定的是背景
    alpha，不是元素 opacity），那套浅字 + 描边必须留着，否则一碰它就又看不清了。 */
-.lamp-root:hover .sign,
-.lamp-root:hover .lamp-dot {
+.lamp-root:hover :is(.sign, .lamp-dot, .fold-board) {
   opacity: 1;
 }
 
@@ -1372,12 +1536,16 @@ body,
   }
 }
 
-/* 牌面：一道从顶部往下淡出的极淡白（2%，只在亮桌面才隐约看得见），加一条
+/* 五档动效仍**逐行**生效：共享的是外框，不是节奏。整块板一起呼吸反而会把
+   「哪一行刚更新」抹掉；脉冲 / 扫光 / 渐隐各播各的，跃迁那圈闪也是逐行的
+   （见 `edge-flash`）。底色由 `.sign-board` 画，行叠的是这层渐变。
+   牌面：一道从顶部往下淡出的极淡白（2%，只在亮桌面才隐约看得见），加一条
    非常柔的顶部高光。玻璃感应该是「若有若无」的，不是「能看见一条边」的。
    不改盒模型，也不碰 --sign-bg 的 alpha —— 低透明度那套浅字 + 描边照旧。
-   **0.6.5 起刻意不用 box-shadow 做内高光**：`.sign` 的 box-shadow 归边框光的
-   辉光档所有（见上面那段），两条规则抢同一个属性会让辉光凭空消失。改成叠一层
-   顶部 1px 渐变，观感几乎一样，但两套效果可以共存。 */
+   **0.6.5 起刻意不用 box-shadow 做内高光**：当时 `.sign` 的 box-shadow 归边框光
+   的辉光档，两条规则抢同一个属性会让辉光凭空消失。改成叠一层顶部 1px 渐变，
+   观感几乎一样，两套效果可以共存。0.6.7 辉光档已删，这个属性现在只被
+   `[data-pulse]` 那圈一次性跃迁闪用到，渐变仍留在自己的 background-image 上。 */
 .lamp-root[data-effect="breathe"] .sign {
   background-image:
     linear-gradient(180deg, rgba(255, 255, 255, 0.07), transparent 1.5px),

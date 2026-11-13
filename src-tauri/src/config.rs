@@ -93,6 +93,90 @@ pub const MAX_DOTS: usize = MAX_SIGNS;
 /// 的 `.lamp-flag`），不参与几何。这个上限只用来兜住一个算错的调用点。
 const MAX_BADGES: usize = 1;
 
+/// 折叠后那几颗灯往哪个方向排。
+///
+/// **默认竖排**（用户明确要的默认改动）：折叠的诉求是让出横向桌面，一串竖着的
+/// 点占的是一条窄边；原来横着排反而把窗口摊成一条长条，挡住的是整行。
+/// 老配置里没有这个字段，`Settings` 的容器级 `serde(default)` 会把它们一并
+/// 落到 `Vertical` —— 这是有意的行为变化，不是迁移事故。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FoldAxis {
+    #[default]
+    Vertical,
+    Horizontal,
+}
+
+/// 折叠后每颗灯旁边带哪一段文字。
+///
+/// 四档**单选**而不是可多选：窗口宽度必须能从设置直接算出来（文字长度不定，
+/// 一律固定宽度 + 省略号截断），多选会让「哪几段开着」变成一个组合数，Rust
+/// 与 CSS 就得各自维护一张加法表。四档覆盖「是哪一盏 / 排第几 / 现在怎么样」
+/// 三种最常被问到的事，再加一个「什么都不要」。
+///
+/// `None` 是默认：升级上来的人看到的是原来的裸点，只是方向变成竖排。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FoldLabel {
+    #[default]
+    None,
+    Name,
+    Index,
+    State,
+}
+
+impl FoldLabel {
+    /// 一格的宽度相对 `size` 的倍率。`None` 时不画板，格子就是一颗 `size` 见方的点。
+    ///
+    /// **这条曲线的用途是「一眼认出是哪一组」，不是「把组名排完」**。折叠的全部
+    /// 意义是让出桌面：展开牌宽 `7×size`（22px 档 154px），一格能写的字只要够
+    /// 认出一组就行。0.6.7 之前给的倍率是 3 / 4 / **6**，组名档 132px 宽、
+    /// 窗口 160px —— 比展开牌只窄 22px，用户的原话是「那么折叠没有意义啊」。
+    ///
+    /// 现在按「文字区还能放下几个汉字」反推（一格里的固定开销 ≈ 1.48×size：
+    /// 左右内边距 0.5 + 灯珠 0.8 + 珠字间距 0.22；字号 0.5×size，
+    /// 所以能写的汉字数 ≈ 2×倍率 − 2.95）：
+    ///
+    /// | 档位 | 倍率 | 22px 档格宽 | 文字区 | 能写 |
+    /// |------|------|-------------|--------|------|
+    /// | 序号 | 2.4 | 53px | 21px | 3 位数字（最多 4 组，1 位就够） |
+    /// | 状态 | 3.5 | 77px | 45px | 「需要授权」正好 4 字 |
+    /// | 组名 | 4.0 | 88px | 56px | 5 个汉字，超出省略号 |
+    ///
+    /// 窗口宽 116px（组名档）对展开态 182px：窄 36%，折叠终于看得出来。
+    ///
+    /// 倍数写成小数没问题 —— 跟 `size` 相乘后再 `ceil`，窗口宽仍**只由设置决定**，
+    /// 组名再长也不会让窗口跳一下（和 `sign_width` 同一个取整方向）。
+    pub fn width_mult(self) -> f32 {
+        match self {
+            FoldLabel::None => 1.0,
+            FoldLabel::Index => 2.4,
+            FoldLabel::State => 3.5,
+            FoldLabel::Name => 4.0,
+        }
+    }
+
+    /// 带文字的档共用一块窄板；只有灯的档是几颗互不相连的裸点。
+    pub fn has_text(self) -> bool {
+        self != FoldLabel::None
+    }
+}
+
+/// 折叠态一格的宽 / 高（逻辑像素，不含窗口留白）。
+///
+/// **带文字时行高直接取一块单行牌的高度**（`sign_height`），于是折叠窄板和
+/// 展开的行是同一把尺子 —— 不用再维护第三套高度。宽度是 `size × 倍率 × 宽倍率`，
+/// 向上取整的方向与 `sign_width` 一致：窗口只许多留，不许裁。
+pub fn fold_cell_size(size: u16, label: FoldLabel, w: f32, h: f32) -> (u16, u16) {
+    if !label.has_text() {
+        return (size, size);
+    }
+    (
+        (size as f32 * label.width_mult() * w).ceil() as u16,
+        sign_height(size, false, h),
+    )
+}
+
 /// 折叠态要不要挂那枚 `+N` 角标：可见组数超过 [`MAX_DOTS`] 时，多出来的那些
 /// 在灯上**一点痕迹都没有** —— 而「有几个智能体在跑」恰恰是这盏灯要回答的问题。
 ///
@@ -105,25 +189,45 @@ pub fn more_badge(visible: usize) -> usize {
     usize::from(visible > MAX_DOTS)
 }
 
-/// 折叠形态的窗口尺寸：N 个点排成一行。
+/// 折叠形态的窗口尺寸：N 格按 `axis` 排成一行或一列，每格大小由 `label` 决定。
 ///
-/// 这套几何比展开态小得多 —— 折叠的意义就是让出地方。一个组一个点，
-/// 所以点数和组数一样；一个组都没有时也要有一个点（表示 offline）。
+/// `label = None` + `axis = Horizontal` **逐像素等于 0.6.6 的那排裸点**：
+/// `N × size + (N−1) × size/3 + LAMP_MARGIN` 宽、`size + LAMP_MARGIN` 高。
+/// 竖排只是把这两维对调，所以「默认竖排」不需要动别的几何约定。
 ///
-/// `badges` 是**占一个点位的额外角标数**，现在只有「还有几组没画出来」的 `+N`
+/// 带文字时每格变成一段「灯珠 + 文字」，N 格共享一块窄板（`.fold-board`）：
+/// 板内靠 1px 细线分格，**不再留点距** —— 否则连续的一块板会被切成几条。
+/// `w` / `h` 是用户设的牌宽高倍率，和展开态同一把尺子。
+///
+/// `badges` 是**占一格位置的额外角标数**，现在只有「还有几组没画出来」的 `+N`
 /// 那一枚（见 [`more_badge`]）。暂停角标是绝对定位在灯体内部最上沿的
-/// 徽标，**不占点位**，所以切换穿透 / 暂停都不该让窗口尺寸变（那会把灯珠推偏）。
+/// 徽标，**不占格位**，所以切换穿透 / 暂停都不该让窗口尺寸变（那会把灯珠推偏）。
 ///
-/// ⚠️ 点径、点距、留白和 CSS 的 `.lamp-dot` / `.lamp-dot-more` /
-/// `.lamp-root` 是两处真值（见本文件头），改一处必须同步另一处。
-pub fn collapsed_window_size(size: u16, dots: usize, badges: usize) -> (u16, u16) {
+/// ⚠️ 点径、点距、格宽高、留白和 CSS 的 `.lamp-dot` / `.lamp-dot-more` /
+/// `.fold-row` / `.lamp-root` 是两处真值（见本文件头），改一处必须同步另一处。
+/// 前端把这四个数算成 px 变量挂在根上（`lampStyle.ts::lampVars`），CSS 不再
+/// 自己用小数 `calc` 重算一遍 —— 那正是旧折叠态差半像素的来源。
+pub fn collapsed_window_size(
+    size: u16,
+    dots: usize,
+    badges: usize,
+    axis: FoldAxis,
+    label: FoldLabel,
+    w: f32,
+    h: f32,
+) -> (u16, u16) {
     // 分别封顶再相加，而不是封顶它们的和：封住和的话「多枚角标」会被当成
     // 「少几个组」，于是牌少了一块 —— 那正是截断要避免的那种谎。
     let dots = dots.clamp(0, MAX_DOTS);
     let badges = badges.min(MAX_BADGES);
-    let dots = (dots + badges).max(1) as u16;
-    let gap = size / 3;
-    (dots * size + (dots - 1) * gap + LAMP_MARGIN, size + LAMP_MARGIN)
+    let count = (dots + badges).max(1) as u16;
+    let gap = if label.has_text() { 0 } else { size / 3 };
+    let (cell_w, cell_h) = fold_cell_size(size, label, w, h);
+    let (width, height) = match axis {
+        FoldAxis::Horizontal => (count * cell_w + (count - 1) * gap, cell_h),
+        FoldAxis::Vertical => (cell_w, count * cell_h + (count - 1) * gap),
+    };
+    (width + LAMP_MARGIN, height + LAMP_MARGIN)
 }
 
 /// 圆环菜单的窗口边长（逻辑像素，正方形）。
@@ -845,7 +949,13 @@ pub enum Effect {
 ///
 /// 这是外观里**唯一会影响窗口几何**的一档：牌竖着叠，间距变大窗口就变高，
 /// 所以只能给三个离散档 —— `window_size` 必须把同一个倍率算进总高，CSS 的
-/// `gap` 与这里的 `gaps` 要逐像素一致（见 [`SignGap::px`]）。
+/// 行距与这里的 `gaps` 要逐像素一致（见 [`SignGap::px`]）。
+///
+/// **0.6.7 起 CSS 那边的形态变了，公式没变**：多行共享一块 `.sign-board`，
+/// 间距从「窗口里两张卡之间露出桌面的透明空隙」变成「板内每行自己的底部
+/// 留白」（`--row-gap` 由 `.sign-board > .sign:not(:last-child)` 消化）。
+/// `stacked + gap×(N−1) + LAMP_MARGIN` 一个字都不用改 —— 这也是拼接板能
+/// 不动 Rust 的前提。
 ///
 /// 默认 `Standard` = 现状 `size / 2`（红线 3：升级不改观感）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -856,7 +966,7 @@ pub enum SignGap {
     /// 现状：`size / 2`。
     #[default]
     Standard,
-    /// 2×：牌与牌之间留出呼吸，一块一块分得开。
+    /// 2×：行与行之间留出呼吸，一眼分得清。
     Loose,
 }
 
@@ -876,8 +986,8 @@ impl SignGap {
     /// 的整数结果，否则默认设置下窗口就比牌多一像素。向上取整的方向和
     /// `sign_width` 一致 —— 窗口只许多留，不许裁。
     ///
-    /// CSS 那边是 `calc(size / 2 * var(--sign-gap))`（小数）。`Tight` 在
-    /// 偶数尺寸下会差半个像素（11 × 0.5 = 5.5 vs 这里 6）—— 窗口比内容高 0.5px，
+    /// CSS 那边是 `.sign` 的 `--row-gap: calc(size / 2 * var(--sign-gap))`（小数）。
+    /// `Tight` 在偶数尺寸下会差半个像素（11 × 0.5 = 5.5 vs 这里 6）—— 窗口比内容高 0.5px，
     /// 那是留白，不会裁到牌。
     pub fn px(self, size: u16) -> u16 {
         ((size / 2) as f32 * self.mult()).ceil() as u16
@@ -1756,6 +1866,12 @@ pub struct Settings {
     /// 存进设置而不是当作瞬态开关：用户折叠是有意的选择，重启后该保持。
     /// 托盘里有「展开 / 折叠外形」可以随时切回来，不会卡在折叠态。
     pub collapsed: bool,
+    /// 折叠后 N 颗灯往哪个方向排。默认竖排，用户可改回横排。
+    /// 这两个字段**只影响折叠态**，展开态一律是竖着叠的牌。
+    pub fold_axis: FoldAxis,
+    /// 折叠后每颗灯旁边带哪一段文字。`None` = 只有灯（0.6.6 的样子）。
+    /// 带文字时窗口宽度由档位固定，不随组名长短变化 —— 见 [`fold_cell_size`]。
+    pub fold_label: FoldLabel,
     /// 展开的牌上显示哪几段内容
     pub show: SignFields,
     /// 牌面背景的不透明度（`MIN_SIGN_OPACITY`–100）。调低能看见桌面。
@@ -2214,6 +2330,10 @@ impl Default for Settings {
             styles: BTreeMap::new(),
             colors: BTreeMap::new(),
             collapsed: false,
+            // 折叠默认竖排、不带文字：用户明确要的「默认竖排」，而「只有灯」
+            // 保证升级上来的人不会突然多出一块板。
+            fold_axis: FoldAxis::default(),
+            fold_label: FoldLabel::default(),
             show: SignFields::default(),
             sign_opacity: DEFAULT_SIGN_OPACITY,
             blink_speed: 100,
@@ -2519,13 +2639,28 @@ impl Settings {
     ///
     /// 一块牌时窗口就是「牌 + 留白」；多块竖着叠，高度逐块累加。
     pub fn window_size(&self, signs: &[u16]) -> (u16, u16) {
-        // 间距档位（`SignGap`）是外观里唯一影响几何的一项 —— 牌竖着叠，
-        // 它直接进窗口总高。默认档必须逐字等于原来的 `size / 2`。
+        // 间距档位（`SignGap`）是外观里唯一影响几何的一项 —— 行竖着叠，
+        // 它直接进窗口总高。0.6.7 起 CSS 把它消化成板内每行的底部留白，
+        // 总高公式不变；默认档必须逐字等于原来的 `size / 2`。
         let gap = self.sign_gap.px(self.size);
         let count = signs.len().clamp(1, MAX_SIGNS) as u16;
         let stacked: u16 = signs.iter().take(count as usize).sum();
         let gaps = gap * count.saturating_sub(1);
         (sign_width(self.size, self.sign_w_mult) + LAMP_MARGIN, stacked + gaps + LAMP_MARGIN)
+    }
+
+    /// 折叠态窗口尺寸。**主灯和每组分灯都走这里**，免得两处各自拼七个参数、
+    /// 将来加一档折叠内容时漏掉一个调用点。几何见 [`collapsed_window_size`]。
+    pub fn folded_size(&self, dots: usize, badges: usize) -> (u16, u16) {
+        collapsed_window_size(
+            self.size,
+            dots,
+            badges,
+            self.fold_axis,
+            self.fold_label,
+            self.sign_w_mult,
+            self.sign_h_mult,
+        )
     }
 }
 
@@ -3099,6 +3234,10 @@ mod tests {
             .into_iter()
             .collect(),
             collapsed: true,
+            // 折叠两轴同样取非默认：默认竖排 + 只有灯，用默认值的话
+            // 「导出时漏了这两个字段」在往返里看不出来
+            fold_axis: FoldAxis::Horizontal,
+            fold_label: FoldLabel::State,
             // 新字段设成非默认值：`ClickAction` 默认是 `Collapse`，用默认值的话
             // 「漏了这个字段」在往返里看不出来
             click_action: ClickAction::Inbox,
@@ -4542,8 +4681,9 @@ mod tests {
     /// 间距档位是外观里**唯一影响几何**的一项：默认档必须逐字等于旧公式
     /// `size / 2`，另外两档要真的改变间距、并且把窗口一起推高。
     ///
-    /// CSS 那边是另一处真值（`lamp.css` 的 `.lamp-signs { gap }` 用
-    /// `calc(size / 2 * var(--sign-gap))`，`--sign-gap` 由 `lampStyle.ts` 从同一个
+    /// CSS 那边是另一处真值（`lamp.css` 里 `.sign` 的 `--row-gap` 用
+    /// `calc(size / 2 * var(--sign-gap))`，由共享板非末行的留白消化；
+    /// `--sign-gap` 由 `lampStyle.ts` 从同一个
     /// 枚举推过来）。这里钉的是 Rust 这一侧的口径：先取整再乘、乘完向上取整。
     #[test]
     fn the_sign_gap_is_identity_at_standard_and_moves_the_window() {
@@ -4666,25 +4806,30 @@ mod tests {
         assert!(!parsed.snap_to_edge);
     }
 
+    /// 0.6.6 的样子：横排裸点。老单测全部走这个包装，语义一个字没改。
+    fn horizontal_dots(size: u16, dots: usize, badges: usize) -> (u16, u16) {
+        collapsed_window_size(size, dots, badges, FoldAxis::Horizontal, FoldLabel::None, 1.0, 1.0)
+    }
+
     /// 折叠态：一个组一个点，窗口比展开态小得多
     #[test]
     fn collapsed_window_holds_one_dot_per_group() {
         let size = Settings::default().size;
 
-        let (w1, h1) = collapsed_window_size(size, 1, 0);
+        let (w1, h1) = horizontal_dots(size, 1, 0);
         assert_eq!(w1, size + LAMP_MARGIN, "一个点：方窗");
         assert_eq!(h1, size + LAMP_MARGIN);
 
-        let (w3, h3) = collapsed_window_size(size, 3, 0);
+        let (w3, h3) = horizontal_dots(size, 3, 0);
         assert!(w3 > w1, "多点横着排，所以变宽");
         assert_eq!(h3, h1, "高度只和点的大小有关");
 
         // 一个组都没有时也要有一个点（表示 offline）
-        assert_eq!(collapsed_window_size(size, 0, 0), collapsed_window_size(size, 1, 0));
+        assert_eq!(horizontal_dots(size, 0, 0), horizontal_dots(size, 1, 0));
         // 超出上限按上限算
         assert_eq!(
-            collapsed_window_size(size, MAX_DOTS + 5, 0),
-            collapsed_window_size(size, MAX_DOTS, 0)
+            horizontal_dots(size, MAX_DOTS + 5, 0),
+            horizontal_dots(size, MAX_DOTS, 0)
         );
     }
 
@@ -4699,8 +4844,8 @@ mod tests {
 
         let visible = MAX_DOTS + 1;
         assert!(
-            collapsed_window_size(size, visible, more_badge(visible))
-                > collapsed_window_size(size, visible, 0),
+            horizontal_dots(size, visible, more_badge(visible))
+                > horizontal_dots(size, visible, 0),
             "多出来的那组要占一个点位，否则角标落在窗口外面"
         );
     }
@@ -4712,22 +4857,22 @@ mod tests {
     fn only_the_more_badge_takes_a_dot_of_its_own() {
         let size = Settings::default().size;
 
-        let (bare, _) = collapsed_window_size(size, 2, 0);
-        let (flagged, _) = collapsed_window_size(size, 2, 1);
+        let (bare, _) = horizontal_dots(size, 2, 0);
+        let (flagged, _) = horizontal_dots(size, 2, 1);
         assert_eq!(flagged - bare, size + size / 3, "多一个点加一个点距");
 
         // 上限仍然要封住，否则一个算错的调用点会让窗口无限变宽。
         // 现在只剩一枚角标，多传也只按 1 算。
         assert_eq!(
-            collapsed_window_size(size, MAX_DOTS, 9),
-            collapsed_window_size(size, MAX_DOTS, MAX_BADGES),
+            horizontal_dots(size, MAX_DOTS, 9),
+            horizontal_dots(size, MAX_DOTS, MAX_BADGES),
             "角标再多也只按 MAX_BADGES 算"
         );
 
         // 角标上限是**单独**封的，不侵占组的份额：组数按 MAX_DOTS 截断，
         // 角标再占位，两者相加才是最终的点数。
-        let (full, _) = collapsed_window_size(size, MAX_DOTS, 0);
-        let (full_badged, _) = collapsed_window_size(size, MAX_DOTS, MAX_BADGES);
+        let (full, _) = horizontal_dots(size, MAX_DOTS, 0);
+        let (full_badged, _) = horizontal_dots(size, MAX_DOTS, MAX_BADGES);
         assert_eq!(
             full_badged - full,
             MAX_BADGES as u16 * (size + size / 3),
@@ -4749,10 +4894,148 @@ mod tests {
     #[test]
     fn collapsed_is_much_smaller_than_expanded() {
         let settings = Settings::default();
-        let (cw, ch) = collapsed_window_size(settings.size, 1, 0);
+        let (cw, ch) = horizontal_dots(settings.size, 1, 0);
         let (ew, eh) = settings.window_size(&[sign_height(settings.size, false, 1.0)]);
         assert!(cw < ew, "折叠态更窄: {cw} vs {ew}");
         assert!(ch < eh, "折叠态更矮: {ch} vs {eh}");
+    }
+
+    /// 折叠默认竖排、不带文字：用户明确要的默认改动。老配置缺这两个字段时
+    /// 也必须落到同一组值（容器级 `serde(default)`），不能退回横排。
+    #[test]
+    fn fold_defaults_to_a_vertical_column_of_bare_dots() {
+        let settings = Settings::default();
+        assert_eq!(settings.fold_axis, FoldAxis::Vertical);
+        assert_eq!(settings.fold_label, FoldLabel::None);
+
+        let old = r#"{"size": 30, "collapsed": true}"#;
+        let legacy: Settings = serde_json::from_str(old).unwrap();
+        assert!(legacy.collapsed, "用户折过就还是折着");
+        assert_eq!(legacy.fold_axis, FoldAxis::Vertical);
+        assert_eq!(legacy.fold_label, FoldLabel::None);
+
+        let size = settings.size;
+        let (w, h) = settings.folded_size(3, 0);
+        assert_eq!(w, size + LAMP_MARGIN, "竖排只占一条窄边");
+        assert_eq!(h, 3 * size + 2 * (size / 3) + LAMP_MARGIN, "三个点竖着叠");
+    }
+
+    /// 换轴只换「哪一维累加格数」，不改格子本身。裸点的格子是正方形，所以
+    /// 竖排正好是横排的转置；带文字的格子是长方形，两维各自按格宽 / 格高累加。
+    #[test]
+    fn the_fold_axis_only_decides_which_dimension_stacks_cells() {
+        let size = Settings::default().size;
+        for label in [FoldLabel::None, FoldLabel::Index, FoldLabel::State, FoldLabel::Name] {
+            let (cell_w, cell_h) = fold_cell_size(size, label, 1.0, 1.0);
+            let gap = if label.has_text() { 0 } else { size / 3 };
+            for dots in [1, 3, MAX_DOTS] {
+                let n = dots as u16;
+                let (hw, hh) = collapsed_window_size(
+                    size, dots, 0, FoldAxis::Horizontal, label, 1.0, 1.0,
+                );
+                let (vw, vh) = collapsed_window_size(
+                    size, dots, 0, FoldAxis::Vertical, label, 1.0, 1.0,
+                );
+                assert_eq!(
+                    (hw, hh),
+                    (n * cell_w + (n - 1) * gap + LAMP_MARGIN, cell_h + LAMP_MARGIN),
+                    "{label:?} × {dots} 格：横排"
+                );
+                assert_eq!(
+                    (vw, vh),
+                    (cell_w + LAMP_MARGIN, n * cell_h + (n - 1) * gap + LAMP_MARGIN),
+                    "{label:?} × {dots} 格：竖排"
+                );
+                if label == FoldLabel::None {
+                    assert_eq!((vw, vh), (hh, hw), "正方形格子：竖排就是转置");
+                }
+            }
+        }
+    }
+
+    /// 带文字时宽度只由档位决定，与组数无关；板内不留点距，高度是 N 个单行牌。
+    #[test]
+    fn labeled_folds_have_a_fixed_width_and_no_dot_gap() {
+        let size = Settings::default().size;
+        let row_h = sign_height(size, false, 1.0);
+        for (label, mult) in [
+            (FoldLabel::Index, 2.4),
+            (FoldLabel::State, 3.5),
+            (FoldLabel::Name, 4.0),
+        ] {
+            let one = collapsed_window_size(
+                size, 1, 0, FoldAxis::Vertical, label, 1.0, 1.0,
+            );
+            let three = collapsed_window_size(
+                size, 3, 0, FoldAxis::Vertical, label, 1.0, 1.0,
+            );
+            assert_eq!(one.0, (size as f32 * mult).ceil() as u16 + LAMP_MARGIN);
+            assert_eq!(three.0, one.0, "{label:?}: 组名再长也不该让窗口变宽");
+            assert_eq!(three.1 - one.1, 2 * row_h, "{label:?}: 板内不该再有点距");
+        }
+        assert!(
+            FoldLabel::Index.width_mult() < FoldLabel::State.width_mult()
+                && FoldLabel::State.width_mult() < FoldLabel::Name.width_mult(),
+            "序号最窄、组名最宽"
+        );
+        // **折叠的全部意义是让出桌面**：组名档要是和展开牌差不多宽，折叠就白做了。
+        // 0.6.7 之前组名档是 6.0×size（22px 档 132px、窗口 160px），只比展开牌的
+        // 154px / 182px 窄 22px —— 用户的原话是「那么折叠没有意义啊」。
+        let name_w =
+            collapsed_window_size(size, 1, 0, FoldAxis::Vertical, FoldLabel::Name, 1.0, 1.0).0;
+        let sign_w = sign_width(size, 1.0) + LAMP_MARGIN;
+        assert!(
+            name_w * 100 < sign_w * 70,
+            "组名档 {name_w}px 相对展开牌 {sign_w}px 没窄下 30%，折叠会显得没有意义"
+        );
+    }
+
+    /// 折叠内容跟着牌宽高倍率走：用户把整盏灯调大时，窄板不该仍用旧尺寸。
+    #[test]
+    fn labeled_folds_follow_the_sign_multipliers() {
+        // 一次性写进初始化式而不是先 default 再逐个赋值：clippy 的
+        // `field_reassign_with_default` 在 CI 里是 `-D warnings` 的一部分。
+        let settings = Settings {
+            fold_label: FoldLabel::Name,
+            sign_w_mult: 1.5,
+            sign_h_mult: 1.2,
+            ..Settings::default()
+        };
+        let (w, h) = settings.folded_size(2, 0);
+        let (cw, ch) = fold_cell_size(settings.size, FoldLabel::Name, 1.5, 1.2);
+        assert_eq!(w, cw + LAMP_MARGIN);
+        assert_eq!(h, 2 * ch + LAMP_MARGIN);
+        // 这里引用 `width_mult()` 而不是再写一遍 4.0：具体数值由上一个测试钉住，
+        // 这条只验「倍率有没有乘进格宽」。
+        assert_eq!(
+            cw,
+            (settings.size as f32 * FoldLabel::Name.width_mult() * 1.5).ceil() as u16
+        );
+        assert_eq!(ch, sign_height(settings.size, false, 1.2));
+    }
+
+    /// 两个新字段要落盘、也要读得回来；手改的非法值不能让整份设置失效到
+    /// 连用户调过的 size 都丢掉（那是 Settings 的 serde 契约，这里一起钉住）。
+    #[test]
+    fn fold_settings_round_trip_through_config_json() {
+        // 同上：字段一次性写进初始化式，别让 clippy 的
+        // `field_reassign_with_default` 把 CI 拦下来。
+        let settings = Settings {
+            fold_axis: FoldAxis::Horizontal,
+            fold_label: FoldLabel::Index,
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(json.contains(r#""fold_axis":"horizontal""#), "{json}");
+        assert!(json.contains(r#""fold_label":"index""#), "{json}");
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.fold_axis, FoldAxis::Horizontal);
+        assert_eq!(back.fold_label, FoldLabel::Index);
+
+        let legacy: Settings = serde_json::from_str(r#"{"size": 30}"#).unwrap();
+        assert_eq!(legacy.size, 30);
+        assert_eq!(legacy.fold_axis, FoldAxis::Vertical);
+        assert_eq!(legacy.fold_label, FoldLabel::None);
     }
 
     // ---- 圆环菜单的窗口 -------------------------------------------------------

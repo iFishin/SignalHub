@@ -361,8 +361,8 @@ export const DEMO_SCENARIOS: DemoScenario[] = [
         muted: true,
       },
       {
-        // 两块牌状态不同，只有「等你批准」那块上边亮 —— 行为页的触发方式用一张图
-        // 就能说清，光靠一行说明讲不明白。这一步不挂角灯，免得两件事抢注意力。
+        // 两行状态不同，只有「等你批准」那行上沿亮 —— 行为页的触发方式用一张图
+        // 就能说清，光靠一行说明讲不明白。这一步不挂四格记号，免得两件事抢注意力。
         id: "lightTrigger",
         durationMs: DEMO_STEP_MS + 1200,
         aggregate: "permission",
@@ -375,8 +375,8 @@ export const DEMO_SCENARIOS: DemoScenario[] = [
         }),
       },
       {
-        // 穿透不再是窗口右上角一枚常驻角标，而是四角里可选的一枚灯。
-        // 这一步把「穿透开着」当成事实喂进去，空心方才会出现（不亮 = 根本不画）。
+        // 穿透不再是窗口右上角一枚常驻角标，而是行尾四格里可选的一枚记号。
+        // 这一步把「穿透开着」当成事实喂进去，那枚竖条才会出现（不亮 = 根本不画）。
         id: "cornerPassthrough",
         durationMs: DEMO_STEP_MS + 800,
         aggregate: "working",
@@ -392,8 +392,8 @@ export const DEMO_SCENARIOS: DemoScenario[] = [
         passThrough: true,
       },
       {
-        // 六个槽**各判各的**：上边挑「达到指定状态 → 出错」，下边常亮，四角常亮。
-        // 于是出错那块上下都亮、正在跑那块只剩一条下边，而四枚状态角灯两块牌
+        // 六个槽**各判各的**：上沿挑「达到指定状态 → 出错」，下沿常亮，四格常亮。
+        // 于是出错那行上下都亮、正在跑那行只剩一道下沿刻线，而四枚状态色记号两行
         // 都挂着 —— 一张图同时说清「九档条件」和「六行互不牵连」。
         id: "lightTriggerState",
         durationMs: DEMO_STEP_MS + 1200,

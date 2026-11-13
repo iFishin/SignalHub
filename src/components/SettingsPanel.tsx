@@ -29,7 +29,7 @@ import { CallMePage } from "./CallMePage";
 import { CallMeMessages } from "./CallMeMessages";
 import { LocalPanel, LocalTabs, PageHeader } from "./settings/SettingsPage";
 import { labelOf, labelPrefOf } from "../lib/lampSort";
-import { SIGN_OPACITY_MIN, stateOverridden, lampVars, resolveShapes, cornerLights, edgeLightKinds, edgeBlinks, lightBlink, minutesToClock, clockToMinutes } from "../lib/lampStyle";
+import { SIGN_OPACITY_MIN, stateOverridden, lampVars, resolveShapes, cornerLights, edgeLightKinds, edgeBlinks, lightBlink, minutesToClock, clockToMinutes, toneOf } from "../lib/lampStyle";
 import {
   commitHeader,
   withoutHeader,
@@ -99,6 +99,7 @@ import {
   NOTIFY_STATES,
   SIGNALS,
   REPORTABLE_SIGNALS,
+  type GroupView,
   type SignalState,
   type Snapshot,
 } from "../lib/types";
@@ -564,6 +565,131 @@ function resetFor<K extends keyof Settings>(
 }
 
 /**
+ * 折叠形态的实时预览：三行样机，和真灯用**同一套** `.fold-board` / `.fold-row`
+ * 类名与 `lampVars` 变量。只有灯的两个档不画板，直接几颗裸点。
+ *
+ * 这里刻意不复用 `SignalLamp`：那一个组件带着拖拽、通知、审批、悬停展开等
+ * 一整套运行时，预览只需要几何与画法。照抄三行 DOM 的代价是结构改了要手动
+ * 跟上，收益是预览永远不会被某个运行时开关悄悄改样。
+ */
+function FoldPreview({ settings }: { settings: Settings }) {
+  const lang = useLang();
+  const m = useMessages();
+  const shapes = resolveShapes(settings);
+  // 组名走 `m.demoGroup` —— 和演示页同一份文案。原来写死 `review / build / api`，
+  // 中文界面的预览里会突然冒出三个英文词，而它偏偏是「让你看清自己配了什么」
+  // 的那一段（尤其「折叠内容 = 组名」这一档，看到的就是这三个词）。
+  // 第一格的状态**和上面那块展开预览一样用 `attention`**：`permission` 会被
+  // 强制画成圆角方，用户选「形状 = 圆」时这一格永远不跟着变。
+  const samples: { state: SignalState; name: string }[] = [
+    { state: "attention", name: m.demoGroup.review },
+    { state: "working", name: m.demoGroup.build },
+    { state: "done", name: m.demoGroup.api },
+  ];
+  const label = settings.fold_label;
+  // 状态词走和真灯同一个 `signalLabel`：预览里写死一句中文的话，英文界面
+  // 会突然冒出四个汉字 —— 而它偏偏是「让用户看清自己配了什么」的那一段。
+  const textFor = (sample: (typeof samples)[number], index: number) =>
+    label === "name"
+      ? sample.name
+      : label === "index"
+        ? String(index + 1)
+        : label === "state"
+          ? signalLabel(lang, sample.state)
+          : "";
+  return (
+    <>
+      <div className="fold-preview-title">{m.foldPreviewTitle}</div>
+      <div className="fold-preview">
+        <div
+          className="lamp-root"
+          style={{ "--size": `${settings.size}px`, ...lampVars(settings) } as React.CSSProperties}
+          data-collapsed="true"
+          data-fold-axis={settings.fold_axis}
+          data-fold-label={label}
+          data-sign-radius={settings.sign_radius}
+          data-sign-border={settings.sign_border}
+          data-sign-tint={settings.sign_tint}
+          data-sign-text={settings.sign_text}
+          data-sign-font={settings.sign_font}
+          data-sign-outline={settings.sign_outline}
+        >
+          {label === "none" ? (
+            samples.map((sample) => (
+              <span
+                key={sample.state}
+                className="dot lamp-dot"
+                data-state={sample.state}
+                data-shape={shapes[sample.state]}
+              />
+            ))
+          ) : (
+            <div className="fold-board" data-axis={settings.fold_axis} data-label={label} data-rows={samples.length}>
+              {samples.map((sample, index) => (
+                <div key={sample.state} className="fold-row" data-label={label}>
+                  <span
+                    className="dot lamp-dot"
+                    data-state={sample.state}
+                    data-shape={shapes[sample.state]}
+                  />
+                  <span className="fold-text">{textFor(sample, index)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
+/**
+ * 预览里的一条合成组。
+ *
+ * **为什么不用两个写死的字符串**：真灯上组名走 `labelOf(group, meta, labelPref)`，
+ * 它要 `sessions` 才能拼出「会话 · 智能体」、才认「会话标题」那三档（只显示会话名 /
+ * 会话 · 智能体 / 自定义模板）。预览要是写死一个词，用户调那三档时牌上一个字都不
+ * 动 —— 和他的原话「设置了也不生效」是同一类坏体验。造一条真的 `SessionView`，
+ * 三档就都能在预览里当场看见。
+ */
+function previewGroup(
+  name: string,
+  spec: {
+    agent: string;
+    cwd: string;
+    state: SignalState;
+    message: string | null;
+    ageMs: number;
+  },
+  now: number,
+): GroupView {
+  // `default_label` 就是服务端给会话组的那句「目录末段 · 智能体」，
+  // 「会话标题 = 会话 · 智能体」那一档读的正是它。留 `null` 的话预览在那档下
+  // 会退回裸组名，而真灯上写的是两个词 —— 又是一处「预览和真灯不一样」。
+  const project = spec.cwd.split("/").filter(Boolean).pop() ?? name;
+  return {
+    name,
+    default_label: `${project} · ${spec.agent}`,
+    aggregate: spec.state,
+    message: spec.message,
+    since_ms: now - spec.ageMs,
+    stale_progress: null,
+    sessions: [
+      {
+        id: name,
+        state: spec.state,
+        agent: spec.agent,
+        cwd: spec.cwd,
+        message: spec.message,
+        age_ms: spec.ageMs,
+        stale_progress: null,
+        machine: null,
+      },
+    ],
+  };
+}
+
+/**
  * 「牌长这样」的实时预览。
  *
  * **为什么要有它**：改外观的时候你不一定看得见那盏灯 —— 它可能被别的窗口挡住、
@@ -573,17 +699,48 @@ function resetFor<K extends keyof Settings>(
  * 所以大小、形态、形状、配色、透明度、闪烁节奏、牌宽高倍率全都跟着变，一个都不用
  * 在这里重算。代价是这份标记是**照着 `SignalLamp` 写的**：那边改了结构，这里要手动
  * 跟上（跟不上的后果止于观感，不会出错）。
+ *
+ * 0.6.7 起**三条内容也走真灯那几个函数**，不再写死：组名 `labelOf`（认「会话标题」
+ * 三档与自定义显示名）、状态词 `shortSignal`、时长 `formatAge`。写死的时候，调
+ * 「会话标题」预览一个字都不动 —— 和「设置了也不生效」是同一类坏体验。
  */
 function LampPreview({ settings }: { settings: Settings }) {
   const m = useMessages();
-  const lang = useLang();
   const shapes = resolveShapes(settings);
-  // 画两块：一块「忙碌 + 说明」、一块「等你批准」。后者顺带演示了形状那条特判
-  // （全局选了圆，permission / error 仍画圆角方），那是外观页里最容易改坏的东西。
-  const cards: { state: SignalState; message?: string }[] = [
-    { state: "working", message: m.previewMessage },
-    { state: "permission" },
+  // 两块**不同组**的牌：一块「等你关注」、一块「忙碌 + 说明」。
+  //
+  // **第一块用 `attention` 而不是 `permission`**：`permission` / `error` 会被
+  // `resolveShapes` 强制画成圆角方（那是形状的一条特判），而这一页顶上就是
+  // 「形状」六档 —— 样例牌里放一颗永远不跟随的方点，用户选「圆」时只看到下面
+  // 那颗变了，第一反应是「形状这一档没生效」。`attention` 不被特判、颜色是黄，
+  // 又和 `permission` 同属 `need` 分量（大点 + 600 字重），该演示的一样没少。
+  //
+  // **必须两个不同的组名**：真灯一组一块牌，同一个名字出现两次是这两块牌最刺眼的
+  // 「假」—— 用户拿它和桌面那盏灯一比就说「样式对不上」。
+  // **顺序必须是真灯那个顺序**：`orderVisible` 把要你动手的（permission /
+  // attention / error）排在前面，预览倒过来的话「连顺序都对不上」。
+  // 时长也用真灯那个 `formatAge`（"12s" 而不是「12 秒」）：两处各写一份，中文界面
+  // 就会出现「预览 12 秒、真灯 12s」，这正是「对不上」最容易长出来的地方。
+  const now = Date.now();
+  const groups: GroupView[] = [
+    previewGroup(
+      "orders",
+      { agent: "Claude", cwd: "/Users/you/Code/orders", state: "attention", message: null, ageMs: 12_000 },
+      now,
+    ),
+    previewGroup(
+      "billing",
+      {
+        agent: "Codex",
+        cwd: "/Users/you/Code/billing",
+        state: "working",
+        message: m.previewMessage,
+        ageMs: 4 * 60_000,
+      },
+      now,
+    ),
   ];
+  const labelPref = labelPrefOf(settings);
 
   // 预览里的四角**全部画出来**。真灯上「置顶 / 静音 / 沉默」要等条件成立才出现，
   // 而预览的任务恰恰是「让你看清自己配了什么」—— 跟着条件走的话，配完可能一个角
@@ -631,14 +788,23 @@ function LampPreview({ settings }: { settings: Settings }) {
         data-sign-light-alpha={settings.sign_light_alpha}
         data-sign-light-color={settings.sign_light_color}
       >
-        {cards.map((card) => (
-          <div
-            key={card.state}
-            className="sign"
+        {/* 预览必须跟着真灯那层共享外框走：两块示例牌现在是同一块板的两行，
+            否则「改了真灯、预览还是两张独立卡片」比没有预览更误导。 */}
+        <div className="sign-board" data-rows={groups.length}>
+          {groups.map((group) => (
+            <div
+              key={group.name}
+              className="sign"
+            /* **视觉分量必须跟真灯同一套**（`toneOf`）。预览永远是两块牌，而真灯
+               恰好是「多块牌才分层」，所以这里恒给 tone。不挂的后果是预览里两颗点
+               一样大（need 该 0.72×、默认兜底 0.55×）、calm 行没有那层薄雾、组名
+               也还停在 600 字重 —— 「质感 → 分量」那一档调了预览纹丝不动，用户
+               只能理解成开关坏了。 */
+            data-tone={toneOf(group.aggregate)}
             /* `data-state` 是边灯和角灯取色的唯一入口（`--state` 来自 state.css）。
                预览以前只在 `.dot` 上挂它，于是这两样在预览里会取到透明兜底 ——
                表现是「调了没反应」，而真灯上是好的。 */
-            data-state={card.state}
+            data-state={group.aggregate}
             /* 预览**不套用行为页的触发开关**：那六行管的是「什么时候亮」，而预览
                是一张静态样机，跟着触发走的话设成「只在要你处理时亮」就有一块牌
                什么都不画，会被当成开关没生效。预览始终按常亮画，什么时候亮去
@@ -647,27 +813,47 @@ function LampPreview({ settings }: { settings: Settings }) {
             data-edge-bottom={previewEdges.bottom}
             data-blink-top={previewBlink.top || undefined}
             data-blink-bottom={previewBlink.bottom || undefined}
-            style={{ "--light-blink": lightBlink(settings, card.state) } as React.CSSProperties}
-            data-has-message={settings.show.message && card.message ? "true" : "false"}
+            style={
+              { "--light-blink": lightBlink(settings, group.aggregate) } as React.CSSProperties
+            }
+            data-has-message={settings.show.message && group.message ? "true" : "false"}
           >
             {/* 和真灯同一处判断：关掉圆点之后预览也必须是纯文字卡，
                 否则「关掉了却还在」会被当成开关没生效。 */}
             {settings.show.dot && (
-              <span className="dot" data-state={card.state} data-shape={shapes[card.state]} />
+              <span
+                className="dot"
+                data-state={group.aggregate}
+                data-shape={shapes[group.aggregate]}
+              />
             )}
             <div className="sign-body">
               <div className="sign-line">
-                {settings.show.name && <span className="sign-name">{m.previewGroup}</span>}
+                {/* 组名走真灯那条 `labelOf`（自定义显示名 > 会话标题三档 > 默认名），
+                    所以「会话标题」「各组的显示」这两项在预览里当场就能看见。 */}
+                {settings.show.name && (
+                  <span className="sign-name">{labelOf(group, settings.group_meta, labelPref)}</span>
+                )}
                 {settings.show.state && (
-                  <span className="sign-state">{signalLabel(lang, card.state)}</span>
+                  /* **短词，不是 `signalLabel`**：真灯上状态词取的是
+                     `m.shortSignal`（「授权」「出错」两字），长词「需要授权」
+                     会多吃 2 个字宽、把组名挤成「订单…」，于是预览看起来
+                     比桌面那盏灯挤得多 —— 这正是「预览和真灯不一致」里最
+                     容易被当成预览坏了的一半。 */
+                  <span className="sign-state">{m.shortSignal[group.aggregate]}</span>
                 )}
               </div>
-              {settings.show.message && card.message && (
-                <div className="sign-message">{card.message}</div>
+              {settings.show.message && group.message && (
+                <div className="sign-message">{group.message}</div>
               )}
             </div>
-            {settings.show.age && <span className="sign-age">{m.seconds(12)}</span>}
-            {/* 四角小灯：和真灯同一套类名与位置（见 lamp.css 的 `.sign-corner`）。 */}
+            {/* 时长用真灯同一个 `formatAge`（"12s"），不再写一份「12 秒」：两处
+                各写一份的结果就是「预览 12 秒、真灯 12s」，而用户拿它一比只会
+                得出「预览是假的」。 */}
+            {settings.show.age && (
+              <span className="sign-age">{formatAge(group.since_ms, now)}</span>
+            )}
+            {/* 行尾四格：和真灯同一套类名与位置（见 lamp.css 的 `.sign-corner`）。 */}
             {previewCorners.map((corner) => (
               <span
                 key={corner.pos}
@@ -677,8 +863,9 @@ function LampPreview({ settings }: { settings: Settings }) {
                 data-blink={corner.blink || undefined}
               />
             ))}
-          </div>
-        ))}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -1900,6 +2087,11 @@ export function SettingsPanel({ snapshot }: Props) {
   const [probeResults, setProbeResults] = useState<Record<string, ProbeOutcome>>({});
   // 配置导出 / 导入的结果，就地显示在按钮下面
   const [backupNotice, setBackupNotice] = useState<string | null>(null);
+  // 「全部归位」的结果：按钮上短暂换字，让人知道这一下确实做了事（灯可能正被
+  // 设置窗挡着，看不见它们移动）。1.5 秒后收回，和复制按钮同一套反馈。
+  // 分两种回执：Rust 返回 0 表示当下没有开着的组灯（比如超过 8 组回落单灯），
+  // 但位置记忆仍然清掉了 —— 这时说「已归位」是撒谎，改说「已清空位置」。
+  const [lampsReset, setLampsReset] = useState<"moved" | "cleared" | null>(null);
   // 内置采集器（B2）。Rust 只回**这台机器上做得到的**（比如 Time Machine 只有
   // macOS 有）—— 空数组就是「这台机器没有」，那一行不渲染，不是灰着骗人。
   // 开着 / 关着不在 useSettings 里管：拉一次、点完再拉一次（collect.rs 的线程
@@ -3194,6 +3386,65 @@ export function SettingsPanel({ snapshot }: Props) {
                     </button>
                   </div>
                 </Row>
+                {/* 折叠态的两个旋钮。**和「形态」并排成一组三行**：它们只在
+                    「一颗灯」下有作用，放在紧挨着的下一行才不会被当成另一类
+                    设置。都是单选，所以沿用平整的 `.seg`，不另起一套控件。
+                    两个字段互不覆盖 —— 选了横排也照样能带文字（横排会变成
+                    一整条窄板），用户不用猜哪个开关会悄悄改掉另一个。 */}
+                <Row
+                  label={m.foldAxis}
+                  hint={m.foldAxisHint}
+                  onReset={resetFor(settings, "fold_axis", patch)}
+                >
+                  <div className="seg">
+                    <button
+                      type="button"
+                      data-active={settings.fold_axis === "vertical"}
+                      onClick={() => patch({ fold_axis: "vertical" })}
+                    >
+                      {m.foldVertical}
+                    </button>
+                    <button
+                      type="button"
+                      data-active={settings.fold_axis === "horizontal"}
+                      onClick={() => patch({ fold_axis: "horizontal" })}
+                    >
+                      {m.foldHorizontal}
+                    </button>
+                  </div>
+                </Row>
+                <Row
+                  label={m.foldLabel}
+                  hint={m.foldLabelHint}
+                  onReset={resetFor(settings, "fold_label", patch)}
+                >
+                  <div className="seg">
+                    {([
+                      ["none", m.foldNone],
+                      ["name", m.foldName],
+                      ["index", m.foldIndex],
+                      ["state", m.foldState],
+                    ] as const).map(([value, label]) => (
+                      <button
+                        key={value}
+                        type="button"
+                        data-active={settings.fold_label === value}
+                        onClick={() => patch({ fold_label: value })}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </Row>
+                {/* 折叠形态的实时预览。折叠时用户多半看不见真灯（它只剩几颗
+                    点，或者在别的屏上），而「组名 / 序号 / 状态」是纯观感项 ——
+                    不给预览就等于盲挑。用和真灯同一套 `.fold-board` / `.fold-row`
+                    类名，改档位立刻能看见宽窄变化。
+                    **恒常显示，不跟 `settings.collapsed` 走**：这三档只在折叠态
+                    生效，而展开态下点了它们，真灯一个像素都不会变 —— 于是「点了
+                    没反应」被当成「选不了」（用户原话）。预览在这里的作用就是
+                    当场回答「折叠后会变成什么样」，跟此刻是不是折叠无关。 */}
+                <FoldPreview settings={settings} />
                 <Row label={m.size} onReset={resetFor(settings, "size", patch)}>
                   <div className="seg">
                     {sizes.map((size) => (
@@ -3664,7 +3915,7 @@ export function SettingsPanel({ snapshot }: Props) {
                 ))}
                 <p className="hint">{m.slotsHint}</p>
 
-                {/* 三把尺子：边灯的线宽和角灯的直径**共用一档**，取色和明暗也共用。
+                {/* 三把尺子：刻线高度和四格记号大小**共用一档**，取色和明暗也共用。
                     分开设四行只会让人调出「一条粗线配四颗小芝麻」。 */}
                 <Row
                   label={m.lightScale}
@@ -3789,6 +4040,38 @@ export function SettingsPanel({ snapshot }: Props) {
                 </div>
               </div>
               <p className="hint">{m.layoutHint}</p>
+
+              {/* 归位是「每组分灯」专属的动作，单灯模式连一行都不该占：那时候
+                  根本没有可归的组灯，摆一行灰按钮只会让人去找一个不存在的功能。
+                  可见组超过 8 个时会临时回落单灯，这一行仍在 —— Rust 那头会把
+                  位置记忆照样清掉，按钮上给「已清空位置」而不是「已归位」。 */}
+              {settings.lamp_layout === "per-group" && (
+                <>
+                  <div className="row">
+                    <span>{m.resetLamps}</span>
+                    <button
+                      type="button"
+                      className="btn btn-tiny"
+                      onClick={() => {
+                        setError(null);
+                        invoke<number>("reset_lamp_positions")
+                          .then((moved) => {
+                            setLampsReset(moved > 0 ? "moved" : "cleared");
+                            window.setTimeout(() => setLampsReset(null), 1500);
+                          })
+                          .catch(reported);
+                      }}
+                    >
+                      {lampsReset === "moved"
+                        ? m.resetLampsDone
+                        : lampsReset === "cleared"
+                          ? m.resetLampsEmpty
+                          : m.resetLampsAction}
+                    </button>
+                  </div>
+                  <p className="hint">{m.resetLampsHint}</p>
+                </>
+              )}
             </div>
 
             <div className="section">

@@ -767,6 +767,47 @@ fn toggle_collapsed(app: tauri::AppHandle) -> Result<Settings, String> {
     set_collapsed(&app, collapsed)
 }
 
+/// 「全部归位」：把散落在桌面各处的组灯摆回默认堆叠，并丢掉拖过的位置记忆。
+///
+/// 用户要的是「保持自由散落 + 只加一个归位入口」：默认摆放、自定义拖动、位置
+/// 记忆一个都不改，只多一条「一键收拾」的路。入口有三处 —— 灯上右键的通用菜单
+/// （`menu::show_general`）、灯珠 / 牌面右键的组菜单（`menu::show`，多灯下最顺手
+/// 的那一个）和设置页「分组」页（`SettingsPanel`），都走下面这个共用实现，免得
+/// 三条路的行为分叉。
+///
+/// 返回摆了几盏。**清记忆是无条件的**：点「全部归位」本身就是「丢掉我拖过的
+/// 位置」这个明确意图，不该因为当下没有开着的组灯而变成空操作。尤其是「每组分灯
+/// 但可见组超过 `MAX_LAMPS` 回落单灯」时 `lamp_specs` 为空，而设置页按钮仍在 ——
+/// 早退会让它显示「已归位」却什么都没做，下次组数回落解除又照旧散回去。前端按
+/// 返回值 0 给另一种回执（「已清空位置」），不谎称归了位。
+#[tauri::command]
+fn reset_lamp_positions(app: tauri::AppHandle) -> usize {
+    reset_lamp_positions_impl(&app)
+}
+
+pub(crate) fn reset_lamp_positions_impl(app: &tauri::AppHandle) -> usize {
+    let settings = current_settings(app);
+    let snapshot = current_snapshot(app);
+    // 顺序跟「第一次出现」完全一致：置顶在前、其余按紧急度（和前端渲染同一条
+    // `lamp_specs`）。归位完从上往下读到的组，和刚切到多灯时看到的是同一串。
+    // 尺寸也用同一份规格，见 `lamps::reset_positions` 的说明。空规格不早退：
+    // 下面清记忆那一步仍要做完。
+    let specs = lamp_specs(app, &settings, &snapshot);
+
+    // 锁内只清记忆 + 取快照；落盘和动窗口都在锁外（`LampWindows::commit` 那条
+    // 纪律）。磁盘也写空表：只清内存的话，用户归位后马上退出，`save_open_positions`
+    // 会以旧文件为底把老坐标 merge 回去。
+    let positions = {
+        let state = app.state::<SharedLamps>();
+        let mut lamps = state.lock().expect("lamps poisoned");
+        lamps.clear_positions();
+        lamps.positions_snapshot()
+    };
+    lamps::save_positions(&positions);
+
+    lamps::reset_positions(app, &specs)
+}
+
 /// 折叠态被鼠标指着时**临时**展开（3s 或移开就回去）。
 ///
 /// 只影响渲染和窗口尺寸，**不改设置** —— 退出重开仍是折叠态（这是这一项的验收
@@ -792,7 +833,8 @@ fn set_peek(
     // 尺寸跟着「实际折叠与否」变，所以要重算一遍所有窗口的布局。
     let settings = current_settings(&app);
     let snapshot = current_snapshot(&app);
-    sync_layout(&app, &settings, &snapshot);
+    // hover / 圆环菜单本身就会改变尺寸，增量判断够用，不必强制重设。
+    sync_layout(&app, &settings, &snapshot, false);
     Ok(())
 }
 
@@ -825,7 +867,8 @@ fn set_lamp_menu(
     }
     let settings = current_settings(&app);
     let snapshot = current_snapshot(&app);
-    sync_layout(&app, &settings, &snapshot);
+    // hover / 圆环菜单本身就会改变尺寸，增量判断够用，不必强制重设。
+    sync_layout(&app, &settings, &snapshot, false);
     Ok(())
 }
 
@@ -2041,7 +2084,9 @@ fn apply_settings(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapsh
             let _ = window.set_always_on_top(settings.always_on_top);
         }
     }
-    sync_layout(app, settings, snapshot);
+    // `force = true`：**用户主动改了设置**（以及启动后第一次按落盘设置摆放）。
+    // 前端收到广播就立刻重画，窗口尺寸必须同一轮真的落地，不能靠增量缓存判断。
+    sync_layout(app, settings, snapshot, true);
     // 开关可能刚被改过，所以尺寸之外还要重画一次托盘
     refresh_tray(app);
     // 灯可能刚被加上 / 刚被改过地址 / 刚换了配色 —— 立刻按**当前**状态发一次，
@@ -2191,7 +2236,7 @@ fn lamp_specs(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapshot) 
                     .find(|group| group.name == name)
                     .is_some_and(|group| group.message.is_some());
             let size = if collapsed {
-                config::collapsed_window_size(settings.size, 1, config::more_badge(1))
+                settings.folded_size(1, config::more_badge(1))
             } else {
                 settings.window_size(&[config::sign_height(settings.size, has_message, settings.sign_h_mult)])
             };
@@ -2210,7 +2255,12 @@ fn lamp_specs(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapshot) 
 ///
 /// **建 / 关还要再离开调用方的栈**（见 [`lamp_worker`]）：在 Windows 上就地建窗会
 /// 整机冻住，而在 macOS 上完全看不出来。
-fn sync_lamps(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapshot) {
+fn sync_lamps(
+    app: &tauri::AppHandle,
+    settings: &Settings,
+    snapshot: &Snapshot,
+    force: bool,
+) {
     let specs = lamp_specs(app, settings, snapshot);
     let handle = app.state::<SharedLamps>();
 
@@ -2218,6 +2268,12 @@ fn sync_lamps(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapshot) 
     // 看见窗口跟不上鼠标。
     let resize_only = {
         let mut lamps = handle.lock().expect("lamps poisoned");
+        // 用户改设置时丢掉尺寸记账，`plan` 就会对每个开着的窗重新生成 resize。
+        // 理由见 `LampWindows::invalidate_sizes`：乐观记账一旦领先真实窗口，
+        // 后续同尺寸的帧会一直跳过 `set_size`，灯被裁在旧窗口里。
+        if force {
+            lamps.invalidate_sizes();
+        }
         let plan = lamps.plan(&specs);
         if plan.open.is_empty() && plan.close.is_empty() {
             Some(plan.resize)
@@ -2346,9 +2402,23 @@ fn approval_area(app: &tauri::AppHandle) -> (u16, u16) {
 /// 「先把眼前这条处理掉」本来就是对的顺序。
 const MAX_APPROVAL_BUBBLES: usize = 3;
 
-fn sync_layout(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapshot) {
-    apply_window_size(app, settings, snapshot);
-    sync_lamps(app, settings, snapshot);
+/// `force` = 用户**主动改了设置**（`apply_settings`）。热路径传 false。
+///
+/// 两处尺寸都是「缓存里记着上次设下去的值，一样就跳过」的增量判断：主灯是
+/// `SharedGeometry.size`，组灯是 `LampWindows.sizes`。它们对状态推送（每秒好几次）
+/// 是必要的优化，但前端在设置广播到达时**立刻**按新设置重画了 DOM —— 只要缓存与
+/// 真实窗口失步（圆环菜单开合、hover 临时展开、某次 `set_size` 没落地，或新设置
+/// 恰好算出同尺寸），Rust 这边就会跳过 `set_size`，窗口停在旧尺寸、内容被
+/// `overflow: hidden` 裁掉。改设置是低频且必须生效的操作，所以这条路径强制重设
+/// 主灯尺寸、并让组灯重新生成 resize；状态热路径仍走增量，别把那段也拖慢。
+fn sync_layout(
+    app: &tauri::AppHandle,
+    settings: &Settings,
+    snapshot: &Snapshot,
+    force: bool,
+) {
+    apply_window_size(app, settings, snapshot, force);
+    sync_lamps(app, settings, snapshot, force);
 }
 
 /// 这些组在展开态各占多高。有东西可读的牌多占一行，正好是个提示。
@@ -2384,7 +2454,16 @@ fn sign_heights(settings: &Settings, groups: &[&GroupView]) -> Vec<u16> {
 ///
 /// **热路径上不问窗口**（见 `SharedGeometry`）：缩放比和上次设下去的尺寸都
 /// 从缓存读，一次 `inner_size` / `scale_factor` 的同步往返都不做。
-fn apply_window_size(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapshot) {
+///
+/// `force` 的由来看 [`sync_layout`]：用户改设置时跳过「和上次一样就收工」，
+/// 但**仍然更新缓存与 `previous`**，所以 `keep_on_screen` / `center_grow` 拿到的
+/// 旧尺寸照旧是对的，不会因为强制重设而把灯挪偏。
+fn apply_window_size(
+    app: &tauri::AppHandle,
+    settings: &Settings,
+    snapshot: &Snapshot,
+    force: bool,
+) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
@@ -2393,7 +2472,7 @@ fn apply_window_size(app: &tauri::AppHandle, settings: &Settings, snapshot: &Sna
     // 的几何对菜单形态没有意义，而菜单一关就该回到它。
     let menu_open = lamp_menu_open(app, "main");
 
-    // 展开态是一叠牌，折叠态是一排点 —— 两套几何，见 config.rs。
+    // 展开态是一叠牌，折叠态是一列 / 一排格 —— 两套几何，见 config.rs。
     // 多灯模式下主灯只看全局（各组交给各自的灯），所以这里拿的是「主灯该画的组」。
     let groups = main_window_groups(settings, snapshot);
     // 悬停临时展开也算「不折叠」（见 `effective_collapsed`）—— 前端会按同一个条件
@@ -2423,7 +2502,7 @@ fn apply_window_size(app: &tauri::AppHandle, settings: &Settings, snapshot: &Sna
                 visible_group_names(settings, snapshot).len()
             };
             let badges = config::more_badge(visible);
-            config::collapsed_window_size(settings.size, visible, badges)
+            settings.folded_size(visible, badges)
         } else {
             settings.window_size(&sign_heights(settings, &groups))
         };
@@ -2432,10 +2511,12 @@ fn apply_window_size(app: &tauri::AppHandle, settings: &Settings, snapshot: &Sna
     };
 
     // 和上次设下去的尺寸一样就收工。**这是热路径**：拿缓存比，不问窗口。
+    // `force` 只在用户主动改设置时为 true —— 那条路上「缓存说没变」不可信，
+    // 前端已经重画了，必须再设一次（见 `sync_layout`）。
     let (previous, scale) = {
         let handle = app.state::<SharedGeometry>();
         let mut geometry = handle.lock().expect("geometry poisoned");
-        if geometry.size == Some((width, height)) {
+        if !force && geometry.size == Some((width, height)) {
             return;
         }
         let previous = geometry.size;
@@ -3139,6 +3220,7 @@ pub fn run() {
             try_agent,
             diagnose,
             toggle_collapsed,
+            reset_lamp_positions,
             set_lamp_menu,
             clear_session,
             test_hooks,
@@ -3264,7 +3346,8 @@ pub fn run() {
                         let _ = handle.emit(APPROVALS_EVENT, ());
                         let settings = current_settings(&handle);
                         let snapshot = current_snapshot(&handle);
-                        sync_layout(&handle, &settings, &snapshot);
+                        // 审批条数变化只改高度，走增量即可。
+                        sync_layout(&handle, &settings, &snapshot, false);
                     }));
             }
             server::spawn(

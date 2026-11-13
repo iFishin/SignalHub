@@ -28,6 +28,10 @@ const CLEAR: &str = "group:clear";
 const TOGGLE: &str = "group:toggle";
 const SETTINGS: &str = "group:settings";
 const OPEN_DIR: &str = "group:open-dir";
+/// 组菜单里那一份「全部归位」。**id 与通用菜单的 `LAMP_RESET` 分开**：muda 按 id
+/// 维护一张全局表，两张菜单同时建同 id 的项会互相覆盖。行为不分叉靠的是两条
+/// 分支都调同一个 `reset_lamp_positions_impl`，不是靠复用 id。
+const RESET: &str = "group:reset-positions";
 /// 「重命名…」：**不开输入框**，只是把设置窗翻到「分组」页（那一页有显示名的输入框）。
 ///
 /// 牌上的就地改名在 0.6.2 之后被撤掉了：灯是常驻桌面的，点一下名字就进入编辑状态，
@@ -62,11 +66,22 @@ fn manual_state_for(id: &str) -> Option<Signal> {
         .find(|state| state.name() == name)
 }
 
-/// 灯上**通用**菜单的 id（空白处和占位牌用的那张）。同样与托盘、与组菜单都不
-/// 重合：三边的菜单事件都会走到 `AppHandle::on_menu_event`。
+/// 灯上**通用**菜单的 id（空白处和占位牌用的那张）。同样与托盘不重合：三边的
+/// 菜单事件都会走到 `AppHandle::on_menu_event`。
 const LAMP_SETTINGS: &str = "lamp:settings";
 const LAMP_PAUSE: &str = "lamp:pause";
 const LAMP_COLLAPSED: &str = "lamp:collapsed";
+/// 通用菜单里那份「全部归位」（组菜单那份是 `RESET`，见它的注释）。
+///
+/// **为什么两张菜单都放**：归位不是「对这一组」的操作，可组菜单本来就有
+/// `TOGGLE`（折叠是全局的）这类全局项 —— 更要紧的是多灯模式下用户右键点的
+/// **就是灯珠 / 牌面**，通用菜单只在四周留白才弹得出来，只放通用菜单等于把
+/// 最顺手的入口藏了。两处都调 `reset_lamp_positions_impl`，行为不分叉。
+///
+/// 两处都只在**真的开着组灯**时插入。单灯模式没有可归位的灯，摆一个点了没反应
+/// 的项只会让人以为坏了；判据取当前窗口而不是 `lamp_layout` 设置 —— 超过
+/// `MAX_LAMPS` 时多灯会回落单灯，那时设置里仍写着「每组分灯」，窗口才是真值。
+const LAMP_RESET: &str = "lamp:reset-positions";
 const LAMP_QUIT: &str = "lamp:quit";
 
 /// 在灯球窗口上弹出菜单。`group` 是右键点中的那一组的名字。
@@ -139,8 +154,10 @@ pub fn show(app: &AppHandle, window: &WebviewWindow, group: &str) -> Result<(), 
     .map_err(menu_err)?;
     let open_settings =
         MenuItem::with_id(app, SETTINGS, t.menu_settings, true, None::<&str>).map_err(menu_err)?;
+    let reset = MenuItem::with_id(app, RESET, t.menu_reset_lamps, true, None::<&str>)
+        .map_err(menu_err)?;
 
-    let items: [&dyn IsMenuItem<tauri::Wry>; 8] = [
+    let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![
         &open_dir,
         &rename,
         &manual,
@@ -150,9 +167,24 @@ pub fn show(app: &AppHandle, window: &WebviewWindow, group: &str) -> Result<(), 
         &toggle,
         &open_settings,
     ];
+    // 和通用菜单同一个判据（`has_group_lamps`）：只问「现在有没有组灯」，不问
+    // 设置里写的是什么布局（超过 MAX_LAMPS 会回落单灯，那时设置仍是「每组分灯」
+    // 却无灯可归）。id 用 `RESET` 而不是 `LAMP_RESET`，理由见那个常量的注释。
+    if has_group_lamps(app) {
+        // 挨着「折叠」放：两项都在管「灯怎么摆」
+        items.insert(6, &reset);
+    }
     let menu = Menu::with_items(app, &items).map_err(menu_err)?;
 
     popup(window, &menu)
+}
+
+/// 当前是否真有组灯窗口开着。归位是对**这些窗口**的操作，所以窗口本身才是真值，
+/// 而不是 `Settings::lamp_layout` 或「这一帧有没有超过上限」的推算。
+fn has_group_lamps(app: &AppHandle) -> bool {
+    app.webview_windows()
+        .keys()
+        .any(|label| label.starts_with(crate::lamps::LABEL_PREFIX))
 }
 
 /// 灯上空白处（以及还没接任何上报方时那块占位牌）的右键菜单。
@@ -179,8 +211,18 @@ pub fn show_general(app: &AppHandle, window: &WebviewWindow) -> Result<(), Strin
     )
     .map_err(menu_err)?;
     let quit = MenuItem::with_id(app, LAMP_QUIT, t.tray_quit, true, None::<&str>).map_err(menu_err)?;
-
-    let menu = Menu::with_items(app, &[&open_settings, &pause, &collapse, &quit]).map_err(menu_err)?;
+    // 和「折叠」挨着放：两项都是「灯怎么摆」，一件事在菜单上不该被别的操作隔开。
+    let reset = MenuItem::with_id(app, LAMP_RESET, t.menu_reset_lamps, true, None::<&str>)
+        .map_err(menu_err)?;
+    // 菜单项是运行时构造的，所以这里能按真值决定插不插。数组长度随形态变，
+    // 用 Vec 而不是写死长度的字面量 —— 写死就得为「有归位 / 没归位」维护两份。
+    let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> =
+        vec![&open_settings, &pause, &collapse];
+    if has_group_lamps(app) {
+        items.push(&reset);
+    }
+    items.push(&quit);
+    let menu = Menu::with_items(app, &items).map_err(menu_err)?;
 
     popup(window, &menu)
 }
@@ -194,8 +236,18 @@ fn popup(window: &WebviewWindow, menu: &Menu<tauri::Wry>) -> Result<(), String> 
 
 /// 分派一次菜单事件。返回「是不是我们这张菜单的」，好让调用方知道要不要管。
 pub fn handle(app: &AppHandle, id: &str) -> bool {
-    // 灯自己那张菜单（空白处 / 占位牌）。它不与任何组绑定，所以先判、先返回。
-    if matches!(id, LAMP_SETTINGS | LAMP_PAUSE | LAMP_COLLAPSED | LAMP_QUIT) {
+    // 这一组动作都不需要知道是哪一组，所以先判、先返回，全部来自灯上通用菜单
+    // （空白处 / 占位牌）。组菜单那份归位用 `RESET`，在下面第二段里同样先判。
+    if matches!(
+        id,
+        LAMP_SETTINGS | LAMP_PAUSE | LAMP_COLLAPSED | LAMP_RESET | LAMP_QUIT
+    ) {
+        // 「全部归位」没有失败路径：拿不到显示器信息就一盏不动，返回 0。
+        // 单独摘出来，免得为了塞进 `Result<(), String>` 去编一个错误文案。
+        if id == LAMP_RESET {
+            crate::reset_lamp_positions_impl(app);
+            return true;
+        }
         let result = match id {
             LAMP_SETTINGS => {
                 crate::reveal_settings(app);
@@ -221,16 +273,21 @@ pub fn handle(app: &AppHandle, id: &str) -> bool {
         return true;
     }
 
-    if !matches!(id, OPEN_DIR | RENAME | HIDE | MUTE | CLEAR | TOGGLE | SETTINGS)
+    if !matches!(id, OPEN_DIR | RENAME | HIDE | MUTE | CLEAR | TOGGLE | SETTINGS | RESET)
         && manual_state_for(id).is_none()
     {
         // 托盘菜单那些 id（quit / toggle / …）也走这条路，不是我们的就放行
         return false;
     }
 
-    // 这两项都不需要知道是哪一组
+    // 这几项都不需要知道是哪一组。**归位尤其要先判**：组菜单是在记录了 target
+    // 之后弹的，但归位动的是所有组灯，和右键点中哪一组无关。
     if id == SETTINGS {
         crate::reveal_settings(app);
+        return true;
+    }
+    if id == RESET {
+        crate::reset_lamp_positions_impl(app);
         return true;
     }
     // 「重命名…」直接翻到「分组」页 —— 那一页的「各组的显示」里就是显示名输入框。
@@ -359,5 +416,32 @@ mod tests {
     fn permission_is_not_offered_manually() {
         let id = format!("{MANUAL_PREFIX}permission");
         assert_eq!(manual_state_for(&id), None);
+    }
+
+    /// 三张菜单的事件都汇到同一个 `on_menu_event`，id 撞了就会互相误触发。
+    /// 「全部归位」有两份（通用菜单 + 组菜单），**必须各用各的 id**：muda 按 id
+    /// 维护全局表，同 id 会互相覆盖；而两处都得能被自己的分支认领。
+    #[test]
+    fn lamp_menu_ids_do_not_collide_with_each_other_or_other_menus() {
+        let lamp = [LAMP_SETTINGS, LAMP_PAUSE, LAMP_COLLAPSED, LAMP_RESET, LAMP_QUIT];
+        let mut seen = Vec::new();
+        for id in lamp {
+            assert!(!seen.contains(&id), "{id} 和灯上另一项撞了");
+            assert!(!id.starts_with("group:"), "{id} 落进了组菜单的命名空间");
+            assert!(manual_state_for(id).is_none(), "{id} 被当成手动状态了");
+            seen.push(id);
+        }
+        assert_eq!(RESET, "group:reset-positions");
+        assert_ne!(RESET, LAMP_RESET, "两张菜单的归位项不能共用一个 id");
+        assert!(!seen.contains(&RESET), "组菜单的归位项和通用菜单撞了");
+        assert!(manual_state_for(RESET).is_none());
+        // 组菜单其它固定 id 也不能和它撞
+        for other in [HIDE, MUTE, CLEAR, TOGGLE, SETTINGS, OPEN_DIR, RENAME] {
+            assert_ne!(RESET, other, "归位项和组菜单的 {other} 撞了");
+        }
+        // 托盘那几个 id 都是不带前缀的裸词
+        for tray in ["inbox", "toggle", "settings", "pause", "pass_through", "collapsed", "quit"] {
+            assert!(!seen.contains(&tray), "托盘的 {tray} 和灯上菜单撞了");
+        }
     }
 }

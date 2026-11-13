@@ -141,6 +141,12 @@ impl TauriHost<'_> {
         Some((crate::work_bounds(&monitor), monitor.scale_factor()))
     }
 
+    /// 默认堆叠该用哪块屏。**首次摆放和归位都必须问这一句**：鼠标所在的那块，
+    /// 拿不到才退回主屏。归位若自己另挑一块屏，灯就会从用户正看着的这块跳走。
+    fn stack_area(&self) -> Option<(Bounds, f64)> {
+        self.cursor_area().or_else(|| self.primary_area())
+    }
+
     /// 把记忆中的位置夹回可见区。
     ///
     /// **为什么必须夹**：位置是按物理坐标存进 `lamp-positions.json` 的，而那个坐标
@@ -174,23 +180,139 @@ impl TauriHost<'_> {
     /// 拿不到显示器信息就返回 `None`（交回系统默认摆放），不硬编一个坐标：多屏 /
     /// 远程桌面上编出来的点可能落在根本不存在的屏幕上。
     fn default_position(&self, size: (u16, u16)) -> Option<(i32, i32)> {
-        let (bounds, scale) = self.cursor_area().or_else(|| self.primary_area())?;
-        let ((_left, top), (right, bottom)) = bounds;
-        let width = (f64::from(size.0) * scale).round() as i32;
-        let height = (f64::from(size.1) * scale).round() as i32;
-        let gap = (f64::from(size.0) * scale / 2.0).round() as i32;
+        let (bounds, scale) = self.stack_area()?;
         let index = self
             .0
             .webview_windows()
             .keys()
             .filter(|label| label.starts_with(LABEL_PREFIX))
             .count() as i32;
-        let x = right - width - gap;
-        let y = top + gap + index * (height + gap);
-        // 堆到屏幕底下就停在最下面（keep_on_screen 的兜底）
-        let y = y.min(bottom - height - gap);
-        Some((x, y))
+        Some(stack_position(index, size, bounds, scale))
     }
+}
+
+/// 默认堆叠里第 `index` 盏灯该在哪个位置（物理像素）。
+///
+/// **首次摆放（`default_position`）和「全部归位」（`reset_positions`）共用这一条
+/// 几何**。抽成纯函数不是为好看：归位时窗口都还开着，若沿用 `default_position`
+/// 里「已开着几盏」当序号，每盏都会算出同一个坐标、叠成一摞。两处各写一遍公式
+/// 也会让归位后的灯落得和第一次出现时不一样 —— 那就不叫归位了。
+///
+/// `size` 是窗口的**逻辑**尺寸，`bounds` / `scale` 是目标屏的工作区与缩放比；
+/// 间距取半个窗宽（和 0.6.6 逐像素一致）。`x` 到工作区右缘的距离正好是 `gap`，
+/// 而 `gap = 窗宽 × scale / 2` 恒大于贴边吸附的 12px 阈值 —— 所以程序化摆位
+/// 不会在 220ms 后被 `wire_snap` 又吸走，这一点和首次摆放完全相同。
+///
+/// 纯几何、不碰 Tauri，所以能在单测里把「第几盏」「堆到底了没」摆出来。
+pub(crate) fn stack_position(
+    index: i32,
+    size: (u16, u16),
+    bounds: Bounds,
+    scale: f64,
+) -> (i32, i32) {
+    let width = (f64::from(size.0) * scale).round() as i32;
+    let height = (f64::from(size.1) * scale).round() as i32;
+    let gap = (f64::from(size.0) * scale / 2.0).round() as i32;
+    stack_at(index, (width, height), gap, bounds)
+}
+
+/// 默认堆叠的几何，**全是物理像素**。`gap` 统一取 `round(逻辑宽 × scale / 2)`
+/// （逐像素保持 0.6.6）：首次摆放从 `stack_position` 传进来，归位从
+/// `reset_positions` 按同一份 `LampSpec.size` 换算，**不读窗口 `outer_size()`** ——
+/// 物理宽反推逻辑宽在 125% 之类的缩放上会差 1px，两条路就不在同一条线上了。
+///
+/// 拆出 `stack_at_y` 是为了让 `stack_column` 能用游标累加：同一列里可能混着折叠
+/// 裸点、带文字窄板、临时展开、圆环菜单正方形，按「第几盏 × 固定行高」摆会重叠
+/// 或留大缝。而 `x` 与「堆到底就停住」的封顶只在 `stack_at_y` 定义一次，首次摆放
+/// 和归位共用，不会各写一份 `right - width - gap`。
+fn stack_at(
+    index: i32,
+    (width, height): (i32, i32),
+    gap: i32,
+    bounds: Bounds,
+) -> (i32, i32) {
+    let ((_left, top), (_right, _bottom)) = bounds;
+    stack_at_y(top + gap + index * (height + gap), (width, height), gap, bounds)
+}
+
+/// 给定这一盏该从哪行开始，算出它的落点。`x` 与「堆到底就停住」的封顶只在
+/// 这一处定义 —— 首次摆放和归位共用，不会各写一份 `right - width - gap`。
+fn stack_at_y(
+    y: i32,
+    (width, height): (i32, i32),
+    gap: i32,
+    bounds: Bounds,
+) -> (i32, i32) {
+    let ((_left, _top), (right, bottom)) = bounds;
+    let x = right - width - gap;
+    (x, y.min(bottom - height - gap))
+}
+
+/// 一串**尺寸可能各不相同**的窗口依次堆下来的落点。
+///
+/// 游标累加而不是 `index × 固定行高`：多灯下被 hover 临时展开的那一盏比其余
+/// 折叠灯高，按「第几盏」算会拿每盏自己的高度去乘，结果要么留大缝、要么两盏
+/// 压在一起。这个是纯函数，好把上面那句断言写进单测。
+fn stack_column(cells: &[(i32, i32, i32)], bounds: Bounds) -> Vec<(i32, i32)> {
+    let ((_left, top), (_right, _bottom)) = bounds;
+    let mut y = None;
+    cells
+        .iter()
+        .map(|&(width, height, gap)| {
+            let at = stack_at_y(y.unwrap_or(top + gap), (width, height), gap, bounds);
+            y = Some(at.1 + height + gap);
+            at
+        })
+        .collect()
+}
+
+/// 「全部归位」：把当前开着的组灯按 `specs` 的顺序摆回默认堆叠。
+///
+/// **尺寸取 `LampSpec.size`（逻辑像素）而不是窗口 `outer_size()`**：`lamp_specs`
+/// 已经把「这一盏此刻该多大」算好了，包括圆环菜单开着时那扇 196×196 的正方形
+/// 窗、被 hover 临时展开的那一盏。用物理宽反推逻辑宽会在 125% 之类的缩放上
+/// 差 1px，归位和首次摆放就不在同一条线上了。返回成功摆了几盏。
+///
+/// 位置只在这里动，**清记忆和落盘交给调用方**（`lib.rs::reset_lamp_positions_impl`）：
+/// 那一步要拿 `SharedLamps` 锁，而 `set_position` 触发的 `Moved` 事件可能辗转回到
+/// 主线程抢同一把锁 —— 抱着锁动窗口正是 issue #4 那类死锁。
+pub fn reset_positions(app: &AppHandle, specs: &[LampSpec]) -> usize {
+    let Some((bounds, scale)) = TauriHost(app).stack_area() else {
+        // 拿不到显示器信息就不动（和 `default_position` 一个态度）
+        return 0;
+    };
+    // 先只挑出真开着的窗，尺寸换算也在这里一次做完；摆位是纯计算，和窗口
+    // 操作分开 —— 某盏刚被关掉时后面几盏仍贴着排，不留空档（游标只数存在的窗）。
+    // gap 恒 ≥ 20px（窗口最小 = MIN_SIZE + LAMP_MARGIN = 40），大于贴边吸附的
+    // 12px 阈值，所以程序化摆位不会被 `wire_snap` 在 220ms 后二次吸走。
+    let cells: Vec<(String, (i32, i32, i32))> = specs
+        .iter()
+        .filter_map(|spec| {
+            let label = label_for(&spec.group);
+            app.get_webview_window(&label).map(|_| {
+                (
+                    label,
+                    (
+                        (f64::from(spec.size.0) * scale).round() as i32,
+                        (f64::from(spec.size.1) * scale).round() as i32,
+                        (f64::from(spec.size.0) * scale / 2.0).round() as i32,
+                    ),
+                )
+            })
+        })
+        .collect();
+    let dims: Vec<(i32, i32, i32)> = cells.iter().map(|(_, dim)| *dim).collect();
+    let places = stack_column(&dims, bounds);
+
+    let mut moved = 0;
+    for ((label, _), (x, y)) in cells.iter().zip(places) {
+        if let Some(window) = app.get_webview_window(label)
+            && window.set_position(PhysicalPosition::new(x, y)).is_ok()
+        {
+            moved += 1;
+        }
+    }
+    moved
 }
 
 impl LampHost for TauriHost<'_> {
@@ -284,6 +406,19 @@ impl LampWindows {
         Self { positions, ..Self::default() }
     }
 
+    /// 丢掉「上次设下去的尺寸」记账，让下一帧 `plan` 对**每个**开着的窗都重新
+    /// 生成一次 resize。用户主动改设置时调（见 `lib.rs::sync_layout` 的 `force`）。
+    ///
+    /// `sizes` 是**乐观记账**：`plan` 一算出新尺寸就写进去，`set_size` 那时还没
+    /// 落地。只要有一次 `set_size` 没生效、或窗口被圆环菜单 / hover 临时展成别的
+    /// 尺寸而记账没跟着回退，记账就会领先真实窗口；之后算出同尺寸时 `plan` 直接
+    /// `continue`，窗口便永远停在旧尺寸。前端却已经按新设置重画了 —— 表现就是
+    /// 「灯变了但被裁」。改设置是低频操作，多几次 `set_size` 没有代价，但**必须**
+    /// 真的落地；状态热路径仍走增量，别把那段也改成每次都设。
+    pub fn invalidate_sizes(&mut self) {
+        self.sizes.clear();
+    }
+
     /// 算这一帧要做的窗口操作，**只动自己的记账，不碰任何窗口**。
     ///
     /// 记账是**乐观**的：新组在计划里就已经算作「开着」了。这样并发进来的下一帧
@@ -356,6 +491,18 @@ impl LampWindows {
     /// 位置记忆的快照（落盘用；在锁外写，见 [`Self::commit`]）。
     pub fn positions_snapshot(&self) -> BTreeMap<String, (i32, i32)> {
         self.positions.clone()
+    }
+
+    /// 「全部归位」时丢掉所有拖过的位置。返回 `true` = 原本记着东西，调用方
+    /// 该落一次盘；空表时连写都不必写。
+    ///
+    /// **只动内存**：落盘和移动窗口都在锁外（和 [`Self::commit`] 同一条纪律）。
+    /// 光移动窗口不清这份表的话，下次新开一盏灯或重启，之前拖散的那几盏又被
+    /// `open()` 按老坐标放回去 —— 用户会觉得「归位白点了」。
+    pub fn clear_positions(&mut self) -> bool {
+        let had = !self.positions.is_empty();
+        self.positions.clear();
+        had
     }
 
     /// `plan` + 同步执行 + `commit` 的便利形态。
@@ -528,6 +675,36 @@ mod tests {
         assert_eq!(host.size_of("a"), Some((20, 30)));
     }
 
+    /// 用户改设置时 `sync_layout(force = true)` 先 `invalidate_sizes()`：即使算出
+    /// 的尺寸和记账里一样，也要对**每个**开着的窗再设一次。记账是乐观的，可能领先
+    /// 真实窗口（菜单开合 / hover 临时展开 / 某次 `set_size` 没落地），那时增量判断
+    /// 会一直跳过，前端按新设置重画的 DOM 就被 `overflow: hidden` 裁掉。
+    #[test]
+    fn invalidating_sizes_forces_a_resize_for_every_open_lamp() {
+        let host = FakeHost::default();
+        let mut lamps = LampWindows::default();
+
+        lamps.reconcile(&host, &[spec("a", 10, 10), spec("b", 12, 12)]);
+        lamps.positions.insert(label_for("a"), (123, 456));
+        host.resized.borrow_mut().clear();
+
+        // 不改尺寸、只清记账：两盏都要重新 set_size
+        lamps.invalidate_sizes();
+        lamps.reconcile(&host, &[spec("a", 10, 10), spec("b", 12, 12)]);
+        assert_eq!(host.resized.borrow().len(), 2, "每盏开着的窗都该重设一次");
+        assert_eq!(host.size_of("a"), Some((10, 10)));
+        assert_eq!(host.size_of("b"), Some((12, 12)));
+
+        // 只丢尺寸记账，位置和开窗状态一个都不该动
+        assert_eq!(lamps.positions.get(&label_for("a")), Some(&(123, 456)));
+        assert_eq!(lamps.open.len(), 2);
+
+        // 下一帧没清记账就回到增量：状态热路径不该被波及
+        host.resized.borrow_mut().clear();
+        lamps.reconcile(&host, &[spec("a", 10, 10), spec("b", 12, 12)]);
+        assert!(host.resized.borrow().is_empty(), "热路径仍该跳过没变的尺寸");
+    }
+
     #[test]
     fn reconcile_with_no_specs_closes_everything() {
         let host = FakeHost::default();
@@ -616,5 +793,126 @@ mod tests {
         assert_eq!(encode_query("x&y=z"), "x%26y%3Dz");
         // 中文按 UTF-8 字节编码
         assert_eq!(encode_query("构"), "%E6%9E%84");
+    }
+
+    // ---- 「全部归位」------------------------------------------------------
+
+    /// 屏：`((0, 0), (1920, 1080))`。四个角的取值不重要，堆叠只看上 / 下 / 右。
+    const AREA: Bounds = ((0, 0), (1920, 1080));
+
+    /// 抽出 `stack_position` 之后，首次摆放必须**逐像素**等于 0.6.6 那段老公式
+    /// （`N × size + (N−1) × size/3` 那套几何的另一半）。这条是重构的安全网：
+    /// 归位可以改写法，刚切到多灯的第一眼不能跟着变。
+    #[test]
+    fn stack_position_matches_the_original_default_formula() {
+        for (size, scale) in [((50, 50), 1.0), ((132, 33), 1.25), ((196, 196), 2.0)] {
+            let width = (f64::from(size.0) * scale).round() as i32;
+            let height = (f64::from(size.1) * scale).round() as i32;
+            let gap = (f64::from(size.0) * scale / 2.0).round() as i32;
+            for index in [0, 1, 3, 7] {
+                let x = 1920 - width - gap;
+                let y = (gap + index * (height + gap)).min(1080 - height - gap);
+                assert_eq!(stack_position(index, size, AREA, scale), (x, y));
+            }
+        }
+    }
+
+    /// 第几盏只改 y，不改 x；间距是「窗高 + 半个窗宽」；堆到屏幕底下就停住，
+    /// 不会有一盏跑到工作区外面（那是 `clamp_to_visible` 也救不回来的）。
+    #[test]
+    fn stack_at_goes_down_one_cell_at_a_time_and_stops_at_the_bottom() {
+        let (width, height) = (60, 40);
+        let gap = 30;
+        let first = stack_at(0, (width, height), gap, AREA);
+        let second = stack_at(1, (width, height), gap, AREA);
+        assert_eq!(first, (1920 - 60 - 30, 30));
+        assert_eq!(second, (first.0, first.1 + height + gap));
+
+        let last = stack_at(100, (width, height), gap, AREA);
+        assert_eq!(last.1, 1080 - height - gap, "封顶在屏幕底部");
+        assert!(last.1 < 1080 - height, "整扇窗都还在工作区内");
+    }
+
+    /// 归位和首次摆放共用 `stack_at_y` 的 x 公式，且间距都从「逻辑宽 × scale」
+    /// 算 —— 125% 这种半整数缩放下也不能差 1px，否则每点一次归位就飘一次。
+    #[test]
+    fn reset_geometry_lands_where_a_fresh_lamp_would() {
+        for (size, scale) in [((50, 50), 1.0), ((132, 33), 1.25), ((196, 196), 2.0)] {
+            let width = (f64::from(size.0) * scale).round() as i32;
+            let height = (f64::from(size.1) * scale).round() as i32;
+            let gap = (f64::from(size.0) * scale / 2.0).round() as i32;
+            let column = stack_column(&[(width, height, gap)], AREA);
+            assert_eq!(
+                (column[0].0, column[0].1),
+                stack_position(0, size, AREA, scale),
+                "{size:?} @ {scale}: 归位与首次摆放必须逐像素一致"
+            );
+        }
+    }
+
+    /// **这一条钉住混合高度的坑**：多灯下被 hover 临时展开的那盏比折叠灯高。
+    /// 用 `index × (高+间距)` 会按每盏自己的高度算 y，第三盏会和第二盏压在一起。
+    /// 游标累加则每盏都恰好接在上一盏底边 + gap 处。
+    #[test]
+    fn a_mixed_height_column_stacks_without_gaps_or_overlaps() {
+        // (宽, 高, gap)：折叠点 / 展开牌 / 折叠点 / 圆环菜单正方形
+        let cells = [(50, 50, 25), (154, 89, 77), (50, 50, 25), (196, 196, 98)];
+        let places = stack_column(&cells, AREA);
+        for i in 1..places.len() {
+            let (_, prev_h, prev_gap) = cells[i - 1];
+            let expected = places[i - 1].1 + prev_h + prev_gap;
+            assert_eq!(
+                places[i].1, expected,
+                "第 {i} 盏该接在上一盏底边 + 间距处"
+            );
+            assert!(
+                places[i].1 >= places[i - 1].1 + prev_h,
+                "第 {i} 盏和上一盏压在一起了"
+            );
+        }
+        // 都贴同一条右边线（各自的 gap 不同，所以 x 不完全相同）
+        for (i, (place, cell)) in places.iter().zip(&cells).enumerate() {
+            let (w, _, g) = *cell;
+            assert_eq!(1920 - (place.0 + w), g, "第 {i} 盏没留对右缘间距");
+        }
+    }
+
+    /// 归位后 `wire_snap` 会在 220ms 检查一次：x 到工作区右缘的距离就是 `gap`。
+    /// 最小窗口（`MIN_SIZE + LAMP_MARGIN` = 40）时仍要大于 12px 吸附阈值，否则
+    /// 灯刚归位就被吸到贴边，和首次摆放不一样。
+    #[test]
+    fn the_stack_never_sits_inside_the_edge_snap_threshold() {
+        for size in [12, 22, 64] {
+            let width = size + 28; // LAMP_MARGIN，见 config.rs 文件头
+            let gap = width / 2;
+            let x = stack_column(&[(width, width, gap)], AREA)[0].0;
+            assert!(
+                1920 - (x + width) > 12,
+                "size {size} 的归位落点会被 wire_snap 二次吸走"
+            );
+        }
+    }
+
+    /// 清记忆要把 **all** label 都清掉，并且报告「原本有没有东西」给调用方决定
+    /// 要不要落盘；重复点一次不该再写一次盘。
+    #[test]
+    fn clearing_positions_is_idempotent_and_reports_whether_it_mattered() {
+        let mut lamps = LampWindows::default();
+        lamps.plan(&[spec("a", 10, 10), spec("b", 10, 10)]);
+        lamps.commit(
+            &[
+                (label_for("a"), Some((10, 20))),
+                (label_for("b"), Some((300, 400))),
+            ],
+            &[],
+        );
+        assert_eq!(lamps.positions_snapshot().len(), 2);
+
+        assert!(lamps.clear_positions(), "有东西，该落盘");
+        assert!(lamps.positions_snapshot().is_empty());
+        assert!(!lamps.clear_positions(), "空表再点一次不必落盘");
+        // 归位不动灯的开关账：清完记忆这一帧不该冒出「重建 / 关窗」的计划
+        let plan = lamps.plan(&[spec("a", 10, 10), spec("b", 10, 10)]);
+        assert!(plan.open.is_empty() && plan.close.is_empty());
     }
 }

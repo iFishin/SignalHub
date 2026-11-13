@@ -32,13 +32,14 @@ export type SignFont = "system" | "mono";
 /**
  * 一条边怎么亮。
  *
- * 0.6.5 之前全局只有一个 `SignEdge`，四档描述的是**一条轨铺多大范围**，上下边
- * 永远长得一样、也没法各自挑「什么时候亮」。现在每条边是独立灯位，四档都是
- * 同一条 `border` 的变体（`fade` 用 `mask-image` 让两端淡出），不引入第二层线。
+ * 0.6.5 之前全局只有一个 `SignEdge`，四档描述的是**一条轨铺多大范围**；现在
+ * 上下是两枚独立的行沿短刻线，四档只是同一枚刻线的长短与明暗（0.6.7：不画渐变、
+ * 不画发光、不画第二圈线）。**key 一个没改** —— `off` / `line` / `fade` / `glow`
+ * 是落盘值，改了旧配置就迁移；变的只是界面上的叫法。
  */
 export type EdgeLight = "off" | "line" | "glow" | "fade";
 
-/** 四角里的一枚小灯表达什么。 */
+/** 行尾四格里的一枚微记号表达什么。配置键仍是 tl/tr/br/bl（旧设置不迁移）。 */
 export type SignCorner =
   | "empty"
   | "state"
@@ -90,6 +91,20 @@ export const SLOT_IDS: SlotId[] = [...EDGE_SLOTS, ...CORNER_SLOTS];
 
 /** 整块牌的轮廓。只能用 `border-radius`，不能用 `clip-path`（会裁掉角灯）。 */
 export type SignOutline = "rect" | "capsule" | "leaf" | "arch";
+
+/**
+ * 折叠后那几颗灯往哪个方向排。**默认 `vertical`**：折叠是为了让出横向桌面，
+ * 一列点只占一条窄边；`horizontal` 是 0.6.6 那种长条，留给用户自己挑。
+ * 落盘值与 Rust `config::FoldAxis` 同名（lowercase）。
+ */
+export type FoldAxis = "vertical" | "horizontal";
+
+/**
+ * 折叠后每颗灯旁边带哪一段文字。**默认 `none` = 只有灯**。
+ * 四档单选，宽度由档位固定（长组名省略号截断），窗口尺寸不跟文字长度走；
+ * 落盘值与 Rust `config::FoldLabel` 同名（lowercase）。
+ */
+export type FoldLabel = "none" | "name" | "index" | "state";
 /** 动效风格。`breathe` 就是旧「灵动效果」开关开着的样子。 */
 export type Effect = "off" | "breathe" | "pulse" | "sweep" | "fade";
 
@@ -369,8 +384,8 @@ export interface QuietHours {
 export interface Settings {
   size: number;
   /**
-   * 牌宽倍率。**1.0 = 原样**。只作用于展开态的牌 —— 折叠态是一排正方形点，
-   * 长宽倍率对它没有意义。
+   * 牌宽倍率。**1.0 = 原样**。展开态作用在牌上；折叠态只有「带文字」的
+   * 窄板用到它 —— 光是一排 / 一列正方形点时，长宽倍率没有意义。
    */
   sign_w_mult: number;
   /** 牌高倍率。**1.0 = 原样**（单行 / 带消息两行都乘）。 */
@@ -462,6 +477,10 @@ export interface Settings {
   styles: Record<string, StateStyle>;
   /** 折叠成一颗单纯的灯（只剩灯，没有牌面）。**默认 false = 展开成牌。** */
   collapsed: boolean;
+  /** 折叠后 N 颗灯的排列方向。**只影响折叠态**，默认竖排。 */
+  fold_axis: FoldAxis;
+  /** 折叠后每颗灯旁边带哪一段文字。**只影响折叠态**，默认只有灯。 */
+  fold_label: FoldLabel;
   /**
    * 灯上单击的主操作。`collapse` = 折叠 / 展开（默认），`inbox` = 打开收件箱，
    * `none` = 什么都不做。长按圆环菜单与拖拽不受影响。
@@ -635,6 +654,10 @@ export const DEFAULTS: Settings = {
   sign_outline: "rect",
   styles: {},
   collapsed: false,
+  // 折叠默认竖排、只有灯：方向是用户明确要的改动，内容保持 0.6.6 的裸点。
+  // 和 Rust `Settings::default` 是两处真值，改一处必须同步另一处。
+  fold_axis: "vertical",
+  fold_label: "none",
   click_action: "collapse",
   show: { name: true, state: true, age: true, message: true, dot: true },
   sign_opacity: 86,

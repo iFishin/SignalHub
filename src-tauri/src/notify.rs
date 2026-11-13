@@ -103,7 +103,9 @@ fn compose_now(app: tauri::AppHandle) -> Notifier {
             .lock()
             .expect("settings poisoned")
             .clone();
-        crate::sync_layout(&app, &settings, snapshot);
+        // 状态推送是热路径，尺寸走增量判断（只有内容真变了才 `set_size`）。
+        // 用户主动改设置那条路才 force，见 `lib.rs::sync_layout`。
+        crate::sync_layout(&app, &settings, snapshot, false);
 
         app.state::<SharedStats>()
             .lock()

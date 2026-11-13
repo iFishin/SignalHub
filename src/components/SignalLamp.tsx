@@ -329,6 +329,9 @@ export function SignalLamp({
   // 本来就不画（见 `ApprovalBubble`）。
   const bubbles = Math.min(pending, MAX_APPROVAL_BUBBLES);
   const { size, quiet, collapsed, show, hidden_groups } = settings;
+  // 折叠态的两个旋钮。展开态一律不读它们 —— 牌永远是竖着叠的一块板。
+  const foldAxis = settings.fold_axis;
+  const foldLabel = settings.fold_label;
   const m = useMessages();
   const lang = useLang();
   // 穿透也能从托盘和全局快捷键改，所以订阅而不是读一次 —— 配了「穿透」角灯的
@@ -659,6 +662,271 @@ export function SignalLamp({
     !guide.show &&
     ["idle", "stale", "offline", "off"].includes(aggregate);
 
+  /**
+   * 展开态的每一行 / 折叠态的每一格。**同一份数组供三种形态用**：
+   * 展开时外面套 `.sign-board`（共享外框、圆角、行间细线）；折叠且「只有灯」
+   * 时直接是 `.lamp-root` 的一列 / 一排裸点；折叠且带文字时套 `.fold-board`
+   * 变成一条窄板，每行仍是「同一颗灯珠 + 一段词」。
+   * 三者的格子数都由 `rows.length + (hidden.length > 0 ? 1 : 0)` 决定，
+   * 和 Rust `Settings::folded_size` 的 dots + badges 是同一个数。
+   */
+  const cards = rows.map((group, index) => {
+        // B4 预设 3：会议中那一组画成蓝色。`--state` 是圆点 / 圆环颜色的唯一入口，
+    // 覆盖它之后 `--edge`（描边）也跟着派生 —— 见 state.css 的 `[data-state]`。
+    // 折叠态同样上色：收起来时那一排点正是「开会」最该被看见的地方。
+    const tint = meetingTint(group, settings.rule_meeting);
+    const dotStyle = {
+      ...progressStyle(group),
+      ...(tint ? { "--state": tint } : {}),
+      // 灵动效果：把该状态的柔光呼吸 animation 挂到灯珠上，CSS 的
+      // `.dot::before { animation: var(--halo-anim, none) }` 读它。
+      ...(haloAnims ? { "--halo-anim": haloAnims[group.aggregate] } : {}),
+    } as React.CSSProperties;
+    // 效果不是「关闭」、也没开「减少动态效果」时，灯珠用 motion 弹簧入场。
+    // spring 比 ease-out 更「灵动」——有一点过冲，像灯珠落到了位。
+    // 只动 opacity 和 scale：**不改盒模型**，scale 走 transform 合成层，
+    // 不触发重排（红线 2 只限制「常驻循环动画」，一次性弹簧不在此列）。
+    const dotMotion = motionOn
+      ? {
+          initial: { opacity: 0, scale: 0.6 },
+          animate: { opacity: 1, scale: 1 },
+          transition: { type: "spring" as const, stiffness: 300, damping: 18, duration: 0.42 },
+        }
+      : {};
+    // 六个灯位共用**这一份**逐块牌事实。判据在 `lampStyle.ts::lightOn`
+    // （纯函数、有单测）；每个槽各自拿自己的 trigger 去问，所以上边常亮、
+    // 下边只在出错时亮、四个角各挂各的是同一帧里判出来的，不会出现
+    // 「轨亮着、四枚灯却熄了」这种半套画面。
+    // 九档里带参数的档位（指定状态 / 指定时段 / 沉默将尽、有消息、仅置顶）
+    // 都从这份 ctx 取值，六个槽共用一份参数。
+    const pinned = settings.group_meta[group.name]?.order != null;
+    const lightCtx: LightContext = {
+      state: group.aggregate,
+      quiet: quietDim,
+      matchState: settings.sign_trigger_state,
+      from: settings.sign_trigger_from,
+      to: settings.sign_trigger_to,
+      staleProgress: group.stale_progress,
+      message: group.message,
+      pinned,
+    };
+    const edges = edgeLightKinds(settings.sign_lights, lightCtx);
+    // 闪不闪和「画成什么样」是两件事，但都按**这块牌自己的**状态节奏走：
+    // 同一盏灯里可以有牌在闪、有牌常亮。见 `lampStyle.ts::lightBlink`。
+    const edgeBlink = edgeBlinks(settings.sign_lights, lightCtx);
+
+    // 行尾四格：哪几枚该亮。判据在 `lampStyle.ts::cornerLights`（纯函数、有单测）
+    // —— 它只返回**该亮**的那些，「不亮」是根本不画，而不是画一个暗点。
+    // 每个角先过自己的 trigger，再过这枚灯自己的事实：说「现在别亮」时连
+    // 无条件亮的 `state` 那枚也得消失。0.6.5 之前四角共用一个 gate。
+    //
+    // **占位牌（`name` 为空）不挂**：它不对应任何真实的组，也就没有「置顶 /
+    // 静音 / 沉默多久」可言 —— 挂上去的每一枚都会是假的。
+    const corners =
+      group.name === ""
+        ? []
+        : cornerLights(
+            settings.sign_lights,
+            {
+              pinned,
+              muted: settings.muted_groups.includes(group.name),
+              staleProgress: group.stale_progress,
+              // 全局事实：开着穿透时每块牌都挂这一枚（如果那一角配了它）。
+              passThrough,
+            },
+            lightCtx,
+          );
+    // 折叠内容的四档只改「灯珠旁边那一个词」，灯珠本身一模一样。
+    // `name` 走和展开牌同一个 `labelOf`（自定义显示名 / 模板都在里面）；占位牌
+    // 没有真实组名，就不写字。`index` 是这一帧可见行从 1 开始的序号。
+    const foldText =
+      foldLabel === "name"
+        ? group.name
+          ? labelOf(group, settings.group_meta, labelPref)
+          : ""
+        : foldLabel === "index"
+          ? String(index + 1)
+          : foldLabel === "state"
+            ? signalLabel(lang, group.aggregate)
+            : "";
+    const dotMenu = (event: React.MouseEvent) => handleGroupMenu(event, group.name);
+    // key 用下标：折叠后组名可能为空（占位那块），不能用名字当 key。
+    // 右键菜单在裸点档挂在点上，在窄板档挂在整行上 —— 后者点文字也该弹出组菜单。
+    const dot = (
+      <motion.span
+        key={index}
+        className="dot lamp-dot"
+        data-state={group.aggregate}
+        data-shape={shapes[group.aggregate]}
+        style={dotStyle}
+        {...dotMotion}
+        onContextMenu={foldLabel === "none" ? dotMenu : undefined}
+      />
+    );
+
+    return !expanded ? (
+      foldLabel === "none" ? (
+        dot
+      ) : (
+        <div
+          key={index}
+          className="fold-row"
+          data-label={foldLabel}
+          /* 折叠格宽只留「够认出这一组」的几个字（见 `FOLD_WIDTH_MULT`），
+             长组名会被省略号截断。原生 title 让用户 hover 时还能读到全名 ——
+             不然「折叠省了宽度」就变成「名字再也看不全」了。 */
+          title={foldText || undefined}
+          onContextMenu={dotMenu}
+        >
+          {dot}
+          <span className="fold-text">{foldText}</span>
+        </div>
+      )
+    ) : (
+      <div
+        key={group.name || index}
+        className="sign"
+        data-has-message={show.message && group.message ? "true" : "false"}
+        /* 视觉分量：`need` = 正在等你动手，`calm` = 只是现在怎么样。
+           判据在 `lampStyle.ts::toneOf`（有单测），CSS 按它给点径 / 牌底 /
+           字重 —— 三样都不参与布局，牌宽高一个像素都不变。
+           **只有一块牌时不分层**（`shown.length > 1`）：分层的用途是在多块
+           之间分先后，只有一块时压淡只是让整盏灯退一档、没有换来任何信息。
+           而 `group_by` 默认是 `none` —— 所有上报归一组，也就是**一块牌**，
+           这正是最常见的用法，不能让它无缘无故变淡。
+           **占位牌也不参与**（`name` 为空 = 一个真实的组都没有）：它不是
+           「某一块组牌」，是整盏灯的自述，那句「没有智能体在上报 / 刚完成 ·
+           N 分钟前」正是回来时最该读的一句话。 */
+        data-tone={
+          shown.length > 1 && group.name !== ""
+            ? toneOf(group.aggregate)
+            : undefined
+        }
+        /* 给 `.sign` 挂 data-state，是为了让 state.css 的 `[data-state] { --state }`
+           在**牌**这一层也生效 —— 跃迁时描边闪的是这个状态的颜色（见 lamp.css
+           的 `edge-flash`）。刻线和四格记号都从这个 `--state` 取色，所以它必须
+           挂在牌上，而不是只挂在灯珠上。 */
+        data-state={group.aggregate}
+        /* 上下两条边**逐块牌、逐条**判定：同一盏灯里可以有的牌亮边、有的不亮，
+           同一块牌也可以只亮上边。`off` 时仍然挂属性（而不是不挂），CSS 的
+           「中性描边让位」那条 `:not([data-edge-top="off"])` 才不会误伤
+           没开边灯的牌。 */
+        data-edge-top={edges.top}
+        data-edge-bottom={edges.bottom}
+        /* 要闪的边 / 角在牌上只挂一个存在性的属性：动画本身是一条 `--light-blink`
+           变量（见下面的 `style`），CSS 只负责「挂了才播」。所以关掉闪烁时
+           连一条动画声明都不存在，而不是播一条 0 时长的空动画。 */
+        data-blink-top={edgeBlink.top || undefined}
+        data-blink-bottom={edgeBlink.bottom || undefined}
+        /* `--progress` 也挂到牌上：沉默进度那枚角灯要用它，而它原来只挂在
+           灯珠的 style 里。同一个变量、同一个来源，两者不会给出不同的答案。
+           `--light-blink` 同理挂在牌上：边的两个伪元素和四枚角灯都从这一层
+           继承，于是「这一块牌什么节奏」只有一处答案。 */
+        style={
+          {
+            ...progressStyle(group),
+            "--light-blink": lightBlink(settings, group.aggregate),
+          } as React.CSSProperties
+        }
+        // 刚换了状态就闪一下（`pulses` 是这一帧跃迁的组名）。折叠态的点不带
+        // 这个 —— 点的状态动画本身就会重放，重复闪反而糊。
+        data-pulse={pulses.includes(group.name) || undefined}
+        onContextMenu={(event) => handleGroupMenu(event, group.name)}
+      >
+        {/* 圆点也可以关掉（「牌上显示」里的第五个 chip）：有人只想要一块
+            纯文字卡。关掉后文字自然左移，牌宽高一个像素都不变 —— 点本来
+            就在 flex 行里，不参与 `sign_width` / `sign_height`。 */}
+        {show.dot && (
+          <motion.span
+            className="dot"
+            data-state={group.aggregate}
+            data-shape={shapes[group.aggregate]}
+            style={dotStyle}
+            {...dotMotion}
+          />
+        )}
+        <div className="sign-body">
+          <div className="sign-line">
+            {show.name && group.name && (
+              /* 组名**只是一段文本**：改名的入口在设置面板（分组 → 各组的显示），
+                 也可以从牌的右键菜单「重命名…」直接跳过去。
+                 早先点它就能就地改，但那是一次「点一下就进入编辑状态」的交互 ——
+                 灯是常驻在桌面上的，误点一下就开始编辑，比改名的便利更碍事。 */
+              <span className="sign-name">{labelOf(group, settings.group_meta, labelPref)}</span>
+            )}
+            {guide.show && group.name === "" ? (
+              /* 第一次用：占位牌自己变成入口。**仍然只占一行**（按钮是
+                 flex:none 的小 chip），牌高和 Rust 算出来的一行牌完全一致，
+                 不会被 overflow:hidden 裁掉。 */
+              <>
+                <span className="sign-state">{m.lampFirstRun}</span>
+                <button
+                  type="button"
+                  className="sign-guide"
+                  title={m.lampFirstRunDemoHint}
+                  onMouseDown={stopMouse}
+                  onMouseUp={stopMouse}
+                  onClick={(event) => {
+                    stopMouse(event);
+                    openDemo();
+                  }}
+                >
+                  {m.lampFirstRunDemo}
+                </button>
+              </>
+            ) : (
+              show.state && (
+                /* 占位牌（`name` 为空，见上面 `rows` 的构造）说 `emptyLabel`：
+                   一组都没有时它可能是「刚完成 · N 分钟前」。它没有组名要让位，
+                   所以用长句。
+                   真组用**两字短词**（`shortSignal`，中文「需要授权」→「授权」、
+                   「出错 / 阻塞」→「出错」）。牌宽是固定的 154px（22px 档），
+                   长词光状态就吃掉 40–53px，组名常被截成五六个字符；短词把
+                   省下的宽度还给组名。也不能干脆不显示状态词 —— `working` 和
+                   `done` 默认同色，只靠「慢闪 / 常亮」区分，静态一瞥分不出来。 */
+                <span className="sign-state">
+                  {group.name === "" ? emptyLabel : m.shortSignal[group.aggregate]}
+                </span>
+              )
+            )}
+          </div>
+          {show.message && group.message && (
+            <div className="sign-message">{group.message}</div>
+          )}
+        </div>
+        {show.age && <span className="sign-age">{formatAge(group.since_ms, now)}</span>}
+        {/* **牌上不再有任何按钮**（2026-11-10）。原来这里挂着一枚悬停出现的
+            ×（「清除该组的状态」），撤掉它有两条理由：
+            1. 常驻窗口上的一枚 × 读起来就是「关掉这块牌」，而它做的事只是清一个
+               状态 —— 文案得靠 tooltip 纠正，那说明形状本身说错了话；
+            2. 它所在的右上角正是当年 `tr` 那枚角灯的落点（0.6.7 起挪到行尾
+               第 2 格），一悬停就盖住一盏读者刚配好的灯。
+            清除没丢：牌上右键 → 「清除」走同一条 `clear_group`（原生菜单
+            `menu.rs::CLEAR`）。首启引导那枚「不再提示」也一并撤了 —— 引导本来
+            「真有组上报就自动收起」，加上行内的「看演示」按钮，退出路径够用，
+            不值得为它在牌角留一颗常驻的 ×。 */}
+        {hidden.length > 0 && index === rows.length - 1 && (
+          <span className="sign-more" title={moreGroupsTip(m, hidden, settings.group_meta, labelPref)}>
+            +{hidden.length}
+          </span>
+        )}
+        {/* 行尾四格：**绝对定位、不参与 flex**，所以行宽高一个像素都不变。
+            排在最后是为了让它们压在行底之上 —— 它们本来就画在右内边距里，
+            不会盖住字；这里只是保证「画在行上」而不是「被行挡住」。 */}
+        {corners.map((corner) => (
+          <span
+            key={corner.pos}
+            className="sign-corner"
+            data-pos={corner.pos}
+            data-kind={corner.kind}
+            // 只有这一枚自己开了闪烁才挂；值不存在 = 常亮（CSS 靠存在性选）。
+            data-blink={corner.blink || undefined}
+          />
+        ))}
+      </div>
+    );
+  });
+
   return (
     <div
       className="lamp-root"
@@ -690,9 +958,9 @@ export function SignalLamp({
       /* 边框光的三把尺子（粗细 / 明暗 / 颜色来源）。和上面几个 `data-sign-*`
          同一个道理 —— 倍数与取色只住在 `lamp.css` 一处。
 
-         **六个灯位的画法不挂在这里**：每个槽的触发条件是逐块牌判定的（只在
-         要你处理时亮 / 只在出错时亮），所以上下两条边由每块 `.sign` 自己带
-         `data-edge-top` / `data-edge-bottom`，四枚角灯则只画该亮的那些。
+         **六个灯位的画法不挂在这里**：每个槽的触发条件是逐行判定的（只在
+         要你处理时亮 / 只在出错时亮），所以上下两枚刻线由每行 `.sign` 自己带
+         `data-edge-top` / `data-edge-bottom`，行尾四格则只画该亮的那些。
          根上挂一个全局值会让整盏灯一起亮灭，等于没有触发开关。 */
       data-sign-light-scale={settings.sign_light_scale}
       data-sign-light-alpha={settings.sign_light_alpha}
@@ -702,6 +970,10 @@ export function SignalLamp({
       data-approvals={pending || undefined}
       data-pass-through={passThrough || undefined}
       data-collapsed={!expanded}
+      /* 折叠轴与折叠内容：CSS 按它们决定 flex 方向、要不要画窄板、每格多宽。
+         展开态挂了也不会命中任何规则（所有相关选择器都带 `[data-collapsed]`）。 */
+      data-fold-axis={foldAxis}
+      data-fold-label={foldLabel}
       data-flash={flash || undefined}
       // 五档动效。旧版 `[data-lively]` 那批规则现在归 `[data-effect="breathe"]`，
       // 其余四档各有一套；系统「减少动态效果」时 CSS 把五档一律降级成静止。
@@ -723,227 +995,35 @@ export function SignalLamp({
       onContextMenu={preview ? (event) => event.preventDefault() : openLampMenu}
       {...(preview ? {} : drag)}
     >
-      {rows.map((group, index) => {
-        // B4 预设 3：会议中那一组画成蓝色。`--state` 是圆点 / 圆环颜色的唯一入口，
-        // 覆盖它之后 `--edge`（描边）也跟着派生 —— 见 state.css 的 `[data-state]`。
-        // 折叠态同样上色：收起来时那一排点正是「开会」最该被看见的地方。
-        const tint = meetingTint(group, settings.rule_meeting);
-        const dotStyle = {
-          ...progressStyle(group),
-          ...(tint ? { "--state": tint } : {}),
-          // 灵动效果：把该状态的柔光呼吸 animation 挂到灯珠上，CSS 的
-          // `.dot::before { animation: var(--halo-anim, none) }` 读它。
-          ...(haloAnims ? { "--halo-anim": haloAnims[group.aggregate] } : {}),
-        } as React.CSSProperties;
-        // 效果不是「关闭」、也没开「减少动态效果」时，灯珠用 motion 弹簧入场。
-        // spring 比 ease-out 更「灵动」——有一点过冲，像灯珠落到了位。
-        // 只动 opacity 和 scale：**不改盒模型**，scale 走 transform 合成层，
-        // 不触发重排（红线 2 只限制「常驻循环动画」，一次性弹簧不在此列）。
-        const dotMotion = motionOn
-          ? {
-              initial: { opacity: 0, scale: 0.6 },
-              animate: { opacity: 1, scale: 1 },
-              transition: { type: "spring" as const, stiffness: 300, damping: 18, duration: 0.42 },
-            }
-          : {};
-        // 六个灯位共用**这一份**逐块牌事实。判据在 `lampStyle.ts::lightOn`
-        // （纯函数、有单测）；每个槽各自拿自己的 trigger 去问，所以上边常亮、
-        // 下边只在出错时亮、四个角各挂各的是同一帧里判出来的，不会出现
-        // 「轨亮着、四枚灯却熄了」这种半套画面。
-        // 九档里带参数的档位（指定状态 / 指定时段 / 沉默将尽、有消息、仅置顶）
-        // 都从这份 ctx 取值，六个槽共用一份参数。
-        const pinned = settings.group_meta[group.name]?.order != null;
-        const lightCtx: LightContext = {
-          state: group.aggregate,
-          quiet: quietDim,
-          matchState: settings.sign_trigger_state,
-          from: settings.sign_trigger_from,
-          to: settings.sign_trigger_to,
-          staleProgress: group.stale_progress,
-          message: group.message,
-          pinned,
-        };
-        const edges = edgeLightKinds(settings.sign_lights, lightCtx);
-        // 闪不闪和「画成什么样」是两件事，但都按**这块牌自己的**状态节奏走：
-        // 同一盏灯里可以有牌在闪、有牌常亮。见 `lampStyle.ts::lightBlink`。
-        const edgeBlink = edgeBlinks(settings.sign_lights, lightCtx);
-
-        // 四角小灯：哪几枚该亮。判据在 `lampStyle.ts::cornerLights`（纯函数、有单测）
-        // —— 它只返回**该亮**的那些，「不亮」是根本不画，而不是画一个暗点。
-        // 每个角先过自己的 trigger，再过这枚灯自己的事实：说「现在别亮」时连
-        // 无条件亮的 `state` 那枚也得消失。0.6.5 之前四角共用一个 gate。
-        //
-        // **占位牌（`name` 为空）不挂**：它不对应任何真实的组，也就没有「置顶 /
-        // 静音 / 沉默多久」可言 —— 挂上去的每一枚都会是假的。
-        const corners =
-          group.name === ""
-            ? []
-            : cornerLights(
-                settings.sign_lights,
-                {
-                  pinned,
-                  muted: settings.muted_groups.includes(group.name),
-                  staleProgress: group.stale_progress,
-                  // 全局事实：开着穿透时每块牌都挂这一枚（如果那一角配了它）。
-                  passThrough,
-                },
-                lightCtx,
-              );
-        return !expanded ? (
-          <motion.span
-            // 折叠后只有点，没有可读的文字，所以 key 用下标；组名可能为空（占位那块）
-            key={index}
-            className="dot lamp-dot"
-            data-state={group.aggregate}
-            data-shape={shapes[group.aggregate]}
-            style={dotStyle}
-            {...dotMotion}
-            onContextMenu={(event: React.MouseEvent) => handleGroupMenu(event, group.name)}
-          />
-        ) : (
-          <div
-            key={group.name || index}
-            className="sign"
-            data-has-message={show.message && group.message ? "true" : "false"}
-            /* 视觉分量：`need` = 正在等你动手，`calm` = 只是现在怎么样。
-               判据在 `lampStyle.ts::toneOf`（有单测），CSS 按它给点径 / 牌底 /
-               字重 —— 三样都不参与布局，牌宽高一个像素都不变。
-               **只有一块牌时不分层**（`shown.length > 1`）：分层的用途是在多块
-               之间分先后，只有一块时压淡只是让整盏灯退一档、没有换来任何信息。
-               而 `group_by` 默认是 `none` —— 所有上报归一组，也就是**一块牌**，
-               这正是最常见的用法，不能让它无缘无故变淡。
-               **占位牌也不参与**（`name` 为空 = 一个真实的组都没有）：它不是
-               「某一块组牌」，是整盏灯的自述，那句「没有智能体在上报 / 刚完成 ·
-               N 分钟前」正是回来时最该读的一句话。 */
-            data-tone={
-              shown.length > 1 && group.name !== ""
-                ? toneOf(group.aggregate)
-                : undefined
-            }
-            /* 给 `.sign` 挂 data-state，是为了让 state.css 的 `[data-state] { --state }`
-               在**牌**这一层也生效 —— 跃迁时描边闪的是这个状态的颜色（见 lamp.css
-               的 `edge-flash`）。边灯和四角小灯都从这个 `--state` 取色，所以它必须
-               挂在牌上，而不是只挂在灯珠上。 */
-            data-state={group.aggregate}
-            /* 上下两条边**逐块牌、逐条**判定：同一盏灯里可以有的牌亮边、有的不亮，
-               同一块牌也可以只亮上边。`off` 时仍然挂属性（而不是不挂），CSS 的
-               「中性描边让位」那条 `:not([data-edge-top="off"])` 才不会误伤
-               没开边灯的牌。 */
-            data-edge-top={edges.top}
-            data-edge-bottom={edges.bottom}
-            /* 要闪的边 / 角在牌上只挂一个存在性的属性：动画本身是一条 `--light-blink`
-               变量（见下面的 `style`），CSS 只负责「挂了才播」。所以关掉闪烁时
-               连一条动画声明都不存在，而不是播一条 0 时长的空动画。 */
-            data-blink-top={edgeBlink.top || undefined}
-            data-blink-bottom={edgeBlink.bottom || undefined}
-            /* `--progress` 也挂到牌上：沉默进度那枚角灯要用它，而它原来只挂在
-               灯珠的 style 里。同一个变量、同一个来源，两者不会给出不同的答案。
-               `--light-blink` 同理挂在牌上：边的两个伪元素和四枚角灯都从这一层
-               继承，于是「这一块牌什么节奏」只有一处答案。 */
-            style={
-              {
-                ...progressStyle(group),
-                "--light-blink": lightBlink(settings, group.aggregate),
-              } as React.CSSProperties
-            }
-            // 刚换了状态就闪一下（`pulses` 是这一帧跃迁的组名）。折叠态的点不带
-            // 这个 —— 点的状态动画本身就会重放，重复闪反而糊。
-            data-pulse={pulses.includes(group.name) || undefined}
-            onContextMenu={(event) => handleGroupMenu(event, group.name)}
-          >
-            {/* 圆点也可以关掉（「牌上显示」里的第五个 chip）：有人只想要一块
-                纯文字卡。关掉后文字自然左移，牌宽高一个像素都不变 —— 点本来
-                就在 flex 行里，不参与 `sign_width` / `sign_height`。 */}
-            {show.dot && (
-              <motion.span
-                className="dot"
-                data-state={group.aggregate}
-                data-shape={shapes[group.aggregate]}
-                style={dotStyle}
-                {...dotMotion}
-              />
-            )}
-            <div className="sign-body">
-              <div className="sign-line">
-                {show.name && group.name && (
-                  /* 组名**只是一段文本**：改名的入口在设置面板（分组 → 各组的显示），
-                     也可以从牌的右键菜单「重命名…」直接跳过去。
-                     早先点它就能就地改，但那是一次「点一下就进入编辑状态」的交互 ——
-                     灯是常驻在桌面上的，误点一下就开始编辑，比改名的便利更碍事。 */
-                  <span className="sign-name">{labelOf(group, settings.group_meta, labelPref)}</span>
-                )}
-                {guide.show && group.name === "" ? (
-                  /* 第一次用：占位牌自己变成入口。**仍然只占一行**（按钮是
-                     flex:none 的小 chip），牌高和 Rust 算出来的一行牌完全一致，
-                     不会被 overflow:hidden 裁掉。 */
-                  <>
-                    <span className="sign-state">{m.lampFirstRun}</span>
-                    <button
-                      type="button"
-                      className="sign-guide"
-                      title={m.lampFirstRunDemoHint}
-                      onMouseDown={stopMouse}
-                      onMouseUp={stopMouse}
-                      onClick={(event) => {
-                        stopMouse(event);
-                        openDemo();
-                      }}
-                    >
-                      {m.lampFirstRunDemo}
-                    </button>
-                  </>
-                ) : (
-                  show.state && (
-                    /* 占位牌（`name` 为空，见上面 `rows` 的构造）说 `emptyLabel`：
-                       一组都没有时它可能是「刚完成 · N 分钟前」。它没有组名要让位，
-                       所以用长句。
-                       真组用**两字短词**（`shortSignal`，中文「需要授权」→「授权」、
-                       「出错 / 阻塞」→「出错」）。牌宽是固定的 154px（22px 档），
-                       长词光状态就吃掉 40–53px，组名常被截成五六个字符；短词把
-                       省下的宽度还给组名。也不能干脆不显示状态词 —— `working` 和
-                       `done` 默认同色，只靠「慢闪 / 常亮」区分，静态一瞥分不出来。 */
-                    <span className="sign-state">
-                      {group.name === "" ? emptyLabel : m.shortSignal[group.aggregate]}
-                    </span>
-                  )
-                )}
-              </div>
-              {show.message && group.message && (
-                <div className="sign-message">{group.message}</div>
-              )}
-            </div>
-            {show.age && <span className="sign-age">{formatAge(group.since_ms, now)}</span>}
-            {/* **牌上不再有任何按钮**（2026-11-10）。原来这里挂着一枚悬停出现的
-                ×（「清除该组的状态」），撤掉它有两条理由：
-                1. 常驻窗口上的一枚 × 读起来就是「关掉这块牌」，而它做的事只是清一个
-                   状态 —— 文案得靠 tooltip 纠正，那说明形状本身说错了话；
-                2. 它所在的右上角正是四角小灯 `tr` 的落点（`.sign-corner[data-pos="tr"]`），
-                   一悬停就盖住一盏读者刚配好的灯。
-                清除没丢：牌上右键 → 「清除」走同一条 `clear_group`（原生菜单
-                `menu.rs::CLEAR`）。首启引导那枚「不再提示」也一并撤了 —— 引导本来
-                「真有组上报就自动收起」，加上行内的「看演示」按钮，退出路径够用，
-                不值得为它在牌角留一颗常驻的 ×。 */}
-            {hidden.length > 0 && index === rows.length - 1 && (
-              <span className="sign-more" title={moreGroupsTip(m, hidden, settings.group_meta, labelPref)}>
+      {expanded ? (
+        <div className="sign-board" data-rows={rows.length}>
+          {cards}
+        </div>
+      ) : foldLabel === "none" ? (
+        cards
+      ) : (
+        /* 带文字时 `+N` 也占一格：它本来就是「还有几组」，不该飘在板外。
+           Rust 的 folded_size 把它算进 badges，两边必须同数。 */
+        <div
+          className="fold-board"
+          data-axis={foldAxis}
+          data-label={foldLabel}
+          data-rows={rows.length + (hidden.length > 0 ? 1 : 0)}
+        >
+          {cards}
+          {hidden.length > 0 && (
+            <div className="fold-row" data-label={foldLabel}>
+              <span
+                className="lamp-dot-more"
+                title={moreGroupsTip(m, hidden, settings.group_meta, labelPref)}
+              >
                 +{hidden.length}
               </span>
-            )}
-            {/* 四角小灯：**绝对定位、不参与 flex**，所以牌宽高一个像素都不变。
-                排在最后是为了让它们压在牌底之上 —— 它们本来就画在四角的留白里，
-                不会盖住字；这里只是保证「画在牌上」而不是「被牌挡住」。 */}
-            {corners.map((corner) => (
-              <span
-                key={corner.pos}
-                className="sign-corner"
-                data-pos={corner.pos}
-                data-kind={corner.kind}
-                // 只有这一枚自己开了闪烁才挂；值不存在 = 常亮（CSS 靠存在性选）。
-                data-blink={corner.blink || undefined}
-              />
-            ))}
-          </div>
-        );
-      })}
+              <span className="fold-text" />
+            </div>
+          )}
+        </div>
+      )}
       {/* 待审批的气泡。**绝对定位**（见 lamp.css）：不参与 flex 布局，所以折叠态
           那种横排也不用另写一套，牌的宽高一个像素都不变。 */}
       {pending > 0 && onDecide && (
@@ -963,8 +1043,9 @@ export function SignalLamp({
       )}
       {/* 展开态那条同样的提示挂在最后一块牌上；折叠态看不到牌面，**不留这一枚
           就等于「还有几个智能体在跑」被悄悄抹掉了** —— 而那正是这盏灯要回答的。
-          条件与 Rust 的 `config::more_badge` 是同一个。 */}
-      {!expanded && hidden.length > 0 && (
+          条件与 Rust 的 `config::more_badge` 是同一个。带文字的窄板档不在这里画：
+          它作为板内的最后一格，`+N` 也要和别的行一样对齐。 */}
+      {!expanded && foldLabel === "none" && hidden.length > 0 && (
         <span className="lamp-dot-more" title={moreGroupsTip(m, hidden, settings.group_meta, labelPref)}>
           +{hidden.length}
         </span>

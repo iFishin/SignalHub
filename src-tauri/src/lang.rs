@@ -137,6 +137,9 @@ pub struct NativeText {
     /// 「打开项目目录」。点通知本体做的是同一件事，但通知上不再有这枚按钮 ——
     /// 见 `alerts.rs::wire_actions`。文案只留这一份，两处不会各写各的。
     pub menu_open_dir: &'static str,
+    /// 「全部归位」：把散落的组灯摆回默认堆叠。措辞说「全部」是为了和设置页
+    /// 那颗按钮对得上，用户不会以为是只归位当前右键的这一盏。
+    pub menu_reset_lamps: &'static str,
 
     // ---- 系统通知上的动作按钮 ----
     /// 「已知晓」：**只收起这条通知**，不改灯、不静音、也不碰重复提醒链。
@@ -272,10 +275,11 @@ static ZH: NativeText = NativeText {
     menu_mute: "静音该组",
     menu_unmute: "取消静音该组",
     menu_clear: "清除该组的状态",
-    menu_collapse: "折叠成一颗灯",
+    menu_collapse: "折叠成灯",
     menu_expand: "展开牌面",
     menu_settings: "打开设置…",
     menu_open_dir: "打开项目目录",
+    menu_reset_lamps: "灯全部归位",
 
     action_ack: "已知晓",
     action_mute: "静音该组",
@@ -311,10 +315,11 @@ static EN: NativeText = NativeText {
     menu_mute: "Mute this group",
     menu_unmute: "Unmute this group",
     menu_clear: "Clear this group's state",
-    menu_collapse: "Collapse to a light",
+    menu_collapse: "Collapse to lights",
     menu_expand: "Expand signs",
     menu_settings: "Open settings…",
     menu_open_dir: "Open project folder",
+    menu_reset_lamps: "Reset lamp positions",
 
     action_ack: "Got it",
     action_mute: "Mute this group",
@@ -409,6 +414,7 @@ mod tests {
             en.menu_expand,
             en.menu_settings,
             en.menu_open_dir,
+            en.menu_reset_lamps,
             en.action_ack,
             en.action_mute,
             en.pass_through_title,

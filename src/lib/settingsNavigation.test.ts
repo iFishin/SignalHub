@@ -124,4 +124,32 @@ describe("设置页签导航", () => {
     expect(matchesTab("messages", zh.tabMessages, "留言")).toBe(true);
     expect(matchesTab("callme", zh.tabCallMe, "留言")).toBe(false);
   });
+
+  // 「全部归位」挂在「分组」页（和「一盏灯 / 每组分灯」同一节），别名写错页
+  // 的表现是搜到了、点进去却找不到按钮 —— 界面上看不出任何报错。
+  it("搜「归位」落在分组页，中英别名都在", () => {
+    for (const q of ["归位", "灯的位置", "位置记忆", "reset", "position"]) {
+      expect(matchesTab("groups", zh.tabGroups, q)).toBe(true);
+    }
+    expect(matchesTab("groups", zh.tabGroups, "  RESET  ")).toBe(true);
+    expect(matchesTab("look", zh.tabLook, "归位")).toBe(false);
+  });
+
+  it("归位的五段文案两种语言都齐，英文那份不含中文", () => {
+    for (const key of [
+      "resetLamps",
+      "resetLampsAction",
+      "resetLampsDone",
+      "resetLampsEmpty",
+      "resetLampsHint",
+    ] as const) {
+      expect(zh[key].trim()).not.toBe("");
+      expect(en[key].trim()).not.toBe("");
+      expect(en[key]).not.toMatch(/[\u4e00-\u9fff]/);
+    }
+    // 「没有开着组灯」时清了记忆但没摆灯，不能复用「已归位」这个词 —— 那会让
+    // 按钮显示一个没发生过的动作。两种语言都得真的分开写。
+    expect(zh.resetLampsEmpty).not.toBe(zh.resetLampsDone);
+    expect(en.resetLampsEmpty).not.toBe(en.resetLampsDone);
+  });
 });

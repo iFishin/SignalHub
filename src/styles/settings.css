@@ -376,23 +376,50 @@ html[data-window="settings"] #root {
 }
 
 /* 「牌长这样」的实时预览（外观页顶部）。
-   **它用的就是灯自己那张牌**（同一套 CSS 变量和类名，见 `LampPreview`），所以这里
-   只需要给一块画布和一层底色：牌面是半透明的（默认 86%），落在纯白面板上看不出
-   「透」，用 `--hover` 垫一层才看得出来。 */
-.settings .lamp-preview {
-  min-height: 132px;
-  margin-bottom: 6px;
-  padding: 6px 0;
-  border-radius: 8px;
-  background: var(--hover);
+   **它用的就是灯自己那张牌**（同一套 CSS 变量和类名，见 `LampPreview`）—— 这里
+   不再给它任何容器样式。
+
+   这中间踩过三次坑，都记在这里免得再走回去：
+   1) `width: 100%`：牌在灯窗里本来就是「撑满窗口」，预览放进宽列后会被拉成一面
+      几倍宽的墙（`width: 100%` 的牌 + `max-content` 的折叠板，两处真值打架）。
+   2) `min-width: 240px` + `margin: 0 auto` + `--hover` 底：想给两块预览一个统一
+      的样品台，结果是牌 / 窄板被摆在一块灰块的**正中间**，左右各留几十像素 ——
+      用户看到的正是「缩起来的灯左边有个空隙」，还说这块灰底「把界面改乱了」。
+      设置页的语言是扁平、无底色、靠 1px 细线与灰度分层，一块灰圆角卡不属于它。
+   3) 去掉灰底之后顺手改成了左对齐 —— 于是牌贴着内容列左边缘、右边空出五百多
+      像素，整页的视觉重心歪到左边，「预览没有居中」又被报了一次。
+
+   现在的形状：**宽度按内容收、水平居中、不画底不画框**。居中是纯几何
+   （`margin-inline: auto`），不再借任何色块去「托住」它 —— 这正是第 2 条和
+   第 3 条之间那条正确的路。 */
+.settings .lamp-preview,
+.settings .fold-preview {
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 auto 6px;
+  padding: 0;
   /* 预览不是控件：吃指针会显得能拖、能选、还能右键弹出灯的那张菜单 */
   pointer-events: none;
 }
 
-.settings .lamp-preview .lamp-root {
+.settings .lamp-preview .lamp-root,
+.settings .fold-preview .lamp-root {
   /* 灯窗里它是 `width/height: 100%`（整窗口就是它）；这里得按内容长高 */
   height: auto;
   cursor: default;
+}
+
+/* 折叠预览上方那行小字。它是**说明**而不是一节标题（`.section-title` 会让人
+   以为又开了一节设置），所以沿用 `.row-hint` 的字号与灰度，只补一点上间距 ——
+   否则会紧贴上面「折叠内容」那一行，看起来像那一行的第二行说明。
+   **和窄板一起居中**：板居中、这行字左对齐的话，两个左边缘差着半个屏，
+   看着像「字是上一行的注、板是另一段的图」。它就是这张图的图注。 */
+.settings .fold-preview-title {
+  margin: 12px 0 6px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+  text-align: center;
 }
 
 /* 一行设置。`flex-wrap` + 行内说明占满整行：说明要落在它解释的那一行**下面**，
