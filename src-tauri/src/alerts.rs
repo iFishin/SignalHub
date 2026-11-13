@@ -637,6 +637,8 @@ mod tests {
             message: None,
             since_ms: 0,
             stale_progress: None,
+            // 这些用例只关心通知该不该发；推迟是展示层的事，不参与告警判定
+            snooze_until_ms: 0,
             sessions,
         }
     }

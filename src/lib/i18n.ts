@@ -1052,6 +1052,13 @@ export interface Messages {
    * `signal.offline` 那句「没有智能体在上报」—— 见 `lib/signals.ts`。
    */
   justFinished: (minutes: number) => string;
+  /**
+   * 牌上「已持续」那一格在推迟期间改说的话。
+   *
+   * **位置不变、语义反转**：同一个位置，`45s` 变成「14m 后」—— 说的是「还有多久
+   * 它才会重新开始催」，而不是「它已经这样多久了」。不新增元素，也不新增一行字。
+   */
+  snoozeLeft: (age: string) => string;
   groupsCount: (n: number) => string;
   /** 截断标记的 tooltip：「+3」指的是哪几组 */
   moreGroups: (n: number) => string;
@@ -2220,6 +2227,7 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     },
     justFinished: (minutes) =>
       minutes < 1 ? "刚完成 · 刚刚" : `刚完成 · ${minutes} 分钟前`,
+    snoozeLeft: (age) => `${age} 后`,
     groupsCount: (n) => `（${n} 组）`,
     moreGroups: (n) => `还有 ${n} 组`,
     expandNow: "已展开",
@@ -3340,6 +3348,7 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     },
     justFinished: (minutes) =>
       minutes < 1 ? "Just finished · moments ago" : `Just finished · ${minutes} min ago`,
+    snoozeLeft: (age) => `in ${age}`,
     groupsCount: (n) => ` (${plural(n, "group", "groups")})`,
     moreGroups: (n) => `+${n} more`,
     expandNow: "Expanded",

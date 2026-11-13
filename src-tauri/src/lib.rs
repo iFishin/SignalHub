@@ -921,6 +921,36 @@ pub(crate) fn clear_group(app: &tauri::AppHandle, group: &str) -> usize {
     removed
 }
 
+/// 「推迟」按多久。写在一处：菜单文案里那个「15 分钟」要是和这里不一致，
+/// 用户按下去就会觉得时间不对，而那种错没人会去 commit 里找。
+pub(crate) const SNOOZE_MS: u64 = 15 * 60 * 1000;
+
+/// 推迟该组 15 分钟；已经推迟过就取消（菜单里两面同一个 id，见 `menu::SNOOZE`）。
+///
+/// **只改展示**：会话、设置、统计、钩子、通知一概不碰 —— 理由见
+/// [`crate::state::Store::snooze`] 的长注释。因此这里不走 `notify::push`（那条链
+/// 会记一遍今日时长），只把新快照推给窗口。
+pub(crate) fn toggle_snooze(app: &tauri::AppHandle, group: &str) {
+    let store = app.state::<SharedStore>();
+    let snapshot = {
+        let mut guard = store.lock().expect("state store poisoned");
+        let now = std::time::SystemTime::now();
+        // 判据和菜单里那句文案是同一处（`snooze_until` 比 `now`），所以不会
+        // 出现「写着取消推迟、点了却又推迟 15 分钟」。
+        if guard.snooze_until(group).is_some_and(|until| until > now) {
+            guard.clear_snooze(group);
+        } else {
+            // 把「按下那一刻的状态」一起记下来：它一变，这条推迟自己作废
+            // （见 `state::Snooze`）。否则一组从「等批准」变成「出错了」还会被
+            // 压着不闪，新的事实被一个旧动作藏起来。
+            let state = guard.group_state(group);
+            guard.snooze(group, state, now + std::time::Duration::from_millis(SNOOZE_MS));
+        }
+        guard.snapshot()
+    };
+    notify::push_ui(app, &snapshot);
+}
+
 /// 把已配置的转发各发一遍（设置 →「通知转发」里的「发送测试」）。
 ///
 /// 复用**当前**快照，忽略 `when` / 组过滤 / 跃迁判据（见 `outbound::test_all`）——
@@ -1965,8 +1995,9 @@ fn open_group_menu(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     group: String,
+    why: Option<Vec<String>>,
 ) -> Result<(), String> {
-    menu::show(&app, &window, &group)
+    menu::show(&app, &window, &group, why.as_deref().unwrap_or_default())
 }
 
 /// 在灯的空白处（或还没接上报方时那块占位牌）弹出通用菜单。
@@ -3761,6 +3792,7 @@ mod tests {
             message: None,
             since_ms: 0,
             stale_progress: None,
+            snooze_until_ms: 0,
             sessions: Vec::new(),
         }
     }

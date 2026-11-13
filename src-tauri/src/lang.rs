@@ -131,6 +131,11 @@ pub struct NativeText {
     pub menu_mute: &'static str,
     pub menu_unmute: &'static str,
     pub menu_clear: &'static str,
+    /// 「推迟 15 分钟」：牌上不再催，状态一点不改（见 `Store::snooze`）。
+    /// 时长必须和 `SNOOZE_MS` 一致 —— 菜单是唯一能说明到底多久的地方。
+    pub menu_snooze: &'static str,
+    /// 已经在推迟里时同一项变成这个。**同一个菜单 id**，动作跟着翻。
+    pub menu_unsnooze: &'static str,
     pub menu_collapse: &'static str,
     pub menu_expand: &'static str,
     pub menu_settings: &'static str,
@@ -275,6 +280,8 @@ static ZH: NativeText = NativeText {
     menu_mute: "静音该组",
     menu_unmute: "取消静音该组",
     menu_clear: "清除该组的状态",
+    menu_snooze: "推迟 15 分钟",
+    menu_unsnooze: "取消推迟",
     menu_collapse: "折叠成灯",
     menu_expand: "展开牌面",
     menu_settings: "打开设置…",
@@ -315,6 +322,8 @@ static EN: NativeText = NativeText {
     menu_mute: "Mute this group",
     menu_unmute: "Unmute this group",
     menu_clear: "Clear this group's state",
+    menu_snooze: "Snooze for 15 min",
+    menu_unsnooze: "Cancel snooze",
     menu_collapse: "Collapse to lights",
     menu_expand: "Expand signs",
     menu_settings: "Open settings…",
@@ -410,6 +419,8 @@ mod tests {
             en.menu_mute,
             en.menu_unmute,
             en.menu_clear,
+            en.menu_snooze,
+            en.menu_unsnooze,
             en.menu_collapse,
             en.menu_expand,
             en.menu_settings,

@@ -1039,6 +1039,7 @@ mod tests {
             message: message.map(str::to_string),
             since_ms: 1_700_000_000_000,
             stale_progress: None,
+            snooze_until_ms: 0,
             sessions: Vec::new(),
         }
     }
@@ -1895,6 +1896,7 @@ mod tests {
                 message: Some("等你批准".into()),
                 since_ms: since,
                 stale_progress: None,
+                snooze_until_ms: 0,
                 sessions: Vec::new(),
             }],
         };

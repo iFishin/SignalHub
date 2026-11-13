@@ -3435,6 +3435,7 @@ mod tests {
             message: None,
             since_ms: 0,
             stale_progress: None,
+            snooze_until_ms: 0,
             sessions: Vec::new(),
         };
 

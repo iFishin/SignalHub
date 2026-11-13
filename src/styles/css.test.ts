@@ -5,6 +5,7 @@ import stateCss from "./state.css?raw";
 import inboxCss from "./inbox.css?raw";
 import demoCss from "./demo.css?raw";
 import settingsPanelSource from "../components/SettingsPanel.tsx?raw";
+import lampSource from "../components/SignalLamp.tsx?raw";
 
 /**
  * 样式表的两条「静默失效」防线。
@@ -71,6 +72,9 @@ describe("样式表", () => {
       ".sign[data-blink-top]::before",
       ".sign-corner[data-blink]",
       "--blink-a", // 闪烁两端的透明度基线，丢了闪起来会抹平明暗档
+      // 0.6.7：同屏多块牌错相呼吸。少了这个变量，三四个 working 组又会同频
+      // 同相地闪（读起来像灯坏了）—— 删掉不报错，只是又变回「集体抽搐」。
+      "--rhythm-delay",
       // 0.6.7：多组共享一块板。少了这层，就会退回「几张独立卡片 + 11px 断口」，
       // 而 CSS 不报错、只是看着散。
       ".sign-board {",
@@ -242,7 +246,55 @@ describe("样式表", () => {
   });
 
   /**
-   * 设置页那条子页切换（`LocalTabs`）必须是**分区条**，不能退回成一排小字。
+   * 推迟（「先放一边 15 分钟」）的画法。
+   *
+   * 三样东西缺一样都不报错，只是那块牌会继续红着闪、或者淡一下又自己变回来：
+   * ① 文字退成灰的（名字 400 + 状态词 muted）；
+   * ② `animation: none` **必须写在所有 `[data-state]` 动画规则之后** —— 它们和
+   *    本条特异性相同，靠源码顺序取胜，挪到上面就会被状态规则顶掉；
+   * ③ 变暗用 `filter` 而不是 `opacity`：`.dot` 的 opacity 同时被状态（idle 的
+   *    0.45）和 `pulse` 动画占着，再写一条要么被动画覆盖回原亮度，要么和状态
+   *    自身那档打架。
+   *
+   * **点径不许动**：试过压到 0.55 那一档，同一块牌里那一行的文字会跟着左移
+   * 3.7px（flex 里点窄了，后面的内容就往前挪），两行行首不齐。推迟是「别催我」，
+   * 不是「这一行重排」。
+   */
+  it("推迟的画法不跟状态动画抢同一组属性", () => {
+    expect(lampCss).toContain(".sign[data-snoozed] .sign-name");
+    expect(lampCss).toContain(".sign[data-snoozed] .sign-state");
+    expect(lampCss).not.toMatch(/\.sign\[data-snoozed\]\s+\.dot\s*\{[^}]*--dot-scale/);
+
+    const quiet = /\.dot\[data-snoozed\]\s*\{[^}]*\}/.exec(lampCss)?.[0] ?? "";
+    expect(quiet, "lamp.css 里找不到推迟时停闪那条规则").not.toBe("");
+    expect(quiet).toContain("animation: none");
+    expect(quiet).toContain("filter: opacity");
+    expect(quiet).not.toMatch(/^\s*opacity:/m);
+    // 柔光也得停，否则外圈还在呼吸，像「关了一半」
+    expect(lampCss).toContain(".dot[data-snoozed]::before");
+
+    // 顺序：状态动画（thinking / working / …）必须在它前面
+    expect(lampCss.indexOf(".dot[data-snoozed]")).toBeGreaterThan(
+      lampCss.indexOf('.dot[data-state="working"]'),
+    );
+
+    // 折叠形态：裸点共用 `.dot[data-snoozed]`，带文字的格还要把名字退成灰的
+    expect(lampCss).toContain(".fold-row[data-snoozed] .fold-text");
+  });
+
+  /**
+   * 收起之后一颗还在闪的红点比什么都催人 —— 折叠格必须也带 `data-snoozed`，
+   * 而且推迟期间「已持续」那一格要说「14m 后」而不是「45s」。
+   *
+   * 这条读的是 TSX 源文本：改坏不会报错，只会让折叠形态下的推迟静默失效。
+   */
+  it("折叠格也表达推迟，牌上那一格换成倒计时", () => {
+    expect(lampSource).toContain("data-snoozed={snoozed || undefined}");
+    expect(lampSource).toContain("m.snoozeLeft(formatRemaining(");
+  });
+
+  /**
+   * 子页切换（`LocalTabs`）必须是**分区条**，不能退回成一排小字。
    *
    * 0.6.6 的起因是用户根本没看出「基础 / 质感」是个会换掉大半页内容的开关 ——
    * 它当时是 12.5px 的透明文字。让它退回去只需要删几行样式，而「顺手简化掉

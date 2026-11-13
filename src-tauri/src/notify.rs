@@ -383,6 +383,15 @@ fn sustained(snapshot: &Snapshot, muted: &[String], state: Signal, threshold: Du
 /// 是一次**阻塞的主线程往返**（tauri-runtime-wry 的 `window_getter!`），而这条
 /// 推送路径是从 HTTP 上报线程和 sweep 任务里走的 —— 往热路径上加同步调用不值当。
 /// 隐藏的设置窗多渲染几次只是它自己的开销，不会拖慢上报。
+/// **只**把快照推给窗口，不跑上面那条链（尺寸 / 统计 / 托盘 / 钩子 / 通知）。
+///
+/// 目前只有一个调用方：推迟（`Store::snooze`）—— 那是纯展示动作，聚合、统计、
+/// 钩子、通知、物理灯都不该被它碰一下。走 [`compose`] 那条路会把这些全部跑一遍，
+/// 其中「记今日时长」尤其不能多记一次（牌上什么都没变）。
+pub(crate) fn push_ui(app: &tauri::AppHandle, snapshot: &Snapshot) {
+    emit(app, snapshot);
+}
+
 fn emit(app: &tauri::AppHandle, snapshot: &Snapshot) {
     if let Err(err) = app.emit(STATE_EVENT, snapshot) {
         eprintln!("[signalhub] 推送状态失败: {err}");

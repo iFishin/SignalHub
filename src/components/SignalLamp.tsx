@@ -6,10 +6,12 @@ import { inTauri } from "../lib/env";
 import { requestSettingsTab } from "../lib/settingsIntent";
 import { signalLabel, justFinishedLabel } from "../lib/signals";
 import { useLang, useMessages, type Messages, type Lang } from "../lib/i18n";
-import { lampVars, resolveShapes, resolveHaloAnimations, toneOf, cornerLights, edgeLightKinds, edgeBlinks, lightBlink, type LightContext } from "../lib/lampStyle";
-import { transitions, type AggregateMap } from "../lib/lampTransitions";
+import { lampVars, resolveShapes, resolveHaloAnimations, toneOf, cornerLights, edgeLightKinds, edgeBlinks, lightBlink, rhythmDelay, type LightContext } from "../lib/lampStyle";
+import { transitions, type SignSignature } from "../lib/lampTransitions";
+import { whyLines } from "../lib/lampWhy";
 import { labelOf, labelPrefOf, orderVisible, type LabelPref } from "../lib/lampSort";
 import { useNow } from "../lib/useNow";
+import { formatRemaining } from "../lib/age";
 import { useToggles } from "../lib/useToggles";
 import { ApprovalBubble, MAX_APPROVAL_BUBBLES } from "./ApprovalBubble";
 import { Icon } from "./Icon";
@@ -289,7 +291,7 @@ function useDragOrClick(onClick: () => void, onLongPress: () => void) {
  * 无论有没有组名都要 `preventDefault` —— 否则占位那块牌上会冒出 webview 自己的
  * 右键菜单（dev 模式下是「重新加载」那种），和这个应用格格不入。
  */
-function openGroupMenu(event: React.MouseEvent, group: string) {
+function openGroupMenu(event: React.MouseEvent, group: string, why: string[] = []) {
   event.preventDefault();
   event.stopPropagation();
   if (!inTauri) return;
@@ -297,7 +299,7 @@ function openGroupMenu(event: React.MouseEvent, group: string) {
   // 的组，什么也不会发生。这时弹的是**灯自己那张菜单**：第一次装上、还没接任何
   // 上报方时，这是灯上唯一能进设置的地方。
   if (group) {
-    invoke("open_group_menu", { group }).catch(console.error);
+    invoke("open_group_menu", { group, why }).catch(console.error);
   } else {
     invoke("open_lamp_menu").catch(console.error);
   }
@@ -438,15 +440,47 @@ export function SignalLamp({
     };
   }, [collapsed]);
 
+  // 「已持续」是算出来的，所以得有东西让它随时间重绘 —— 否则它永远停在状态刚变化
+  // 那一刻，也就是 0s。折叠形态和关掉这一格的牌上没有这个数字，不起定时器。
+  //
+  // 「刚完成 · N 分钟前」同理：它也在数分钟，**而且不依赖「已持续」开没开**。
+  // 只按 `show.age` 决定起不起钟的话，把「已持续」关掉的用户会看到那句话冻在
+  // 打开面板那一刻的分钟数上。它只在一组都没有时才需要 —— 有会话时那句话不出现。
+  //
+  // **有组在推迟时也必须走**：推迟那一格显示的是「还有 14m」这种倒计时，它也是
+  // 算出来的；更要紧的是牌在到点那一刻要自己变回满强度 —— 后端到点不推帧
+  // （那对后端不是一次变化），没有这个钟，一块被推迟的牌会永远停在淡的那一档。
+  // 判据用 `> 0` 而不是和 `now` 比：`now` 正是这里要产出的东西，不能反过来依赖它。
+  //
+  // 推迟这一档**不受 `expanded` 门控**：折叠形态里那颗还在闪的红点比什么都催人，
+  // 收起来之后同样要变暗、同样要到点自己亮回来。别的两种（已持续 / 刚完成）只有
+  // 展开态才画，所以它们仍在 `expanded` 里面。
+  //
+  // **必须在下面那个跃迁 effect 之前求值**：那一帧要拿 `now` 判断「推迟是不是
+  // 刚好到点了」，而到点这件事只体现在 `now` 上。
+  const snoozeTick = groups.some((group) => group.snooze_until_ms > 0);
+  const ticking =
+    snoozeTick ||
+    (expanded && (show.age || (groups.length === 0 && lastDoneMs > 0)));
+  const now = useNow(ticking);
+
   // 跃迁脉冲：哪一块牌刚**换了状态**就闪一下。判据在 `lib/lampTransitions.ts`
-  // （纯函数、有单测）：拿上一帧的每组聚合和这一帧比。**首帧不闪** —— ref 初值
+  // （纯函数、有单测）：拿上一帧的每组签名和这一帧比。**首帧不闪** —— ref 初值
   // 是空表，第一帧没有任何组「变了」。
-  const prevAggregates = useRef<AggregateMap>({});
+  //
+  // 签名里含「是否在推迟」，所以**到点解除推迟那一下也会闪**（牌从淡的一档回到
+  // 满强度）。那正是用户说「过十分钟再说」之后要的提示，而推迟刻意不发通知。
+  // 依赖里有 `now`：解除推迟不改 `groups`（后端到点不推帧），只有钟在走。
+  const prevAggregates = useRef<SignSignature>({});
   const [pulses, setPulses] = useState<string[]>([]);
   const pulseTimer = useRef<number | null>(null);
 
   useEffect(() => {
-    const { changed, next } = transitions(prevAggregates.current, groups);
+    const { changed, next } = transitions(
+      prevAggregates.current,
+      groups,
+      (group) => group.snooze_until_ms > now,
+    );
     prevAggregates.current = next;
     if (changed.length === 0) return;
 
@@ -460,7 +494,7 @@ export function SignalLamp({
     // **没有 cleanup**：这条 effect 只是把「谁刚变了」记下来，摘掉脉冲由上面那个
     // 超时负责。在这里返回清理函数的话，下一帧一进来就把上一个计时器清掉、脉冲
     // 永远摘不掉了。
-  }, [groups]);
+  }, [groups, now]);
 
   // 卸载时兜一下，别让计时器在组件没了之后还回调 setState
   useEffect(
@@ -475,14 +509,6 @@ export function SignalLamp({
   // 12px 方块，穿透一开就把「暂停」盖掉，反而少了一条信息。
   const flag = !preview && paused;
   const flagTitle = !preview && paused ? m.lampPaused : "";
-
-  // 「已持续」是算出来的，所以得有东西让它随时间重绘 —— 否则它永远停在状态刚变化
-  // 那一刻，也就是 0s。折叠形态和关掉这一格的牌上没有这个数字，不起定时器。
-  //
-  // 「刚完成 · N 分钟前」同理：它也在数分钟，**而且不依赖「已持续」开没开**。
-  // 只按 `show.age` 决定起不起钟的话，把「已持续」关掉的用户会看到那句话冻在
-  // 打开面板那一刻的分钟数上。它只在一组都没有时才需要 —— 有会话时那句话不出现。
-  const now = useNow(expanded && (show.age || (groups.length === 0 && lastDoneMs > 0)));
 
   /**
    * 一组都没有时，占位牌上那一句话。
@@ -601,18 +627,20 @@ export function SignalLamp({
             message: null,
             since_ms: 0,
             stale_progress: null,
+            // 占位牌不对应任何组，也就没有「推迟」可言
+            snooze_until_ms: 0,
             sessions: [],
           },
         ];
 
   /** 预览里右键只吃掉原生菜单，不弹真灯那张（它会改这台机器的状态）。 */
-  const handleGroupMenu = (event: React.MouseEvent, group: string) => {
+  const handleGroupMenu = (event: React.MouseEvent, group: string, why: string[] = []) => {
     if (preview) {
       event.preventDefault();
       event.stopPropagation();
       return;
     }
-    openGroupMenu(event, group);
+    openGroupMenu(event, group, why);
   };
 
   // 圆环菜单形态：窗口已经被 Rust 换成正方形，这一帧**只画圆环**。
@@ -675,12 +703,24 @@ export function SignalLamp({
     // 覆盖它之后 `--edge`（描边）也跟着派生 —— 见 state.css 的 `[data-state]`。
     // 折叠态同样上色：收起来时那一排点正是「开会」最该被看见的地方。
     const tint = meetingTint(group, settings.rule_meeting);
+    // 推迟：用户对**这一组**按了「推迟 15 分钟」（见 Rust `state::Store::snooze`）。
+    // 判据是绝对时刻和自己的钟，不是后端推来的布尔值 —— 到点时后端不会推帧
+    // （那对后端不是一次变化），牌重新变亮全靠这一行。
+    //
+    // 它只影响**这一行怎么画**：聚合、排序、通知、转发全都不看它。
+    const snoozed = group.snooze_until_ms > now;
+    // 这一块牌的呼吸相位（见 `lampStyle.ts::rhythmDelay`）。灯珠、柔光、边框光
+    // 三处共用一个变量，所以它们永远同相 —— 它们本来就在说同一句话。
+    const rhythm = rhythmDelay(settings, group.name, group.aggregate);
     const dotStyle = {
       ...progressStyle(group),
       ...(tint ? { "--state": tint } : {}),
       // 灵动效果：把该状态的柔光呼吸 animation 挂到灯珠上，CSS 的
       // `.dot::before { animation: var(--halo-anim, none) }` 读它。
       ...(haloAnims ? { "--halo-anim": haloAnims[group.aggregate] } : {}),
+      // 同屏多块牌时错开呼吸相位（只有「在干活」两种状态带非零值）。
+      // **按组名算**，所以同一块牌每次重渲染、每次重启都停在自己那个相位上。
+      "--rhythm-delay": rhythm,
     } as React.CSSProperties;
     // 效果不是「关闭」、也没开「减少动态效果」时，灯珠用 motion 弹簧入场。
     // spring 比 ease-out 更「灵动」——有一点过冲，像灯珠落到了位。
@@ -749,7 +789,15 @@ export function SignalLamp({
           : foldLabel === "state"
             ? signalLabel(lang, group.aggregate)
             : "";
-    const dotMenu = (event: React.MouseEvent) => handleGroupMenu(event, group.name);
+    // 右键：菜单最上面那两行「为什么它在亮」**在按下那一刻**才算 —— 纯展示，
+    // 没必要每次状态刷新都为每一行拼两段字符串。判据与点亮六格共用同一份
+    // `lightCtx`（见 `lib/lampWhy.ts`）。
+    const dotMenu = (event: React.MouseEvent) =>
+      handleGroupMenu(
+        event,
+        group.name,
+        whyLines({ group, settings, ctx: lightCtx, lang, m, now, passThrough }),
+      );
     // key 用下标：折叠后组名可能为空（占位那块），不能用名字当 key。
     // 右键菜单在裸点档挂在点上，在窄板档挂在整行上 —— 后者点文字也该弹出组菜单。
     const dot = (
@@ -758,6 +806,9 @@ export function SignalLamp({
         className="dot lamp-dot"
         data-state={group.aggregate}
         data-shape={shapes[group.aggregate]}
+        /* 推迟期间：同形状、同颜色，只是不再闪、暗一档（见 lamp.css）。
+           **形状和颜色都不改** —— 改了就变成「另一个状态」了，而它仍然在等你批准。 */
+        data-snoozed={snoozed || undefined}
         style={dotStyle}
         {...dotMotion}
         onContextMenu={foldLabel === "none" ? dotMenu : undefined}
@@ -772,6 +823,9 @@ export function SignalLamp({
           key={index}
           className="fold-row"
           data-label={foldLabel}
+          /* 折叠形态也要让人看出「这一组被推迟了」：收起来之后牌上只剩一颗点，
+             一颗还在闪的红点比什么都催人。点变暗、词变灰，和展开态同一套。 */
+          data-snoozed={snoozed || undefined}
           /* 折叠格宽只留「够认出这一组」的几个字（见 `FOLD_WIDTH_MULT`），
              长组名会被省略号截断。原生 title 让用户 hover 时还能读到全名 ——
              不然「折叠省了宽度」就变成「名字再也看不全」了。 */
@@ -802,6 +856,11 @@ export function SignalLamp({
             ? toneOf(group.aggregate)
             : undefined
         }
+        /* 推迟：这一行暂时不再催。CSS 只做三件事 —— 套上「退后一档」那套
+           （点径 / 薄雾 / 灰字）、停掉闪烁、把「已持续」换成倒计时。
+           **状态色、形状、消息一个字都不改**：它仍然在等你批准，只是你说过
+           「先放一边」。见 Rust `state::Store::snooze` 的注释。 */
+        data-snoozed={snoozed || undefined}
         /* 给 `.sign` 挂 data-state，是为了让 state.css 的 `[data-state] { --state }`
            在**牌**这一层也生效 —— 跃迁时描边闪的是这个状态的颜色（见 lamp.css
            的 `edge-flash`）。刻线和四格记号都从这个 `--state` 取色，所以它必须
@@ -826,12 +885,14 @@ export function SignalLamp({
           {
             ...progressStyle(group),
             "--light-blink": lightBlink(settings, group.aggregate),
+            // 行沿刻线与行尾四格的闪烁也吃这个相位（见 `.sign` 里那条规则）。
+            "--rhythm-delay": rhythm,
           } as React.CSSProperties
         }
         // 刚换了状态就闪一下（`pulses` 是这一帧跃迁的组名）。折叠态的点不带
         // 这个 —— 点的状态动画本身就会重放，重复闪反而糊。
         data-pulse={pulses.includes(group.name) || undefined}
-        onContextMenu={(event) => handleGroupMenu(event, group.name)}
+        onContextMenu={dotMenu}
       >
         {/* 圆点也可以关掉（「牌上显示」里的第五个 chip）：有人只想要一块
             纯文字卡。关掉后文字自然左移，牌宽高一个像素都不变 —— 点本来
@@ -894,7 +955,18 @@ export function SignalLamp({
             <div className="sign-message">{group.message}</div>
           )}
         </div>
-        {show.age && <span className="sign-age">{formatAge(group.since_ms, now)}</span>}
+        {/* 「已持续」那一格。推迟期间**同一个位置换一句话**：`45s` 变成
+            「14m 后」—— 说的是「还有多久它才会重新开始催」。位置、字号、宽度
+            都不用改，所以牌宽一个像素不动（这点很重要：牌宽是 Rust 算的）。
+            推迟时这一格即使「已持续」关着也显示 —— 用户刚按下的动作必须有回应，
+            否则他会以为没生效。 */}
+        {(show.age || snoozed) && (
+          <span className="sign-age">
+            {snoozed
+              ? m.snoozeLeft(formatRemaining(group.snooze_until_ms, now))
+              : formatAge(group.since_ms, now)}
+          </span>
+        )}
         {/* **牌上不再有任何按钮**（2026-11-10）。原来这里挂着一枚悬停出现的
             ×（「清除该组的状态」），撤掉它有两条理由：
             1. 常驻窗口上的一枚 × 读起来就是「关掉这块牌」，而它做的事只是清一个

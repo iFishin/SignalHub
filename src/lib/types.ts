@@ -99,6 +99,17 @@ export interface GroupView {
    * 由服务端算好：要自己算就得复刻一遍 TTL 与宽限期常量。
    */
   stale_progress: number | null;
+  /**
+   * 这一组被「推迟」到哪个时刻（epoch 毫秒），0 = 没推迟。
+   *
+   * **只影响这一行怎么画**：牌变淡、不闪、「已持续」那一格换成倒计时。聚合、
+   * 排序、通知、转发、统计都不看它 —— 推迟不是状态，它描述的是「用户此刻想不想
+   * 被打扰」，不是「智能体在干什么」。见 Rust 侧 `state::Store::snooze`。
+   *
+   * 给的是绝对时刻而不是剩余毫秒：前端自己有时钟，比一个会在传输途中变旧的长度
+   * 可靠（快照不是每次变化都推）。
+   */
+  snooze_until_ms: number;
   sessions: SessionView[];
 }
 

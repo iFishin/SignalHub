@@ -8,7 +8,7 @@
 //! —— 只能挂在应用上按 id 分派，见 `crate::run` 里的 `on_menu_event`。
 
 use std::sync::Mutex;
-use tauri::menu::{IsMenuItem, Menu, MenuItem, Submenu};
+use tauri::menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Manager, WebviewWindow};
 
 use crate::state::Signal;
@@ -39,6 +39,14 @@ const RESET: &str = "group:reset-positions";
 /// 丢，只是搬到了设置里 —— 于是这里要留一条「知道它搬哪儿去了」的路，否则用户
 /// 会以为功能没了。
 const RENAME: &str = "group:rename";
+/// 「推迟 15 分钟」/「取消推迟」。
+///
+/// 一个 id、两种文案：已经推迟时同一项变成「取消推迟」（`menu_unsnooze`）。
+/// 不另开一项 —— 菜单里同时摆着「推迟」和「取消推迟」会让后者在最常见的
+/// 那一帧（没推迟）永远是灰的，那是噪音。
+///
+/// 它改的是**展示**（`Store::snooze`），不是状态：见那边的长注释。
+const SNOOZE: &str = "group:snooze";
 /// 「手动状态」子菜单里那些项的 id 前缀（后面接状态名，见 [`manual_state_for`]）。
 /// 和上面几个固定 id 同一个命名空间（`group:`），但不会撞：那几个没有 `manual:`
 /// 这一段。
@@ -88,12 +96,31 @@ const LAMP_QUIT: &str = "lamp:quit";
 ///
 /// `window` 是**发起这次右键的那个灯窗** —— 多灯模式下每个组灯都会调这里，菜单必须
 /// 弹在用户点的那盏灯上，而不是永远弹在 `main` 上（那样点组灯会弹出别处的菜单）。
-pub fn show(app: &AppHandle, window: &WebviewWindow, group: &str) -> Result<(), String> {
+///
+/// `why` 是菜单最上面那两行**不可点**的解释（「为什么它在亮」），由前端算好传进来。
+/// **措辞不在 Rust 里生成**：这两行解释的是前端那套亮灯判定（`lampStyle.ts::lightOn`
+/// / `cornerLights`），在 Rust 重写一遍就是给「什么时候亮」造第二处真值。见
+/// `src/lib/lampWhy.ts`。空数组 = 不画（别的调用方不必知道有这回事）。
+pub fn show(app: &AppHandle, window: &WebviewWindow, group: &str, why: &[String]) -> Result<(), String> {
     *app.state::<Target>().0.lock().expect("menu target poisoned") = Some(group.to_string());
 
     let settings = crate::current_settings(app);
     let muted = settings.muted_groups.iter().any(|name| name == group);
     let t = crate::lang::text(crate::current_lang(app));
+
+    // 「推迟」的两种处境：已经推迟（那一项变成「取消推迟」）和值不值得推迟。
+    //
+    // **空闲 / 已完成 / 沉默的组不给推迟**：它们本来就不催人，按下之后唯一的
+    // 效果是把一块本来就安静的牌再画淡一点 —— 一个动作看不出效果，就等于没有。
+    // 反过来，已经推迟过的组永远可点：那时这一项是**撤销**，任何状态下都该能用。
+    let (snoozed, can_snooze) = {
+        let store = app.state::<crate::SharedStore>();
+        let guard = store.lock().expect("state store poisoned");
+        let snoozed = guard
+            .snooze_until(group)
+            .is_some_and(|until| until > std::time::SystemTime::now());
+        (snoozed, snoozed || is_active(guard.group_state(group)))
+    };
 
     // 「打开项目目录」——目录取该组 winner 会话的 `cwd`。没有（或已经不是目录）就
     // 置灰而不是藏起来：藏起来的话用户不知道这个能力存在，也不知道为什么没有。
@@ -120,6 +147,15 @@ pub fn show(app: &AppHandle, window: &WebviewWindow, group: &str) -> Result<(), 
     .map_err(menu_err)?;
     let clear =
         MenuItem::with_id(app, CLEAR, t.menu_clear, true, None::<&str>).map_err(menu_err)?;
+    // 「推迟 15 分钟」/「取消推迟」。文案跟处境走，判据在上面（`snoozed`）。
+    let snooze = MenuItem::with_id(
+        app,
+        SNOOZE,
+        if snoozed { t.menu_unsnooze } else { t.menu_snooze },
+        can_snooze,
+        None::<&str>,
+    )
+    .map_err(menu_err)?;
     // 「手动状态」子菜单（issue #1）：灯不只是展示 —— 点哪盏灯，就能把那盏灯设成
     // 自己要的状态。它不是第二套状态机：走 `manual::set_group` 的普通上报路径，
     // 只是那条会话会在**本组牌面**上压过真实智能体会话（否则组里有个 working /
@@ -157,26 +193,74 @@ pub fn show(app: &AppHandle, window: &WebviewWindow, group: &str) -> Result<(), 
     let reset = MenuItem::with_id(app, RESET, t.menu_reset_lamps, true, None::<&str>)
         .map_err(menu_err)?;
 
-    let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![
-        &open_dir,
-        &rename,
-        &manual,
-        &hide,
-        &mute,
-        &clear,
-        &toggle,
-        &open_settings,
-    ];
+    // 「为什么它在亮」：两行灰字摆在最上面，`enabled = false` —— 原生菜单自己画
+    // 禁用态的灰度，和下面的动作项一眼分得开，不用另起标题或缩进。
+    // id 带序号：muda 按 id 维护一张全局表，两行同 id 会互相覆盖。
+    let why_items = why
+        .iter()
+        .enumerate()
+        .map(|(index, line)| {
+            MenuItem::with_id(
+                app,
+                format!("group:why:{index}"),
+                line,
+                false,
+                None::<&str>,
+            )
+            .map_err(menu_err)
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let why_sep = if why_items.is_empty() {
+        None
+    } else {
+        Some(PredefinedMenuItem::separator(app).map_err(menu_err)?)
+    };
+
+    // **按顺序 push，不用下标 insert。** 原来「全部归位」是 `items.insert(6, &reset)`
+    // 硬插在「折叠」前面 —— 一旦在这个数组顶上加了任何东西（比如上面那两行解释），
+    // 那个 6 就指向别的项了。顺序本来就是一件可以读出来的事，别用魔数表达。
+    let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> = Vec::new();
+    for item in &why_items {
+        items.push(item);
+    }
+    if let Some(sep) = &why_sep {
+        items.push(sep);
+    }
+    items.push(&open_dir);
+    items.push(&rename);
+    items.push(&manual);
+    // 推迟排在「隐藏 / 静音 / 清除」之前：那三项都改变事实（看不见了 / 不再通知 /
+    // 状态清空），推迟只改变**催促的强度**，是最轻的一个动作，应该先被看到。
+    items.push(&snooze);
+    items.push(&hide);
+    items.push(&mute);
+    items.push(&clear);
     // 和通用菜单同一个判据（`has_group_lamps`）：只问「现在有没有组灯」，不问
     // 设置里写的是什么布局（超过 MAX_LAMPS 会回落单灯，那时设置仍是「每组分灯」
     // 却无灯可归）。id 用 `RESET` 而不是 `LAMP_RESET`，理由见那个常量的注释。
+    // 挨着「折叠」放：两项都在管「灯怎么摆」。
     if has_group_lamps(app) {
-        // 挨着「折叠」放：两项都在管「灯怎么摆」
-        items.insert(6, &reset);
+        items.push(&reset);
     }
+    items.push(&toggle);
+    items.push(&open_settings);
+
     let menu = Menu::with_items(app, &items).map_err(menu_err)?;
 
     popup(window, &menu)
+}
+
+/// 这一组此刻有没有「值得推迟的动静」。
+///
+/// 和 `lampStyle.ts` 的 `INACTIVE_STATES` 是同一张表，但**不共用**：那份管的是
+/// 「边框光『只在有活动时亮』该不该亮」，这份管的是「推迟这一项该不该可点」。
+/// 两个问题碰巧都排除了同样五个状态，但它们会各自演化（比如将来的 `waiting`
+/// 算不算活动），合表只会让改其中一处的人以为改了两处。
+fn is_active(state: Signal) -> bool {
+    !matches!(
+        state,
+        Signal::Idle | Signal::Done | Signal::Stale | Signal::Offline | Signal::Off
+    )
 }
 
 /// 当前是否真有组灯窗口开着。归位是对**这些窗口**的操作，所以窗口本身才是真值，
@@ -273,8 +357,10 @@ pub fn handle(app: &AppHandle, id: &str) -> bool {
         return true;
     }
 
-    if !matches!(id, OPEN_DIR | RENAME | HIDE | MUTE | CLEAR | TOGGLE | SETTINGS | RESET)
-        && manual_state_for(id).is_none()
+    if !matches!(
+        id,
+        OPEN_DIR | RENAME | HIDE | MUTE | CLEAR | TOGGLE | SETTINGS | RESET | SNOOZE
+    ) && manual_state_for(id).is_none()
     {
         // 托盘菜单那些 id（quit / toggle / …）也走这条路，不是我们的就放行
         return false;
@@ -329,6 +415,13 @@ pub fn handle(app: &AppHandle, id: &str) -> bool {
         }
         CLEAR => {
             crate::clear_group(app, &group);
+            Ok(())
+        }
+        SNOOZE => {
+            // 一个 id 两种文案，动作也跟着翻。判据和菜单里那句文案**同一处**
+            // （`Store::snooze_until`），所以不会出现「写着取消推迟、点了却
+            // 又推迟了 15 分钟」这种错位。
+            crate::toggle_snooze(app, &group);
             Ok(())
         }
         TOGGLE => {

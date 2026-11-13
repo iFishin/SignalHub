@@ -281,6 +281,13 @@ body,
   font-variant-numeric: tabular-nums;
 }
 
+/* 推迟期间折叠格里的名字也退成灰的 —— 和展开态同一套语义（这一组暂时不催你）。
+   前缀 `.lamp-root` 是为了压过上面 `[data-label="name"]` 那条：两者特异性相同，
+   靠源码顺序取胜，而这里离它最近。 */
+.lamp-root .fold-row[data-snoozed] .fold-text {
+  color: var(--sign-muted);
+}
+
 .fold-board > .fold-row:not(:last-child) {
   border-bottom: 1px solid var(--sign-line);
 }
@@ -727,6 +734,31 @@ body,
   color: var(--sign-muted);
 }
 
+/* ---- 推迟（「先放一边 15 分钟」，0.6.7）-----------------------------------
+
+   语义：这一组还是 `permission`、还是红的、还在等你 —— 只是用户刚说过
+   「我知道，过十五分钟再说」。所以**状态色、形状、消息一个字都不改**，变的只有
+   三样：不再闪、暗一档、字退成灰的；外加「已持续」那一格换成「14m 后」
+   （见 `SignalLamp`）。
+
+   **点径刻意不动。** 试过把它从 0.55（`need` 档 0.72）压到 0.55 那一档，量出来
+   确实「退后」了，但同一块牌里那一行的文字会跟着左移 3.7px（flex 里点窄了，
+   后面的内容就往前挪）—— 两行行首不齐，看起来像排版坏了。推迟是「别催我」，
+   不是「这一行重排」；暗一半 + 停闪 + 一句倒计时已经足够把它压下去。
+
+   **为什么不吃上面那层 calm 薄雾**：薄雾属于「分层」（多块牌之间分先后），
+   用户关掉分层时那种表达就被收回了（见下面 `data-sign-emphasis="flat"` 那几条）。
+   推迟是**逐组的主动动作**，它得在任何分层设置下都看得见。
+
+   **不参与布局**：滤镜和动画都是绘制，行宽高一个像素不动。 */
+.sign[data-snoozed] .sign-name {
+  font-weight: 400;
+}
+
+.sign[data-snoozed] .sign-state {
+  color: var(--sign-muted);
+}
+
 /* 关掉分层：所有行同等分量。
  *
  * 为什么这值得一个开关：上面那套规则界面上原本没有任何解释 —— 用户看到某一行
@@ -1068,11 +1100,14 @@ body,
   }
 }
 
-/* 挂了 `data-blink-*` 才播；不挂时连一条动画声明都没有（而不是播一条空动画）。 */
+/* 挂了 `data-blink-*` 才播；不挂时连一条动画声明都没有（而不是播一条空动画）。
+   相位和灯珠共用 `--rhythm-delay`：同一块牌的灯珠、柔光、边框光在说同一句话，
+   错开就会互相打拍子。 */
 .sign[data-blink-top]::before,
 .sign[data-blink-bottom]::after,
 .sign-corner[data-blink] {
   animation: var(--light-blink, none);
+  animation-delay: var(--rhythm-delay, 0ms);
 }
 
 /* 四枚记号都只负责「看」，不接收事件，所以牌上没有任何一块会因此点不动。 */
@@ -1348,6 +1383,22 @@ body,
   animation: var(--anim-working, pulse 1600ms ease-in-out infinite);
 }
 
+/* **同屏多块牌错相呼吸。** 三四个组同时 `working` 时，它们的配方和起点都一样，
+   整块板于是同频同相地闪 —— 余光里读起来像一盏坏掉的灯，而不是「几件事各自
+   在跑」。相位由 `--rhythm-delay` 给（`lampStyle.ts::rhythmDelay`：按组名哈希到
+   自己周期里的一个点，返回负值），这里只负责挂上去。
+
+   **只给「在干活」两种状态**（判据也在那边）：`attention` / `permission` / `error`
+   是要你处理的警报，就该整齐同步；把它们也打散等于把「一起在叫你」稀释成
+   「有点吵」。
+
+   和一次性反馈不打架：`[data-flash]` / `[data-pulse]` 那两条用的是 `animation`
+   简写，会把这个延迟一起重置成 0s，所以展开 / 折叠那一下不会晚半拍。 */
+.dot[data-state="thinking"],
+.dot[data-state="working"] {
+  animation-delay: var(--rhythm-delay, 0ms);
+}
+
 /* 完成：常亮。原来那一下入场脉冲（`pop`）已经删掉 —— 它是唯一的 transform 违例，
    「落定」的观感现在由**跃迁脉冲**（上面的 `[data-pulse]`）承担，而那一下更通用：
    任何状态变化都会闪，不只 done。 */
@@ -1388,6 +1439,27 @@ body,
 .dot[data-state="off"] {
   animation: var(--anim-off, none);
   opacity: 0.45;
+}
+
+/* 推迟期间：不闪、暗一档。**放在所有 `[data-state]` 动画规则之后** —— 那几条
+   和这里特异性相同（`.dot` + 一个属性选择器），靠源码顺序取胜；挪到上面就会被
+   「执行：慢闪」那类逐状态规则顶掉，牌继续红着闪，推迟就白按了。
+
+   用 `filter` 而不是 `opacity`：`.dot` 的 opacity 同时被状态（`idle` 淡）和
+   `pulse` 动画占着，再写一条要么被动画覆盖回原亮度，要么和状态自身那档打架。
+   filter 作用在合成结果上，两者都不碰。
+
+   一次性反馈不受影响：`[data-flash]` 命中的是 `.lamp-root[data-flash] .lamp-dot`
+   （三个类级），比这里高，折叠点形态切换那一下照常闪；牌上的 `[data-pulse]`
+   动的是描边，根本不在灯珠上。 */
+.dot[data-snoozed] {
+  filter: opacity(0.5);
+  animation: none;
+}
+
+/* 柔光也一并停掉：只停主点的话，外圈还在呼吸，读起来像「关了一半」。 */
+.dot[data-snoozed]::before {
+  animation: none;
 }
 
 /* ---- 安静模式：有事才显形 ------------------------------------------------ */
@@ -1469,8 +1541,12 @@ body,
   opacity: 0.38;
   pointer-events: none;
   /* 逐状态挂在灯珠 style 上（不是根上）：一个窗口里多块牌节奏可以不同。
-     常亮状态解析成 `none`，那时就是一圈稳定的柔光。 */
+     常亮状态解析成 `none`，那时就是一圈稳定的柔光。
+     **延迟乘 2**：柔光自己的周期就是灯珠的 2 倍（见 `resolveHaloAnimations`），
+     同一个相位在 2 倍长的周期里要落回同一个位置，就得同样翻倍 —— 否则光圈
+     会和灯珠越错越远，最后变成「灯珠在闪、光在原地发呆」。 */
   animation: var(--halo-anim, none);
+  animation-delay: calc(var(--rhythm-delay, 0ms) * 2);
 }
 
 /* ring 形状自己就带着一圈环，再叠柔光会糊成两个不同心的圆；而且它的 mask

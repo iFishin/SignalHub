@@ -496,6 +496,64 @@ export function lightBlink(settings: Settings, state: SignalState): string {
 }
 
 /**
+ * 哪些状态的节奏要**错相**。只有「它在干活」这两种。
+ *
+ * 一盏灯里同时跑着三四个组时，它们的 `working` / `thinking` 是同一个配方、同一个
+ * 起点 —— 整块板同频同相地闪，读起来像一盏坏掉的灯，而不是「几件事各自在跑」。
+ * 错开相位之后，余光里看到的是错落的呼吸。
+ *
+ * **要你处理的三种一律不错相**（`attention` / `permission` / `error`）：警报就该
+ * 整齐、同步、一眼看见；把它们也打散，等于把「一起在叫你」稀释成「有点吵」。
+ * 剩下那些本来就不动（`done` / `idle` / `stale` / `offline` / `off`），相位对它们
+ * 没有意义。
+ */
+const RHYTHM_PHASED: readonly SignalState[] = ["thinking", "working"];
+
+/** 某个状态最终的节奏周期（ms）。口径与 `resolveAnimations` 逐字一致。 */
+function rhythmPeriodMs(settings: Settings, state: SignalState): number {
+  const speed = settings.blink_speed / 100;
+  const explicit = settings.styles[state]?.blink_ms;
+  if (explicit === 0) return 0;
+  if (typeof explicit === "number" && explicit > 0) return explicit;
+  const recipe = BASE_ANIMATION[state];
+  return recipe ? Math.round(recipe.ms / speed) : 0;
+}
+
+/**
+ * 把组名散成一个周期内的相位（0..period-1）。
+ *
+ * **按名字散，不按序号散**：序号会随「哪一组更紧急」在排序里跳，同一块牌下一次
+ * 刷新就换了相位，观感上是「它抖了一下」。组名在一组生命期内不变，于是同一块牌
+ * 永远停在自己那个相位上，重启也不变 —— 这条稳定性比「散得均匀」更要紧。
+ *
+ * FNV-1a：十行就能写完、分布够用、不依赖任何库。`Math.imul` 是必须的 ——
+ * 直接 `*` 会在 2^53 之后丢精度，长中文组名算出来的相位就不稳定了。
+ */
+export function rhythmPhase(name: string, periodMs: number): number {
+  if (!(periodMs > 0)) return 0;
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < name.length; i += 1) {
+    hash = Math.imul(hash ^ name.charCodeAt(i), 0x01000193);
+  }
+  return (hash >>> 0) % periodMs;
+}
+
+/**
+ * 挂到一块牌上的 `animation-delay`，用来把「在干活」的呼吸错开。
+ *
+ * 返回**负值**是刻意的：负延迟让动画一上来就处在自己那个相位上，而不是先停
+ * 半拍再开始 —— 后者在切换形态 / 重渲染时会被看成「卡了一下」。
+ *
+ * 只喂给三个地方，且都靠 `--rhythm-delay` 这一个变量：灯珠（`pulse`）、灯珠的
+ * 柔光（周期是灯珠的 2 倍，所以 CSS 里乘 2）、可选的边灯 / 角灯闪烁。同一块牌
+ * 的这三样因此永远同相 —— 它们本来就在说同一句话。
+ */
+export function rhythmDelay(settings: Settings, name: string, state: SignalState): string {
+  if (!RHYTHM_PHASED.includes(state)) return "0ms";
+  return `${-rhythmPhase(name, rhythmPeriodMs(settings, state))}ms`;
+}
+
+/**
  * 这个状态有没有被单独设过。
  *
  * 「设过」= 表里至少有一个字段不是 null。**判据必须和 `PerStateStyles` 里

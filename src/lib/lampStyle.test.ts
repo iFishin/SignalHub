@@ -15,6 +15,7 @@ import {
   SIGN_OPACITY_MIN,
   edgeBlinks,
   lightBlink,
+  rhythmDelay,
   LIGHT_BLINK_FALLBACK_MS,
   FOLD_WIDTH_MULT,
   type LightContext,
@@ -690,6 +691,60 @@ describe("边灯 / 角灯的闪烁", () => {
       styles: { working: { color: null, shape: null, blink_ms: 500, ttl_ms: null } },
     });
     expect(lightBlink(settings, "working")).toBe("light-blink 500ms ease-in-out infinite");
+  });
+
+  /**
+   * 呼吸错相。一盏灯里三四个组同时 `working` 时，同频同相会读成「一盏坏掉的灯」；
+   * 这里钉住四件事：谁错相、散在什么范围内、同一个名字永远同一个相位、
+   * 以及「要你处理」的三种状态一律不错相。
+   */
+  describe("呼吸错相", () => {
+    it("只有「在干活」的两种状态错相", () => {
+      const settings = withSettings({});
+      expect(rhythmDelay(settings, "orders", "working")).not.toBe("0ms");
+      expect(rhythmDelay(settings, "orders", "thinking")).not.toBe("0ms");
+      // 警报要整齐：这三种一律回落到 0，和以前逐像素一致
+      for (const state of ["permission", "error", "attention"] as const) {
+        expect(rhythmDelay(settings, "orders", state)).toBe("0ms");
+      }
+      // 本来就不动的四种，相位没有意义
+      for (const state of ["done", "idle", "stale", "offline"] as const) {
+        expect(rhythmDelay(settings, "orders", state)).toBe("0ms");
+      }
+    });
+
+    it("相位是一个周期内的负延迟，永远不会把动画推迟到结束之后", () => {
+      const settings = withSettings({});
+      // 默认 working 周期 1600ms、thinking 640ms
+      const working = Number(rhythmDelay(settings, "orders", "working").replace("ms", ""));
+      expect(working).toBeLessThanOrEqual(0);
+      expect(working).toBeGreaterThan(-1600);
+      const thinking = Number(rhythmDelay(settings, "orders", "thinking").replace("ms", ""));
+      expect(thinking).toBeGreaterThan(-640);
+    });
+
+    it("同一个组名永远同一个相位（重渲染 / 重启都不跳）", () => {
+      const settings = withSettings({});
+      const first = rhythmDelay(settings, "orders-api", "working");
+      for (let i = 0; i < 5; i += 1) {
+        expect(rhythmDelay(settings, "orders-api", "working")).toBe(first);
+      }
+      // 不同组真的散开了（这两个名字的哈希落在不同的分钟上）
+      expect(rhythmDelay(settings, "orders-api", "working")).not.toBe(
+        rhythmDelay(settings, "billing", "working"),
+      );
+    });
+
+    it("周期跟着用户设的节奏走；设成常亮就没有相位", () => {
+      const fast = withSettings({ blink_speed: 200 });
+      // 800ms 周期：任何延迟都落在 (−800, 0]
+      const delay = Number(rhythmDelay(fast, "orders", "working").replace("ms", ""));
+      expect(delay).toBeGreaterThan(-800);
+      const paused = withSettings({
+        styles: { working: { color: null, shape: null, blink_ms: 0, ttl_ms: null } },
+      });
+      expect(rhythmDelay(paused, "orders", "working")).toBe("0ms");
+    });
   });
 });
 

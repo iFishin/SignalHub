@@ -674,6 +674,8 @@ function previewGroup(
     message: spec.message,
     since_ms: now - spec.ageMs,
     stale_progress: null,
+    // 预览不演推迟：推迟是用户对某一组下的令，没有「默认长相」可预览。
+    snooze_until_ms: 0,
     sessions: [
       {
         id: name,

@@ -29,6 +29,7 @@ function group(name: string, sessions: SessionView[], label?: string): GroupView
     message: sessions[0]?.message ?? null,
     since_ms: 0,
     stale_progress: null,
+    snooze_until_ms: 0,
     sessions,
   };
 }

@@ -545,6 +545,8 @@ export function demoSnapshot(
     // 固定「6 秒前进入当前状态」，牌上的「已持续」会自己往上走
     since_ms: now - 6_000,
     stale_progress: row.staleProgress ?? null,
+    // 演示页不演示推迟：那不是「灯在做什么」，而是用户对某一组下的令。
+    snooze_until_ms: 0,
     sessions: [],
   }));
   return {

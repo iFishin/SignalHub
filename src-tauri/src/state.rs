@@ -420,6 +420,16 @@ pub struct GroupView {
     /// 才变成 `stale`，要缩短的自然也是它。组内没有会话时是 `None`（那一组的
     /// 聚合是 `offline` 而不是 `stale`，画不出环来）。
     pub stale_progress: Option<f32>,
+    /// 这一组被用户「推迟」到哪个时刻（epoch 毫秒），0 = 没推迟。
+    ///
+    /// **只给渲染用。** 聚合、排序、通知、转发、统计、CLI 查询一律不看它 ——
+    /// 推迟是个展示层的动作（「这一行别再催我」），不是一个新的状态。这意味着
+    /// 一块牌被推迟时仍然是 `permission`、仍然是红的，只是不再呼吸、不再抢眼。
+    /// 见 `Store::snooze`。
+    ///
+    /// 给的是**绝对时刻**而不是剩余毫秒：前端自己有时钟，拿绝对值比拿一个会在
+    /// 传输途中变旧的长度可靠（快照不一定每次变化都推）。
+    pub snooze_until_ms: u64,
     pub sessions: Vec<SessionView>,
 }
 
@@ -521,6 +531,26 @@ pub struct Store {
     /// 用墙钟而不是 `Instant`：它要跨进程序列化给前端，`Instant` 没有绝对零点。
     /// 进程重启后归零 —— 那是对的，重启之后「刚才」已经无从谈起。
     last_done: Option<SystemTime>,
+    /// 组名 → 「推迟到什么时候」。见 [`Store::snooze`]。
+    ///
+    /// 同样用墙钟：这个时刻要原样交给前端做倒计时。**不落盘** —— 重启后所有
+    /// 推迟自动失效、该催的重新催。宁可多提醒一次，也不要漏掉一次。
+    snooze: HashMap<String, Snooze>,
+}
+
+/// 一条推迟记录：到什么时候 + **按下那一刻这一组是什么状态**。
+///
+/// 带 `state` 是这次设计里最关键的一处：推迟的语义是「这件事我知道了，过会儿
+/// 再说」，**不是**「这一组从现在起安安静静十五分钟」。少了这个字段，一组从
+/// 「等批准」变成「出错了」时还会被压着不闪 —— 新的事实被一个旧动作藏了起来，
+/// 这盏灯就开始撒谎了。
+///
+/// 所以状态一变，推迟自动作废（见 `Store::snooze_until` / `prune_snooze`）。
+/// 用户得到的是「它换了个说法，所以又能催我了」，而不是「它怎么一直不动」。
+#[derive(Debug, Clone, Copy)]
+struct Snooze {
+    until: SystemTime,
+    state: Signal,
 }
 
 impl Store {
@@ -736,6 +766,65 @@ impl Store {
         (ids.len(), self.settle(now))
     }
 
+    /// 把某一组「推迟」到 `until`：牌上不再催，状态一点不改。
+    ///
+    /// **为什么这是展示层的事，而不是一种新状态。** 开会时 billing 在等你批准，
+    /// 你能做的只有「静音该组」（永久的、粗的）或者一直红着。中间那一档不存在，
+    /// 而它恰恰是最常见的需求：「我知道，过十分钟再说」。把它做成一个状态
+    /// （`snoozed`）会污染三处 —— 聚合要算它、通知要判它、统计要记它 ——
+    /// 而它根本不描述智能体在干什么。所以它只是一个**截止时刻**：
+    ///
+    /// - 聚合、排序、通知、转发、统计、CLI 全部看不见它（它们读 `aggregate`，
+    ///   而 `aggregate` 里没有这个字段）；
+    /// - 前端拿它把这一行画淡、把「已持续」换成倒计时（见 `SignalLamp`）。
+    ///
+    /// `state` 是按下那一刻这一组的聚合，**它一变推迟就作废**（见 [`Snooze`]）。
+    ///
+    /// 到点自动失效，**不发通知**：用户说的是「过十分钟再说」，不是「十分钟后
+    /// 叫我一次」。灯自己会重新变亮 —— 那已经够了。
+    ///
+    /// 不落盘，见 `snooze` 字段的注释。
+    pub fn snooze(&mut self, group: &str, state: Signal, until: SystemTime) {
+        self.snooze
+            .insert(group.to_string(), Snooze { until, state });
+    }
+
+    /// 取消推迟（用户又点了一次菜单）。
+    pub fn clear_snooze(&mut self, group: &str) {
+        self.snooze.remove(group);
+    }
+
+    /// 这一组推迟到什么时候。**不判过期** —— 过期的判断留给读的人做：
+    /// 前端拿绝对时刻和自己的钟比，后端在 `expire` 里回收。
+    ///
+    /// 但**状态已经变了的一律当作没推迟**：那一刻在等的是批准，现在它在报错，
+    /// 后者是个新事实，不该被旧动作压住。菜单和快照都走这里，所以两处不会
+    /// 出现「菜单写着取消推迟、牌上却一点没淡」（或者反过来）。
+    pub fn snooze_until(&self, group: &str) -> Option<SystemTime> {
+        let snooze = self.snooze.get(group)?;
+        (self.group_state(group) == snooze.state).then_some(snooze.until)
+    }
+
+    /// 回收已经到点、或者状态已经变过的推迟项。由 `expire` 每拍调用。
+    ///
+    /// 返回值**不参与「有没有可见变化」**：到点这件事对后端不是状态变化（聚合
+    /// 从头到尾没动过），而牌重新变亮是前端自己按秒算出来的。把它算成变化只会
+    /// 让每个到点的组各推一帧，前端拿到的东西和它已经画出来的一模一样。
+    pub fn prune_snooze(&mut self, now: SystemTime) {
+        // 两趟，同 `expire`：`retain` 的闭包里不能再借 `self`（`group_state` 要）。
+        let dead: Vec<String> = self
+            .snooze
+            .iter()
+            .filter(|(group, snooze)| {
+                snooze.until <= now || self.group_state(group) != snooze.state
+            })
+            .map(|(group, _)| group.clone())
+            .collect();
+        for group in dead {
+            self.snooze.remove(&group);
+        }
+    }
+
     /// 清掉某台远程机器的全部会话（多机中枢）。
     ///
     /// 用户把一台机器从设置里删掉、或者把它关掉时调用 —— 否则那些会话会一直挂在
@@ -880,6 +969,11 @@ impl Store {
             }
         }
 
+        // 到点的推迟项在这里回收（每拍一次，够廉价）。**不算变化** —— 理由见
+        // `prune_snooze`：牌重新变亮是前端按自己的钟画的，后端推一帧只会推一份
+        // 前端已经画出来的东西。
+        self.prune_snooze(SystemTime::now());
+
         self.settle(now)
     }
 
@@ -919,6 +1013,13 @@ impl Store {
                     since_ms: winner.map(|s| epoch_ms(s.since)).unwrap_or(0),
                     // 细环取的是**决定聚合那个会话**的进度（见字段注释）
                     stale_progress: winner.and_then(|s| stale_progress(s, now)),
+                    // 推迟是用户对**这一行**下的令，和聚合无关（但绑在「下令那一刻
+                    // 的状态」上，状态一变就作废 —— 见 `Snooze`）。过期项在
+                    // `expire` 里回收，这里原样给出 —— 前端自己会比钟。
+                    snooze_until_ms: self
+                        .snooze_until(&name)
+                        .map(epoch_ms)
+                        .unwrap_or(0),
                     sessions,
                     name,
                 }
@@ -1021,6 +1122,17 @@ impl Store {
     ///
     /// 只在**这一组的牌面**上优先：全局聚合仍按普通优先级取最大值
     /// （`Store::winner`），告警判定也不看牌面（`GroupView::alert_state`）。
+    /// 某一组此刻的牌面聚合。没有会话时是 `Offline`。
+    ///
+    /// 和 `snapshot_at` 里那一行是**同一个算法**（`winner_in` 的状态，缺失即
+    /// `Offline`），只是不用为此生成一整份快照。右键菜单用它决定「推迟」这一项
+    /// 该不该可点 —— 空闲的组本来就不催人，给它一个「别催我」等于按下去没反应。
+    pub fn group_state(&self, group: &str) -> Signal {
+        self.winner_in(group)
+            .map(|session| session.state)
+            .unwrap_or(Signal::Offline)
+    }
+
     fn winner_in(&self, group: &str) -> Option<&Session> {
         self.manual_winner_in(group)
             .or_else(|| self.real_winner_in(group))
@@ -2084,6 +2196,121 @@ mod tests {
         assert_eq!(s.aggregate(), Signal::Offline);
     }
 
+    // ---- 推迟（snooze）--------------------------------------------------------
+
+    /// 推迟**只**写出一个截止时刻，聚合、牌面状态、消息一个字都不动。
+    ///
+    /// 这条钉的是整个功能的那条边界（见 `Store::snooze` 的注释）：如果哪天有人
+    /// 为了「推迟时别再发通知」把它塞进聚合，这块牌就会变成一个假状态 ——
+    /// 而红灯不再等于「真的在等你」之后，这盏灯就什么都不值了。
+    #[test]
+    fn snoozing_changes_the_deadline_and_nothing_else() {
+        let (mut s, t) = (Store::default(), Instant::now());
+        rep_in(&mut s, t, "a", "alpha", Signal::Permission);
+        let before = s.snapshot_at(t);
+        let until = SystemTime::now() + Duration::from_secs(15 * 60);
+
+        s.snooze("alpha", Signal::Permission, until);
+        let after = s.snapshot_at(t);
+
+        assert_eq!(after.groups[0].snooze_until_ms, epoch_ms(until));
+        // 牌上其余每一个字段都必须逐字相同
+        assert_eq!(after.groups[0].aggregate, Signal::Permission);
+        assert_eq!(after.groups[0].aggregate, before.groups[0].aggregate);
+        assert_eq!(after.groups[0].message, before.groups[0].message);
+        assert_eq!(after.groups[0].since_ms, before.groups[0].since_ms);
+        assert_eq!(after.aggregate, Signal::Permission, "全局聚合也不动");
+    }
+
+    /// 只有被推迟的那一组带上截止时刻，别的组是 0 —— 挨着的牌不能一起变淡。
+    #[test]
+    fn only_the_snoozed_group_gets_a_deadline() {
+        let (mut s, t) = (Store::default(), Instant::now());
+        rep_in(&mut s, t, "a", "alpha", Signal::Working);
+        rep_in(&mut s, t, "b", "beta", Signal::Working);
+
+        s.snooze("alpha", Signal::Working, SystemTime::now() + Duration::from_secs(60));
+        let snapshot = s.snapshot_at(t);
+        let alpha = snapshot.groups.iter().find(|g| g.name == "alpha").unwrap();
+        let beta = snapshot.groups.iter().find(|g| g.name == "beta").unwrap();
+
+        assert!(alpha.snooze_until_ms > 0);
+        assert_eq!(beta.snooze_until_ms, 0);
+    }
+
+    /// 取消推迟就是把这个组从表里拿掉（前端据此立刻变回满强度）。
+    #[test]
+    fn cancelling_a_snooze_clears_the_deadline() {
+        let (mut s, t) = (Store::default(), Instant::now());
+        rep_in(&mut s, t, "a", "alpha", Signal::Permission);
+        s.snooze("alpha", Signal::Permission, SystemTime::now() + Duration::from_secs(60));
+        assert!(s.snooze_until("alpha").is_some());
+
+        s.clear_snooze("alpha");
+        assert!(s.snooze_until("alpha").is_none());
+        assert_eq!(s.snapshot_at(t).groups[0].snooze_until_ms, 0);
+    }
+
+    /// 到点的推迟项要回收，**且回收本身不算「可见变化」**。
+    ///
+    /// 第二半句是重点：牌重新变亮是前端按自己的钟算的（`snooze_until_ms` 是绝对
+    /// 时刻），后端把「到点了」当成一次变化去推帧，推出去的是一份前端已经画完的
+    /// 东西 —— 而每个到点的组各推一次，就成了一排无意义的唤醒。
+    #[test]
+    fn an_expired_snooze_is_pruned_without_reporting_a_change() {
+        let (mut s, t) = (Store::default(), Instant::now());
+        rep_in(&mut s, t, "a", "alpha", Signal::Permission);
+        let ago = SystemTime::now() - Duration::from_secs(1);
+        s.snooze("alpha", Signal::Permission, ago);
+
+        s.prune_snooze(SystemTime::now());
+        assert!(s.snooze_until("alpha").is_none(), "过期的要回收");
+
+        // 还在未来的一律留着
+        let alive = SystemTime::now() + Duration::from_secs(60);
+        s.snooze("alpha", Signal::Permission, alive);
+        s.prune_snooze(SystemTime::now());
+        assert_eq!(s.snooze_until("alpha"), Some(alive));
+    }
+
+    /// **状态一变，推迟立刻作废。**
+    ///
+    /// 这条是「灯不撒谎」的底线：用户按下「推迟」时那一组在等批准，十五分钟里
+    /// 它变成了「出错」—— 那是**另一件事**，必须立刻重新催。只按组名记住截止
+    /// 时刻的话，新事实会被一个旧动作压着不闪，而那正是这盏灯最不该做的事。
+    ///
+    /// 两种失效都要清干净：读（`snooze_until`）不能返回旧时刻，`prune` 之后
+    /// 连底表都不该留着这条记录。
+    #[test]
+    fn a_state_change_cancels_the_snooze() {
+        let (mut s, t) = (Store::default(), Instant::now());
+        rep_in(&mut s, t, "a", "alpha", Signal::Permission);
+        s.snooze("alpha", Signal::Permission, SystemTime::now() + Duration::from_secs(60));
+        assert!(s.snooze_until("alpha").is_some());
+
+        // 同一组换了状态（还是同一个会话、同一个组名）
+        rep_in(&mut s, t, "a", "alpha", Signal::Error);
+
+        assert!(
+            s.snooze_until("alpha").is_none(),
+            "状态变了就当没推迟过 —— 否则「出错了」会被压着不闪"
+        );
+        assert_eq!(s.snapshot_at(t).groups[0].snooze_until_ms, 0);
+
+        s.prune_snooze(SystemTime::now());
+        assert!(s.snooze.is_empty(), "回收之后底表里也不该留着这条");
+    }
+
+    /// 菜单那一项要靠 `group_state` 判断该不该可点：没有会话的组是 `Offline`，
+    /// 而不是 `Idle`（后者会被读成「智能体在待命，只是没动静」）。
+    #[test]
+    fn group_state_reports_offline_for_groups_that_do_not_exist() {
+        let (mut s, t) = (Store::default(), Instant::now());
+        rep_in(&mut s, t, "a", "alpha", Signal::Thinking);
+        assert_eq!(s.group_state("alpha"), Signal::Thinking);
+        assert_eq!(s.group_state("nope"), Signal::Offline);
+    }
+
     // ---- 消息流 ---------------------------------------------------------------
 
     fn rep_with_message(
@@ -2379,6 +2606,7 @@ mod tests {
             message: None,
             since_ms: 0,
             stale_progress: None,
+            snooze_until_ms: 0,
             sessions: vec![],
         };
         assert_eq!(group.alert_state(), Signal::Permission);

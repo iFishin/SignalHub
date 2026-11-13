@@ -9,7 +9,21 @@
  * 「3 分钟前」什么时候变「1 小时前」就会在两张页面上不一致。
  */
 export function formatAge(atMs: number, now: number): string {
-  const seconds = Math.max(0, Math.round((now - atMs) / 1000));
+  return formatSpan(Math.max(0, now - atMs));
+}
+
+/**
+ * 「还有多久」。和 [`formatAge`] 同一套单位，方向相反。
+ *
+ * 单独一个函数而不是传个负数进去：`formatAge` 那个 `Math.max(0, …)` 会把未来
+ * 的时刻压成 `0s` —— 正好把要显示的东西抹掉。牌上「推迟到 14m 后」那一格用它。
+ */
+export function formatRemaining(untilMs: number, now: number): string {
+  return formatSpan(Math.max(0, untilMs - now));
+}
+
+function formatSpan(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000));
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m`;

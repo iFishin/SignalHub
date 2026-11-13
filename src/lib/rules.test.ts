@@ -14,6 +14,7 @@ function group(
     message: null,
     since_ms: 0,
     stale_progress: null,
+    snooze_until_ms: 0,
     sessions: sessionIds.map((id) => ({
       id,
       state: "working",

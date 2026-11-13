@@ -21,6 +21,7 @@ function group(name: string, defaultLabel: string | null = null): GroupView {
     message: null,
     since_ms: 0,
     stale_progress: null,
+    snooze_until_ms: 0,
     sessions: [],
   };
 }
