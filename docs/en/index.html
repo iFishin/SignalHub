@@ -23,7 +23,7 @@
   <div class="wrap">
     <a class="brand" href="./">
       <img src="../assets/icon.png" width="28" height="28" alt="">
-      SignalHub <span class="tag">Tauri 2 · v0.6.6</span>
+      SignalHub <span class="tag">Tauri 2 · v0.6.7</span>
     </a>
     <nav aria-label="Main navigation">
       <a href="#states">States</a>
@@ -216,7 +216,7 @@
         </div>
         <div>
           <h3>Sign outlines · four</h3>
-          <p class="sub-sm">Built with <code>border-radius</code> only — <code>clip-path</code> would cut off the little lights on the four corners.</p>
+          <p class="sub-sm">Built with <code>border-radius</code> only — <code>clip-path</code> would cut off the ticks along the rows and the slots at each row’s end.</p>
           <div class="outline-grid">
             <div class="outline-item"><i class="outline-chip" data-outline="rect"></i>Rectangle</div>
             <div class="outline-item"><i class="outline-chip" data-outline="capsule"></i>Capsule</div>
@@ -229,9 +229,10 @@
       <p class="skin-line reveal">
         <strong>Five skins</strong> (Plain / Focus / Neon / Paper / Signal) switch palette, sign
         tint, radius and border, dot shape, motion and frame lighting in one click.
-        <strong>Six independent light slots</strong> — top edge, bottom edge and all four corners —
-        each pick a drawing style <strong>and</strong> one of nine trigger conditions: the top edge
-        can stay on while the bottom only lights on errors. Skins overwrite those six trigger rows
+        <strong>Six independent light slots</strong> — one tick above the first row and one below the
+        last, plus four slots stacked at each row’s end — each pick a drawing style
+        <strong>and</strong> one of nine trigger conditions: the top tick can stay on while the
+        bottom one only lights on errors. Skins overwrite those six trigger rows
         too; the interface says so explicitly rather than doing it silently.
         <strong>Five effects</strong>: off / breathing halo / pulse / sweep / fade, all dialled
         down to stillness when the system asks for reduced motion.
@@ -336,7 +337,7 @@ npm run tauri dev</code></pre>
     <p class="foot-note">
       A desktop status lamp built with Tauri 2, Rust and TypeScript: one state machine, many
       surfaces. State stays on your machine; the read-only web panel, phone pushes and outbound
-      hooks are all off by default and have to be switched on by you. Version 0.6.6 · MIT.
+      hooks are all off by default and have to be switched on by you. Version 0.6.7 · MIT.
     </p>
   </div>
 </footer>
