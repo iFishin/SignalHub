@@ -249,14 +249,16 @@
 
       <div class="figures">
         <figure class="reveal">
-          <img src="../assets/demo.gif" loading="lazy" width="880" height="480"
-               alt="SignalHub lamp loop: idle, thinking, working, waiting for permission, then green again after Allow is clicked in the bubble">
+          <img src="../assets/demo.gif" loading="lazy" width="720" height="420"
+               alt="SignalHub lamp loop: idle, thinking, working, permission, attention, error, done, stale, offline, then quiet mode">
           <figcaption>
-            <strong>Fig. 1　Default light cycle and "approve from the lamp".</strong>
-            Not a screen recording: the colours and blink rhythm are taken straight from
-            <code>state.css</code> / <code>lamp.css</code>
-            (green <code>#16a34a</code>, red <code>#d0342c</code>, 640 / 1600 / 900 ms) —
-            even the rounded-square dot for permission and the 800 ms hold for dangerous commands.
+            <strong>Fig. 1　Ten looks of the default light effects.</strong>
+            Not a hand-drawn mockup: every frame renders the app's real lamp component from the
+            build output, so colours, blink timings and the rounded-square <code>permission</code>
+            dot follow <code>state.css</code> / <code>lamp.css</code>. The data is scripted.
+            The ten shots run idle → thinking → working → permission → attention → error → done →
+            stale → offline → quiet. Real interactions:
+            <a href="https://github.com/iFishin/SignalHub/blob/main/docs/scenes.md">Scenes in practice</a>.
           </figcaption>
         </figure>
         <figure class="reveal">

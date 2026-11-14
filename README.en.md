@@ -16,9 +16,9 @@
 
 </div>
 
-![Looping demo of the default light effects and on-lamp approval](docs/assets/demo.gif)
+![Looping demo of the default light effects and ten lamp states](docs/assets/demo.gif)
 
-<sub>Not a screen recording and not a hand-drawn mockup: every frame renders the app's real lamp component from the build output, so colours, blink timings and the rounded-square <code>permission</code> dot follow <a href="src/styles/state.css"><code>state.css</code></a> / <a href="src/styles/lamp.css"><code>lamp.css</code></a>. The data is scripted. Nine shots cover the light rhythms; re-render with <a href="scripts/render-scenes.sh"><code>sh scripts/render-scenes.sh</code></a> when the defaults change.</sub>
+<sub>Not a screen recording and not a hand-drawn mockup: every frame renders the app's real lamp component from the build output, so colours, blink timings and the rounded-square <code>permission</code> dot follow <a href="src/styles/state.css"><code>state.css</code></a> / <a href="src/styles/lamp.css"><code>lamp.css</code></a>. The data is scripted. Ten shots cover the light rhythms; re-render with <a href="scripts/render-scenes.sh"><code>sh scripts/render-scenes.sh</code></a> when the defaults change.</sub>
 
 **Eight real-world walkthroughs** (collapse, approvals, the radial menu, six light slots, click-through…) with frame-by-frame animations: [Scenes in practice](docs/scenes.md). The write-up is in Chinese and the clips show the Chinese UI, but there is no narration or on-screen caption to read.
 

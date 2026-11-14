@@ -16,9 +16,9 @@
 
 </div>
 
-![默认灯效与「从灯上审批」的循环演示](docs/assets/demo.gif)
+![默认灯效与十种状态的循环演示](docs/assets/demo.gif)
 
-<sub>这不是真窗口录屏，也不是手绘示意图：每一帧都从构建产物里渲染产品自己的灯牌组件，颜色、闪烁节奏、圆角方灯珠跟着 <a href="src/styles/state.css"><code>state.css</code></a> / <a href="src/styles/lamp.css"><code>lamp.css</code></a> 走，喂进去的是演示数据。九个镜头讲灯效节奏；改了默认灯效就跑 <a href="scripts/render-scenes.sh"><code>sh scripts/render-scenes.sh</code></a> 重画。</sub>
+<sub>这不是真窗口录屏，也不是手绘示意图：每一帧都从构建产物里渲染产品自己的灯牌组件，颜色、闪烁节奏、圆角方灯珠跟着 <a href="src/styles/state.css"><code>state.css</code></a> / <a href="src/styles/lamp.css"><code>lamp.css</code></a> 走，喂进去的是演示数据。十个镜头讲灯效节奏；改了默认灯效就跑 <a href="scripts/render-scenes.sh"><code>sh scripts/render-scenes.sh</code></a> 重画。</sub>
 
 **八段实际操作场景**（折叠、审批、圆环菜单、六灯位、点击穿透…）逐帧动图见 [《实际使用场景》](docs/scenes.md)。
 

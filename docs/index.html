@@ -240,13 +240,14 @@
 
       <div class="figures">
         <figure class="reveal">
-          <img src="assets/demo.gif" loading="lazy" width="880" height="480"
-               alt="SignalHub 悬浮灯循环演示：从空闲、推理、执行到等待授权，气泡里点允许后灯变回绿色">
+          <img src="assets/demo.gif" loading="lazy" width="720" height="420"
+               alt="SignalHub 悬浮灯循环演示：空闲、推理、执行、等待授权、需要关注、出错、完成、沉默、离线，最后收进安静模式">
           <figcaption>
-            <strong>图 1　默认灯效与「从灯上审批」。</strong>
-            这段动图不是录屏：颜色与闪烁节奏直接取自 <code>state.css</code> / <code>lamp.css</code>
-            （绿 <code>#16a34a</code>、红 <code>#d0342c</code>，640 / 1600 / 900 ms），
-            连等待授权的圆角方灯珠和危险命令要按住 800 毫秒都照着代码画。
+            <strong>图 1　默认灯效的十种样子。</strong>
+            这不是手绘示意图：每一帧都从构建产物里渲染产品自己的灯牌组件，颜色、闪烁节奏、
+            圆角方灯珠跟着 <code>state.css</code> / <code>lamp.css</code> 走，喂进去的是演示数据。
+            十个镜头依次是空闲、推理、执行、等待授权、需要关注、出错、完成、沉默、离线与安静模式。
+            实际操作画面见 <a href="https://github.com/iFishin/SignalHub/blob/main/docs/scenes.md">场景文档</a>。
           </figcaption>
         </figure>
         <figure class="reveal">
