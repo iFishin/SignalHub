@@ -6,11 +6,11 @@
  * 不是不好看，是某一步画出了和产品实际行为不一致的东西（比如把「完成」
  * 画成转沉默），那会变成一份会骗人的说明书。
  *
- * **为什么分成场景而不是一条长剧本**：一盏灯的真实用法有五种互不相干的样子
- * —— 平时干活、有事要你、它不说话了、收起来、以及「用光说话」（边灯 / 角灯）。
- * 串成一条 20 步的线性剧本，
- * 想看「折叠长什么样」得先等 40 秒；而按场景切开，每个场景自己循环，点一下
- * 就能反复看同一件事。
+ * **为什么分成场景而不是一条长剧本**：这些用法彼此不相干 —— 平时干活、有事要你、
+ * 它不说话了、收起来、「用光说话」（边灯 / 角灯），以及 0.5 之后长出来的收件箱、
+ * Call Me 留言、灯上的手势。串成一条线性剧本，想看「折叠长什么样」得先等 40 秒；
+ * 而按场景切开，每个场景自己循环，点一下就能反复看同一件事。
+ * 界面文案因此**不写死场景数量**：再加一场不用回头改五处标题。
  *
  * 四条硬约束：
  * - 每一步的 `aggregate` 必须等于各组里优先级最高的那个（红 > 黄 > 绿），
@@ -21,9 +21,14 @@
  * - **每一步都要能被真实产品做出来**。`collapsed` / `quiet` 都是设置里真有的
  *   开关，`stale_progress` 用的是 `state.rs` 那套真实比例，没有一个字段是
  *   只为演示编出来的。
+ *
+ * 0.6.7 之后多了**三个舞台**：老五个场景画灯牌，新场景把收件箱 / 留言面板和
+ * 长按呼出的圆环菜单也搬进同一段演示。舞台只决定「这一步画哪个组件」，
+ * 数据仍然从这里念 —— 面板帧的 id 在 `demoPanel.ts`，文案在 i18n。
  */
 import type { GroupView, SignalState } from "./types";
 import type { Shape, SignLights } from "./useSettings";
+import type { DemoPanelFrameId } from "./demoPanel";
 
 /** 演示里出现的组。名字是稳定的 id，显示名走 i18n（中英各一份）。 */
 export type DemoGroupId = "build" | "api" | "review";
@@ -56,8 +61,24 @@ function demoLights(patch: Partial<SignLights>): SignLights {
   };
 }
 
-/** 场景 id。文案在 i18n 的 `demoScenario`。 */
-export type DemoScenarioId = "day" | "asking" | "silence" | "tucked" | "look";
+/**
+ * 场景 id。文案在 i18n 的 `demoScenario`。
+ *
+ * 前五个讲**灯牌本身**（一天里怎么呼吸）；后三个讲 0.5 之后长出来的那半边：
+ * 打开面板能做什么、Call Me 留言从哪来、灯上的手势怎么呼出菜单。
+ */
+export type DemoScenarioId =
+  | "day"
+  | "asking"
+  | "silence"
+  | "tucked"
+  | "look"
+  | "inbox"
+  | "callme"
+  | "menu";
+
+/** 一步画在哪个舞台上。不填 = 灯牌（老五个场景全是这个）。 */
+export type DemoStageKind = "lamp" | "panel" | "menu";
 
 
 export interface DemoRow {
@@ -110,6 +131,25 @@ export interface DemoStep {
   triggerState?: SignalState;
   /** 这一步假装在点击穿透，让 `passthrough` 角灯有条件亮。 */
   passThrough?: boolean;
+
+  /**
+   * 这一步画在哪个舞台上。不填 = 灯牌（老五个场景全是这个）。
+   *
+   * `panel` 用只读面板（`DemoPanel`），`menu` 用长按呼出的圆环（`LampMenu`）。
+   * 两者都是**产品里那个组件的本体**，不是另画一张示意图。
+   */
+  stage?: DemoStageKind;
+  /** `stage === "panel"` 时取哪一帧。frame id 与 step.id 同名，单测会盯住。 */
+  panel?: DemoPanelFrameId;
+  /** `stage === "menu"` 时，「暂停 / 继续」那一项摆成暂停后的样子。 */
+  menuPaused?: boolean;
+  /**
+   * 这一步把哪一组标成「推迟 15 分钟」（0.6.7 的右键菜单动作）。
+   *
+   * 只改展示：牌退成灰、停闪、显示倒计时，底层状态一点不动 —— 所以演示里
+   * 也只是给 `GroupView.snooze_until_ms` 一个未来的时间，没有别的假字段。
+   */
+  snooze?: DemoGroupId;
 }
 
 export interface DemoScenario {
@@ -117,7 +157,7 @@ export interface DemoScenario {
   steps: DemoStep[];
 }
 
-/** 每一步停多久。场景最长 9 步 ≈ 30 秒，最短 2 步 ≈ 7 秒。 */
+/** 每一步停多久。场景最长 9 步 ≈ 30 秒，最短 3 步 ≈ 10 秒。 */
 export const DEMO_STEP_MS = 3200;
 
 export const DEMO_SCENARIOS: DemoScenario[] = [
@@ -427,6 +467,179 @@ export const DEMO_SCENARIOS: DemoScenario[] = [
       },
     ],
   },
+  {
+    // 0.6.6 之后「灯红了，然后呢」的完整链路。灯只告诉你有事，细节在面板里：
+    // 打开 → 看分段与审批 → 离开摘要 → 不想现在处理就推迟 → 处理完的空态。
+    id: "inbox",
+    steps: [
+      {
+        id: "inboxLampRed",
+        durationMs: DEMO_STEP_MS,
+        aggregate: "permission",
+        rows: [
+          { id: "review", state: "permission" },
+          { id: "build", state: "working" },
+        ],
+      },
+      {
+        id: "inboxNeed",
+        stage: "panel",
+        panel: "inboxNeed",
+        durationMs: DEMO_STEP_MS + 1800,
+        aggregate: "permission",
+        // 面板帧自己的四个组：permission / attention / working / done。
+        // 这里用三个演示组 id 复述同一组优先级，让 demoSnapshot 仍然自洽。
+        rows: [
+          { id: "review", state: "permission" },
+          { id: "build", state: "attention" },
+          { id: "api", state: "working" },
+        ],
+      },
+      {
+        id: "inboxApproval",
+        stage: "panel",
+        panel: "inboxApproval",
+        durationMs: DEMO_STEP_MS + 1800,
+        aggregate: "permission",
+        rows: [
+          { id: "review", state: "permission" },
+          { id: "build", state: "permission" },
+        ],
+      },
+      {
+        id: "inboxAway",
+        stage: "panel",
+        panel: "inboxAway",
+        durationMs: DEMO_STEP_MS + 1800,
+        aggregate: "permission",
+        rows: [
+          { id: "review", state: "permission" },
+          { id: "build", state: "attention" },
+          { id: "api", state: "working" },
+        ],
+      },
+      {
+        id: "inboxSnoozed",
+        durationMs: DEMO_STEP_MS + 1200,
+        aggregate: "permission",
+        rows: [
+          { id: "review", state: "permission" },
+          { id: "build", state: "working" },
+        ],
+        // 右键那块牌 →「推迟 15 分钟」。牌退成灰、停闪、显示倒计时。
+        snooze: "review",
+      },
+      {
+        id: "inboxEmpty",
+        stage: "panel",
+        panel: "inboxEmpty",
+        durationMs: DEMO_STEP_MS + 1200,
+        aggregate: "offline",
+        rows: [],
+      },
+    ],
+  },
+  {
+    // Call Me：外面智能体发来的留言走的是**另一条通道** —— 不点红灯、不塞待办。
+    // 这一场从「灯没红」开始，讲的是同一个面板的第二个页签。
+    id: "callme",
+    steps: [
+      {
+        id: "callmeLampQuiet",
+        durationMs: DEMO_STEP_MS + 800,
+        aggregate: "working",
+        rows: [
+          { id: "build", state: "working" },
+          { id: "api", state: "done" },
+        ],
+      },
+      {
+        id: "messagesInbox",
+        stage: "panel",
+        panel: "messagesInbox",
+        durationMs: DEMO_STEP_MS + 1800,
+        aggregate: "working",
+        rows: [
+          { id: "build", state: "working" },
+          { id: "api", state: "done" },
+        ],
+      },
+      {
+        id: "messagesUnread",
+        stage: "panel",
+        panel: "messagesUnread",
+        durationMs: DEMO_STEP_MS + 1800,
+        aggregate: "working",
+        rows: [
+          { id: "build", state: "working" },
+          { id: "api", state: "done" },
+        ],
+      },
+      {
+        id: "messagesOpen",
+        stage: "panel",
+        panel: "messagesOpen",
+        durationMs: DEMO_STEP_MS + 1800,
+        aggregate: "working",
+        rows: [
+          { id: "build", state: "working" },
+          { id: "api", state: "done" },
+        ],
+      },
+      {
+        id: "messagesEmpty",
+        stage: "panel",
+        panel: "messagesEmpty",
+        durationMs: DEMO_STEP_MS + 1200,
+        aggregate: "working",
+        rows: [
+          { id: "build", state: "working" },
+          { id: "api", state: "done" },
+        ],
+      },
+    ],
+  },
+  {
+    // 灯上的手势：单击折叠、长按 480ms 呼出圆环、拖动移动窗口。
+    // 圆环用 LampMenu 本体（preview 开关关掉抢焦点 / 键盘 / 真动作）。
+    id: "menu",
+    steps: [
+      {
+        id: "menuLamp",
+        durationMs: DEMO_STEP_MS + 800,
+        aggregate: "permission",
+        rows: [
+          { id: "review", state: "permission" },
+          { id: "build", state: "working" },
+        ],
+      },
+      {
+        id: "menuRing",
+        stage: "menu",
+        durationMs: DEMO_STEP_MS + 1800,
+        aggregate: "permission",
+        rows: [{ id: "review", state: "permission" }],
+      },
+      {
+        id: "menuPaused",
+        stage: "menu",
+        menuPaused: true,
+        durationMs: DEMO_STEP_MS + 1200,
+        aggregate: "working",
+        rows: [{ id: "build", state: "working" }],
+      },
+      {
+        id: "menuBack",
+        durationMs: DEMO_STEP_MS + 800,
+        aggregate: "permission",
+        rows: [
+          { id: "review", state: "permission" },
+          { id: "build", state: "working" },
+        ],
+        collapsed: true,
+      },
+    ],
+  },
 ];
 
 /**
@@ -502,6 +715,24 @@ export function nextDemoStep(index: number): number {
   return start + ((index - start + 1) % count);
 }
 
+/**
+ * 独立演示页（`?window=demo`）的深链：`?demo=inbox&step=2` 直接停到那一帧。
+ *
+ * 给 README 动图和视觉核对用 —— 不用先等前面几个场景播完，也不用往产品代码里
+ * 塞一个只为截图存在的开关。返回的是 `DEMO_STEPS` 的全局下标；认不出来的场景
+ * 返回 null，落回默认的第一场。`step` 是**场景内的 1 起序号**，越界就夹到首尾。
+ */
+export function demoDeepLink(search: string): number | null {
+  const params = new URLSearchParams(search);
+  const id = params.get("demo");
+  if (!id || !DEMO_SCENARIOS.some((item) => item.id === id)) return null;
+  const scenario = id as DemoScenarioId;
+  const count = scenarioSteps(scenario).length;
+  const raw = Number(params.get("step") ?? "1");
+  const wanted = Number.isInteger(raw) && raw >= 1 ? raw : 1;
+  return scenarioStart(scenario) + Math.min(wanted, count) - 1;
+}
+
 /** 上一步，同样在场景内循环。 */
 export function prevDemoStep(index: number): number {
   const scenario = stepScenario(index);
@@ -535,6 +766,12 @@ export function demoSnapshot(
   triggerState: SignalState | undefined;
   /** 这一步是否把「点击穿透」当成已开启（给 `passthrough` 角灯当事实）。 */
   passThrough: boolean;
+  /** 这一步画哪个舞台。 */
+  stage: DemoStageKind;
+  /** `stage === "panel"` 时取哪一帧。 */
+  panel: DemoPanelFrameId | undefined;
+  /** `stage === "menu"` 时「暂停 / 继续」那一项摆成暂停后的样子。 */
+  menuPaused: boolean;
 } {
   const step = DEMO_STEPS[index];
   const groups: GroupView[] = step.rows.map((row) => ({
@@ -545,8 +782,9 @@ export function demoSnapshot(
     // 固定「6 秒前进入当前状态」，牌上的「已持续」会自己往上走
     since_ms: now - 6_000,
     stale_progress: row.staleProgress ?? null,
-    // 演示页不演示推迟：那不是「灯在做什么」，而是用户对某一组下的令。
-    snooze_until_ms: 0,
+    // 只有「推迟 15 分钟」那一步给一个未来的时间，其余一律 0。
+    // 用的是产品里那个真实字段：灯自己会据此退成灰、停闪、显示倒计时。
+    snooze_until_ms: step.snooze === row.id ? now + 15 * 60_000 : 0,
     sessions: [],
   }));
   return {
@@ -562,5 +800,8 @@ export function demoSnapshot(
     muted: step.muted === true,
     triggerState: step.triggerState,
     passThrough: step.passThrough === true,
+    stage: step.stage ?? "lamp",
+    panel: step.panel,
+    menuPaused: step.menuPaused === true,
   };
 }

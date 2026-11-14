@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SignalLamp } from "./SignalLamp";
+import { DemoPanel } from "./DemoPanel";
+import { LampMenu, type MenuItemSpec } from "./LampMenu";
 import {
   DEMO_CORNER_GROUP,
   DEMO_SCENARIOS,
   DEMO_STEPS,
+  demoDeepLink,
   demoSnapshot,
   nextDemoStep,
   prevDemoStep,
@@ -13,8 +16,10 @@ import {
   type DemoGroupId,
   type DemoScenarioId,
 } from "../lib/demo";
-import { useMessages } from "../lib/i18n";
+import { useLang, useMessages } from "../lib/i18n";
 import { skins } from "../lib/presets";
+import { demoPanelFrame } from "../lib/demoPanel";
+import { lampVars } from "../lib/lampStyle";
 import {
   DEFAULT_SIGN_LABEL_TEMPLATE,
   useSettings,
@@ -26,6 +31,9 @@ interface Props {
   compact?: boolean;
 }
 
+/** 演示里所有动作都退化成空实现：两个 preview 开关已经保证它们不会被调到。 */
+const NOOP = () => {};
+
 /**
  * 一段会自己播的「产品说明」。
  *
@@ -35,13 +43,24 @@ interface Props {
  *
  * **按场景播，不是一条长剧本**：上面一排场景 chip，每个场景自己循环。想看
  * 「折叠成一颗灯」不用先等 20 秒别的步骤 —— 那正是这类演示最容易劝退人的地方。
+ *
+ * **三种舞台**：灯牌 / 只读收件箱面板 / 长按呼出的圆环菜单。后两个也是**产品里
+ * 那个组件的本体**（各自带 preview 开关），不是另画一张示意图 —— 灯牌改了颜色、
+ * 收件箱改了分段、圆环改了图标，演示都跟着变。
  */
 export function DemoStage({ compact = false }: Props) {
   const m = useMessages();
+  const lang = useLang();
   const settings = useSettings();
+  const size = compact ? 22 : 30;
+  // 深链是「停在这一帧」的工具：给 README 动图 / 视觉核对用，所以默认不播，
+  // 点一下「播放」才往下走。没有深链时一切照旧，从第一场自动播。
+  const deepLink = useRef(
+    demoDeepLink(typeof window === "undefined" ? "" : window.location.search),
+  ).current;
   // `step` 始终是 `DEMO_STEPS` 的全局下标，场景只是它的一段区间。
-  const [step, setStep] = useState(0);
-  const [playing, setPlaying] = useState(true);
+  const [step, setStep] = useState(deepLink ?? 0);
+  const [playing, setPlaying] = useState(deepLink === null);
 
   // since_ms / lastDoneMs 都以挂载时刻为基准固定下来，牌上的「已持续」和
   // 「刚完成 · N 分钟前」由 SignalLamp 自己的钟往前走。这样 DemoStage 不必每秒
@@ -83,7 +102,7 @@ export function DemoStage({ compact = false }: Props) {
       collapsed: frame.collapsed,
       quiet: frame.quiet,
       shape: frame.shape ?? settings.shape,
-      size: compact ? 22 : 30,
+      size,
       sign_opacity: 100,
       show: { name: true, state: true, age: true, message: true, dot: true },
       // 不继承用户的个性化：组名、隐藏的组、逐状态的颜色 / 形状覆盖。
@@ -131,6 +150,26 @@ export function DemoStage({ compact = false }: Props) {
     frame.triggerState,
   ]);
 
+  /**
+   * 圆环上的四项，和 `SignalLamp::menuOpen` 里那一份**同序、同图标、同文案键**：
+   * 顺时针从上开始是收件箱 / 设置 / 暂停 / 退出。演示读的是同一份 `m`，
+   * 真菜单改了名字，这里跟着变。
+   */
+  const menuItems: MenuItemSpec[] = useMemo(
+    () => [
+      { id: "inbox", icon: "▤", label: m.lampMenuInbox, onSelect: NOOP },
+      { id: "settings", icon: "⚙", label: m.lampMenuSettings, onSelect: NOOP },
+      {
+        id: "pause",
+        icon: frame.menuPaused ? "▶" : "‖",
+        label: frame.menuPaused ? m.lampMenuResume : m.lampMenuPause,
+        onSelect: NOOP,
+      },
+      { id: "quit", icon: "✕", label: m.lampMenuQuit, onSelect: NOOP, danger: true },
+    ],
+    [m, frame.menuPaused],
+  );
+
   const info = m.demoStep[DEMO_STEPS[step].id];
 
   /** 切场景 / 逐步都保持「场景内循环」，这样首尾相接不会跳画面。 */
@@ -162,18 +201,48 @@ export function DemoStage({ compact = false }: Props) {
         ))}
       </div>
 
-      <div className="demo-stage">
-        <div className="demo-lamp">
-          <SignalLamp
-            preview
-            previewPassThrough={frame.passThrough}
-            aggregate={frame.aggregate}
-            groups={frame.groups}
-            settings={demoSettings}
-            paused={false}
-            lastDoneMs={frame.lastDoneMs}
+      <div className="demo-stage" data-stage={frame.stage}>
+        {frame.stage === "panel" ? (
+          // key 换帧重挂载：帧里给的初始页签 / 展开项每切一步都要重新生效。
+          <DemoPanel
+            key={DEMO_STEPS[step].id}
+            frame={demoPanelFrame(frame.panel!, startedAt, m.demoPanel)}
+            m={m}
+            lang={lang}
+            now={startedAt}
           />
-        </div>
+        ) : frame.stage === "menu" ? (
+          // `.lamp-root-menu` 那套 CSS 变量（--size / --sign-line / 状态色）本来是
+          // 灯窗自己挂在根上的。这里没有灯窗，得把同一份 lampVars 补上，否则
+          // 圆环会掉回默认字号、描边和颜色。
+          <div
+            className="lamp-root lamp-root-menu demo-menu-root"
+            style={
+              { "--size": `${size}px`, ...lampVars(demoSettings) } as React.CSSProperties
+            }
+            data-aggregate={frame.aggregate}
+            data-effect={demoSettings.effect}
+          >
+            <LampMenu
+              preview
+              items={menuItems}
+              aggregate={frame.aggregate}
+              onClose={NOOP}
+            />
+          </div>
+        ) : (
+          <div className="demo-lamp">
+            <SignalLamp
+              preview
+              previewPassThrough={frame.passThrough}
+              aggregate={frame.aggregate}
+              groups={frame.groups}
+              settings={demoSettings}
+              paused={false}
+              lastDoneMs={frame.lastDoneMs}
+            />
+          </div>
+        )}
         <span className="demo-badge">{m.demoNotReal}</span>
       </div>
 

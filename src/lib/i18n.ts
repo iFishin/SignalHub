@@ -4,6 +4,7 @@ import { inTauri } from "./env";
 import { useSettings, type HttpPreset, type Settings } from "./useSettings";
 import type { SignalState } from "./types";
 import type { DemoGroupId, DemoScenarioId } from "./demo";
+import type { DemoPanelTexts } from "./demoPanel";
 import type { HealthCheck, HealthLevel } from "./health";
 import type { DigestFact } from "./digest";
 import type { InsightFact } from "./insights";
@@ -351,6 +352,8 @@ export interface Messages {
   demoScenario: Record<DemoScenarioId, string>;
   /** 每一步的标题 + 说明。键是 demo.ts 里的 DemoStep.id。 */
   demoStep: Record<string, { title: string; body: string }>;
+  /** 演示面板里的项目名 / 命令 / 留言文本。中英各一份，见 demoPanel.ts。 */
+  demoPanel: DemoPanelTexts;
   demoStepCount: (index: number, total: number) => string;
   demoPrev: string;
   demoNext: string;
@@ -1398,10 +1401,11 @@ export const MESSAGES: Record<Lang, Messages> = {
     railSearchEmpty: "没有匹配的页签",
     lampFirstRun: "第一次用？",
     lampFirstRunDemo: "看演示",
-    lampFirstRunDemoHint: "不接智能体，先看这盏灯怎么亮（五段场景，每段 10–20 秒）",
+    lampFirstRunDemoHint: "不接智能体，先看它怎么亮（按场景循环，每段 10–30 秒）",
 
-    demoTitle: "看懂 SignalHub 的五种场景",
-    demoIntro: "按场景循环播放 —— 想看哪一段点哪一段，不用接任何智能体。",
+    demoTitle: "SignalHub 场景演示",
+    demoIntro:
+      "按场景循环播放 —— 灯牌、收件箱面板和圆环菜单都在这一段里，点一下就切过去，不用接任何智能体。",
     demoBackToSettings: "返回设置",
     demoNotReal: "演示画面 · 不会改动任何真实状态",
     demoGroup: { build: "构建", api: "接口", review: "审阅" },
@@ -1411,6 +1415,43 @@ export const MESSAGES: Record<Lang, Messages> = {
       silence: "它不说话了",
       tucked: "收起来的样子",
       look: "用光说话",
+      inbox: "收件箱与审批",
+      callme: "Call Me 留言",
+      menu: "灯上的手势",
+    },
+    // 面板演示里的「假数据」文本。放在这里有唯一一个理由：英文界面里不该
+    // 冒出一句中文项目名。数据形状（几个组、几条留言）在 demoPanel.ts。
+    demoPanel: {
+      project: ["官网重构", "支付接口", "队列任务", "文档站", "随手记"],
+      agent: "Claude Code",
+      machine: "书房那台 Mac",
+      cwd: "/Users/me/work/web",
+      tool: "Bash",
+      command: "npm run build",
+      longCommand:
+        "rm -rf ./dist ./coverage && NODE_ENV=production npm run build && npm run verify:all -- --shard=3/8 --reporter=junit && echo done",
+      note: "等你看过再继续",
+      source: ["家里的工作机", "云上的构建机"],
+      // 数组是旧→新（和 Rust 侧一致），留言页会翻成新→旧。最后一条既是
+      // 最新的、也是 `messagesOpen` 默认展开的那条 —— 所以把「出处是网址」
+      // 放在它身上，那一帧才真的能演示「打开来源」按钮。
+      letters: [
+        {
+          title: "明早的包已经打好",
+          text: "构建机上的产物齐了，明早可以直接发。",
+          context: "CI runner · build-07",
+        },
+        {
+          title: "迁移脚本改了三处字段",
+          text: "我没敢自己合，等你回来核对一下 users 表那一段。",
+          context: "来自 ~/.signalhub/callme.toml",
+        },
+        {
+          title: "构建跑完了",
+          text: "官网重构的构建通过了，预览链接我放在 PR 描述里了。",
+          context: "https://example.com/pr/128",
+        },
+      ],
     },
     demoStep: {
       idle: {
@@ -1513,6 +1554,72 @@ export const MESSAGES: Record<Lang, Messages> = {
         title: "也能一键换整套",
         body: "这一步是「霓虹」皮肤：配色、牌底、圆角、描边、灯珠形状、牌的轮廓、动效，以及上下长刻与行尾四格，一次全换。「外观 → 皮肤」里一共五套；只想改大小或透明度的话，下面那四套外观预设不动这些。",
       },
+
+      // ---- 收件箱 / 审批 -------------------------------------------------
+      inboxLampRed: {
+        title: "灯只说「有事」，细节在收件箱里",
+        body: "红色那块告诉你哪一组在等你批准，但不会把要执行的命令摊在桌面上。长按灯呼出圆环、或从托盘打开收件箱，才看得到「到底要我做什么」。",
+      },
+      inboxNeed: {
+        title: "打开收件箱：需要你的排最前",
+        body: "同一个面板按「需要你 / 运行中 / 刚刚完成 / 空闲沉默」分四段，一行就是一个会话，往下滚能依次看到后面三段。红 > 黄 > 绿，所以最该处理的总在最上面；远程机器上那行会多一枚机器名。",
+      },
+      inboxApproval: {
+        title: "看不全，就不给放行",
+        body: "这条命令被截断了：详情只露出前半段，「允许」是灰的，只能按「拒绝」；危险操作还会多一条红横幅。往下滚是另一条完整命令，那里才给一键放行。每条审批只画一次，不会在两段里各占一行。",
+      },
+      inboxAway: {
+        title: "离开一阵子，回来先看这一句",
+        body: "面板顶上那行「你离开的 24 分钟」把期间发生的事压成一句：几个完成、几个失败、几个还在等你，以及跑完就已经清掉的临时会话。不用从历史里翻。",
+      },
+      inboxSnoozed: {
+        title: "先放一边 15 分钟",
+        body: "右键那块牌 →「推迟 15 分钟」。牌退成灰、不再闪、时长换成倒计时，但底层状态一点没改：它只是别催你，不是把这件事办了。再点一次就取消。",
+      },
+      inboxEmpty: {
+        title: "处理完，面板自己就空了",
+        body: "没有会话、没有待审批时是明确的空态，不是一片空白；「去接入」和「看演示」两个出口还留在原处。灯也回到安静，等下一次真有事再亮。",
+      },
+
+      // ---- Call Me 留言 ---------------------------------------------------
+      callmeLampQuiet: {
+        title: "留言不会把灯点红",
+        body: "外面的智能体通过 Call Me 链接发来一句话，走的是另一条通道：它不占状态灯、不塞待办、也不弹通知。所以此刻灯还是绿的 —— 这是刻意的设计，不是漏报。",
+      },
+      messagesInbox: {
+        title: "同一个面板，第二个页签上有个红点",
+        body: "收件箱回答「有没有事要我做」，留言回答「刚才有人找我吗」。两件事平级，所以做成两个页签；未读数就挂在名字旁边，人还在收件箱页也能先看见。",
+      },
+      messagesUnread: {
+        title: "谁发来的、多久以前、说了什么",
+        body: "每条留言一行，蓝点是没读过的。名字是链接的来源，不是智能体自报的名字；时间按收到那一刻算。展开一条即标为已读，不用再点一次确认。",
+      },
+      messagesOpen: {
+        title: "点开一条，正文和出处都在",
+        body: "展开后能看到全文、智能体自报的名字、以及它说「从哪读到这条链接」的出处；这一条的出处是网址，于是那一格变成「打开出处」。复制全文也在这一层 —— 收起时行里只有两行摘要。",
+      },
+      messagesEmpty: {
+        title: "空，也要说清楚为什么空",
+        body: "这里演示的是「还没配服务器」：空态给的是「去配置」，不是「没有留言」。四种空态各有各的原因，说错原因会让人跑去修一个根本没坏的东西。",
+      },
+
+      // ---- 灯上的手势 / 圆环菜单 -------------------------------------------
+      menuLamp: {
+        title: "灯上有三种手势",
+        body: "单击把整叠牌收成一颗灯、再点一下展开；按住约半秒呼出圆环；按住拖动则把灯挪到桌面别处。移动超过几个像素就算拖拽，不会误触成菜单。",
+      },
+      menuRing: {
+        title: "长按半秒，四个动作绕成一圈",
+        body: "从上顺时针是收件箱 / 设置 / 暂停 / 退出，中心那颗始终是此刻的灯。方向键或数字键 1–4 能直达，Esc 收起；退出这种不可逆的动作单独用警示色。",
+      },
+      menuPaused: {
+        title: "菜单跟着处境变",
+        body: "暂停之后同一枚位置会写成「继续」，图标也一起换。圆环不是一张固定的图，它读的是当前状态 —— 所以中心和这一项永远说的是同一件事。",
+      },
+      menuBack: {
+        title: "收起，回到一颗灯",
+        body: "点圆环外的空白、点中心那颗灯珠、或者按 Esc，窗口就缩回原来那一小块。折叠态照样会按状态闪：少占桌面，不等于把提醒关掉。",
+      },
     },
     demoStepCount: (index, total) => `${index} / ${total}`,
     demoPrev: "上一步",
@@ -1520,7 +1627,7 @@ export const MESSAGES: Record<Lang, Messages> = {
     demoPlay: "播放",
     demoPause: "暂停",
     demoReplay: "重播",
-    demoCta: "看四段演示",
+    demoCta: "看演示",
     demoCtaHint: "还没接智能体？先看一遍这盏灯会怎么亮，不用配任何东西。",
 
     guideEntry: "第一次用？",
@@ -2509,10 +2616,11 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     lampFirstRun: "New here?",
     lampFirstRunDemo: "See a demo",
     lampFirstRunDemoHint:
-      "See the lamp in action without connecting any agent (five scenes, 10–20s each)",
+      "See the lamp in action without connecting any agent (looping scenes, 10–30s each)",
 
-    demoTitle: "SignalHub in five scenes",
-    demoIntro: "Four looping scenes — jump to the one you care about, no agent needed.",
+    demoTitle: "See SignalHub in action",
+    demoIntro:
+      "Looping scenes — the lamp, the inbox panel and the ring menu; jump to the one you care about, no agent needed.",
     demoBackToSettings: "Back to settings",
     demoNotReal: "Demo only · no real state is changed",
     demoGroup: { build: "Build", api: "API", review: "Review" },
@@ -2522,6 +2630,38 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       silence: "When it goes quiet",
       tucked: "Tucked away",
       look: "Speaking in light",
+      inbox: "Inbox & approvals",
+      callme: "Call Me notes",
+      menu: "Gestures on the lamp",
+    },
+    demoPanel: {
+      project: ["Website rebuild", "Payments API", "Queue worker", "Docs site", "Scratch notes"],
+      agent: "Claude Code",
+      machine: "the study Mac",
+      cwd: "/Users/me/work/web",
+      tool: "Bash",
+      command: "npm run build",
+      longCommand:
+        "rm -rf ./dist ./coverage && NODE_ENV=production npm run build && npm run verify:all -- --shard=3/8 --reporter=junit && echo done",
+      note: "Waiting for your call",
+      source: ["Home workstation", "Cloud build box"],
+      letters: [
+        {
+          title: "Tomorrow's package is ready",
+          text: "Artifacts are all on the build box; it can ship in the morning.",
+          context: "CI runner · build-07",
+        },
+        {
+          title: "Migration touches three columns",
+          text: "I did not want to merge it myself — please check the users table when you are back.",
+          context: "from ~/.signalhub/callme.toml",
+        },
+        {
+          title: "Build finished",
+          text: "The website rebuild passed. I put the preview link in the PR description.",
+          context: "https://example.com/pr/128",
+        },
+      ],
     },
     demoStep: {
       idle: {
@@ -2623,6 +2763,72 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       lookSkin: {
         title: "Or swap the whole look at once",
         body: "This step is the Neon skin: palette, card tint, radius and border, dot shape, card outline, motion, long ticks and all four end slots change together. There are five skins under Appearance → Skin; the four look presets below only touch size, opacity and which fields show.",
+      },
+
+      // ---- Inbox & approvals ---------------------------------------------
+      inboxLampRed: {
+        title: "The lamp says “something needs you”; the inbox says what",
+        body: "The red card tells you which group is waiting, but it does not paste the command onto your desktop. Long-press the lamp for the ring menu, or open the inbox from the tray, to see what you are actually being asked to do.",
+      },
+      inboxNeed: {
+        title: "Open the inbox: what needs you comes first",
+        body: "One panel, four sections — Needs you / Running / Just finished / Idle & quiet — with one row per session; scroll down for the other three. Red outranks amber and green, so the thing to handle first is always on top, and a session on another machine gets a machine badge.",
+      },
+      inboxApproval: {
+        title: "If you cannot see all of it, you cannot allow it",
+        body: "This command was truncated: only its first half is shown, Allow is greyed out and Deny is the only option; dangerous commands also get a red banner. Scroll down for the complete command, where one-click Allow is available. Each approval is drawn once, never duplicated across two sections.",
+      },
+      inboxAway: {
+        title: "Back after a while? Read this one line",
+        body: "The strip at the top condenses the time you were away into a sentence: how many finished, failed, still need you and are still running, plus sessions that finished and vanished. No digging through history.",
+      },
+      inboxSnoozed: {
+        title: "Put one aside for 15 minutes",
+        body: "Right-click a card → Snooze for 15 min. The card turns grey, stops blinking and shows a countdown, but its state does not change: it stops nagging, it does not resolve anything. Click once more to cancel.",
+      },
+      inboxEmpty: {
+        title: "Once handled, the panel empties itself",
+        body: "No sessions and no approvals is an explicit empty state, not a blank area — Connect an agent and See the demo stay where they were. The lamp goes quiet too and lights up again the next time something really happens.",
+      },
+
+      // ---- Call Me notes ---------------------------------------------------
+      callmeLampQuiet: {
+        title: "A note does not turn the lamp red",
+        body: "Outside agents send notes through a Call Me link on a separate channel: it takes no slot on the lamp, adds no to-do and fires no notification. So the lamp is still green here — deliberate, not a missed event.",
+      },
+      messagesInbox: {
+        title: "Same panel, a badge on the second tab",
+        body: "The inbox answers “is there something for me to do”; notes answer “did anyone try to reach me”. They are peers, so they are two tabs, and the unread count sits beside the name — visible even while you are still on the inbox tab.",
+      },
+      messagesUnread: {
+        title: "Who sent it, when, and what they said",
+        body: "One row per note; a blue dot means unread. The name is the link it came from, not a name the agent claimed, and the timestamp is when it arrived. Opening one marks it read — no second confirmation tap.",
+      },
+      messagesOpen: {
+        title: "Open one: full text and provenance",
+        body: "Expanded, you get the full text, the agent's self-reported name, and where it says it read the link from; this one is a URL, so that slot becomes an Open source button. Copy text lives on this layer too — collapsed rows show only a two-line excerpt.",
+      },
+      messagesEmpty: {
+        title: "Empty still explains why",
+        body: "This frame is “no server configured yet”: the empty state offers Go configure, not “no messages”. Four different causes produce four different messages — naming the wrong one sends people off to fix something that was never broken.",
+      },
+
+      // ---- Gestures / ring menu -------------------------------------------
+      menuLamp: {
+        title: "Three gestures on the lamp",
+        body: "A click folds the stack into one light and another click unfolds it; hold for about half a second to bring up the ring; hold and drag to move the lamp elsewhere. Moving a few pixels counts as a drag, so the menu never fires by accident.",
+      },
+      menuRing: {
+        title: "Hold half a second: four actions in a ring",
+        body: "Clockwise from the top: Inbox / Settings / Pause / Quit, with the current lamp always at the centre. Arrow keys or digits 1–4 jump straight to an item, Esc closes it; the irreversible Quit gets its own warning colour.",
+      },
+      menuPaused: {
+        title: "The menu follows the situation",
+        body: "Once paused, that same slot reads Resume and its icon changes with it. The ring is not a fixed picture — it reads the live state, so the centre and this item always describe the same thing.",
+      },
+      menuBack: {
+        title: "Close it, back to one light",
+        body: "Click the empty space outside the ring, click the centre light, or press Esc, and the window shrinks back to its small size. The folded lamp still blinks by state: taking less desktop space is not the same as muting anything.",
       },
     },
     demoStepCount: (index, total) => `${index} / ${total}`,

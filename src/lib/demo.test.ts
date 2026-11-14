@@ -3,6 +3,7 @@ import {
   DEMO_SCENARIOS,
   DEMO_STEPS,
   demoAggregate,
+  demoDeepLink,
   demoSnapshot,
   nextDemoStep,
   prevDemoStep,
@@ -14,6 +15,8 @@ import {
 } from "./demo";
 import { MESSAGES } from "./i18n";
 import { skins } from "./presets";
+import { buildInbox } from "./inboxRows";
+import { DEMO_PANEL_FRAMES, demoPanelFrame, type DemoPanelFrameId } from "./demoPanel";
 import type { SignLights } from "./useSettings";
 
 const LABELS: Record<DemoGroupId, string> = {
@@ -160,8 +163,17 @@ describe("demo steps", () => {
     expect(nextDemoStep(0)).toBe(1);
   });
 
-  it("场景 id 覆盖五种用法，且默认从「一天的节奏」开始", () => {
-    const ids: DemoScenarioId[] = ["day", "asking", "silence", "tucked", "look"];
+  it("场景 id 覆盖八种用法，且默认从「一天的节奏」开始", () => {
+    const ids: DemoScenarioId[] = [
+      "day",
+      "asking",
+      "silence",
+      "tucked",
+      "look",
+      "inbox",
+      "callme",
+      "menu",
+    ];
     expect(DEMO_SCENARIOS.map((scenario) => scenario.id)).toEqual(ids);
     expect(scenarioStart("day")).toBe(0);
   });
@@ -234,5 +246,170 @@ describe("demo steps", () => {
     expect(frame.groups[0].since_ms).toBe(NOW - 6_000);
     expect(frame.groups[0].sessions).toEqual([]);
     expect(frame.groups[0].stale_progress).toBeNull();
+  });
+
+  // ---- 0.6.7 之后的三种舞台 ------------------------------------------------
+
+  /** 老五个场景一个都不该被改成面板 / 菜单，默认舞台仍是灯牌。 */
+  it("老场景全在灯牌舞台上，新场景才切到面板与圆环", () => {
+    for (const id of ["day", "asking", "silence", "tucked", "look"] as const) {
+      for (const step of scenarioSteps(id)) {
+        expect(step.stage, step.id).toBeUndefined();
+        expect(demoSnapshot(DEMO_STEPS.indexOf(step), NOW, LABELS).stage, step.id).toBe("lamp");
+      }
+    }
+    const stages = DEMO_SCENARIOS.map((scenario) => [
+      scenario.id,
+      new Set(scenario.steps.map((step) => step.stage ?? "lamp")),
+    ]);
+    expect(stages.find(([id]) => id === "inbox")?.[1]).toEqual(
+      new Set(["lamp", "panel"]),
+    );
+    expect(stages.find(([id]) => id === "callme")?.[1]).toEqual(
+      new Set(["lamp", "panel"]),
+    );
+    expect(stages.find(([id]) => id === "menu")?.[1]).toEqual(
+      new Set(["lamp", "menu"]),
+    );
+  });
+
+  /**
+   * 每一步的舞台数据必须齐：面板步骤得给出 frame id（并且和步骤 id 同名，
+   * 这样文案表与数据层不会各念一套），菜单步骤不能偷偷带 panel，反之亦然。
+   */
+  it("每个非灯牌步骤都带齐了自己的舞台数据", () => {
+    const panels = new Set<DemoPanelFrameId>();
+    for (const step of DEMO_STEPS) {
+      if (step.stage === "panel") {
+        expect(step.panel, step.id).toBe(step.id);
+        expect(DEMO_PANEL_FRAMES, step.id).toContain(step.panel);
+        panels.add(step.panel!);
+        expect(step.stage === "panel" && step.menuPaused, step.id).toBeFalsy();
+      } else if (step.stage === "menu") {
+        expect(step.panel, step.id).toBeUndefined();
+      } else {
+        expect(step.panel, step.id).toBeUndefined();
+        expect(step.menuPaused, step.id).toBeUndefined();
+      }
+      const frame = demoSnapshot(DEMO_STEPS.indexOf(step), NOW, LABELS);
+      expect(frame.stage, step.id).toBe(step.stage ?? "lamp");
+      expect(frame.panel, step.id).toBe(step.panel);
+      expect(frame.menuPaused, step.id).toBe(step.menuPaused === true);
+    }
+    // 八个面板帧，一个都不能在演示里缺席（否则那一帧的数据没人盯着）。
+    expect([...panels].sort()).toEqual([...DEMO_PANEL_FRAMES].sort());
+  });
+
+  /**
+   * 演示面板必须能用**真实纯函数**处理：分段 / 排序 / 审批去重都不是演示自己排的。
+   * 两种语言各跑一遍，顺带保证 demoPanel 文本表里没有漏掉的空字符串。
+   */
+  it("每个面板帧都能被真实 buildInbox 处理，中英文文本都齐", () => {
+    for (const lang of LANGS) {
+      const texts = MESSAGES[lang].demoPanel;
+      expect(texts.project, lang).toHaveLength(5);
+      for (const value of [
+        ...texts.project,
+        texts.agent,
+        texts.machine,
+        texts.cwd,
+        texts.tool,
+        texts.command,
+        texts.longCommand,
+        texts.note,
+        ...texts.source,
+        ...texts.letters.flatMap((letter) => [letter.title, letter.text, letter.context]),
+      ]) {
+        expect(value.length, `${lang}: 演示文本不能是空的`).toBeGreaterThan(0);
+      }
+
+      for (const id of DEMO_PANEL_FRAMES) {
+        const frame = demoPanelFrame(id, NOW, texts);
+        const model = buildInbox(frame.snapshot, frame.approvals, {});
+        const total =
+          model.need.length +
+          model.running.length +
+          model.done.length +
+          model.quiet.length;
+        expect(total, `${lang}/${id}`).toBeGreaterThanOrEqual(0);
+        // 一条审批只画一次：两条审批 = 两行，而不是四行
+        if (id === "inboxApproval") {
+          expect(frame.approvals).toHaveLength(2);
+          expect(total).toBe(2);
+          expect(model.need.every((row) => row.approval)).toBe(true);
+        }
+        if (id === "inboxEmpty") expect(total).toBe(0);
+        // 说「四段」就得真的有四段：少一组 idle，那段在这帧里根本不会出现。
+        if (id === "inboxNeed") {
+          expect(model.need.length).toBeGreaterThan(0);
+          expect(model.running.length).toBeGreaterThan(0);
+          expect(model.done.length).toBeGreaterThan(0);
+          expect(model.quiet.length).toBeGreaterThan(0);
+          // 这一帧不带审批：详情会把一行撑到三倍高，四段就挤不进同一屏
+          expect(frame.approvals).toHaveLength(0);
+        }
+        if (id === "messagesInbox") expect(frame.tab).toBe("inbox");
+        if (id === "messagesOpen") {
+          expect(frame.tab).toBe("messages");
+          expect(frame.openSeq).toBeGreaterThan(0);
+          // 默认展开的那条必须带着网址出处，否则「打开来源」只存在于文案里
+          const opened = frame.callme.messages.find(
+            (message) => message.seq === frame.openSeq,
+          )!;
+          expect(opened.context, `${lang}/messagesOpen`).toMatch(/^https?:\/\//);
+        }
+      }
+    }
+  });
+
+  /** 留言那一场最关键的事实：灯没红、收件箱没有待办，但留言页签挂着未读。 */
+  it("Call Me 那一帧不把留言画成红灯，也不塞进收件箱", () => {
+    const frame = demoPanelFrame("messagesInbox", NOW, MESSAGES.zh.demoPanel);
+    expect(frame.snapshot.aggregate).toBe("working");
+    expect(frame.approvals).toHaveLength(0);
+    const model = buildInbox(frame.snapshot, frame.approvals, {});
+    expect(model.need).toHaveLength(0);
+    expect(
+      frame.callme.messages.length - Object.values(frame.callme.read).reduce((a, b) => a + b, 0),
+    ).toBeGreaterThanOrEqual(0);
+    const step = DEMO_STEPS.find((item) => item.id === "messagesInbox")!;
+    expect(step.aggregate).toBe("working");
+    expect(step.rows.some((row) => ["permission", "attention", "error"].includes(row.state)))
+      .toBe(false);
+  });
+
+  /** 深链是给截图 / 动图用的，必须夹在场景内，不能跳到别的场景去。 */
+  it("?demo=…&step=N 停在该场景内的那一帧", () => {
+    expect(demoDeepLink("")).toBeNull();
+    expect(demoDeepLink("?window=demo")).toBeNull();
+    expect(demoDeepLink("?demo=does-not-exist")).toBeNull();
+
+    const index = demoDeepLink("?window=demo&demo=inbox&step=2")!;
+    expect(stepScenario(index)).toBe("inbox");
+    expect(DEMO_STEPS[index].id).toBe("inboxNeed");
+    expect(demoDeepLink("?demo=menu&step=1")).toBe(scenarioStart("menu"));
+    expect(demoDeepLink("?demo=menu&step=99")).toBe(
+      scenarioStart("menu") + scenarioSteps("menu").length - 1,
+    );
+    // 0 / 负数 / 非数字都当第一步，而不是算出个负下标
+    expect(demoDeepLink("?demo=callme&step=0")).toBe(scenarioStart("callme"));
+    expect(demoDeepLink("?demo=callme&step=abc")).toBe(scenarioStart("callme"));
+  });
+
+  /** 推迟只改展示：给的是产品里那个真实字段，而且只落在被推迟的那一组上。 */
+  it("「先放一边 15 分钟」只给那一组一个未来的 snooze_until_ms", () => {
+    const step = DEMO_STEPS.find((item) => item.id === "inboxSnoozed")!;
+    expect(step.snooze).toBe("review");
+    const frame = demoSnapshot(DEMO_STEPS.indexOf(step), NOW, LABELS);
+    const snoozed = frame.groups.filter((group) => group.snooze_until_ms > NOW);
+    expect(snoozed).toHaveLength(1);
+    expect(snoozed[0].name).toBe("review");
+    // 状态一字不改 —— 推迟是「别催我」，不是把这件事办了
+    expect(snoozed[0].aggregate).toBe("permission");
+    const other = frame.groups.find((group) => group.name === "build")!;
+    expect(other.snooze_until_ms).toBe(0);
+
+    const plain = demoSnapshot(0, NOW, LABELS);
+    expect(plain.groups.every((group) => group.snooze_until_ms === 0)).toBe(true);
   });
 });

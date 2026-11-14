@@ -19,6 +19,9 @@ dist-ssr
 # 本机专用的 cargo 配置（把构建目录指到 APFS，见该文件里的说明）
 .cargo/config.toml
 
+# 本机编辑器 / 智能体的权限白名单，因人而异，不该进仓库
+.claude/settings.local.json
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

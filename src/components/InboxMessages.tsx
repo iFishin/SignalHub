@@ -32,12 +32,28 @@ interface Props {
   now: number;
   /** 面板里没有配置界面，空态把人送回设置。 */
   onConfigure: () => void;
+  /**
+   * 演示模式：**只画，不动真东西**。标记已读 / 全部已读 / 复制 / 打开来源这些
+   * 动作一概不执行（它们会改这台机器的状态或调起系统）。展开收起是纯本地
+   * state，留着无妨 —— 演示里能点开一条看看，比一张死图好懂。
+   */
+  preview?: boolean;
+  /** 演示里初始展开哪一条（seq）。真面板永远是 null，由用户自己点开。 */
+  initialOpenSeq?: number | null;
 }
 
-export function InboxMessages({ m, state, refresh, now, onConfigure }: Props) {
+export function InboxMessages({
+  m,
+  state,
+  refresh,
+  now,
+  onConfigure,
+  preview = false,
+  initialOpenSeq = null,
+}: Props) {
   const c = m.callme;
   // 同时只展开一条：这个面板高度有限，展开两条就会把「刚才那条」顶出视野。
-  const [openSeq, setOpenSeq] = useState<number | null>(null);
+  const [openSeq, setOpenSeq] = useState<number | null>(initialOpenSeq);
   const [copied, setCopied] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -54,6 +70,9 @@ export function InboxMessages({ m, state, refresh, now, onConfigure }: Props) {
 
   const markRead = (message: CallMeMessage) => {
     if (message.seq <= readOf(read, message.source_id)) return;
+    // 演示里绝不发 IPC：展开一条留言是纯本地的看点，不该顺手把真面板里那条
+    // 标成已读。
+    if (preview) return;
     invoke("callme_mark_read", { sourceId: message.source_id, seq: message.seq })
       .then(refresh)
       .catch((err) => setError(String(err)));
@@ -67,6 +86,7 @@ export function InboxMessages({ m, state, refresh, now, onConfigure }: Props) {
   };
 
   const markAllRead = () => {
+    if (preview) return;
     const pending = sources
       .map((source) => ({ source, seq: lastSeqOf(messages, source.id) }))
       .filter(({ source, seq }) => seq > readOf(read, source.id));
@@ -81,6 +101,8 @@ export function InboxMessages({ m, state, refresh, now, onConfigure }: Props) {
   };
 
   const copy = (message: CallMeMessage) => {
+    // 演示里不碰剪贴板：看演示不该悄悄改掉用户刚复制的东西。
+    if (preview) return;
     navigator.clipboard
       .writeText(message.text)
       .then(() => {
@@ -164,7 +186,13 @@ export function InboxMessages({ m, state, refresh, now, onConfigure }: Props) {
                     <button
                       type="button"
                       className="inbox-btn"
-                      onClick={() => invoke("open_url", { url: from }).catch((err) => setError(String(err)))}
+                      onClick={() => {
+                        // 演示里不打开浏览器：那是「操作这台机器」，不是看演示。
+                        if (preview) return;
+                        invoke("open_url", { url: from }).catch((err) =>
+                          setError(String(err)),
+                        );
+                      }}
                     >
                       {c.openSource}
                     </button>

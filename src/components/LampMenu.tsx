@@ -30,6 +30,14 @@ interface Props {
   /** 中心那颗灯珠的状态 —— 圆环的视觉锚点，也是「你正在操作哪盏灯」的答案 */
   aggregate: SignalState;
   onClose: () => void;
+  /**
+   * 演示模式：**只画，不抢焦点、不挂键盘、不执行任何动作**。
+   *
+   * 真菜单一打开就把焦点交给第一项，还在 window 上接方向键 —— 那是灯窗自己的
+   * 窗口才该有的行为。设置页里的演示是在同一个 webview 中，抢焦点会把用户正在
+   * 用的设置面板弄坏；`onSelect` 里的退出 / 暂停更是一件都不能真做。
+   */
+  preview?: boolean;
 }
 
 /**
@@ -43,7 +51,7 @@ function angleOf(index: number, count: number): number {
   return -90 + (360 / count) * index;
 }
 
-export function LampMenu({ items, aggregate, onClose }: Props) {
+export function LampMenu({ items, aggregate, onClose, preview = false }: Props) {
   const m = useMessages();
   const reduceMotion = useReducedMotion();
   const count = items.length;
@@ -52,14 +60,18 @@ export function LampMenu({ items, aggregate, onClose }: Props) {
 
   // 打开就把焦点交给第一项。之前 `role="menu"` 只有 Esc 能用，方向键会走到哪一项
   // 全靠猜 —— 现在它是一圈真的能用键盘走的菜单。
+  // 演示里**不能**这么做：焦点会被从设置面板抢走，用户正在填的东西就断了。
   useEffect(() => {
+    if (preview) return;
     itemRefs.current[0]?.focus();
-  }, []);
+  }, [preview]);
 
   // Esc 关闭（和设置窗 / 收件箱对齐），方向键沿圆环走，数字键 1–4 直达。
   // 监听挂在 window 而不是菜单容器上：灯窗是 `focus: false` 的常驻小窗，
   // 万一焦点没能落到按钮上，方向键也得能走。Enter / Space 交给按钮自己处理。
   useEffect(() => {
+    // 演示里连监听都不挂：它在 window 上，会和设置面板自己的键盘操作打架。
+    if (preview) return;
     const focusAt = (index: number) => {
       setActive(index);
       itemRefs.current[index]?.focus();
@@ -95,7 +107,7 @@ export function LampMenu({ items, aggregate, onClose }: Props) {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [active, count, onClose]);
+  }, [active, count, onClose, preview]);
 
   return (
     <div
@@ -111,7 +123,8 @@ export function LampMenu({ items, aggregate, onClose }: Props) {
         className="lamp-menu-scrim"
         aria-label={m.lampMenuCloseHint}
         title={m.lampMenuCloseHint}
-        onClick={onClose}
+        tabIndex={preview ? -1 : 0}
+        onClick={preview ? undefined : onClose}
       />
 
       {/* 中心：当前状态那颗灯珠。点它也是关闭 —— 手已经在中心了，
@@ -122,7 +135,8 @@ export function LampMenu({ items, aggregate, onClose }: Props) {
         data-state={aggregate}
         title={m.lampMenuCloseHint}
         aria-label={m.lampMenuCloseHint}
-        onClick={onClose}
+        tabIndex={preview ? -1 : 0}
+        onClick={preview ? undefined : onClose}
         initial={reduceMotion ? false : { scale: 0.7, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
         transition={
@@ -158,13 +172,15 @@ export function LampMenu({ items, aggregate, onClose }: Props) {
               ref={(node) => {
                 itemRefs.current[index] = node;
               }}
-              tabIndex={index === active ? 0 : -1}
+              tabIndex={!preview && index === active ? 0 : -1}
               onFocus={() => setActive(index)}
               className="lamp-menu-item"
               data-danger={item.danger || undefined}
               title={item.label}
               aria-label={item.label}
               onClick={() => {
+                // 演示里一项都不能真执行：退出 / 暂停 / 开收件箱都是操作这台机器。
+                if (preview) return;
                 // **先关再执行**：动作可能打开另一个窗口（收件箱 / 设置），
                 // 而菜单窗口缩回原尺寸这件事要在那之前发生 —— 否则用户会看到
                 // 圆环和收件箱同时出现一下。

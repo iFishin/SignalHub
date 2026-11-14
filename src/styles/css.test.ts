@@ -6,6 +6,9 @@ import inboxCss from "./inbox.css?raw";
 import demoCss from "./demo.css?raw";
 import settingsPanelSource from "../components/SettingsPanel.tsx?raw";
 import lampSource from "../components/SignalLamp.tsx?raw";
+import demoPanelSource from "../components/DemoPanel.tsx?raw";
+import inboxMessagesSource from "../components/InboxMessages.tsx?raw";
+import lampMenuSource from "../components/LampMenu.tsx?raw";
 
 /**
  * 样式表的两条「静默失效」防线。
@@ -339,5 +342,63 @@ describe("样式表", () => {
     expect(inboxCss).toContain(".inbox-msg-row[data-unread] .inbox-dot");
     // 正文收起时两行截断 —— 少了它，一条长留言会把整列挤成一面墙
     expect(inboxCss).toContain("-webkit-line-clamp: 2");
+  });
+
+  /**
+   * 演示里的收件箱 / 圆环菜单是**同一套真实样式**，不是另画一张示意图。
+   *
+   * 这里钉住三件容易「静默变样」的事：① 画框得给面板留出高度，并把
+   * `100vh` 收回来；② 圆环得有和灯窗一样的正方形根；③ 演示面板复用的
+   * `.inbox-*` 类名仍存在于 inbox.css —— 少一条不会报错，只是某一行悄悄
+   * 变成没有样式的裸文字。
+   */
+  it("演示舞台复用真实面板样式，并把窗口尺寸收回画框", () => {
+    expect(demoCss).toContain('.demo-stage[data-stage="panel"]');
+    expect(demoCss).toContain(".demo-inbox");
+    expect(demoCss).toContain(".demo-menu-root");
+    const panel = /\.demo-stage\[data-stage="panel"\]\s*\{[^}]*\}/.exec(demoCss)?.[0] ?? "";
+    expect(panel, "demo.css 里找不到面板舞台规则").not.toBe("");
+    expect(panel).toContain("height: 420px");
+    const inbox = /\.demo-inbox\s*\{[^}]*\}/.exec(demoCss)?.[0] ?? "";
+    expect(inbox, "demo.css 里找不到 .demo-inbox").not.toBe("");
+    expect(inbox).toContain("height: 100%");
+    // 「看不全就不给放行」：演示里那枚 span 也得跟着真按钮一起灰掉
+    expect(demoCss).toContain('.inbox-btn[data-disabled="true"]');
+    expect(demoPanelSource).toContain('data-disabled={allow && unavailable ? "true" : undefined}');
+    // 用到的类名必须还在收件箱那张表里
+    for (const needle of [
+      ".inbox-window",
+      ".inbox-head",
+      ".inbox-tabs",
+      ".inbox-tab-badge",
+      ".inbox-scroll",
+      ".inbox-section",
+      ".inbox-row",
+      ".inbox-approval",
+      ".inbox-actions",
+      ".inbox-btn",
+      ".inbox-empty",
+      ".inbox-foot",
+      ".inbox-away",
+      ".inbox-msg-row[data-unread] .inbox-dot",
+    ]) {
+      expect(inboxCss, `inbox.css 里找不到 ${needle}`).toContain(needle);
+    }
+  });
+
+  /**
+   * 演示在**真的 Tauri 进程**里跑（设置页），所以两个被复用的组件必须一直
+   * 带着 preview 闸门。删掉任一条不会报错，只会让演示顺手改掉真状态：
+   * 标已读 / 写剪贴板 / 打开浏览器 / 抢焦点 / 挂 window 键盘 / 退出应用。
+   */
+  it("演示复用的组件始终关掉真实副作用", () => {
+    expect(demoPanelSource).toContain("buildInbox(");
+    expect(demoPanelSource).toContain("<InboxMessages");
+    expect(demoPanelSource).toContain("preview");
+    expect(inboxMessagesSource).toContain("if (preview) return;");
+    expect(inboxMessagesSource).toContain("preview?: boolean");
+    expect(lampMenuSource).toContain("if (preview) return;");
+    expect(lampMenuSource).toContain("onClick={preview ? undefined : onClose}");
+    expect(lampMenuSource).toContain("preview?: boolean");
   });
 });

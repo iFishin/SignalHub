@@ -89,6 +89,82 @@
   height: 180px;
 }
 
+/* ---- 面板舞台 --------------------------------------------------------------
+ *
+ * 收件箱窗口真身是 `height: 100vh` 的透明 Tauri 窗；演示里要把它收进画框，
+ * 所以这里改的是**画框的尺寸**，不是重画一张面板。留一行给「演示画面」那句
+ * 说明（否则它会压在面板自己的页脚上）。
+ *
+ * 颜色仍由 inbox.css 管：这一页刻意保持深色 HUD，和悬浮灯同一套语言，
+ * 不跟设置面板的亮/深主题走。
+ */
+.demo-stage[data-stage="panel"] {
+  align-items: stretch;
+  height: 420px;
+  padding: 26px 12px 12px;
+}
+
+.demo-stage[data-stage="panel"] .demo-badge {
+  top: 7px;
+  bottom: auto;
+}
+
+/* 设置窗只有 720×690：面板帧比灯牌帧高，得连画框带留白一起收，
+   否则播放 / 上一步 / 下一步 / 重播会被推到首屏以下，用户得先滚动才能暂停。 */
+.demo[data-compact] {
+  gap: 9px;
+}
+
+.demo[data-compact] .demo-stage[data-stage="panel"] {
+  height: 250px;
+  padding: 22px 10px 10px;
+}
+
+.demo[data-compact] .demo-caption {
+  min-height: 62px;
+}
+
+.demo[data-compact] .demo-controls {
+  gap: 7px;
+}
+
+.demo-inbox {
+  width: min(440px, 100%);
+  /* 覆盖 inbox.css 的 100vh：演示里高度跟着画框，不跟着视口 */
+  height: 100%;
+  border-radius: 10px;
+  font-size: 12px;
+}
+
+/* 只读投影：动作都退化成 span，不该长得像能按。页签仍是真按钮 —— 演示里
+   点一下切到另一半是纯本地 state，不碰任何真状态。 */
+.demo-inbox[data-preview="true"] {
+  cursor: default;
+}
+
+.demo-inbox[data-preview="true"] :is(.inbox-btn, .inbox-icon, .inbox-row) {
+  cursor: default;
+}
+
+/* span 没有 :disabled 伪类，用 data 属性复刻 inbox.css 的 .inbox-btn:disabled。
+   少了它，「看不全就不给放行」那条规则在演示里会反过来显得可以点。 */
+.demo-inbox[data-preview="true"] .inbox-btn[data-disabled="true"] {
+  opacity: 0.35;
+}
+
+/* ---- 圆环菜单舞台 ----------------------------------------------------------
+ *
+ * 真菜单由 Rust 把灯窗临时放大成 196×196 的正方形；这里没有窗口可放大，
+ * 就直接给根一个同尺寸的正方形。`.lamp-root-menu` 里的 --menu-window /
+ * --menu-radius 仍是唯一的半径真值。
+ */
+.demo-menu-root {
+  flex: none;
+  width: 196px;
+  height: 196px;
+  cursor: default;
+}
+
 .demo-badge {
   position: absolute;
   right: 10px;
