@@ -1,12 +1,23 @@
 #!/bin/sh
-# 重画 README 顶部的 docs/assets/demo.gif。
+# 【已停用 · 历史存档】旧版 README 首图的手绘生成器。
 #
 #     sh scripts/render-demo.sh [输出路径]
+#
+# 0.6.8 起 docs/assets/demo.gif 改由 scripts/render-scenes.sh 从产品组件逐帧渲染。
+# 这个脚本画的是「照着 state.css 的常量抄一遍」的示意图，颜色/节奏会和代码漂移，
+# 而且会覆盖新的首图 —— 所以默认拒绝运行。真要复现旧素材，显式加 --legacy。
 #
 # 两步：Swift（AppKit）逐帧画 PNG，ffmpeg 两遍合成 GIF。编排必须放在 shell 里：
 # Swift 解释器在受限环境下 fork 子进程会被系统终止；而把 palettegen 和 paletteuse
 # 写成一条滤镜链又会让 ffmpeg 把上百帧全缓进内存，同样会被杀。
 set -eu
+
+if [ "${1:-}" != "--legacy" ]; then
+  echo "demo.gif 现在由 sh scripts/render-scenes.sh 生成（真实组件渲染）。" >&2
+  echo "本脚本是已停用的手绘存档，运行会覆盖新的首图；确需使用请加 --legacy。" >&2
+  exit 1
+fi
+shift
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${1:-$ROOT/docs/assets/demo.gif}"

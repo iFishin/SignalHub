@@ -664,12 +664,14 @@ fn toggles(app: &tauri::AppHandle) -> Toggles {
     Toggles {
         // 开机自启的真值在插件那边（它管着 LaunchAgent plist），不复制进 Settings
         autostart: app.autolaunch().is_enabled().unwrap_or(false),
-        pass_through: app
-            .state::<SharedUi>()
-            .lock()
-            .expect("ui poisoned")
-            .pass_through,
-        pass_through_shortcut: shortcuts::pass_through_label(),
+        pass_through: pass_through_on(app),
+        // 没抢到的组合不能报给界面 —— 设置页会拿它拼「按 X 退出」，而那是个
+        // 按不出来的键。空串在系统页走「从托盘菜单退出」那一句。
+        pass_through_shortcut: if shortcuts::pass_through_registered(app) {
+            shortcuts::pass_through_label()
+        } else {
+            String::new()
+        },
     }
 }
 
@@ -688,42 +690,164 @@ fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
     Ok(enabled)
 }
 
-/// 切换点击穿透的核心逻辑。
+/// 点击穿透只覆盖「灯窗」：主灯 + 每组分灯（`lamp-*`）。
 ///
-/// 命令和全局快捷键都走它 —— 两处各写一遍的话，行为迟早会分叉。
-fn set_pass_through_impl(app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
+/// 设置窗和收件箱**必须**保持可点 —— 它们本来就是穿透期间还能操作的两扇窗，
+/// 把设置窗也穿透等于拆掉一条逃生通道。多灯模式下用户看到的是好几盏灯，
+/// 只穿 `main` 那一盏的话，开了穿透照样被其它灯挡住点击（防误点的目标直接落空）。
+fn in_pass_through_scope(label: &str) -> bool {
+    label == "main" || label.starts_with(lamps::LABEL_PREFIX)
+}
+
+/// 从一份窗口 label 清单里挑出该穿透的目标。
+///
+/// 抽成纯函数是为了能单测：「开了穿透却还有一盏灯在抢鼠标」不报错、不崩，
+/// 也不会有任何日志，只能靠这条筛选本身保证。
+fn pass_through_labels(labels: &[String]) -> Vec<String> {
+    labels
+        .iter()
+        .filter(|label| in_pass_through_scope(label))
+        .cloned()
+        .collect()
+}
+
+/// 一条可用的退出通道。穿透下窗口收不到任何指针事件，所以**至少要有一种**
+/// 不经过窗口就能退出的方式，否则就是把用户锁在外面。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PassThroughEscape {
+    /// 全局快捷键抢到了（托盘当然也还在）。
+    Shortcut,
+    /// 快捷键没抢到，只剩托盘菜单。
+    TrayOnly,
+    /// 两条都没有 —— 不许开启。
+    None,
+}
+
+fn escape_kind(shortcut_ok: bool, tray_ok: bool) -> PassThroughEscape {
+    match (shortcut_ok, tray_ok) {
+        (true, _) => PassThroughEscape::Shortcut,
+        (false, true) => PassThroughEscape::TrayOnly,
+        (false, false) => PassThroughEscape::None,
+    }
+}
+
+fn pass_through_escape(app: &tauri::AppHandle) -> PassThroughEscape {
+    escape_kind(
+        shortcuts::pass_through_registered(app),
+        app.tray_by_id("signalhub").is_some(),
+    )
+}
+
+/// 此刻是不是在穿透。新建组灯要按它继承，否则「开了穿透」之后状态一变、
+/// 新冒出来的那盏灯又会开始抢鼠标。
+pub(crate) fn pass_through_on(app: &tauri::AppHandle) -> bool {
     app.state::<SharedUi>()
         .lock()
         .expect("ui poisoned")
-        .pass_through = enabled;
+        .pass_through
+}
 
-    let window = app
-        .get_webview_window("main")
-        .ok_or_else(|| "找不到灯球窗口".to_string())?;
-    window
-        .set_ignore_cursor_events(enabled)
-        .map_err(|err| format!("切换点击穿透失败: {err}"))?;
+/// 让所有灯窗跟上当前状态（幂等），收掉「切状态」和「建窗」交错时漏掉的那一盏。
+///
+/// `TauriHost::open` 在建窗时读一次状态、`set_pass_through_impl` 在切换时枚举
+/// 一次窗口 —— 两个动作分处不同线程，中间有一小段窗口：切换时枚举早了，建窗时
+/// 读到的又是旧值。建窗队列结束时再对齐一次，代价是 N 次窗口调用，而队列只在
+/// 真的开 / 关灯窗时才跑（`resize_only` 走的是就地改尺寸那条快路）。
+pub(crate) fn sync_pass_through_windows(app: &tauri::AppHandle) {
+    let enabled = pass_through_on(app);
+    for (label, window) in app.webview_windows() {
+        if in_pass_through_scope(&label) {
+            let _ = window.set_ignore_cursor_events(enabled);
+        }
+    }
+}
 
-    // **不重算窗口**：暂停角标是绝对定位在灯体内部最上沿的徽标（见 lamp.css 的
-    // `.lamp-flag`），不占牌身宽度、也不占折叠态的点位。0.6.4 起穿透不再画角标，
-    // 而是「四角挂什么」里可选的一枚 `.sign-corner`，同样不进几何。曾经这里按角标数
-    // 加宽窗口，表现就是一开穿透整排灯珠被推偏；别把它加回来。
+/// 逐个设置窗口的指针忽略，**要么全成、要么全回滚**。
+///
+/// 原来只改 `main` 一盏，而且先把内存状态写好再调窗口 API：调用失败时 `?`
+/// 直接返回，于是「SharedUi 说开着、窗口其实还可点、托盘和设置面板都没收到通知」。
+/// 现在把窗口操作集中到这个可注入的函数里：失败时把已经改过的窗按 `previous`
+/// 复原，内存状态由调用方在**全部成功之后**才写。
+fn apply_cursor_ignore(
+    labels: &[String],
+    enabled: bool,
+    previous: bool,
+    mut set: impl FnMut(&str, bool) -> Result<(), String>,
+) -> Result<(), String> {
+    for (index, label) in labels.iter().enumerate() {
+        if let Err(err) = set(label, enabled) {
+            for rolled in labels.iter().take(index) {
+                let _ = set(rolled, previous);
+            }
+            return Err(format!("切换点击穿透失败: {err}"));
+        }
+    }
+    Ok(())
+}
 
-    // 开启时发一条通知说明怎么退出。**不再顺手把外形收起来**：穿透下窗口本来
-    // 就点不动，而外形是用户自己选的、存在设置里的，替用户改掉反而是越权。
+/// 切换点击穿透的核心逻辑。
+///
+/// 命令、托盘、全局快捷键三条入口都走它 —— 各写一遍的话，行为迟早会分叉。
+/// 执行顺序是刻意的：**先窗口、后状态、最后反馈**，任何一步失败都不留半套状态。
+fn set_pass_through_impl(app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let lang = current_lang(app);
+    // 架构 §4.4 那条铁律在这里落地：没有退出通道就不许开启。降级要温和 ——
+    // 快捷键被别的程序占了、托盘还在时仍然允许开启，只是通知 / 托盘 / 设置页
+    // 都不能再教用户按一个按不出来的键。
+    let escape = pass_through_escape(app);
+    if enabled && escape == PassThroughEscape::None {
+        return Err(lang::text(lang).pass_through_no_escape.to_string());
+    }
+
+    let windows = app.webview_windows();
+    if !windows.contains_key("main") {
+        return Err("找不到灯球窗口".to_string());
+    }
+    let labels = pass_through_labels(&windows.keys().cloned().collect::<Vec<_>>());
+    let previous = pass_through_on(app);
+    apply_cursor_ignore(&labels, enabled, previous, |label, on| {
+        // label 来自 windows.keys()，必定存在
+        windows[label]
+            .set_ignore_cursor_events(on)
+            .map_err(|err| err.to_string())
+    })?;
+    drop(windows);
+
+    {
+        let ui_state = app.state::<SharedUi>();
+        let mut ui = ui_state.lock().expect("ui poisoned");
+        ui.pass_through = enabled;
+        if enabled {
+            // 只收**临时**放大态：peek 和圆环菜单都是 UiFlags 里的瞬态，
+            // 穿透后收不到指针，既关不掉、又会撑住一块放大的窗口（正方形
+            // 196×196）。用户存下来的外形 / 折叠设置一律不动（§3.15 第 3 条）。
+            // 前端收到 TOGGLES_EVENT 后会同步收掉自己的 React 状态。
+            ui.peek = None;
+            ui.menu = None;
+        }
+    }
+    // 气泡高度、菜单形态、peek 都参与窗口几何，状态一变就得重算一遍。
+    // **不重算的例外**：暂停角标 / 穿透角灯都是绝对定位、不占牌身宽度和点位，
+    // 曾经按角标数加宽窗口会把整排灯珠推偏，别把它加回来。
+    let settings = current_settings(app);
+    let snapshot = current_snapshot(app);
+    sync_layout(app, &settings, &snapshot, false);
+
+    // 开启时发一条通知说明怎么退出。通知是**补充**不是保证：它可能被系统勿扰
+    // 或没给权限静默丢掉（alerts.rs 明说不报错），真正常驻的是下面那条托盘项。
     if enabled {
-        let lang = current_lang(app);
+        let shortcut = (escape == PassThroughEscape::Shortcut)
+            .then(shortcuts::pass_through_label);
         alerts::send_message(
             app,
             lang::text(lang).pass_through_title,
-            &lang::pass_through_body(lang, &shortcuts::pass_through_label()),
+            &lang::pass_through_body(lang, shortcut.as_deref()),
         );
     }
 
-    // 托盘那一项在穿透开着时会写成「退出点击穿透 · ⌃⌥S」。命令 / 托盘 / 快捷键
-    // 三条入口都汇到这里，所以菜单只在这一处重建，文案不会和真实状态漂移。
-    // 通知是一次性的，这条是穿透期间**一直查得到**的退出指引。
-    tray::rebuild_menu(app, current_lang(app));
+    // 托盘那一项在穿透开着时会写成「退出点击穿透 · ⌥⌘S」（没抢到快捷键时
+    // 只写「退出点击穿透」）。三条入口都汇到这里，所以菜单只在这一处重建。
+    tray::rebuild_menu(app, lang);
 
     let _ = app.emit(TOGGLES_EVENT, toggles(app));
     Ok(())
@@ -731,7 +855,7 @@ fn set_pass_through_impl(app: &tauri::AppHandle, enabled: bool) -> Result<(), St
 
 /// 切换点击穿透。
 ///
-/// 开启后**整个窗口忽略指针事件** —— 鼠标再也点不到、拖不动它，只能靠托盘
+/// 开启后**所有灯窗**忽略指针事件 —— 鼠标再也点不到、拖不动它们，只能靠托盘
 /// 菜单或全局快捷键退出。所以开启时会发一条通知告诉用户怎么退出：
 /// 一个没有逃生通道的穿透模式就是个陷阱。
 #[tauri::command]
@@ -2397,6 +2521,9 @@ fn run_lamp_plan(app: &tauri::AppHandle, plan: &lamps::Plan) {
     // 最出过事的一步（Windows 上它曾经把整机冻住，见 [`lamp_worker`]）。关灯窗
     // 和改尺寸不值得各记一行 —— 这个文件同时装着 hook 事件，不能变成流水账。
     if !plan.open.is_empty() {
+        // 建窗和切换穿透分处两个线程，交错时可能有一盏既没被枚举到、又读到了旧
+        // 状态。队列收尾时按当前真值再对齐一次（见 `sync_pass_through_windows`）。
+        sync_pass_through_windows(app);
         config::append_hook_log(&format!(
             "{} [lamp] 建窗完成：成功 {} 盏 / 共 {} 盏（{} ms）\n",
             config::utc_hms(),
@@ -2414,6 +2541,12 @@ fn run_lamp_plan(app: &tauri::AppHandle, plan: &lamps::Plan) {
 /// 只由「牌」决定，现在多了一个来源 —— 而它在 `apply_window_size` 里，那是热路径，
 /// 所以这里只做一次加锁 + 取长度。
 fn approval_area(app: &tauri::AppHandle) -> (u16, u16) {
+    // 穿透下气泡里那两个按钮本来就点不到，却还白占一截窗口高度 —— 那是纯粹的
+    // 遮挡。前端同时不画（`SignalLamp.tsx` 的 `bubbles`），两边一个数；审批本身
+    // 还在 `SharedApprovals` 里等着，通知也照发，不是把它们丢掉。
+    if pass_through_on(app) {
+        return (0, 0);
+    }
     let count = app
         .state::<approvals::SharedApprovals>()
         .list()
@@ -3430,13 +3563,132 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        centered_offset, clamp_to_area, combined_bytes, distance_to_bounds, grow_away_from_edges,
-        nearest_index, snap_to_edges, state_ttl_defaults, validate_settings, visible_groups,
-        TEST_REPORT_TTL_MS,
+        apply_cursor_ignore, centered_offset, clamp_to_area, combined_bytes, distance_to_bounds,
+        escape_kind, grow_away_from_edges, in_pass_through_scope, nearest_index,
+        pass_through_labels, snap_to_edges, state_ttl_defaults, validate_settings, visible_groups,
+        PassThroughEscape, TEST_REPORT_TTL_MS,
     };
     use crate::config::{GroupMeta, Settings, StateStyle, MAX_STATE_TTL_MS, MIN_STATE_TTL_MS};
     use crate::state::{state_ttl, GroupView, Report, Signal, Snapshot, Store};
     use std::time::{Duration, Instant};
+
+    // ---- 点击穿透 -------------------------------------------------------------
+
+    /// 「开了穿透却还有一盏灯在抢鼠标」不报错、不崩、也没有日志，只能靠这条筛选
+    /// 钉住。设置窗和收件箱必须留在作用域外 —— 它们本来就是穿透期间的逃生/操作入口。
+    #[test]
+    fn pass_through_scope_covers_every_lamp_but_not_the_interactive_windows() {
+        let labels: Vec<String> = [
+            "main",
+            "lamp-orders-a1b2c3d4",
+            "lamp-__-deadbeef",
+            "settings",
+            "inbox",
+            "main-backup",
+            "lamp",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(
+            pass_through_labels(&labels),
+            vec!["main", "lamp-orders-a1b2c3d4", "lamp-__-deadbeef"]
+        );
+        assert!(in_pass_through_scope("main"));
+        assert!(in_pass_through_scope("lamp-"));
+        assert!(!in_pass_through_scope("settings"));
+        assert!(!in_pass_through_scope("inbox"));
+    }
+
+    /// 两条逃生通道至少有一条才准开启；快捷键抢不到时降级到托盘，而不是拒绝服务。
+    #[test]
+    fn pass_through_escape_requires_at_least_one_route() {
+        assert_eq!(escape_kind(true, true), PassThroughEscape::Shortcut);
+        // 注册还没跑完时 SharedShortcuts 是空表：托盘在，允许开启但不许宣传快捷键
+        assert_eq!(escape_kind(false, true), PassThroughEscape::TrayOnly);
+        assert_eq!(escape_kind(true, false), PassThroughEscape::Shortcut);
+        assert_eq!(escape_kind(false, false), PassThroughEscape::None);
+    }
+
+    /// 窗口操作是「全成或全回滚」：第 3 盏失败时，前两盏必须按**切换前**的值复原，
+    /// 第 4 盏碰都不该碰。内存状态由调用方在成功之后才写，这里不碰它。
+    #[test]
+    fn cursor_ignore_rolls_back_every_window_it_touched() {
+        use std::cell::RefCell;
+
+        let labels: Vec<String> = ["main", "lamp-a", "lamp-b", "lamp-c"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let calls: RefCell<Vec<(String, bool)>> = RefCell::new(Vec::new());
+        let result = apply_cursor_ignore(&labels, true, false, |label, on| {
+            calls.borrow_mut().push((label.to_string(), on));
+            if label == "lamp-b" {
+                return Err("boom".to_string());
+            }
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert_eq!(
+            calls.borrow().as_slice(),
+            &[
+                ("main".to_string(), true),
+                ("lamp-a".to_string(), true),
+                ("lamp-b".to_string(), true),
+                ("main".to_string(), false),
+                ("lamp-a".to_string(), false),
+            ]
+        );
+    }
+
+    /// 已经是穿透态时重复开启（previous=true）失败，回滚也必须回到 true ——
+    /// 复原成 false 会把一屋子灯「悄悄解除穿透」，比失败本身更糟。
+    #[test]
+    fn cursor_ignore_rollback_uses_the_previous_value_not_the_opposite() {
+        use std::cell::RefCell;
+
+        let labels: Vec<String> = ["main", "lamp-a", "lamp-b"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let calls: RefCell<Vec<(String, bool)>> = RefCell::new(Vec::new());
+        let result = apply_cursor_ignore(&labels, true, true, |label, on| {
+            calls.borrow_mut().push((label.to_string(), on));
+            if label == "lamp-b" {
+                return Err("boom".to_string());
+            }
+            Ok(())
+        });
+        assert!(result.is_err());
+        // 前两条是正向设置，第三条失败，后两条是回滚 —— 回滚必须是 true
+        assert_eq!(
+            &calls.borrow()[3..],
+            &[("main".to_string(), true), ("lamp-a".to_string(), true)]
+        );
+        assert!(calls.borrow().iter().all(|(_, on)| *on));
+    }
+
+    #[test]
+    fn cursor_ignore_applies_to_every_target_in_one_pass() {
+        let labels: Vec<String> = ["main", "lamp-a", "lamp-b"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let mut seen = Vec::new();
+        let result = apply_cursor_ignore(&labels, false, true, |label, on| {
+            seen.push((label.to_string(), on));
+            Ok(())
+        });
+        assert!(result.is_ok());
+        assert_eq!(
+            seen,
+            vec![
+                ("main".to_string(), false),
+                ("lamp-a".to_string(), false),
+                ("lamp-b".to_string(), false),
+            ]
+        );
+    }
 
     // ---- 测试上报 -------------------------------------------------------------
 

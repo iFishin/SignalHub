@@ -142,6 +142,22 @@ pub fn pass_through_label() -> String {
     shortcut_label(PASS_THROUGH.0, PASS_THROUGH.1)
 }
 
+/// 穿透那条快捷键现在**真的**能用吗。
+///
+/// `SharedShortcuts` 在 `register_all` 之前是空表 —— 空 = 还没注册 = 不许当成可用，
+/// 这正是架构 §4.4「注册成功之前不许开启穿透」想要的默认值。抢不到时也不能
+/// 再把 `pass_through_label()` 拼进通知 / 托盘：那会教用户按一个按不出来的键，
+/// 而穿透下窗口收不到指针，用户没法自己发现这条指引是假的。
+pub fn pass_through_registered(app: &AppHandle) -> bool {
+    app.state::<SharedShortcuts>()
+        .lock()
+        .map(|list| {
+            list.iter()
+                .any(|status| status.action == "pass_through" && status.ok)
+        })
+        .unwrap_or(false)
+}
+
 // ---- 注册 -------------------------------------------------------------------
 
 /// 一条快捷键现在的处境。

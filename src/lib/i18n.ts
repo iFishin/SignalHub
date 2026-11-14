@@ -495,8 +495,9 @@ export interface Messages {
   lookHint: string;
   /** 行尾那个 ↺ 的提示语。整份设置的默认值只有一份（`DEFAULTS`）。 */
   resetToDefault: string;
-  /** 外观页里那张「牌长这样」的实时预览的标题。 */
+  /** 外观页那块唯一预览区的标题；两种形态各自一行图注（展开 / 折叠后）。 */
   previewTitle: string;
+  previewExpanded: string;
   previewHint: string;
   /** 预览牌里那段示例消息（组名不再写死：走真灯的 `labelOf`，见 `LampPreview`）。 */
   previewMessage: string;
@@ -981,8 +982,8 @@ export interface Messages {
   launchAtLogin: string;
   clickThrough: string;
   systemHintTray: string;
+  /** shortcut 为空 = 全局快捷键没抢到（或还没读到），只给托盘这条真能用的路。 */
   systemHintPassThrough: (shortcut: string) => string;
-  shortcutFallback: string;
   shortcutsTitle: string;
   /** 按动作名取本地化的名字（`lamp` / `mute` / `clear` / `pass_through`）。 */
   shortcutActions: Record<string, string>;
@@ -1744,7 +1745,7 @@ export const MESSAGES: Record<Lang, Messages> = {
     foldIndex: "序号",
     foldState: "状态",
     foldLabelHint:
-      "不想完全缩成一颗灯时，给每颗灯配一个词。带文字时几格拼成一条窄板，板宽按档位固定、比展开牌窄得多：组名约 5 个字、状态约 4 个字，再长就显示省略号，鼠标悬停能看全；横排也照样带字。只在折叠时生效。",
+      "不想完全缩成一颗灯时，给每颗灯配一个词。带文字时几格拼成一条窄板，板宽跟着实际文字收，最长到档位上限（组名约 5 个字、状态约 4 个字，再长就显示省略号，鼠标悬停能看全）；横排也照样带字。只在折叠时生效。",
     foldPreviewTitle: "折叠后",
     lampLayout: "灯的数量",
     layoutSingle: "一盏灯",
@@ -1774,7 +1775,8 @@ export const MESSAGES: Record<Lang, Messages> = {
       "形状只影响灯珠：改成圆角方或环会让 permission / error 的方角区分失效，此时建议配合色盲友好配色。",
     resetToDefault: "恢复默认",
     previewTitle: "预览",
-    previewHint: "改上面的东西，这里立刻跟着变 —— 灯被挡住、收起来、或在另一块屏上时，这里是唯一看得见效果的地方。画的是「有活动时」的样子：安静模式压暗只在真的灯上发生。",
+    previewExpanded: "展开后",
+    previewHint: "改下面的设置，这里立刻跟着变 —— 灯被挡住、收起来、或在另一块屏上时，这里是唯一看得见效果的地方。上面画展开后，下面画折叠后；都是「有活动时」的样子：安静模式压暗只在真的灯上发生。",
     previewMessage: "正在跑测试",
     sizeSmall: "小",
     sizeMedium: "中",
@@ -2257,8 +2259,9 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     systemHintTray:
       "托盘跟随状态时，菜单栏那颗点会变成当前状态的颜色 —— 不看悬浮灯也知道现在什么情况。关掉就回到单色字形，跟着菜单栏明暗自动反色。",
     systemHintPassThrough: (shortcut) =>
-      `穿透后圆点不再响应鼠标，按 ${shortcut} 或从托盘菜单退出。该模式不会保留到下次启动。`,
-    shortcutFallback: "快捷键",
+      shortcut
+        ? `穿透后圆点不再响应鼠标，按 ${shortcut} 或从托盘菜单退出。该模式不会保留到下次启动。`
+        : "穿透后圆点不再响应鼠标，从托盘菜单的「退出点击穿透」退出。该模式不会保留到下次启动。",
     shortcutsTitle: "全局快捷键",
     shortcutActions: {
       lamp: "显示 / 隐藏灯",
@@ -2955,7 +2958,7 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     foldIndex: "Number",
     foldState: "State",
     foldLabelHint:
-      "If a bare dot is too little, give each light one word. Labelled lights share one narrow board, fixed width per option and much narrower than the expanded sign — about five characters for a group name, four for a state. Longer text is ellipsized; hover to read it all. Horizontal keeps the words too. Folded state only.",
+      "If a bare dot is too little, give each light one word. Labelled lights share one narrow board that shrinks to fit the text, up to a per-option cap — about five characters for a group name, four for a state. Longer text is ellipsized; hover to read it all. Horizontal keeps the words too. Folded state only.",
     foldPreviewTitle: "When collapsed",
     lampLayout: "Lamps",
     layoutSingle: "One lamp",
@@ -2986,8 +2989,9 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       "Shape affects only the light: rounded or ring drops the square-corner cue for permission / error, so pair it with the colourblind palette.",
     resetToDefault: "Reset to default",
     previewTitle: "Preview",
+    previewExpanded: "When expanded",
     previewHint:
-      "Change anything above and this follows immediately — it is the only place you can see the effect while the lamp is hidden, collapsed, or on another screen. This draws the active look; quiet mode dimming only happens on the real lamp.",
+      "Change anything below and this follows immediately — it is the only place you can see the effect while the lamp is hidden, collapsed, or on another screen. The top figure shows the expanded sign, the bottom one the collapsed lamp; both draw the active look, while quiet mode dimming only happens on the real lamp.",
     previewMessage: "running tests",
     sizeSmall: "Small",
     sizeMedium: "Medium",
@@ -3477,8 +3481,9 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     systemHintTray:
       "With tray-follows-state the menu-bar dot takes the current state's colour — you can tell what's going on without looking at the lamp. Turned off, it's a monochrome glyph that inverts with the menu bar's light/dark.",
     systemHintPassThrough: (shortcut) =>
-      `In click-through the dot stops responding to the mouse; press ${shortcut} or quit from the tray menu. The mode is not kept for the next launch.`,
-    shortcutFallback: "the shortcut",
+      shortcut
+        ? `In click-through the dot stops responding to the mouse; press ${shortcut} or quit from the tray menu. The mode is not kept for the next launch.`
+        : "In click-through the dot stops responding to the mouse; use the tray menu's \"Exit click-through\" item to quit. The mode is not kept for the next launch.",
     shortcutsTitle: "Global shortcuts",
     shortcutActions: {
       lamp: "Show / hide the lamp",

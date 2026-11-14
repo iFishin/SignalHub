@@ -356,6 +356,14 @@ impl LampHost for TauriHost<'_> {
             .build();
         match built {
             Ok(window) => {
+                // 穿透期间**新建**的组灯必须跟着穿透：状态一变就冒出来的那盏灯
+                // 不能因为出生得晚又开始抢鼠标。切换时 `set_pass_through_impl`
+                // 会统一处理当时已有的窗，这里补的是之后新建的那一批。
+                if crate::pass_through_on(app)
+                    && let Err(err) = window.set_ignore_cursor_events(true)
+                {
+                    eprintln!("[signalhub] 新灯窗 {label} 没能跟随穿透: {err}");
+                }
                 let _ = window.set_visible_on_all_workspaces(true);
                 if let Some((x, y)) = position {
                     let _ = window.set_position(PhysicalPosition::new(x, y));

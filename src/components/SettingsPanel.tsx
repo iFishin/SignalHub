@@ -571,6 +571,9 @@ function resetFor<K extends keyof Settings>(
  * 这里刻意不复用 `SignalLamp`：那一个组件带着拖拽、通知、审批、悬停展开等
  * 一整套运行时，预览只需要几何与画法。照抄三行 DOM 的代价是结构改了要手动
  * 跟上，收益是预览永远不会被某个运行时开关悄悄改样。
+ *
+ * 图注不在这里画：`LookPreview` 给两种形态统一配一行小字，两边字号与灰度
+ * 才不会各自漂移。这里只负责「图」本身。
  */
 function FoldPreview({ settings }: { settings: Settings }) {
   const lang = useLang();
@@ -598,48 +601,45 @@ function FoldPreview({ settings }: { settings: Settings }) {
           ? signalLabel(lang, sample.state)
           : "";
   return (
-    <>
-      <div className="fold-preview-title">{m.foldPreviewTitle}</div>
-      <div className="fold-preview">
-        <div
-          className="lamp-root"
-          style={{ "--size": `${settings.size}px`, ...lampVars(settings) } as React.CSSProperties}
-          data-collapsed="true"
-          data-fold-axis={settings.fold_axis}
-          data-fold-label={label}
-          data-sign-radius={settings.sign_radius}
-          data-sign-border={settings.sign_border}
-          data-sign-tint={settings.sign_tint}
-          data-sign-text={settings.sign_text}
-          data-sign-font={settings.sign_font}
-          data-sign-outline={settings.sign_outline}
-        >
-          {label === "none" ? (
-            samples.map((sample) => (
-              <span
-                key={sample.state}
-                className="dot lamp-dot"
-                data-state={sample.state}
-                data-shape={shapes[sample.state]}
-              />
-            ))
-          ) : (
-            <div className="fold-board" data-axis={settings.fold_axis} data-label={label} data-rows={samples.length}>
-              {samples.map((sample, index) => (
-                <div key={sample.state} className="fold-row" data-label={label}>
-                  <span
-                    className="dot lamp-dot"
-                    data-state={sample.state}
-                    data-shape={shapes[sample.state]}
-                  />
-                  <span className="fold-text">{textFor(sample, index)}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+    <div className="fold-preview">
+      <div
+        className="lamp-root"
+        style={{ "--size": `${settings.size}px`, ...lampVars(settings) } as React.CSSProperties}
+        data-collapsed="true"
+        data-fold-axis={settings.fold_axis}
+        data-fold-label={label}
+        data-sign-radius={settings.sign_radius}
+        data-sign-border={settings.sign_border}
+        data-sign-tint={settings.sign_tint}
+        data-sign-text={settings.sign_text}
+        data-sign-font={settings.sign_font}
+        data-sign-outline={settings.sign_outline}
+      >
+        {label === "none" ? (
+          samples.map((sample) => (
+            <span
+              key={sample.state}
+              className="dot lamp-dot"
+              data-state={sample.state}
+              data-shape={shapes[sample.state]}
+            />
+          ))
+        ) : (
+          <div className="fold-board" data-axis={settings.fold_axis} data-label={label} data-rows={samples.length}>
+            {samples.map((sample, index) => (
+              <div key={sample.state} className="fold-row" data-label={label}>
+                <span
+                  className="dot lamp-dot"
+                  data-state={sample.state}
+                  data-shape={shapes[sample.state]}
+                />
+                <span className="fold-text">{textFor(sample, index)}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
-    </>
+    </div>
   );
 }
 
@@ -868,6 +868,40 @@ function LampPreview({ settings }: { settings: Settings }) {
             </div>
           ))}
         </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 外观页**唯一**的一块预览区。
+ *
+ * 以前这里有两张分散的样机：顶部常驻的「牌长这样」，和夹在「基础」子页
+ * 「折叠内容」与「有多大」之间的「折叠后」三行图。结果是设置项被一张图从
+ * 中间截断、看效果要在页里上下找两处。现在两种形态收进同一块区域：说明在
+ * 上，紧接其下的就是三个子页切换条 —— 这块区域只回答「长什么样」，按钮
+ * 才开始改它。
+ *
+ * **两种形态同时显示，不跟 `settings.collapsed` 走，也不做成点标签切换**：
+ * 折叠那三档只在折叠态生效，按当前形态只画一张的话，展开态下点「组名 /
+ * 序号 / 状态」真灯和预览都不动，又会被读成「选不了」（见 §3.35.5）；做成
+ * 可切换则多一步操作，调档位时还得记得先切过去。
+ *
+ * 分隔只用 1px 细线 + 一行小字图注：不画底色、不加圆角、不给整块描边 ——
+ * 设置页的层次靠细线与灰度（见 `settings.css` 文件头），而这块位置曾经因为
+ * 一块灰「样品台」被连报三次（见 §3.35.8）。
+ */
+function LookPreview({ settings }: { settings: Settings }) {
+  const m = useMessages();
+  return (
+    <div className="look-preview">
+      <div className="preview-figure">
+        <div className="preview-caption">{m.previewExpanded}</div>
+        <LampPreview settings={settings} />
+      </div>
+      <div className="preview-figure">
+        <div className="preview-caption">{m.foldPreviewTitle}</div>
+        <FoldPreview settings={settings} />
       </div>
     </div>
   );
@@ -3303,12 +3337,14 @@ export function SettingsPanel({ snapshot }: Props) {
         return (
           <>
             <PageHeader title={m.tabLook} hint={m.pageHint.look} />
-            {/* 预览常驻在三个子页之上：无论调「有多大」「怎么画」还是「边和角上
-                放什么灯」，改的都是它。放进子页的话，切到「质感」就得往下滚才
-                知道效果 —— 而三个子页回答的本来是同一个问题：这块牌长什么样。 */}
+            {/* 唯一的预览区常驻在三个子页之上：无论调「有多大」「怎么画」还是
+                「边和角上放什么灯」，改的都是它。展开与折叠两种形态都画在这里，
+                不再一张在页顶、一张夹在「基础」子页的设置项中间。
+                **说明在上、切换条紧贴在下**，中间不再有第二行文字：用户要的就是
+                「一块预览，下面直接是设置的按钮」。 */}
             <div className="section-title">{m.previewTitle}</div>
-            <LampPreview settings={settings} />
             <p className="hint">{m.previewHint}</p>
+            <LookPreview settings={settings} />
 
             {/* 三个子页是这一页的**入口**，就贴在预览下面：预览之上没有任何控件，
                 所以它是第一屏里第一个能点的地方。0.6.6 之前它夹在「边框光」那六行
@@ -3438,15 +3474,11 @@ export function SettingsPanel({ snapshot }: Props) {
                     ))}
                   </div>
                 </Row>
-                {/* 折叠形态的实时预览。折叠时用户多半看不见真灯（它只剩几颗
-                    点，或者在别的屏上），而「组名 / 序号 / 状态」是纯观感项 ——
-                    不给预览就等于盲挑。用和真灯同一套 `.fold-board` / `.fold-row`
-                    类名，改档位立刻能看见宽窄变化。
-                    **恒常显示，不跟 `settings.collapsed` 走**：这三档只在折叠态
-                    生效，而展开态下点了它们，真灯一个像素都不会变 —— 于是「点了
-                    没反应」被当成「选不了」（用户原话）。预览在这里的作用就是
-                    当场回答「折叠后会变成什么样」，跟此刻是不是折叠无关。 */}
-                <FoldPreview settings={settings} />
+                {/* 「折叠后」的三行样机已并入页顶那块统一预览区（见 `LookPreview`），
+                    恒常显示、不跟 `settings.collapsed` 走 —— 这三档只在折叠态生效，
+                    展开态下点它们真灯不动，预览要是不画就会被当成「选不了」。
+                    这里不再插一张图：它原先正好把「折叠内容」和「有多大」两行
+                    设置从中间截断。 */}
                 <Row label={m.size} onReset={resetFor(settings, "size", patch)}>
                   <div className="seg">
                     {sizes.map((size) => (
@@ -5947,10 +5979,10 @@ export function SettingsPanel({ snapshot }: Props) {
                 <p className="hint">{m.themeHint}</p>
 
                 <p className="hint">{m.systemHintTray}</p>
+                {/* 空串 = 快捷键没抢到 / 还没读到。这时候**不能**用「快捷键」三个字
+                    兜底，那会教用户按一个按不出来的键（穿透下窗口点不到，没法自查）。 */}
                 <p className="hint">
-                  {m.systemHintPassThrough(
-                    toggles.pass_through_shortcut || m.shortcutFallback,
-                  )}
+                  {m.systemHintPassThrough(toggles.pass_through_shortcut)}
                 </p>
 
                 {/* 全局快捷键。**抢不到的那一个必须说出来** —— 一个按了没反应的键，

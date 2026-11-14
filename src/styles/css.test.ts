@@ -197,6 +197,32 @@ describe("样式表", () => {
   });
 
   /**
+   * 折叠窄板**按实际文字收宽**，不再永远按「这一档最多能写几个字」画一整块。
+   *
+   * 0.6.7 里 `.fold-row` 写死 `width: var(--fold-cell-w)`，于是短组名（「审核」
+   * 两字）右边也留着按 5 字算出来的深色空板，三档都有 —— 用户原话「右边都有
+   * 很大的空白」。现在宽度交给 `.fold-board` 的 `max-content`（取最宽那行），
+   * `max-width` 仍封在容量上限里：长组名照旧省略号、不会撑出窗口，窗口也
+   * 不必随文字长短重算。改回写死 width 不报错，只会又空一截。
+   */
+  it("折叠窄板按文字收宽，长组名仍封在容量上限里", () => {
+    const rowStart = lampCss.indexOf(".fold-row {");
+    expect(rowStart, "找不到 .fold-row").toBeGreaterThan(-1);
+    const rowRule = lampCss.slice(rowStart, lampCss.indexOf("}", rowStart));
+    // `max-width:` 里也含 "width:"，所以按「行首就是 width」判，别用 toContain
+    expect(rowRule).not.toMatch(/(?:^|\n)\s*width:\s*var\(--fold-cell-w/);
+    expect(rowRule).toContain("max-width: var(--fold-cell-w");
+
+    const boardStart = lampCss.indexOf(".fold-board {");
+    const boardRule = lampCss.slice(boardStart, lampCss.indexOf("}", boardStart));
+    expect(boardRule).toContain("width: max-content");
+
+    const textStart = lampCss.indexOf(".fold-text {");
+    const textRule = lampCss.slice(textStart, lampCss.indexOf("}", textStart));
+    expect(textRule).toContain("text-overflow: ellipsis");
+  });
+
+  /**
    * 预览**是一张居中的图，不是一块样品台**。
    *
    * 这块位置被报过三次，每次都是「换个方向过头」：
@@ -211,7 +237,7 @@ describe("样式表", () => {
    * ① `width: fit-content`（铺满整列会变成一面墙）；
    * ② 水平居中（去掉 auto 就退回「贴左边、右边一大片空」）；
    * ③ 不画底色 / 圆角 / 最小宽度（那就是又摆回一块灰样品台）；
-   * ④ 「折叠后」那行图注跟着居中（板居中、字左对齐会差出半个屏）。
+   * ④ 两张图各自的图注跟着居中（板居中、字左对齐会差出半个屏）。
    */
   it("预览按内容宽居中，不画样品台", () => {
     const selector = ".settings .lamp-preview,";
@@ -224,12 +250,55 @@ describe("样式表", () => {
     expect(rule).not.toContain("background");
     expect(rule).not.toContain("border-radius");
 
-    // 折叠预览上方那行「折叠后」小字：没有它，窄板会紧贴「折叠内容」那一行的
-    // 说明文字，看起来像同一段说明的第二行；不居中则和窄板差出半个屏。
-    const titleStart = settingsCss.indexOf(".settings .fold-preview-title {");
-    expect(titleStart, "找不到 .fold-preview-title").toBeGreaterThan(-1);
-    const titleRule = settingsCss.slice(titleStart, settingsCss.indexOf("}", titleStart));
-    expect(titleRule).toContain("text-align: center");
+    // 两张图各一行图注（「展开后」/「折叠后」），共用同一条规则：字号与灰度
+    // 不会各自漂移；不居中则板居中、字左对齐，两个左边缘差着半个屏。
+    const captionStart = settingsCss.indexOf(".settings .preview-caption {");
+    expect(captionStart, "找不到 .preview-caption").toBeGreaterThan(-1);
+    const captionRule = settingsCss.slice(captionStart, settingsCss.indexOf("}", captionStart));
+    expect(captionRule).toContain("text-align: center");
+  });
+
+  /**
+   * 外观页**只有一块预览**，而且它下面紧接设置入口。
+   *
+   * 0.6.7 里两张样机分散在页顶和「基础」子页中间，设置项被一张图截断，看效果
+   * 得上下找两处。收进 `LookPreview` 之后，「说明在上 → 一张预览区 → 三个子页
+   * 切换条」这条顺序就是需求本身；改回去不报错，只是又变回「两块预览」。
+   * 读 TSX 源文本比渲染整页设置面板便宜得多。
+   */
+  it("外观页两张样机收成一块预览区，说明在上、切换条紧贴在下", () => {
+    const lookStart = settingsPanelSource.indexOf("function LookPreview(");
+    expect(lookStart, "找不到 LookPreview").toBeGreaterThan(-1);
+    const lookBlock = settingsPanelSource.slice(
+      lookStart,
+      settingsPanelSource.indexOf("\n}\n", lookStart),
+    );
+    expect(lookBlock, "展开样机没进预览区").toContain(
+      "<LampPreview settings={settings} />",
+    );
+    expect(lookBlock, "折叠样机没进预览区").toContain(
+      "<FoldPreview settings={settings} />",
+    );
+    // 只此一处：再出现在「基础」子页里，就是又被夹进设置项中间。
+    expect(settingsPanelSource.split("<FoldPreview settings={settings} />").length - 1).toBe(1);
+
+    const hintAt = settingsPanelSource.indexOf("{m.previewHint}");
+    const previewAt = settingsPanelSource.indexOf("<LookPreview settings={settings} />");
+    const tabsAt = settingsPanelSource.indexOf("<LocalTabs", previewAt);
+    expect(hintAt, "找不到预览说明").toBeGreaterThan(-1);
+    expect(previewAt, "找不到统一预览区").toBeGreaterThan(-1);
+    expect(tabsAt, "预览下面找不到子页切换条").toBeGreaterThan(-1);
+    expect(hintAt, "说明必须在预览上方").toBeLessThan(previewAt);
+    expect(previewAt, "预览正下方必须是切换条").toBeLessThan(tabsAt);
+
+    // 两种形态之间只用 1px 细线：不给整块区画底色、也不加圆角（见上面那条
+    // 「不画样品台」的三次事故）。
+    const sepStart = settingsCss.indexOf(".settings .preview-figure + .preview-figure {");
+    expect(sepStart, "找不到两形态之间的细线规则").toBeGreaterThan(-1);
+    const sepRule = settingsCss.slice(sepStart, settingsCss.indexOf("}", sepStart));
+    expect(sepRule).toContain("border-top: 1px solid var(--line)");
+    expect(sepRule).not.toContain("background");
+    expect(sepRule).not.toContain("border-radius");
   });
 
   /**
@@ -240,7 +309,8 @@ describe("样式表", () => {
    * 换一个高亮、真灯一个像素不动、预览整块不出现 —— 用户读成「选择都选择不了」。
    *
    * 这条读的是 TSX 源文本（不是 CSS）：它钉的是「这一块必须常驻」这条呈现约定，
-   * 用 `?raw` 比渲染整页设置面板便宜得多。改回门控不会报错，只会让那三档重新
+   * 用 `?raw` 比渲染整页设置面板便宜得多。0.6.8 起它收进页顶的 `LookPreview`
+   * 里、和展开牌同屏，但**仍然不门控** —— 改回去不会报错，只会让那三档重新
    * 变回「点了没反应」。
    */
   it("折叠预览恒常显示，不跟形态走", () => {

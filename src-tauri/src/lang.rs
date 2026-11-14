@@ -153,6 +153,8 @@ pub struct NativeText {
     pub action_ack: &'static str,
     pub action_mute: &'static str,
     pub pass_through_title: &'static str,
+    /// 快捷键和托盘菜单两条逃生通道都不在时，拒绝开启穿透的报错文案。
+    pub pass_through_no_escape: &'static str,
 
     // ---- 手动状态（托盘子菜单 + 牌上那行字）----
     /// 托盘里那个子菜单的标题。
@@ -190,12 +192,19 @@ pub fn text(lang: Lang) -> &'static NativeText {
 }
 
 /// 穿透模式的说明。要插快捷键文案，所以是函数不是常量。
-pub fn pass_through_body(lang: Lang, shortcut: &str) -> String {
-    match lang {
-        Lang::Zh => format!("圆点不再响应鼠标。按 {shortcut} 或从托盘菜单退出。"),
-        Lang::En => {
-            format!("The lamp no longer responds to the mouse. Press {shortcut} or use the tray menu to exit.")
+///
+/// `None` = 快捷键没抢到（只剩托盘）。这时候**不能**含糊地说「按快捷键退出」：
+/// 通知是一次性的、穿透下又点不到窗口去查，写错等于给用户一条假出路。
+pub fn pass_through_body(lang: Lang, shortcut: Option<&str>) -> String {
+    match (lang, shortcut) {
+        (Lang::Zh, Some(key)) => format!("圆点不再响应鼠标。按 {key} 或从托盘菜单退出。"),
+        (Lang::Zh, None) =>
+            "圆点不再响应鼠标。全局快捷键没抢到，请从托盘菜单的「退出点击穿透」退出。".to_string(),
+        (Lang::En, Some(key)) => {
+            format!("The lamp no longer responds to the mouse. Press {key} or use the tray menu to exit.")
         }
+        (Lang::En, None) =>
+            "The lamp no longer responds to the mouse. The global shortcut is unavailable; use the tray menu's \"Exit click-through\" item to exit.".to_string(),
     }
 }
 
@@ -291,6 +300,7 @@ static ZH: NativeText = NativeText {
     action_ack: "已知晓",
     action_mute: "静音该组",
     pass_through_title: "已进入点击穿透模式",
+    pass_through_no_escape: "没有可用的退出通道（全局快捷键没抢到、托盘菜单也不在），拒绝开启点击穿透",
 
     manual_title: "手动状态",
     manual_focus: "专注 25 分钟",
@@ -333,6 +343,7 @@ static EN: NativeText = NativeText {
     action_ack: "Got it",
     action_mute: "Mute this group",
     pass_through_title: "Click-through mode is on",
+    pass_through_no_escape: "No exit route is available (shortcut not registered, tray menu missing); click-through was not enabled",
 
     manual_title: "Manual state",
     manual_focus: "Focus for 25 minutes",
@@ -429,6 +440,7 @@ mod tests {
             en.action_ack,
             en.action_mute,
             en.pass_through_title,
+            en.pass_through_no_escape,
             en.manual_title,
             en.manual_focus,
             en.manual_meeting,
@@ -447,11 +459,22 @@ mod tests {
             );
         }
         assert!(
-            !pass_through_body(Lang::En, "Ctrl+Alt+S")
+            !pass_through_body(Lang::En, Some("Ctrl+Alt+S"))
                 .chars()
                 .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
             "穿透说明里还有中文"
         );
+        assert!(
+            !pass_through_body(Lang::En, None)
+                .chars()
+                .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+            "「只剩托盘」那份穿透说明里还有中文"
+        );
+        // 两条说明都得给出托盘这条唯一的常驻出路，且没抢到时不能出现按键文案
+        let with_key = pass_through_body(Lang::En, Some("Ctrl+Alt+S"));
+        let tray_only = pass_through_body(Lang::En, None);
+        assert!(with_key.contains("Ctrl+Alt+S") && with_key.contains("tray menu"));
+        assert!(!tray_only.contains("Ctrl+Alt+S") && tray_only.contains("tray menu"));
         assert!(
             !stuck_for(Lang::En, 95)
                 .chars()

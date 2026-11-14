@@ -48,12 +48,16 @@
  *              ↑ 0.6.7 起由 `.sign-board` 消化成每行底部留白，不再是两张卡之间
  *                露出桌面的空隙；总高公式仍是 stacked + gap×(N−1) + 28。
  *   折叠格径 = size（只有灯）           (fold_cell_size)
- *   折叠格宽 = size × 3 / 4 / 6（序号 / 状态 / 组名）× 宽倍率
+ *   折叠格宽 = size × 2.4 / 3.5 / 4（序号 / 状态 / 组名）× 宽倍率
+ *              ↑ 这是**窗口的容量上限**：按「这一档最多能写几个字」留位。
+ *                `.fold-row` 只拿它当 `max-width`，板本身按实际文字收（见
+ *                「折叠态带文字」那节）—— 两者不是同一个数，别再对齐回去。
  *   折叠格高 = 一块单行牌高（带文字时）
  *   折叠格距 = size / 3（只有灯；带文字时归 0，板内只画 1px 细线）
  *   折叠格数 = 组数 + `+N` 角标数       (collapsed_window_size 的 dots + badges)
  *   ↑ 四个数由 `lampVars` 算成整数 px 挂在根上（--fold-*），CSS 不再自己用
- *     小数 calc 重算；Rust `Settings::folded_size` 是另一处真值。
+ *     小数 calc 重算；Rust `Settings::folded_size` 是另一处真值。格高 / 格距 /
+ *     格数 / 留白必须逐像素相等，格宽只许「窗口 ≥ 板」。
  *   留白     = 14px 一侧                (LAMP_MARGIN 总量 28，--lamp-inset)
  *   暂停那枚角标不参与上面任何一条几何：它绝对定位在**牌的右上角外侧**
  *   （`.lamp-flag`，top = 1px、right = --lamp-inset，右边缘与牌右边缘齐平），
@@ -193,9 +197,12 @@ body,
  * 连续外框 + 圆角 + 1px 格间细线，浅色壁纸上字也读得清。**不带文字的档
  * 不画板** —— 一颗孤零零的点套个框反而像按钮。
  *
- * 板宽 = 格数 × 格宽（竖排）或一格宽，板高同理；`width: max-content` 让
- * flex 自己把格子加起来，和 Rust `folded_size` 的公式是同一个数。带文字时
- * 格距归 0，因为连续的板不该再被透明缝切成几条。
+ * 板宽 = **最宽那一行的实际内容**（每行由 `max-width` 封在 `--fold-cell-w`
+ * 这个容量上限里）；`width: max-content` + flex 的 stretch 让所有行等宽、
+ * 1px 格间细线仍连贯。**板宽不再逐像素等于 Rust `folded_size` 的窗口宽**：
+ * 窗口按容量上限留，短内容时多出来的那截是透明留白，而不是一块深色空板
+ * （原因见下面 `.fold-row`）。带文字时格距归 0，因为连续的板不该再被透明缝
+ * 切成几条。
  */
 .fold-board {
   box-sizing: border-box;
@@ -234,14 +241,24 @@ body,
   flex-direction: row;
 }
 
-/* 一格 = 一颗灯珠 + 一段词。宽高都是 `lampVars` 给的整数 px，绝不跟着
-   文字长度走；`min-width: 0` + ellipsis 是长组名不撑破窗口的关键。
+/* 一格 = 一颗灯珠 + 一段词。**高度**仍取 `--fold-cell-h`（和 Rust `folded_size`
+   同一把尺）；**宽度不再写死 `--fold-cell-w`** —— 那个数是按「这一档最多能写
+   几个字」算的容量上限（组名 5 字 / 状态 4 字 / 序号 3 位），实际词一短，每行
+   右侧就空出一大截深色板，正是用户报的「文字后面有很大空白」，三档都有。
+
+   现在行宽按内容收，`.fold-board` 的 `width: max-content` 取最宽那行，其余行
+   由 stretch 撑到同宽；`max-width` 仍封在容量上限里，所以超长组名照样走
+   ellipsis、不会把板撑出窗口（窗口仍按上限留宽，长短名切换时也不跳一下）。
+   ⚠️ 这里和 `config.rs::fold_cell_size` 从此是**两个不同用途的数**：那边是
+   窗口上限，这边是实际画出来的板宽，别再「对整齐」改回去。
    间距 0.22×size（≈5px）：0.18 那版点几乎贴着字，三行连看像一列「点+小字」
    挤在一起。 */
 .fold-row {
   box-sizing: border-box;
   flex: none;
-  width: var(--fold-cell-w, var(--size));
+  min-width: 0;
+  /* `width` 故意不写：按内容收。删掉 max-width 的话长组名会把板撑出窗口。 */
+  max-width: var(--fold-cell-w, var(--size));
   height: var(--fold-cell-h, var(--size));
   display: flex;
   align-items: center;

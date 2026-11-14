@@ -375,7 +375,7 @@ html[data-window="settings"] #root {
   text-transform: uppercase;
 }
 
-/* 「牌长这样」的实时预览（外观页顶部）。
+/* 「牌长这样」的实时预览（外观页统一预览区的上半张）。
    **它用的就是灯自己那张牌**（同一套 CSS 变量和类名，见 `LampPreview`）—— 这里
    不再给它任何容器样式。
 
@@ -409,13 +409,31 @@ html[data-window="settings"] #root {
   cursor: default;
 }
 
-/* 折叠预览上方那行小字。它是**说明**而不是一节标题（`.section-title` 会让人
-   以为又开了一节设置），所以沿用 `.row-hint` 的字号与灰度，只补一点上间距 ——
-   否则会紧贴上面「折叠内容」那一行，看起来像那一行的第二行说明。
-   **和窄板一起居中**：板居中、这行字左对齐的话，两个左边缘差着半个屏，
-   看着像「字是上一行的注、板是另一段的图」。它就是这张图的图注。 */
-.settings .fold-preview-title {
-  margin: 12px 0 6px;
+/* 外观页唯一的预览区（`LookPreview`）：展开牌与折叠窄板上下同屏。
+   **不画底、不画框、不加圆角** —— 这块位置曾因一块灰「样品台」被连报三次
+   （见上面那段），两张图收进同一块区也不等于可以给它一圈容器样式。
+   两种形态之间只用 1px 细线 + 一行居中图注分开；下面紧接 `.local-tabs`
+   自己的 `border-top`，所以这里**不补底部分隔线、也不留 margin-bottom**，
+   否则两条细线只隔几像素，又变成「两条平行线」。 */
+.settings .look-preview {
+  /* 说明 `<p class="hint">` 只写了 margin-top，下边距来自浏览器给 p 的默认值。
+     万一哪天加全局 reset，那行 12.5px 灰字就会和「展开后」图注贴成一段说明
+     的第二行。这条上边距和它折叠后仍是一段留白，属于兜底而不是加空档。 */
+  margin-top: 8px;
+}
+
+.settings .preview-figure + .preview-figure {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+/* 两张图各一行小字图注。它是**图注**而不是一节标题（`.section-title` 会让人
+   以为又开了一节设置），所以沿用 11px 灰字；**必须和板一起居中**：板按内容宽
+   居中、字左对齐的话，两个左边缘差着半个屏，看着像「字是上一行的注、板是
+   另一段的图」。两张图的图注共用这一条规则，字号与灰度不会各自漂移。 */
+.settings .preview-caption {
+  margin: 0 0 6px;
   color: var(--muted);
   font-size: 11px;
   line-height: 1.45;

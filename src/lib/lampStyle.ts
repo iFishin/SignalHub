@@ -329,6 +329,10 @@ export const SIGN_GAP_MULT: Record<SignGap, number> = {
  * 对展开牌 154px / 窗口 182px 窄 36%；6.0 那版只窄 22px，等于没折叠。
  *
  * 窗口宽只由设置决定，组名 / 状态词再长也不会让窗口跳一下（超长一律省略号）。
+ *
+ * **这三档是窗口的容量上限，不是板宽**：0.6.8 起 `.fold-row` 只拿它当
+ * `max-width`，窄板按实际文字收，短词右侧不再留一截深色空板（见 `lamp.css`
+ * 「折叠态带文字」那节）。改这里**只**影响窗口留白，别为了「和板对齐」改小。
  */
 export const FOLD_WIDTH_MULT: Record<FoldLabel, number> = {
   none: 1,

@@ -322,7 +322,7 @@ fn build_menu(app: &AppHandle, lang: crate::config::Lang) -> tauri::Result<Menu<
     let toggle = MenuItem::with_id(app, "toggle", t.tray_show_hide, true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", t.tray_settings, true, None::<&str>)?;
     let pause = MenuItem::with_id(app, "pause", t.tray_pause, true, None::<&str>)?;
-    // 穿透开着时把这一项写成「退出点击穿透 · ⌃⌥S」。**不画勾选态**，而是给一条
+    // 穿透开着时把这一项写成「退出点击穿透 · ⌥⌘S」。**不画勾选态**，而是给一条
     // 能照着做的指令：穿透下窗口收不到任何指针事件，开启时那条通知又是一次性的，
     // 托盘菜单是用户回头唯一还能查到「怎么退出」的地方。
     // 真值只有 `SharedUi.pass_through` 一处：命令、托盘、快捷键三条入口都走
@@ -333,11 +333,17 @@ fn build_menu(app: &AppHandle, lang: crate::config::Lang) -> tauri::Result<Menu<
         .expect("ui poisoned")
         .pass_through;
     let pass_through_label = if pass_through_on {
-        format!(
-            "{} · {}",
-            t.tray_pass_through_exit,
-            crate::shortcuts::pass_through_label()
-        )
+        if crate::shortcuts::pass_through_registered(app) {
+            format!(
+                "{} · {}",
+                t.tray_pass_through_exit,
+                crate::shortcuts::pass_through_label()
+            )
+        } else {
+            // 快捷键没抢到（或还没注册完）：只给托盘这条真能用的路。
+            // 之前无条件拼 label，结果是「请按一个按不出来的键退出」。
+            t.tray_pass_through_exit.to_string()
+        }
     } else {
         t.tray_pass_through.to_string()
     };

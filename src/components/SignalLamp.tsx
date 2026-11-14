@@ -326,10 +326,6 @@ export function SignalLamp({
   // 待审批的条数：Rust 的 `approval_area` 按**同一个数**给窗口留高度（见 lamp.css
   // 的 `--bubble-h`）。数错了就是气泡被裁掉一半 —— 而那两个按钮是唯一的出路。
   const pending = approvals?.length ?? 0;
-  // 窗口高度只按**画出来的**条数留（Rust 的 `approval_area` 同样夹到 3 条）。
-  // 用真实条数算留白的话，4 条以上时牌子和气泡会叠在一起 —— 多出来的那几条
-  // 本来就不画（见 `ApprovalBubble`）。
-  const bubbles = Math.min(pending, MAX_APPROVAL_BUBBLES);
   const { size, quiet, collapsed, show, hidden_groups } = settings;
   // 折叠态的两个旋钮。展开态一律不读它们 —— 牌永远是竖着叠的一块板。
   const foldAxis = settings.fold_axis;
@@ -344,6 +340,11 @@ export function SignalLamp({
   // 产品无关的剧本里。hook 仍然无条件调用（React 规则），只是读的时候盖掉；
   // 剧本想演示这枚角灯时用 `previewPassThrough` 显式打开。
   const passThrough = preview ? previewPassThrough : toggles.pass_through;
+  // 窗口高度只按**画出来的**条数留（Rust 的 `approval_area` 同样夹到 3 条）。
+  // 用真实条数算留白的话，4 条以上时牌子和气泡会叠在一起 —— 多出来的那几条
+  // 本来就不画（见 `ApprovalBubble`）。
+  // 穿透时两边一起归零：那两个按钮本来就点不到，白占的高度是纯粹的遮挡。
+  const bubbles = passThrough ? 0 : Math.min(pending, MAX_APPROVAL_BUBBLES);
 
   // 形状是逐状态的（一个窗口里多块牌可以不一样），所以先整份算出来，再按每块牌
   // 的状态取。颜色和动画走 lampVars 的 CSS 变量，shape走元素属性 —— 形状不是
@@ -588,6 +589,18 @@ export function SignalLamp({
   useEffect(() => {
     if (menuOpen) setPeek(false);
   }, [menuOpen]);
+
+  // 切入穿透时，前端这两个临时态要和 Rust 的 UiFlags 一起收掉。
+  // Rust 侧已经清了 ui.peek / ui.menu 并重算窗口；这里不跟的话，窗口缩回基础
+  // 尺寸而 React 还在画圆环 / 展开牌，内容被裁掉一半，而且穿透下收不到指针、
+  // 既关不掉菜单也等不到 mouseleave（menuOpen 没有自动超时）。
+  // 依赖是布尔值，所以托盘 / 快捷键改自启时重发 toggles 事件不会重复触发。
+  useEffect(() => {
+    if (!preview && toggles.pass_through) {
+      setPeek(false);
+      setMenuOpen(false);
+    }
+  }, [toggles.pass_through, preview]);
 
   // hook 无条件调用（React 规则），预览时只是不把那组事件挂到根节点上。
   // **长按 = 圆环菜单**始终不变；单击做什么由设置决定（默认折叠 / 展开）。
@@ -1042,7 +1055,8 @@ export function SignalLamp({
       data-approvals={pending || undefined}
       data-pass-through={passThrough || undefined}
       data-collapsed={!expanded}
-      /* 折叠轴与折叠内容：CSS 按它们决定 flex 方向、要不要画窄板、每格多宽。
+      /* 折叠轴与折叠内容：CSS 按它们决定 flex 方向、要不要画窄板、每格最多多宽
+         （实际板宽按文字收，见 lamp.css 的 .fold-row）。
          展开态挂了也不会命中任何规则（所有相关选择器都带 `[data-collapsed]`）。 */
       data-fold-axis={foldAxis}
       data-fold-label={foldLabel}
@@ -1097,8 +1111,10 @@ export function SignalLamp({
         </div>
       )}
       {/* 待审批的气泡。**绝对定位**（见 lamp.css）：不参与 flex 布局，所以折叠态
-          那种横排也不用另写一套，牌的宽高一个像素都不变。 */}
-      {pending > 0 && onDecide && (
+          那种横排也不用另写一套，牌的宽高一个像素都不变。
+          穿透时不画：按钮本来就点不到，留着只是多挡一块（Rust 的
+          `approval_area` 同一条件下也不给它留高度）。审批本身仍在等，通知照发。 */}
+      {pending > 0 && onDecide && !passThrough && (
         <ApprovalBubble approvals={approvals ?? []} onDecide={onDecide} />
       )}
       {/* 暂停角标。绝对定位在窗口右上角那一圈留白里（`top` / `right` = 1px，见

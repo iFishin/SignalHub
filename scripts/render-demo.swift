@@ -1,9 +1,13 @@
 #!/usr/bin/env swift
 // scripts/render-demo.swift
 //
-// 重画 README 顶部那张 `docs/assets/demo.gif`。**不是产品代码**，只是素材生成器：
+// 【已停用 · 历史存档】旧版 README 首图的手绘帧生成器；现在由
+// `scripts/render-scenes.mjs` 从产品组件逐帧渲染，见 docs/scenes.md 开头。
+// 本文件保留只为追溯当年那张示意图是怎么画的，不要再拿它产出交付素材。
 //
-//     sh scripts/render-demo.sh
+// **不是产品代码**，只是素材生成器：
+//
+//     sh scripts/render-demo.sh --legacy
 //
 // 分两步：`render-demo.sh` 开临时目录并合成 GIF，本脚本只把 PNG 帧画进去。
 // 为什么不用录屏：真窗口里的状态要等智能体真的跑一次才出现，而这里要演示的是
