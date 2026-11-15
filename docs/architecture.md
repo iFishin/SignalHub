@@ -2042,6 +2042,43 @@ keyframes），收益不值 —— 线在闪已经够读出来了。
 
 **真窗口待验**：动图里没有的东西（透明窗置顶、拖拽、浅色壁纸可读性、系统通知、托盘菜单）仍要 `npm run tauri dev` 自己看；`docs/scenes.md` 里逐段列出的「在真机上」操作路径也要对着当前版本核一遍，尤其是 §3.35.14 记下的那条 —— 穿透时窗口收不到指针，tooltip 物理上不可达，文档里已如实写成「不要指望悬停提示」，产品内 `cornerPassthrough` 那句文案仍待批次二修。
 
+### 3.35.18 0.6.8（未发版）：展示模式是「手动点亮的一屏」，不是屏保
+
+用户提的原需求是「离开电脑后自动进屏保，信号灯放大占满整屏，同时不让系统休眠」。评估后**只保留了「放大占满整屏」这一半，而且改成手动触发**，另外两条明确不做：
+
+- **不自动 / 不当屏保**：闲置判定要回答「人到底还在不在」，而这个产品已经因为「自动判定不可靠」否决过一次同类设计（安静模式只做显示、不推断在场）。更关键的是语义 —— 屏保是「遮挡 + 省电」，把全部组名摆到合盖前的屏幕上正好相反：它想让人**看得更清**，不是遮住。真要做的是「一键把它铺满」这个动作。
+- **不阻止系统休眠**：防休眠要么依赖用户从没点过的系统 API，要么在别人抱着笔记本离开时继续耗电；而且屏保与休眠本来就该一起发生，为了「回来还能看见」而拖住整机是最贵的一种办法。用户选项里也没选这条。
+
+**形状是静态窗口 + show/hide，不是运行时建窗**：`tauri.conf.json` 里 `visible: false` 的 `stage` 窗口启动时只加载 webview、不显示（设置窗 / 收件箱同一路数），`present()` 摆好尺寸位置再 `show()`。好处是关窗事件能在 `setup` 里一次挂好、每次进入不重建 webview、capability 的 label 编译期固定；运行时建窗那条路留给组灯（`lamps.rs` 有「组数会变」这个静态配置满足不了的理由）。
+
+**不调 `set_fullscreen`**：macOS 的系统全屏会另开一个 Space，退出时桌面要滑回来，而这里要的是「按一下立刻回到原样」。改成按显示器的物理尺寸算逻辑尺寸（物理像素 ÷ `scale_factor`）、把无边框窗口精确摆到那块屏上 —— 视觉上铺满，但始终是普通窗口。代价写进 §7：别的应用的全屏 Space 盖不到它。
+
+**「铺满」不等于「盖住系统界面」** —— 这是第一版真机验收时才暴露的：屏满了，Dock 还压在上面。原因是 Dock 与菜单栏的窗口层级高于普通窗口，光把 frame 摆到整屏没有用；而 macOS 又没有「不进 Space 的隐藏」这个窗口级开关。所以 macOS 上额外把本 app 的 `NSApplication.presentationOptions` 临时设成 `AutoHideDock | AutoHideMenuBar`（tao 完全不碰这个属性，`set_fullscreen` 又走 `toggleFullScreen:`，只能自己调 AppKit）。选 `AutoHide` 而不是 `Hide`：鼠标移到屏幕边缘它们仍会滑出来，用户想临时点一下别的 app 不必先退出展示模式 —— 展示模式不是 Kiosk。进入前的值存进一个 `Mutex<Option<usize>>`，退出时按它还原，不假设「默认一定是 0」。AppKit 只能在主线程改，而命令跑在 IPC 线程，所以这步经 `run_on_main_thread` 投递（已在主线程则同步执行）；不阻塞等待，最多让 Dock 多留一帧，换来的是不会因为等主线程而死锁。
+
+Windows / Linux 走另一条路：任务栏是 topmost、X11 面板只认 `_NET_WM_STATE_FULLSCREEN`，普通窗口同样盖不住，所以这两家用 `Fullscreen::Borderless`（**不会**新开桌面，和 macOS 的 Space 不同），一并完成摆放与让位。平台差异全收在 `stage::occupy_screen` 里；`stage_target` 同时返回几何与 `Monitor` 句柄，macOS 只要前者、另外两家只要后者，不必查两次显示器列表。
+
+**选屏优先鼠标所在那块**（`stage::pick_monitor_index` + `stage_target`），拿不到光标才退回主屏，两者都拿不到就只 `show()`、沿用配置尺寸并在 stderr 明示降级。副屏常在左边、坐标是负的，所以判据是「点是否落在矩形内」而不是「比 x 大小」；光标落在所有屏之外时取最近的一块。返回下标而不是矩形，是因为非 macOS 的无边框全屏需要一个 `tauri::Monitor` 句柄（造不出来、也不便比相等），只能回原表取。这四条都有单测。
+
+**状态机是纯函数**（`stage_plan(active, pass_through, enabled)` → `Idempotent / Enter / Exit / RefusePassThrough`）：重复进入是幂等的（不能把「离开这段时间」的起点刷新掉），**穿透开着时拒绝进入**（那盏灯正在替用户挡误点，不该被一个展示动作悄悄改掉），退出则从不因穿透被拒。
+
+**进入时留一份快照，退出按它恢复**（`StagePrevious { pass_through, peek, menu }`）：存的是被收掉那盏灯的 **label** 而不是 bool —— 多灯下只恢复原来那一盏，否则退出会把所有灯都展开一遍。恢复穿透**不再走** `set_pass_through_impl`：那条路会重建托盘、发事件、清 `peek` / `menu`，把刚恢复的快照又洗掉一遍，所以改成直接写回 `UiFlags` 再 `sync_pass_through_windows`（幂等，不发第二次事件）。反向也挡：展示模式开着时拒绝开启穿透（`stage_pass_through_blocked`），两个强状态叠在一起会互相踩同一份瞬态快照。
+
+**大屏另起一套版式，不复用 `lamp.css`**。灯牌的几何全挂在 `--size`（22px 档）上，另有圆环 196、气泡 132、1px 描边、14px 留白这些写死的 px；把变量抬到几百只会得到一块比例崩掉又被 `overflow: hidden` 裁掉的桌面小牌。`stage.css` 用 `clamp()` + grid，复用 `state.css` 的 `--state` 状态色，**只染灯珠和状态词**，不画整屏色块。底色固定深色（投影 / 远距离看时浅色整屏刺眼，灯球与收件箱本来也是深色 HUD）。
+
+**那盏灯必须搬上来 —— 这是第一版漏掉的。** 初版只画「组名 + 状态词 + 时长」，读起来像一块状态表；真机第一句话就是「展示模式为啥没有信号灯，这个是灵魂」。所以每张卡里都有一颗 `.stage-dot`，颜色取 `--state`、形状取 `resolveShapes`（含「全局是圆时 permission / error 画圆角方」的色盲特判）、节奏取 `--anim-<状态>`、`working` / `thinking` 的相位取 `rhythmDelay` —— 四个入口全部来自 `lampVars` / `lampStyle`，和桌面上的灯**同源**：外观页改配色或闪烁速度，大屏会跟着变，不会退化成一套独立的「大屏样式」。标题旁另有一颗总览灯（整屏 `aggregate`），对应「真实灯球上你主要看的那一颗」：远处先知道是红是绿，再往下找是哪一组。**唯一分开的是尺寸**：灯珠按卡片宽高算（`min(24cqw, 52cqh)`，夹到 20–200px），不碰 `--size`。六档形状与逐状态节奏在 `stage.css` 里是**刻意的第二份抄本** —— 几何尺度差一个数量级，没法共享同一条声明，`css.test.ts` 因此逐档钉住（少一档就是「外观里选了菱形、大屏却是圆的」）。
+
+**别把灯牌的 `transition` 抄过来。** `lamp.css` 的 `.dot` 有 `transition: background-color 180ms`，那是给 hover 与状态切换「化」一下用的；照搬到这一屏会让**首帧**读到过渡起点（`transparent`），灯珠先画成一颗空心圈 —— 初版截图正是这样，看起来像「又没有灯」。大屏不 hover、也不该在打开时淡入，直接删掉。
+
+**只有一组时内容居中，多组时左对齐**（`:only-child`）：一张卡占满整屏时挤在左边会显得空；多组时左对齐能让所有灯珠落在同一列，横扫一眼就能比出颜色。
+
+**只画灯牌本来就有的语义**：组名、状态词、持续时长。收件箱详情、审批要放行的命令、消息正文一律不搬 —— 会议投屏因此是天然的脱敏，不用再做第二个「隐私模式」开关。顶部两行摘要复用收件箱那套纯函数：`buildInbox` 摊平 + `buildAwaySummary`，起点是 `UiFlags.stage_since_ms`（进入那一刻，**不落盘**，重启清零），不足 `AWAY_MIN_MS` 不显示。事件流水那条通道**刻意不接**：展示模式不引入新的数据来源，传空数组时 `buildAwaySummary` 会安静地只数快照里还在的行。待审批不单独计数 —— 会话的 `permission` 状态本来就进了快照（`hooks.rs` 里 `PermissionRequest` 会 report），登记表里「会话已消失还在等」的条目属于交互面，不搬上大屏。
+
+**三条退路，且都不依赖同一个东西**：屏上「退出展示模式」按钮、`Esc`（`present()` 里在 macOS 把 activation policy 切到 Regular 并 `set_focus()` —— 静态窗口配的是 `focus: false`，不主动聚焦的话 Esc 落不到这个 webview）、托盘菜单同一项（文案跟着真值变，抢不到快捷键时只写「退出展示模式」）。`inbox::restore_activation` 也把 `stage` 算进「有窗口占前台」，否则收起设置窗时会把应用退回 Accessory，大屏跟着失去焦点。
+
+**入口四个、真值一处**：`set_stage_impl` 是唯一实现，命令 `set_stage` / 托盘 / 全局快捷键 `⌥⌘P`（Windows、Linux 是 `Ctrl+Alt+P`）/ 设置页的两颗按钮（系统 → 通用、演示页底部）都汇过去。演示页那颗是后补的：那一页演的是**剧本**，刚看完的人最容易问「那我自己的呢」，出口放在舞台正下方（滚完就看见，不用回系统页找），按下去的仍是同一个 `set_stage`，所以铺开的是真那份而不是把演示放大；按钮文案跟着 `toggles.stage` 走，同一个位置也能退出。它在视觉上**只是页尾的一格**，只用 1px 上边线分段、不铺底色（`css.test.ts` 钉住 `.demo-real` 不带 `background` / `box-shadow` / `border-radius`）—— 再长成一张卡片就会和上面那个舞台抢主角。顺序沿用穿透那条「先窗口、后状态、最后反馈」：窗口没摆好就写状态的话，失败时会留下「托盘说开着、屏幕上什么都没有」的半套状态。
+
+**测试钉的是「不会悄悄走回头路」**：`stage.rs` 7 条单测覆盖选屏 / 缩放 / 状态机 / 快照；`css.test.ts` 断言 `stage.css` **不含 `var(--size`**、不含 `box-shadow` / `linear-gradient`，且 `StageWindow.tsx` 不出现 `ApprovalBubble` / `group.message` —— 前者是比例崩掉，后者是投屏泄密，两个都不会报错。
+
 ## 4. 悬浮窗实现
 
 ### 4.1 窗口配置
@@ -2314,6 +2351,9 @@ SignalHub/
 | Windows 上 PATH 里的可执行文件带 `.exe` | `Path::is_file()` **不做 PATHEXT 展开**，只找 `signalhub` 会永远找不到 `signalhub.exe`。所以查命令时要把 `.exe` 也试一遍（见 `hooks::candidates`）。 |
 | **Windows 只出 NSIS（`-setup.exe`），不出 MSI** | `bundle.targets` 原本是 `"all"`，会同时出 WiX 的 `.msi` 和 NSIS 的 `-setup.exe`。但 `light.exe` 生成 msi 那一步在这套配置上失败了：`failed to bundle project: failed to run light.exe`，而 Tauri **把 light.exe 自己的 stderr 吞了**，看不出原因（candle 那一步是过的，所以不是 `.wxs` 本身解析不了）。`tauri.windows.conf.json` 因此把 targets 收成 `["nsis"]` —— 那份本来就是 Tauri 推荐的 Windows 安装器。**这是绕开，不是修好**：根因没查出来，只是把出问题的那条路关掉了；想要 msi 的话得另做一轮诊断（用 `--verbose` 重跑，或者把生成的 `main.wxs` 打出来手动跑 light）。 |
 | Linux/Wayland | 透明窗口与 `shadow` 官方标注不支持。Linux 是硬需求时优先 X11。 |
+| **展示模式在 macOS 上不是系统全屏** | 刻意不调 `set_fullscreen`（tao 把它译成 `toggleFullScreen:`，会另开一个 Space，退出要滑回来）。窗口按「物理尺寸 ÷ 缩放比」铺满，位置是物理坐标。别的应用的全屏 Space 仍然盖不到它 —— 同上面第一条。 |
+| **展示模式必须主动让 Dock / 菜单栏让位** | 铺满屏幕**不等于**盖住系统界面：Dock 与菜单栏的窗口层级更高，第一版实测是「屏满了，Dock 还在上面」。macOS 的做法是把本 app 的 `NSApplication.presentationOptions` 临时设成 `AutoHideDock \| AutoHideMenuBar`（自动隐藏，不是禁用 —— 鼠标移到边缘仍会滑出来），退出时按进入前的值还原。Windows / Linux 上任务栏 topmost、X11 面板只认 `_NET_WM_STATE_FULLSCREEN`，普通窗口同样盖不住，所以这两家用 `Fullscreen::Borderless`（**不会**新开桌面，和 macOS 的 Space 不同）。三平台都**未在真机验收**：macOS 是用户报的问题，Windows / Linux 是按实现推断的。 |
+| **展示模式在 Wayland 上未验证** | 无边框**不透明**窗理论上没问题（不像透明窗那样被明确标注不支持），但合成器可能忽略 `set_position`、也可能不给 `alwaysOnTop`；拿不到显示器信息时只 `show()`、沿用配置尺寸，并在 stderr 写明「明示降级」。真机没验过，别对外说三平台一致。 |
 | `set_shadow` | Linux 不支持；Windows 上对无边框窗口加的是 1px 白边（Win11 上是圆角）。 |
 | `set_skip_taskbar` | macOS 不支持（用 Accessory 策略替代）；Windows 上有效。 |
 | 首次运行防火墙弹窗 | 绑定 127.0.0.1 通常不弹，但仍可能提示。 |
