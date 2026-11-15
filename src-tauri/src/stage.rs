@@ -27,7 +27,13 @@
 //!
 //! 已知降级：Wayland 上的置顶 / 全屏语义由合成器决定，见 `docs/architecture.md` §7。
 
-use tauri::{AppHandle, LogicalSize, Manager, PhysicalPosition, WebviewWindow};
+use tauri::{AppHandle, Manager, PhysicalPosition, WebviewWindow};
+// 只有 macOS 那条「按逻辑尺寸精确摆放」的路要它；Windows / Linux 走无边框全屏，
+// 用不到。**必须单独加 cfg**：多留一个跨平台 import 不会报错，只会让 CI 在
+// Linux / Windows 上以 `unused_imports`（`-D warnings`）挂掉 —— 而 macOS 本地
+// 永远看不到，因为那个分支只在别的平台上不编译。
+#[cfg(target_os = "macos")]
+use tauri::LogicalSize;
 
 /// 窗口 label。`tauri.conf.json` 与 `capabilities/default.json` 里必须一致。
 pub const LABEL: &str = "stage";
