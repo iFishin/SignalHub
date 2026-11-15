@@ -41,6 +41,7 @@ import {
   useToggles,
   setAutostart,
   setPassThrough,
+  setStage,
 } from "../lib/useToggles";
 import { useStats } from "../lib/useStats";
 import { useHistory, type DayRow } from "../lib/useHistory";
@@ -5268,6 +5269,34 @@ export function SettingsPanel({ snapshot }: Props) {
             <PageHeader title={m.tabDemo} hint={m.pageHint.demo} />
             <p className="hint">{m.demoIntro}</p>
             <DemoStage compact />
+            {/* 演示页演的是剧本，不是用户的灯 —— 这两件事在同一个页面上很容易
+                被当成一回事（尤其「用光说话」里那些牌真的很像自己的）。所以
+                下面接一个出口：按下去走的是和托盘 / ⌥⌘P 同一条 `set_stage`，
+                铺开的是屏幕上真实那一份。
+                放在舞台**下面**而不是页头旁边：这一页的主角是那个自己会播的
+                舞台，把入口摆到最上面会让人先想「我要不要开全屏」而不是先看
+                演示；而看完的人正好滚到这里，语义是「演的看完了，看真的」。 */}
+            <div className="demo-real">
+              <span className="demo-real-title">{m.stage.title}</span>
+              <p className="demo-real-hint">{m.demoRealHint}</p>
+              <div className="demo-real-actions">
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => {
+                    setError(null);
+                    setStage(!toggles.stage).catch(reported);
+                  }}
+                >
+                  {toggles.stage ? m.stage.exit : m.stage.enter}
+                </button>
+                {/* 抢不到快捷键时不写键名：那会教用户按一个按不出来的键，
+                    和系统页那份同样的判断。 */}
+                {toggles.stage_shortcut && (
+                  <span className="mono">{toggles.stage_shortcut}</span>
+                )}
+              </div>
+            </div>
           </div>
         );
 
@@ -6003,6 +6032,29 @@ export function SettingsPanel({ snapshot }: Props) {
                     </div>
                   ))}
                   <p className="hint">{m.shortcutsHint}</p>
+                </div>
+
+                {/* 展示模式：手动触发的独立大屏窗口。放在「常规」而不是「外观」，
+                    因为它和穿透、快捷键同属全局动作；按钮文案跟着 toggles.stage 走
+                    —— 托盘菜单和全局快捷键也能改这个状态。 */}
+                <div className="section">
+                  <div className="section-title">{m.stage.title}</div>
+                  <div className="row-start">
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => {
+                        setError(null);
+                        setStage(!toggles.stage).catch(reported);
+                      }}
+                    >
+                      {toggles.stage ? m.stage.exit : m.stage.enter}
+                    </button>
+                    {toggles.stage_shortcut && (
+                      <span className="mono">{toggles.stage_shortcut}</span>
+                    )}
+                  </div>
+                  <p className="hint">{m.stage.hint}</p>
                 </div>
               </LocalPanel>
             )}

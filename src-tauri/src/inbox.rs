@@ -123,7 +123,9 @@ pub fn hide(app: &AppHandle) {
 /// Accessory。**不能无条件退回** —— 那会让同时开着的另一个窗口突然失去焦点行为。
 #[cfg(target_os = "macos")]
 pub fn restore_activation(app: &AppHandle) {
-    let any_open = ["settings", LABEL].iter().any(|label| {
+    // 展示模式也是一扇要占前台的窗口：它开着时收起设置 / 收件箱，不能把应用
+    // 退回 Accessory，否则大屏会失去焦点、Esc 落不到 webview（逃生通道少一条）。
+    let any_open = ["settings", LABEL, crate::stage::LABEL].iter().any(|label| {
         app.get_webview_window(label)
             .and_then(|window| window.is_visible().ok())
             .unwrap_or(false)

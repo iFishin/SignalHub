@@ -246,6 +246,50 @@
   gap: 6px;
 }
 
+/* ---- 舞台下面那一格：去看真的 ----------------------------------------------
+ *
+ * 设置 →「演示」页里，`.demo` 演剧本，这一块接真实的展示模式。它**不是**第三个
+ * 舞台，所以不铺底色、不画边框、不加圆角 —— 只用 1px 上边线做分隔，靠字号和
+ * 灰度分层，和设置面板其余部分同一套语言（再长成一张卡片就会和上面的舞台抢
+ * 主角，也正好是之前被否掉的那种「装饰性色块」）。
+ *
+ * 宽度必须和 `.demo` 一样是 680 并居中：两块内容左边缘错开几像素，比不对齐
+ * 本身更显眼。
+ */
+.demo-real {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 680px;
+  margin: 18px auto 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.demo-real-title {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.demo-real-hint {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.demo-real-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* 快捷键和系统页那一处一样只是提示，不该比按钮还响。 */
+.demo-real-actions .mono {
+  color: var(--muted);
+}
+
 /* ---- 独立演示页 ------------------------------------------------------------ */
 
 .demo-window {

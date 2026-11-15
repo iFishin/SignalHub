@@ -340,11 +340,14 @@ export function SignalLamp({
   // 产品无关的剧本里。hook 仍然无条件调用（React 规则），只是读的时候盖掉；
   // 剧本想演示这枚角灯时用 `previewPassThrough` 显式打开。
   const passThrough = preview ? previewPassThrough : toggles.pass_through;
+  // 展示模式期间灯被一整块大屏盖住，气泡既看不见也点不到；Rust 的 `approval_area`
+  // 同时归零（审批本身还留在登记表里，退出后原样回来）。演示里不继承本机状态。
+  const stageOn = preview ? false : toggles.stage;
   // 窗口高度只按**画出来的**条数留（Rust 的 `approval_area` 同样夹到 3 条）。
   // 用真实条数算留白的话，4 条以上时牌子和气泡会叠在一起 —— 多出来的那几条
   // 本来就不画（见 `ApprovalBubble`）。
-  // 穿透时两边一起归零：那两个按钮本来就点不到，白占的高度是纯粹的遮挡。
-  const bubbles = passThrough ? 0 : Math.min(pending, MAX_APPROVAL_BUBBLES);
+  // 穿透 / 展示模式时两边一起归零：那两个按钮本来就点不到，白占的高度是纯粹的遮挡。
+  const bubbles = passThrough || stageOn ? 0 : Math.min(pending, MAX_APPROVAL_BUBBLES);
 
   // 形状是逐状态的（一个窗口里多块牌可以不一样），所以先整份算出来，再按每块牌
   // 的状态取。颜色和动画走 lampVars 的 CSS 变量，shape走元素属性 —— 形状不是
@@ -590,17 +593,18 @@ export function SignalLamp({
     if (menuOpen) setPeek(false);
   }, [menuOpen]);
 
-  // 切入穿透时，前端这两个临时态要和 Rust 的 UiFlags 一起收掉。
+  // 切入穿透 / 展示模式时，前端这两个临时态要和 Rust 的 UiFlags 一起收掉。
   // Rust 侧已经清了 ui.peek / ui.menu 并重算窗口；这里不跟的话，窗口缩回基础
   // 尺寸而 React 还在画圆环 / 展开牌，内容被裁掉一半，而且穿透下收不到指针、
-  // 既关不掉菜单也等不到 mouseleave（menuOpen 没有自动超时）。
+  // 既关不掉菜单也等不到 mouseleave（menuOpen 没有自动超时）。展示模式下灯被
+  // 大屏盖住，同样没有任何 hover 能把它收回去。
   // 依赖是布尔值，所以托盘 / 快捷键改自启时重发 toggles 事件不会重复触发。
   useEffect(() => {
-    if (!preview && toggles.pass_through) {
+    if (!preview && (toggles.pass_through || toggles.stage)) {
       setPeek(false);
       setMenuOpen(false);
     }
-  }, [toggles.pass_through, preview]);
+  }, [toggles.pass_through, toggles.stage, preview]);
 
   // hook 无条件调用（React 规则），预览时只是不把那组事件挂到根节点上。
   // **长按 = 圆环菜单**始终不变；单击做什么由设置决定（默认折叠 / 展开）。

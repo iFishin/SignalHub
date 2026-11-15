@@ -1,0 +1,397 @@
+/*
+ * 展示模式的大屏版式。
+ *
+ * 和 settings.css 同一套朴素原则：没有阴影、没有渐变、没有发光、不用圆角色块，
+ * 分隔靠 1px 细线，层次靠字号与灰度。状态色只落在**灯珠**和**状态词**上，
+ * 不铺整块卡片的底 —— 一整屏色块会把「看一眼」变成「看一会儿」。
+ *
+ * **刻意不引用 --size**。灯牌的几何全挂在那个 22px 档的变量上，还有一批写死的
+ * px（圆环 196、气泡 132、1px 描边、14px 留白）；把变量抬大只会得到比例崩掉又
+ * 被裁掉的桌面小牌。这里只用视口 / 容器相对的 clamp() 与 flex/grid，颜色沿用
+ * state.css 的 --state（由根元素 --c-* 注入，跟着用户的配色走）。
+ *
+ * 底色固定深色：会议投屏 / 远距离看时浅色整屏会刺眼，而灯球与收件箱本来就
+ * 固定深色 HUD。主题偏好不改变这一屏。
+ */
+
+html[data-window="stage"] {
+  color-scheme: dark;
+}
+
+html[data-window="stage"],
+html[data-window="stage"] body,
+html[data-window="stage"] #root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #16161a;
+  color: #e8e8ea;
+}
+
+.stage {
+  --stage-bg: #16161a;
+  --stage-fg: #e8e8ea;
+  --stage-muted: #9aa0a6;
+  --stage-line: #333336;
+  --stage-hover: #2a2a2d;
+
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  padding: clamp(20px, 3vw, 56px) clamp(24px, 4vw, 80px);
+  background: var(--stage-bg);
+  color: var(--stage-fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.stage *,
+.stage *::before,
+.stage *::after {
+  box-sizing: border-box;
+}
+
+/* ---- 顶栏 ---------------------------------------------------------------- */
+
+.stage-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+}
+
+.stage-head-main {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+}
+
+.stage-title {
+  font-size: clamp(18px, 1.5vw, 28px);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+.stage-count,
+.stage-hint,
+.stage-foot,
+.stage-summary-label {
+  color: var(--stage-muted);
+  font-size: clamp(12px, 0.8vw, 15px);
+  font-weight: 400;
+}
+
+.stage-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.stage-exit {
+  border: 1px solid var(--stage-line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--stage-fg);
+  font: inherit;
+  font-size: clamp(13px, 0.9vw, 17px);
+  font-weight: 500;
+  padding: clamp(8px, 0.8vw, 14px) clamp(16px, 1.4vw, 28px);
+  cursor: pointer;
+}
+
+.stage-exit:hover {
+  background: var(--stage-hover);
+}
+
+.stage-exit:focus-visible {
+  outline: 1px solid var(--stage-fg);
+  outline-offset: 2px;
+}
+
+/* ---- 摘要 ---------------------------------------------------------------- */
+
+.stage-summary {
+  margin-top: clamp(16px, 2vw, 32px);
+  padding-bottom: clamp(12px, 1.4vw, 24px);
+  border-bottom: 1px solid var(--stage-line);
+}
+
+.stage-summary-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px clamp(16px, 2vw, 36px);
+  padding: 4px 0;
+}
+
+.stage-summary-label {
+  min-width: clamp(120px, 12vw, 220px);
+}
+
+.stage-summary-parts {
+  font-size: clamp(16px, 1.35vw, 26px);
+  font-weight: 500;
+}
+
+/* ---- 状态网格 ------------------------------------------------------------ */
+
+.stage-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  /* 列数由 `lib/stageGrid.ts` 按组数算好写进 `--stage-cols`，不用 auto-fit：
+   * 它只认「一格至少多宽」，5 组会排出 4 + 1、9 组排出 4 + 4 + 1。
+   * 兜底 3 列是「既没算也没传」时的老样子，不是推荐值。 */
+  grid-template-columns: repeat(var(--stage-cols, 3), minmax(0, 1fr));
+  /* 行高**吃掉剩下的高度**（1fr），不是停在最小档：组少时（会议里常常只有
+   * 两三组）卡片只有一条高、下面一片黑，远处看仍然是「桌面上那块小牌」。
+   * 组多到超出时由 minmax 的最小档兜住，整个网格滚动。 */
+  grid-auto-rows: minmax(clamp(140px, 18vh, 260px), 1fr);
+  align-content: stretch;
+  overflow-y: auto;
+}
+
+.stage-card {
+  /* 字号跟**卡片**走而不是跟视口走：只有一组时那块牌占满整屏，按 3vw 算出来的
+   * 状态词只有 50px，落在 1400px 宽的格子里像一行小字。容器查询让 1 组和 9 组
+   * 各自都有一个合理的字号。
+   * 兜底：不认 `container-type` 的 WebKitGTK（老版本）会忽略 `cqw` 那几条声明，
+   * 用下面先写的那套 `vw` 值 —— 布局不受影响，只是少一组时字偏小。 */
+  container-type: size;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: clamp(14px, 2.4cqw, 40px);
+  min-width: 0;
+  padding: clamp(18px, 2vw, 40px);
+  border-right: 1px solid var(--stage-line);
+  border-bottom: 1px solid var(--stage-line);
+}
+
+/* 灯珠右边那三行。`min-width: 0` 是让长组名能省略 / 换行而不把灯珠挤扁。 */
+.stage-card-body {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: clamp(6px, 0.9cqw, 16px);
+  min-width: 0;
+}
+
+/* 只有一组时内容居中：那张卡占满整屏，灯和字都挤在左边会显得空。
+   多组时**不**居中 —— 每格左对齐时所有灯珠在同一列，横扫一眼就能比出颜色。 */
+.stage-grid > .stage-card:only-child {
+  justify-content: center;
+}
+
+/* ---- 灯珠 ---------------------------------------------------------------- */
+
+/*
+ * 这一屏的灵魂。它和桌面上的 `.dot` 是**同一件事**：颜色取 `--state`（state.css
+ * 按 `data-state` 给出，值来自 lampVars 的 `--c-*`），形状取 `data-shape`
+ * （`resolveShapes` 算出，含「全局是圆时 permission / error 画圆角方」的色盲
+ * 特判），节奏取 `--anim-<状态>`（`resolveAnimations` 算出）。三样都与灯球同源 ——
+ * 所以外观页改配色 / 闪烁速度，大屏会跟着变，不会变成一套独立的「大屏样式」。
+ *
+ * **唯一分开的是尺寸**：这里按卡片宽度算，不碰 `--size`。灯牌的 `--dot` 是
+ * `calc(--size × 0.55)`，抬到 1400px 的卡里只会得到一颗数字上的点、比例全错。
+ *
+ * 兜底那条用 vw（不依赖容器查询）先写；`@supports` 里的 cqw / cqh 版本覆盖它，
+ * 让 1 组和 9 组各有一颗合适大小的灯。写在同一个自定义属性上而不是两条 width：
+ * 形状规则（环的厚度、胶囊的宽、方角的半径）都要拿 `--dot` 去算，只能有一个值。
+ */
+.stage-dot {
+  /* 兜底：不认容器查询的引擎按视口算，偏小但比例不失衡。 */
+  --dot: clamp(20px, 6vw, 96px);
+
+  box-sizing: border-box;
+  width: var(--dot);
+  height: var(--dot);
+  flex: none;
+  border-radius: 50%;
+  /* 兜底用 --state：老 WebKitGTK 不认 color-mix 时 --edge 会退化成无效值，
+     描边于是和填充同色（看不见），布局不受影响 —— 和 lamp.css 同一个思路。 */
+  background: var(--state);
+  border: max(1px, calc(var(--dot) * 0.03)) solid var(--edge, var(--state));
+  /* 没有 `transition`：灯牌上加它是为了让 hover / 状态切换「化」过去，而这一屏
+     不 hover、也不该在打开时从透明淡入。带过渡时首帧读到的是起点色，灯珠会
+     先画成一颗空心圈 —— 第一版截图正是这样，看起来像「没有灯」。 */
+  will-change: opacity;
+}
+
+@supports (container-type: size) {
+  .stage-dot {
+    /* 灯珠要**明显大于状态词**：桌面上它就是主体，状态词是它的注解。这一屏是
+       给三米外看的，一颗和字一样大的点会读成「表格里有个圆点」。
+       9 组 3 列时卡内容约 418×127 → min(24%, 52%) ≈ 66px；1 组占满整屏时
+       两个比例都会算到 300px 以上，所以夹到 200px —— 再大就成了色块，
+       而这一屏刻意不铺色块（见文件头）。 */
+    --dot: clamp(20px, min(24cqw, 52cqh), 200px);
+  }
+}
+
+/* 形状六档。枚举与 lamp.css 一致，**改那边要同步这里** —— 这是唯一一处
+   刻意重复的规则：几何尺度差一个数量级，没法共享同一条声明。 */
+.stage-dot[data-shape="rounded"] {
+  border-radius: 28%;
+}
+
+.stage-dot[data-shape="square"] {
+  /* 按点径给一点圆角消锯齿，而不是写死 2px —— 120px 的灯上 2px 等于直角。 */
+  border-radius: max(2px, calc(var(--dot) * 0.05));
+}
+
+.stage-dot[data-shape="diamond"] {
+  border-radius: 0;
+  clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%);
+}
+
+/* 竖胶囊：只收窄 width，点径（height）不变 —— 和灯牌同一条规则。 */
+.stage-dot[data-shape="capsule"] {
+  width: calc(var(--dot) * 0.72);
+  border-radius: 999px;
+}
+
+/* 空心圆环：弧长同时承载「沉默进度」（`--progress`，1 = 刚开始沉默）。 */
+.stage-dot[data-shape="ring"] {
+  --thickness: max(3px, calc(var(--dot) / 3.4));
+
+  border: none;
+  background: conic-gradient(
+    var(--state) calc(var(--progress, 1) * 360deg),
+    transparent 0
+  );
+  -webkit-mask: radial-gradient(
+    farthest-side,
+    transparent calc(100% - var(--thickness)),
+    #000 calc(100% - var(--thickness))
+  );
+  mask: radial-gradient(
+    farthest-side,
+    transparent calc(100% - var(--thickness)),
+    #000 calc(100% - var(--thickness))
+  );
+}
+
+/* 节奏：和 lamp.css 逐条对应，值由 `lampVars` 挂在根上（`--anim-*`）。
+   括号里的兜底值让这张表单独也能用，和 state.css 的 `var(--c-x, 兜底)` 同理。 */
+.stage-dot[data-state="thinking"] {
+  animation: var(--anim-thinking, pulse 640ms ease-in-out infinite);
+}
+
+.stage-dot[data-state="working"] {
+  animation: var(--anim-working, pulse 1600ms ease-in-out infinite);
+}
+
+/* 只给「在干活」两种状态错相：警报（attention / permission / error）就该同步，
+   打散等于把「一起在叫你」稀释成「有点吵」。 */
+.stage-dot[data-state="thinking"],
+.stage-dot[data-state="working"] {
+  animation-delay: var(--rhythm-delay, 0ms);
+}
+
+.stage-dot[data-state="done"] {
+  animation: var(--anim-done, none);
+}
+
+.stage-dot[data-state="idle"] {
+  animation: var(--anim-idle, none);
+}
+
+.stage-dot[data-state="stale"] {
+  animation: var(--anim-stale, none);
+}
+
+.stage-dot[data-state="attention"] {
+  animation: var(--anim-attention, pulse 1000ms ease-in-out infinite);
+}
+
+.stage-dot[data-state="permission"] {
+  animation: var(--anim-permission, pulse 900ms ease-in-out infinite);
+}
+
+/* 出错：steps() 硬闪，一眼与 permission 的平滑闪烁分开 —— 和灯珠同一个判据。 */
+.stage-dot[data-state="error"] {
+  animation: var(--anim-error, pulse 340ms steps(2, end) infinite);
+}
+
+/* 不在工作的三档靠不透明度区分（灯珠同一条）。 */
+.stage-dot[data-state="offline"],
+.stage-dot[data-state="off"] {
+  animation: var(--anim-off, none);
+  opacity: 0.45;
+}
+
+/* 减少动态效果：只留颜色，不闪。整屏闪烁在投影上比桌面上更容易让人不适，
+   这条比灯珠那边更要紧。 */
+@media (prefers-reduced-motion: reduce) {
+  .stage-dot {
+    animation: none !important;
+  }
+}
+
+/* 标题旁的总览灯：复用上面整套形状 / 节奏 / 颜色，只把 `--dot` 收小一档。
+   **必须写在 `@supports` 之后** —— 容器查询那条（`.stage-dot`）和这里特异性
+   相同，靠源码顺序取胜；写前面就会被 200px 那档顶掉。 */
+.stage-head-dot {
+  --dot: clamp(10px, 1.6vh, 22px);
+  align-self: center;
+}
+
+/* 状态色只落在文字上。data-state 由 state.css 提供 --state。 */
+.stage-card-state {
+  color: var(--state, var(--stage-fg));
+  font-size: clamp(28px, 3.2vw, 64px);
+  font-size: clamp(28px, 13cqw, 140px);
+  font-weight: 500;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+}
+
+.stage-card-name {
+  font-size: clamp(17px, 1.7vw, 34px);
+  font-size: clamp(17px, 4.5cqw, 44px);
+  font-weight: 400;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.stage-card-age {
+  color: var(--stage-muted);
+  font-size: clamp(13px, 1vw, 20px);
+  font-size: clamp(13px, 2.4cqw, 26px);
+  font-variant-numeric: tabular-nums;
+}
+
+.stage-empty {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: clamp(28px, 5vw, 80px) 0;
+  color: var(--stage-muted);
+  font-size: clamp(17px, 1.4vw, 26px);
+}
+
+/* 展示模式本来铺满一块屏，这两条是防御性的（副屏很小、或将来允许缩窗）：
+ * 窄到一定程度宁可少排几列，也不让组名被挤成一条竖线。 */
+@media (max-width: 820px) {
+  .stage-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .stage-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---- 页脚 ---------------------------------------------------------------- */
+
+.stage-foot {
+  padding-top: clamp(12px, 1.4vw, 24px);
+  border-top: 1px solid var(--stage-line);
+}

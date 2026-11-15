@@ -276,6 +276,18 @@ pub fn init(app: AppHandle) -> tauri::Result<()> {
                     eprintln!("[signalhub] 托盘切换点击穿透失败: {err}");
                 }
             }
+            // 展示模式的常驻逃生通道。大屏上那颗按钮可能被别的东西盖住，托盘
+            // 这一项必须一直能点；文案跟着真值换，不画勾选态（同穿透那一项）。
+            "stage" => {
+                let enabled = app
+                    .state::<crate::SharedUi>()
+                    .lock()
+                    .expect("ui poisoned")
+                    .stage;
+                if let Err(err) = crate::set_stage_impl(app, !enabled) {
+                    eprintln!("[signalhub] 托盘切换展示模式失败: {err}");
+                }
+            }
             "collapsed" => {
                 let collapsed = app
                     .state::<crate::SharedSettings>()
@@ -349,6 +361,27 @@ fn build_menu(app: &AppHandle, lang: crate::config::Lang) -> tauri::Result<Menu<
     };
     let pass_through =
         MenuItem::with_id(app, "pass_through", &pass_through_label, true, None::<&str>)?;
+    // 展示模式开着时写成「退出展示模式 · ⌥⌘P」。快捷键没抢到就只写「退出」，
+    // 不教用户按一个按不出来的键 —— 和穿透那一项同一套降级口径。
+    let stage_on = app
+        .state::<crate::SharedUi>()
+        .lock()
+        .expect("ui poisoned")
+        .stage;
+    let stage_text = if stage_on {
+        if crate::shortcuts::stage_registered(app) {
+            format!(
+                "{} · {}",
+                t.tray_stage_exit,
+                crate::shortcuts::stage_label()
+            )
+        } else {
+            t.tray_stage_exit.to_string()
+        }
+    } else {
+        t.tray_stage.to_string()
+    };
+    let stage = MenuItem::with_id(app, "stage", &stage_text, true, None::<&str>)?;
     // 折叠后只剩一个点，没有别的入口切回来 —— 所以托盘这一项是必需的
     let collapsed = MenuItem::with_id(app, "collapsed", t.tray_collapsed, true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", t.tray_quit, true, None::<&str>)?;
@@ -403,6 +436,7 @@ fn build_menu(app: &AppHandle, lang: crate::config::Lang) -> tauri::Result<Menu<
             &pause,
             &manual,
             &pass_through,
+            &stage,
             &collapsed,
             &quit,
         ],

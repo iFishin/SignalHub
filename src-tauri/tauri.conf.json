@@ -62,6 +62,23 @@
         "maximizable": false,
         "minimizable": false,
         "closable": false
+      },
+      {
+        "label": "stage",
+        "title": "SignalHub 展示模式",
+        "url": "index.html?window=stage",
+        "width": 1280,
+        "height": 800,
+        "resizable": false,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "focus": false,
+        "visible": false,
+        "maximizable": false,
+        "minimizable": false,
+        "closable": false
       }
     ],
     "security": {

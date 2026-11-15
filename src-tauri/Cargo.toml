@@ -99,6 +99,20 @@ getrandom = "0.3"
 # 跨平台构建会多一道坎。
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 
+# 展示模式在 macOS 上要「藏起 Dock 与菜单栏」。这件事 tao 不管：它连
+# `presentationOptions` 都没碰过，而 `set_fullscreen` 会被译成 `toggleFullScreen:`
+# 另开一个 Space（见 `stage.rs` 模块头）。所以这一层直接调 AppKit。
+# 版本与锁文件里已被 tao 拉进来的那份一致（objc2 0.6.5 / objc2-app-kit 0.3.2），
+# 不会多编一份 crate。features 按最小集开：`NSApplication` 的 impl 块本身挂在
+# `NSResponder` 下面，两个都要。
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+  "std",
+  "NSApplication",
+  "NSResponder",
+] }
+
 # Windows 的进程探活（`proc::alive`）要 `OpenProcess` + `WaitForSingleObject`；
 # 命令式 hook 找父进程还要 ToolHelp 的 `CreateToolhelp32Snapshot` / `Process32*`。
 # 只在那个平台上编译。版本与 Tauri 依赖树里已经锁定的那份一致（0.61.2），

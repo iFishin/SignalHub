@@ -4,8 +4,10 @@ import settingsCss from "./settings.css?raw";
 import stateCss from "./state.css?raw";
 import inboxCss from "./inbox.css?raw";
 import demoCss from "./demo.css?raw";
+import stageCss from "./stage.css?raw";
 import settingsPanelSource from "../components/SettingsPanel.tsx?raw";
 import lampSource from "../components/SignalLamp.tsx?raw";
+import stageSource from "../components/StageWindow.tsx?raw";
 import demoPanelSource from "../components/DemoPanel.tsx?raw";
 import inboxMessagesSource from "../components/InboxMessages.tsx?raw";
 import lampMenuSource from "../components/LampMenu.tsx?raw";
@@ -27,6 +29,7 @@ const SHEETS: [string, string][] = [
   ["state.css", stateCss],
   ["inbox.css", inboxCss],
   ["demo.css", demoCss],
+  ["stage.css", stageCss],
 ];
 
 describe("样式表", () => {
@@ -457,6 +460,22 @@ describe("样式表", () => {
   });
 
   /**
+   * 演示页底部那颗「进入展示模式」是**出口**，不是第三个舞台：它只用一条 1px
+   * 上边线分段，底色 / 阴影 / 圆角一个都不加，宽度和 `.demo` 一样是 680。
+   * 这三样里任意一样跑偏，它就会变成一块和舞台抢主角的卡片 —— 而那正是被
+   * 否掉的那种装饰性色块，且不会有任何报错。
+   */
+  it("演示页底部的展示模式入口只是一条分隔线", () => {
+    const real = /\.demo-real\s*\{[^}]*\}/.exec(demoCss)?.[0] ?? "";
+    expect(real, "demo.css 里找不到 .demo-real").not.toBe("");
+    expect(real).toContain("max-width: 680px");
+    expect(real).toContain("border-top: 1px solid var(--line)");
+    expect(real).not.toContain("background");
+    expect(real).not.toContain("box-shadow");
+    expect(real).not.toContain("border-radius");
+  });
+
+  /**
    * 演示在**真的 Tauri 进程**里跑（设置页），所以两个被复用的组件必须一直
    * 带着 preview 闸门。删掉任一条不会报错，只会让演示顺手改掉真状态：
    * 标已读 / 写剪贴板 / 打开浏览器 / 抢焦点 / 挂 window 键盘 / 退出应用。
@@ -470,5 +489,83 @@ describe("样式表", () => {
     expect(lampMenuSource).toContain("if (preview) return;");
     expect(lampMenuSource).toContain("onClick={preview ? undefined : onClose}");
     expect(lampMenuSource).toContain("preview?: boolean");
+  });
+});
+
+/**
+ * 展示模式最容易走回头路的地方：为了「显得像信号灯」把 `--size` 抬大，或顺手
+ * 把收件箱详情 / 审批气泡搬上大屏。两者都不会报错 —— 前者只会得到一块比例崩掉
+ * 的桌面小牌，后者会让会议投屏直接泄密 —— 所以用源文本钉住。
+ */
+describe("展示模式大屏版式", () => {
+  it("另起一套版式，不复用灯牌的 --size 几何", () => {
+    expect(stageCss).toContain('html[data-window="stage"]');
+    expect(stageCss).toContain(".stage-card-state");
+    expect(stageCss).toContain("var(--state");
+    expect(stageCss).toContain("--stage-line");
+    expect(stageCss).not.toContain("var(--size");
+    expect(stageCss).not.toContain("box-shadow");
+    expect(stageCss).not.toContain("linear-gradient");
+  });
+
+  it("只画灯牌本来就有的语义，摘要复用既有纯函数", () => {
+    expect(stageSource).toContain("buildInbox(");
+    expect(stageSource).toContain("buildAwaySummary(");
+    expect(stageSource).toContain("signalLabel(");
+    expect(stageSource).not.toContain("ApprovalBubble");
+    expect(stageSource).not.toContain("group.message");
+    expect(stageSource).not.toContain("set_stage(true)");
+  });
+
+  /**
+   * 这一屏的灵魂是那盏灯。第一版只画了「组名 + 状态词 + 时长」，看起来像一块
+   * 状态表 —— 灯珠缺席没有任何报错，只是「不像信号灯了」。所以从**三个入口**
+   * 钉住它：颜色 / 节奏来自 `lampVars`、形状来自 `resolveShapes`、CSS 里六档
+   * 形状与逐状态节奏都在。
+   */
+  it("灯珠在场，且和桌面上的灯同源", () => {
+    expect(stageSource).toContain("lampVars(settings)");
+    expect(stageSource).toContain("resolveShapes(settings)");
+    expect(stageSource).toContain('className="stage-dot"');
+    // 标题旁那颗总览灯（整屏 aggregate）—— 它是「远处先看是红是绿」的唯一入口
+    expect(stageSource).toContain("stage-head-dot");
+    // 六档形状一个都不能少 —— 少一档就是「用户在外观里选了菱形，大屏却是圆的」
+    for (const shape of ["rounded", "square", "diamond", "capsule", "ring"]) {
+      expect(stageCss).toContain(`.stage-dot[data-shape="${shape}"]`);
+    }
+    // 节奏按状态分档，且出错那档必须是硬闪（与灯珠同一个判据）
+    expect(stageCss).toContain("var(--anim-error");
+    expect(stageCss).toContain("steps(2, end)");
+    // 错相只给「在干活」两种
+    expect(stageCss).toContain("--rhythm-delay");
+    // 整屏闪烁比桌面上更容易让人不适，减少动态效果必须也管到这里
+    expect(stageCss).toContain("prefers-reduced-motion");
+    // 灯牌上那条 `transition: background-color` 不能抄过来：首帧会读到过渡起点，
+    // 灯珠先画成空心圈（第一版截图就是这样）
+    expect(stageCss).not.toContain("transition: background-color");
+  });
+
+  it("进入 / 退出展示模式的所有入口都汇到同一个 Rust 命令", () => {
+    expect(stageSource).toContain("setStage(false)");
+    // 系统 → 通用 与 演示页 各有一颗，文案都跟着真值走（托盘 / ⌥⌘P 也能改）
+    expect(settingsPanelSource).toContain("setStage(!toggles.stage)");
+    // 演示页那颗必须在舞台**之后**：这一页的主角是上面那段剧本，入口是一条
+    // 「看完演的去看真的」的出口；搬到页头就会先问「要不要全屏」。删掉它不会
+    // 报错，只是刚看完演示的人无处可去。
+    expect(settingsPanelSource).toMatch(
+      /case "demo":[\s\S]*?<DemoStage compact \/>[\s\S]*?setStage\(!toggles\.stage\)/,
+    );
+  });
+
+  /**
+   * 列数必须由组数算（`lib/stageGrid.ts`），不能交回 CSS 的 `auto-fit`：它只认
+   * 「一格至少多宽」，5 组会排成 4 + 1、9 组排成 4 + 4 + 1 —— 最后一行永远填不满，
+   * 而且不会有任何报错。
+   */
+  it("列数由组数决定，不靠 auto-fit", () => {
+    expect(stageCss).toContain("--stage-cols");
+    // 注释里可以提「不用 auto-fit」，实际规则不能手滑写回去
+    expect(stageCss).not.toContain("repeat(auto-fit");
+    expect(stageSource).toContain("stageColumns(cards.length)");
   });
 });

@@ -363,6 +363,11 @@ export interface Messages {
   /** 状态页「第一次用？」那块上的 CTA */
   demoCta: string;
   demoCtaHint: string;
+  /**
+   * 演示页底部那块「进入展示模式」的说明。上面演的是剧本，这里接的是真屏 ——
+   * 两句话都得说清这件事，否则用户会以为下面那个按钮只是把演示放大。
+   */
+  demoRealHint: string;
 
   // 指南（引导手册）
   guideEntry: string;
@@ -989,6 +994,26 @@ export interface Messages {
   shortcutActions: Record<string, string>;
   shortcutTaken: string;
   shortcutsHint: string;
+
+  /**
+   * 展示模式（手动触发的独立大屏窗口）。
+   *
+   * 摘要那几段**刻意复用 `inbox.away*`**：「此刻」和「离开这段时间」用的是同一份
+   * `buildInbox` 分段，措辞也该是同一套，不另立一份会漂移的说法。
+   */
+  stage: {
+    title: string;
+    exit: string;
+    /** 空串 = 快捷键没抢到，只给 Esc 和托盘这两条真能用的路。 */
+    exitHint: (shortcut: string) => string;
+    now: string;
+    groups: (count: number) => string;
+    empty: string;
+    foot: string;
+    /** 设置 → 系统 → 常规里那颗按钮：关着时「进入」，开着时复用 `exit`。 */
+    enter: string;
+    hint: string;
+  };
   language: string;
   langAuto: string;
   langZh: string;
@@ -1630,6 +1655,8 @@ export const MESSAGES: Record<Lang, Messages> = {
     demoReplay: "重播",
     demoCta: "看演示",
     demoCtaHint: "还没接智能体？先看一遍这盏灯会怎么亮，不用配任何东西。",
+    demoRealHint:
+      "上面这段是剧本。按一下，屏幕上铺开的是真那一份 —— 同一套版式，只放灯牌本来就有的组名、状态和时长，不搬收件箱详情和命令；Esc 或再按一次退出，窗口和穿透状态原样回来。",
 
     guideEntry: "第一次用？",
     guideWhatTitle: "这是什么",
@@ -2269,10 +2296,23 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       clear: "清除最差的那一组",
       inbox: "打开收件箱",
       pass_through: "切换点击穿透",
+      stage: "切换展示模式",
     },
     shortcutTaken: "被别的程序占用了",
     shortcutsHint:
       "快捷键是固定的（不做可配：真正的故障是被别的程序占了，那件事可配也解决不了）。抢不到的那一个会在上面标出来。「最差的那一组」= 紧急度最高的那一组，和灯上最上面那块牌同一个判据；置顶只改显示顺序。",
+    stage: {
+      title: "展示模式",
+      exit: "退出展示模式",
+      exitHint: (shortcut) =>
+        shortcut ? `按 Esc 或 ${shortcut} 退出` : "按 Esc 退出，或从托盘菜单退出",
+      now: "此刻",
+      groups: (count) => `共 ${count} 组`,
+      empty: "还没有组在汇报",
+      foot: "只显示灯牌本来就有的信息 · 手动开启，不自动、不阻止休眠、不保存到下次启动",
+      enter: "进入展示模式",
+      hint: "在鼠标所在的那块屏上铺一张大屏看板，方便远距离看或会议投屏。只显示组名、状态和持续时长，不搬收件箱详情、审批或命令；进入时收起临时的悬停展开与圆环菜单，退出后原样恢复。点击穿透开着时不会进入。",
+    },
     language: "语言",
     langAuto: "跟随系统",
     langZh: "中文",
@@ -2842,6 +2882,8 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     demoReplay: "Replay",
     demoCta: "Watch the demo",
     demoCtaHint: "No agent connected yet? See how the lamp behaves first — nothing to configure.",
+    demoRealHint:
+      "What plays above is a script. Press the button and the real board fills the screen under the cursor — same layout, only what the lamp already knows (group names, states, how long they have held), never inbox details or commands. Press Esc or the button again to leave; windows and click-through come back as they were.",
 
     guideEntry: "New here?",
     guideWhatTitle: "What this is",
@@ -3491,10 +3533,23 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
       clear: "Clear the worst group",
       inbox: "Open the inbox",
       pass_through: "Toggle click-through",
+      stage: "Toggle presentation mode",
     },
     shortcutTaken: "taken by another app",
     shortcutsHint:
       "The combinations are fixed (making them configurable would not fix the real failure \u2014 another app already owning one). Any that could not be registered are flagged above. \u201cThe worst group\u201d is the most urgent one, the same rule that puts a sign at the top of the lamp; pinning only changes the display order.",
+    stage: {
+      title: "Presentation mode",
+      exit: "Exit presentation mode",
+      exitHint: (shortcut) =>
+        shortcut ? `Press Esc or ${shortcut} to exit` : "Press Esc, or exit from the tray menu",
+      now: "Right now",
+      groups: (count) => `${count} ${count === 1 ? "group" : "groups"}`,
+      empty: "No groups are reporting yet",
+      foot: "Only what the lamp already shows \u00b7 manual, never automatic, no sleep prevention, not kept for the next launch",
+      enter: "Enter presentation mode",
+      hint: "Fills the screen under the cursor with a large board for reading at a distance or projecting in a meeting. It shows only group names, states and how long they have held \u2014 no inbox details, approvals or commands. Entering it folds away the temporary hover expansion and the ring menu, and restores both on exit. It will not open while click-through is on.",
+    },
     language: "Language",
     langAuto: "System",
     langZh: "中文",

@@ -4,6 +4,7 @@ import { SignalLamp } from "./components/SignalLamp";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { InboxWindow } from "./components/InboxWindow";
 import { DemoWindow } from "./components/DemoWindow";
+import { StageWindow } from "./components/StageWindow";
 import { useSignal } from "./lib/useSignal";
 import { useSettingsState } from "./lib/useSettings";
 import { useTheme } from "./lib/theme";
@@ -79,6 +80,12 @@ export default function App() {
 
   if (windowKind() === "settings") {
     return <SettingsPanel snapshot={snapshot} />;
+  }
+
+  // 展示模式：独立大屏窗口。复用同一份快照 / 设置订阅，但另画一套版式 ——
+  // 绝不把灯牌的 --size 抬到几百（那些写死 px 的圆环、气泡、描边会一起崩）。
+  if (windowKind() === "stage") {
+    return <StageWindow snapshot={snapshot} settings={settings} />;
   }
 
   // 收件箱：和设置窗共用同一份快照订阅与审批订阅，只是换一个组件画。

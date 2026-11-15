@@ -3637,6 +3637,8 @@ version = "0.6.7"
 dependencies = [
  "axum",
  "getrandom 0.3.4",
+ "objc2",
+ "objc2-app-kit",
  "serde",
  "serde_json",
  "signalhub-callme",

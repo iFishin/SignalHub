@@ -64,6 +64,13 @@ const CLEAR_WORST: (Modifiers, Code) = (Modifiers::CONTROL.union(Modifiers::ALT)
 /// 打开 / 关闭收件箱。这是「看 → 做」的主入口：不打开它，灯仍然只是显示器。
 const OPEN_INBOX: (Modifiers, Code) = (Modifiers::CONTROL.union(Modifiers::ALT), Code::KeyI);
 
+/// 展示模式的第二条逃生通道（第一条是大屏上那颗退出按钮，托盘是第三条）。
+/// 和穿透同一套修饰键、换一个字母：两者互斥，不必担心同时按到。
+#[cfg(target_os = "macos")]
+const STAGE: (Modifiers, Code) = (Modifiers::SUPER.union(Modifiers::ALT), Code::KeyP);
+#[cfg(not(target_os = "macos"))]
+const STAGE: (Modifiers, Code) = (Modifiers::CONTROL.union(Modifiers::ALT), Code::KeyP);
+
 // ---- 人话写法 ---------------------------------------------------------------
 
 /// 快捷键写法的两种平台习惯。
@@ -142,6 +149,21 @@ pub fn pass_through_label() -> String {
     shortcut_label(PASS_THROUGH.0, PASS_THROUGH.1)
 }
 
+/// 展示模式快捷键的写法（「按 ⌥⌘P 退出」）。
+pub fn stage_label() -> String {
+    shortcut_label(STAGE.0, STAGE.1)
+}
+
+fn shortcut_registered(app: &AppHandle, action: &str) -> bool {
+    app.state::<SharedShortcuts>()
+        .lock()
+        .map(|list| {
+            list.iter()
+                .any(|status| status.action == action && status.ok)
+        })
+        .unwrap_or(false)
+}
+
 /// 穿透那条快捷键现在**真的**能用吗。
 ///
 /// `SharedShortcuts` 在 `register_all` 之前是空表 —— 空 = 还没注册 = 不许当成可用，
@@ -149,13 +171,13 @@ pub fn pass_through_label() -> String {
 /// 再把 `pass_through_label()` 拼进通知 / 托盘：那会教用户按一个按不出来的键，
 /// 而穿透下窗口收不到指针，用户没法自己发现这条指引是假的。
 pub fn pass_through_registered(app: &AppHandle) -> bool {
-    app.state::<SharedShortcuts>()
-        .lock()
-        .map(|list| {
-            list.iter()
-                .any(|status| status.action == "pass_through" && status.ok)
-        })
-        .unwrap_or(false)
+    shortcut_registered(app, "pass_through")
+}
+
+/// 展示模式那条也一样：抢不到时大屏与托盘都只写「退出展示模式」，不拼一个
+/// 按不出来的键。展示模式不依赖它 —— 屏上按钮和托盘始终在。
+pub fn stage_registered(app: &AppHandle) -> bool {
+    shortcut_registered(app, "stage")
 }
 
 // ---- 注册 -------------------------------------------------------------------
@@ -166,7 +188,8 @@ pub fn pass_through_registered(app: &AppHandle) -> bool {
 /// 一个按了没反应的键。这是这一节存在的全部理由。
 #[derive(Debug, Clone, Serialize)]
 pub struct ShortcutStatus {
-    /// 哪个动作（`lamp` / `mute` / `clear` / `pass_through`）。界面按它取本地化的名字。
+    /// 哪个动作（`lamp` / `mute` / `clear` / `inbox` / `pass_through` / `stage`）。
+    /// 界面按它取本地化的名字。
     pub action: &'static str,
     /// 人话写法（`⌥⇧L`）—— 从注册的那份派生，不另立常量。
     pub label: String,
@@ -177,8 +200,8 @@ pub struct ShortcutStatus {
 /// 五个动作的处境，注册时算一次，之后不再变。
 pub type SharedShortcuts = Arc<Mutex<Vec<ShortcutStatus>>>;
 
-/// 注册全部五个。**不阻断启动**：抢不到一个快捷键不该让 app 起不来（穿透那个
-/// 抢不到也还有托盘菜单能退出）。
+/// 注册全部六个。**不阻断启动**：抢不到一个快捷键不该让 app 起不来（穿透那个
+/// 抢不到也还有托盘菜单能退出，展示模式还有屏上按钮）。
 pub fn register_all(app: &AppHandle) -> Vec<ShortcutStatus> {
     vec![
         register(app, "lamp", TOGGLE_LAMP, |app| {
@@ -188,6 +211,7 @@ pub fn register_all(app: &AppHandle) -> Vec<ShortcutStatus> {
         register(app, "clear", CLEAR_WORST, clear_worst),
         register(app, "inbox", OPEN_INBOX, crate::inbox::toggle),
         register(app, "pass_through", PASS_THROUGH, toggle_pass_through),
+        register(app, "stage", STAGE, toggle_stage),
     ]
 }
 
@@ -310,6 +334,18 @@ fn toggle_pass_through(app: &AppHandle) {
     }
 }
 
+/// 切换展示模式。四条入口（系统 / 演示 / 托盘 / 快捷键）都汇到 `set_stage_impl`。
+fn toggle_stage(app: &AppHandle) {
+    let enabled = app
+        .state::<crate::SharedUi>()
+        .lock()
+        .expect("ui poisoned")
+        .stage;
+    if let Err(err) = crate::set_stage_impl(app, !enabled) {
+        eprintln!("[signalhub] 快捷键切换展示模式失败: {err}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,6 +368,7 @@ mod tests {
             ("mute", MUTE_WORST),
             ("clear", CLEAR_WORST),
             ("inbox", OPEN_INBOX),
+            ("stage", STAGE),
         ] {
             assert!(
                 mods.contains(Modifiers::CONTROL) || mods.contains(Modifiers::SUPER),
@@ -350,10 +387,10 @@ mod tests {
         }
     }
 
-    /// 五个组合互不相同。相同的话第二个注册会失败 —— 那会表现成「有一个动作永远
+    /// 六个组合互不相同。相同的话第二个注册会失败 —— 那会表现成「有一个动作永远
     /// 不生效」，而这是最容易在改快捷键时犯的错。
     #[test]
-    fn the_five_shortcuts_are_distinct() {
+    fn the_six_shortcuts_are_distinct() {
         let mut seen: Vec<(Modifiers, Code)> = Vec::new();
         for spec in [
             PASS_THROUGH,
@@ -361,6 +398,7 @@ mod tests {
             MUTE_WORST,
             CLEAR_WORST,
             OPEN_INBOX,
+            STAGE,
         ] {
             assert!(!seen.contains(&spec), "{spec:?} 和另一个重复了");
             seen.push(spec);
@@ -376,6 +414,7 @@ mod tests {
             MUTE_WORST,
             CLEAR_WORST,
             OPEN_INBOX,
+            STAGE,
         ] {
             let label = shortcut_label(mods, code);
             assert_eq!(

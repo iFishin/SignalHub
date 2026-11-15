@@ -26,6 +26,7 @@ mod rules;
 mod server;
 mod shortcuts;
 mod shell;
+mod stage;
 mod state;
 mod stats;
 mod sweep;
@@ -87,6 +88,20 @@ struct UiFlags {
     /// 菜单一关就清空，窗口自然缩回内容尺寸。**不落盘**：菜单是瞬态界面，
     /// 重启后当然不该还开着。
     menu: Option<String>,
+    /// 展示模式：独立大屏窗口是否开着。
+    ///
+    /// **不是设置，不落盘**：它是「我现在要把屏幕给人看一眼」这种一次性动作，
+    /// 重启后不该有一整块屏幕自己亮起来。窗口本身在 `tauri.conf.json` 里静态
+    /// 声明为 `visible: false`，这里只是「显形 / 收起」的开关。
+    stage: bool,
+    /// 进入展示模式的时刻（Unix 毫秒）。前端拿它当「离开这段时间」的起点算
+    /// 摘要；退出清零。**只是内存里的一个数**，不写进任何文件。
+    stage_since_ms: u64,
+    /// 进入前被收掉的瞬态状态，退出时按它恢复。
+    ///
+    /// 为什么必须存快照而不是「退出时全清」：`peek` / `menu` 记的是某盏灯的
+    /// label，清掉就再也猜不回原来是哪一盏；穿透更不能被展示模式悄悄改掉。
+    stage_previous: Option<stage::StagePrevious>,
 }
 
 type SharedUi = Mutex<UiFlags>;
@@ -647,13 +662,18 @@ fn get_history(
         .collect()
 }
 
-/// 三个开关类功能的当前状态。做成一个命令是为了让前端**不必知道**
+/// 几个开关类功能的当前状态。做成一个命令是为了让前端**不必知道**
 /// 快捷键的文案 —— 那个字符串由 Rust 定义一次，两边不会漂移。
 #[derive(serde::Serialize, Clone)]
 struct Toggles {
     autostart: bool,
     pass_through: bool,
     pass_through_shortcut: String,
+    stage: bool,
+    stage_shortcut: String,
+    /// 展示模式开启的 Unix 毫秒；0 = 没开。前端拿它当「离开这段时间」的起点，
+    /// 所以它是派生值而不是设置 —— 不落盘、重启即清零。
+    stage_since_ms: u64,
 }
 
 /// 设置面板要跟着变的事件名。**必须发**：穿透和自启也能从托盘菜单和全局
@@ -672,6 +692,14 @@ fn toggles(app: &tauri::AppHandle) -> Toggles {
         } else {
             String::new()
         },
+        stage: stage_on(app),
+        // 同穿透：没抢到的组合不能报给界面，否则大屏上会写着一个按不出来的键
+        stage_shortcut: if shortcuts::stage_registered(app) {
+            shortcuts::stage_label()
+        } else {
+            String::new()
+        },
+        stage_since_ms: stage_since(app),
     }
 }
 
@@ -747,6 +775,22 @@ pub(crate) fn pass_through_on(app: &tauri::AppHandle) -> bool {
         .pass_through
 }
 
+/// 此刻是否开着展示模式。`approval_area`、`set_pass_through_impl` 和托盘都读它，
+/// 真值只在 `SharedUi` 一处。
+fn stage_on(app: &tauri::AppHandle) -> bool {
+    app.state::<SharedUi>()
+        .lock()
+        .expect("ui poisoned")
+        .stage
+}
+
+fn stage_since(app: &tauri::AppHandle) -> u64 {
+    app.state::<SharedUi>()
+        .lock()
+        .expect("ui poisoned")
+        .stage_since_ms
+}
+
 /// 让所有灯窗跟上当前状态（幂等），收掉「切状态」和「建窗」交错时漏掉的那一盏。
 ///
 /// `TauriHost::open` 在建窗时读一次状态、`set_pass_through_impl` 在切换时枚举
@@ -797,6 +841,13 @@ fn set_pass_through_impl(app: &tauri::AppHandle, enabled: bool) -> Result<(), St
     let escape = pass_through_escape(app);
     if enabled && escape == PassThroughEscape::None {
         return Err(lang::text(lang).pass_through_no_escape.to_string());
+    }
+    // 展示模式与穿透互斥。作用域上 stage 不在 `in_pass_through_scope` 里，退出按钮
+    // 仍可点，但两件强状态叠在一起会互相踩：开启穿透会清 `peek` / `menu`，而
+    // 展示模式正拿着这两个字段的 `stage_previous` 快照准备退出时恢复；用户按了
+    // 穿透键也看不出任何变化（灯被大屏盖住了）。直接拒绝，比留半套状态好。
+    if enabled && stage_on(app) {
+        return Err(lang::text(lang).stage_pass_through_blocked.to_string());
     }
 
     let windows = app.webview_windows();
@@ -861,6 +912,106 @@ fn set_pass_through_impl(app: &tauri::AppHandle, enabled: bool) -> Result<(), St
 #[tauri::command]
 fn set_pass_through(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
     set_pass_through_impl(&app, enabled)?;
+    Ok(enabled)
+}
+
+/// 展示模式的核心逻辑。命令、托盘、全局快捷键、设置页（系统 / 演示）都走它。
+///
+/// 顺序沿用穿透那条「先窗口、后状态、最后反馈」：窗口没摆好就写状态的话，
+/// 失败时会留下「托盘说开着、屏幕上什么都没有」的半套状态。
+pub(crate) fn set_stage_impl(app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let lang = current_lang(app);
+    // 一次性读完，窗口操作期间不持锁：present 会同步问显示器，而状态锁在
+    // 热路径上也一直有人要（§ issue #4 的锁序教训）。
+    let (active, pass_through, peek, menu, previous) = {
+        // `State` 是临时值，直接 `.lock()` 会 E0716（借用活得比它久）。
+        let ui_state = app.state::<SharedUi>();
+        let ui = ui_state.lock().expect("ui poisoned");
+        (
+            ui.stage,
+            ui.pass_through,
+            ui.peek.clone(),
+            ui.menu.clone(),
+            ui.stage_previous.clone(),
+        )
+    };
+
+    match stage::stage_plan(active, pass_through, enabled) {
+        stage::StagePlan::Idempotent => {
+            // 已开着时再按一次「进入」只把窗口叫回前台：不重置 since_ms，
+            // 否则「离开这段时间」的起点会被一次误按抹掉。
+            if active {
+                stage::present(app, lang)?;
+            }
+            return Ok(());
+        }
+        stage::StagePlan::RefusePassThrough => {
+            return Err(lang::text(lang).stage_no_pass_through.to_string());
+        }
+        stage::StagePlan::Enter | stage::StagePlan::Exit => {}
+    }
+
+    if enabled {
+        if let Err(err) = stage::present(app, lang) {
+            // 窗口没摆成：把可能已经改过的尺寸 / 可见性收回去，状态一律不写。
+            stage::dismiss(app);
+            return Err(err);
+        }
+        let since = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis().min(u128::from(u64::MAX)) as u64)
+            .unwrap_or(0);
+        {
+            let ui_state = app.state::<SharedUi>();
+            let mut ui = ui_state.lock().expect("ui poisoned");
+            ui.stage = true;
+            ui.stage_since_ms = since;
+            ui.stage_previous = Some(stage::StagePrevious {
+                pass_through,
+                peek,
+                menu,
+            });
+            // 只收临时放大态 / 圆环：它们会撑住一块放大的透明窗口，而展示模式
+            // 期间没人去 hover。审批气泡由 `approval_area` 归零，数据本身不删。
+            ui.peek = None;
+            ui.menu = None;
+        }
+    } else {
+        // 先收窗口，再按快照恢复。恢复穿透时**不**再走 `set_pass_through_impl`：
+        // 那条路会重建托盘、发事件、清 peek/menu，把刚恢复的快照又洗掉一遍。
+        stage::dismiss(app);
+        let prev = previous.unwrap_or_default();
+        {
+            let ui_state = app.state::<SharedUi>();
+            let mut ui = ui_state.lock().expect("ui poisoned");
+            ui.stage = false;
+            ui.stage_since_ms = 0;
+            ui.stage_previous = None;
+            ui.pass_through = prev.pass_through;
+            ui.peek = prev.peek;
+            ui.menu = prev.menu;
+        }
+        // 按恢复后的穿透值对齐所有灯窗（幂等，且不发第二次事件）。
+        sync_pass_through_windows(app);
+    }
+
+    // peek / menu / 气泡都参与窗口几何，状态一变就得重算一遍。
+    let settings = current_settings(app);
+    let snapshot = current_snapshot(app);
+    sync_layout(app, &settings, &snapshot, false);
+
+    // 托盘那一项在展示模式开着时写成「退出展示模式 · ⌥⌘P」。四条入口都汇到
+    // 这里，所以菜单只在这一处重建。
+    tray::rebuild_menu(app, lang);
+    let _ = app.emit(TOGGLES_EVENT, toggles(app));
+    Ok(())
+}
+
+/// 切换展示模式。手动触发（设置页 / 托盘 / 全局快捷键），默认关、不自动、
+/// 不写回设置、不阻止系统休眠 —— 见 `docs/architecture.md` §3.35.18。
+#[tauri::command]
+fn set_stage(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+    set_stage_impl(&app, enabled)?;
     Ok(enabled)
 }
 
@@ -2544,7 +2695,10 @@ fn approval_area(app: &tauri::AppHandle) -> (u16, u16) {
     // 穿透下气泡里那两个按钮本来就点不到，却还白占一截窗口高度 —— 那是纯粹的
     // 遮挡。前端同时不画（`SignalLamp.tsx` 的 `bubbles`），两边一个数；审批本身
     // 还在 `SharedApprovals` 里等着，通知也照发，不是把它们丢掉。
-    if pass_through_on(app) {
+    //
+    // 展示模式同理：灯已经被一整块大屏盖住，气泡既看不见也点不到；而且大屏
+    // 只画灯牌本来就有的语义，不把审批详情搬上去。退出后数据还在，原样回来。
+    if pass_through_on(app) || stage_on(app) {
         return (0, 0);
     }
     let count = app
@@ -3334,6 +3488,7 @@ pub fn run() {
             get_toggles,
             set_autostart,
             set_pass_through,
+            set_stage,
             set_peek,
             get_stats,
             get_history,
@@ -3479,6 +3634,7 @@ pub fn run() {
 
             wire_settings_window(app);
             inbox::wire(app);
+            stage::wire(app);
             // 右键菜单是运行时构造的，`Menu` 自己没有事件回调 —— 只能挂在应用上，
             // 靠 id 分派。托盘菜单有它自己的回调，两边的 id 不重合，互不打扰。
             app.on_menu_event(|app, event| {

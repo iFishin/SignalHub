@@ -5,15 +5,17 @@
 export const inTauri =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
-export type WindowKind = "light" | "settings" | "inbox" | "demo";
+export type WindowKind = "light" | "settings" | "inbox" | "demo" | "stage";
 
-/** 灯球、设置窗、收件箱、独立演示页共用一个 Vite 应用，靠查询参数分流。
- *  `demo` 不是 Tauri 里注册的窗口，是给浏览器 / README 动图准备的纯前端页面。 */
+/** 灯球、设置窗、收件箱、展示模式、独立演示页共用一个 Vite 应用，靠查询参数分流。
+ *  `demo` 不是 Tauri 里注册的窗口，是给浏览器 / README 动图准备的纯前端页面；
+ *  `stage` 是 Tauri 里 `visible: false` 的独立窗口，由 Rust 手动显形。 */
 export function windowKind(): WindowKind {
   const kind = new URLSearchParams(window.location.search).get("window");
   if (kind === "settings") return "settings";
   if (kind === "inbox") return "inbox";
   if (kind === "demo") return "demo";
+  if (kind === "stage") return "stage";
   return "light";
 }
 

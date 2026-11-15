@@ -14,6 +14,7 @@ import "./styles/lamp.css";
 import "./styles/settings.css";
 import "./styles/inbox.css";
 import "./styles/demo.css";
+import "./styles/stage.css";
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>

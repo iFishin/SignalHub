@@ -121,6 +121,10 @@ pub struct NativeText {
     /// 穿透开着时托盘那一项的文案。带上快捷键后由 `tray.rs` 拼成
     /// 「退出点击穿透 · ⌃⌥S」—— 通知只弹一次，菜单是随时能回去查的那一处。
     pub tray_pass_through_exit: &'static str,
+    /// 展示模式关着 / 开着时托盘那一项的文案。开着时由 `tray.rs` 拼上快捷键，
+    /// 写成「退出展示模式 · ⌥⌘P」—— 大屏上的退出按钮之外，托盘是第二条常驻通道。
+    pub tray_stage: &'static str,
+    pub tray_stage_exit: &'static str,
     pub tray_collapsed: &'static str,
     pub tray_quit: &'static str,
 
@@ -155,6 +159,10 @@ pub struct NativeText {
     pub pass_through_title: &'static str,
     /// 快捷键和托盘菜单两条逃生通道都不在时，拒绝开启穿透的报错文案。
     pub pass_through_no_escape: &'static str,
+    /// 穿透开着时拒绝进入展示模式（不悄悄替用户改掉一个正在防误点的状态）。
+    pub stage_no_pass_through: &'static str,
+    /// 展示模式开着时拒绝开启穿透（两个强状态会互相踩彼此的瞬态快照）。
+    pub stage_pass_through_blocked: &'static str,
 
     // ---- 手动状态（托盘子菜单 + 牌上那行字）----
     /// 托盘里那个子菜单的标题。
@@ -173,6 +181,8 @@ pub struct NativeText {
     pub manual_set: &'static str,
 
     // ---- 窗口 ----
+    /// 窗口无边框时标题主要出现在 Mission Control / 窗口列表里。
+    pub stage_window_title: &'static str,
     pub settings_window_title: &'static str,
     pub inbox_window_title: &'static str,
 
@@ -281,6 +291,8 @@ static ZH: NativeText = NativeText {
     tray_pause: "暂停 / 恢复监控",
     tray_pass_through: "切换点击穿透",
     tray_pass_through_exit: "退出点击穿透",
+    tray_stage: "进入展示模式",
+    tray_stage_exit: "退出展示模式",
     tray_collapsed: "展开 / 折叠外形",
     tray_quit: "退出 SignalHub",
 
@@ -301,6 +313,8 @@ static ZH: NativeText = NativeText {
     action_mute: "静音该组",
     pass_through_title: "已进入点击穿透模式",
     pass_through_no_escape: "没有可用的退出通道（全局快捷键没抢到、托盘菜单也不在），拒绝开启点击穿透",
+    stage_no_pass_through: "点击穿透开着时不进入展示模式：先退出穿透，再打开展示模式。",
+    stage_pass_through_blocked: "展示模式开着时不开启点击穿透：先退出展示模式。",
 
     manual_title: "手动状态",
     manual_focus: "专注 25 分钟",
@@ -310,6 +324,7 @@ static ZH: NativeText = NativeText {
     manual_focus_done: "专注结束",
     manual_set: "手动设置",
 
+    stage_window_title: "SignalHub 展示模式",
     settings_window_title: "SignalHub 设置",
     inbox_window_title: "SignalHub 收件箱",
 
@@ -324,6 +339,8 @@ static EN: NativeText = NativeText {
     tray_pause: "Pause / resume monitoring",
     tray_pass_through: "Toggle click-through",
     tray_pass_through_exit: "Exit click-through",
+    tray_stage: "Enter presentation mode",
+    tray_stage_exit: "Exit presentation mode",
     tray_collapsed: "Expand / collapse shape",
     tray_quit: "Quit SignalHub",
 
@@ -344,6 +361,8 @@ static EN: NativeText = NativeText {
     action_mute: "Mute this group",
     pass_through_title: "Click-through mode is on",
     pass_through_no_escape: "No exit route is available (shortcut not registered, tray menu missing); click-through was not enabled",
+    stage_no_pass_through: "Click-through is on; exit it before entering presentation mode.",
+    stage_pass_through_blocked: "Presentation mode is on; exit it before enabling click-through.",
 
     manual_title: "Manual state",
     manual_focus: "Focus for 25 minutes",
@@ -353,6 +372,7 @@ static EN: NativeText = NativeText {
     manual_focus_done: "Focus finished",
     manual_set: "Set manually",
 
+    stage_window_title: "SignalHub Presentation",
     settings_window_title: "SignalHub Settings",
     inbox_window_title: "SignalHub Inbox",
 
@@ -441,6 +461,11 @@ mod tests {
             en.action_mute,
             en.pass_through_title,
             en.pass_through_no_escape,
+            en.tray_stage,
+            en.tray_stage_exit,
+            en.stage_no_pass_through,
+            en.stage_pass_through_blocked,
+            en.stage_window_title,
             en.manual_title,
             en.manual_focus,
             en.manual_meeting,
