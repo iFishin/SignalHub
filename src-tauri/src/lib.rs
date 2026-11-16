@@ -2409,13 +2409,14 @@ fn apply_settings(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapsh
     }
 }
 
-/// 灯上真正会画出来的组：右键隐藏掉的不算，再按优先级截断到 `MAX_SIGNS`。
+/// 灯上真正会画出来的组：右键隐藏掉的不算，再按优先级截断到 `settings.max_signs`。
 ///
 /// 牌的**顺序**由服务端定（最紧急在前，见 `Store::snapshot_at`），所以这里只截断、
-/// 不重排。
+/// 不重排。超出的组不丢弃，只是不在牌面上单独占一格 —— 它们仍进 `+N` 汇总，
+/// 收件箱里也一列都在。
 ///
 /// **前端渲染和窗口高度都依赖同一个判断。** 两边算出不同的组，窗口要么裁掉最后
-/// 一块牌，要么底下空一条。
+/// 一块牌，要么底下空一条。前端读同一个 `settings.max_signs`。
 fn visible_groups<'a>(settings: &Settings, snapshot: &'a Snapshot) -> Vec<&'a GroupView> {
     let mut groups: Vec<&GroupView> = snapshot
         .groups
@@ -2434,11 +2435,11 @@ fn visible_groups<'a>(settings: &Settings, snapshot: &'a Snapshot) -> Vec<&'a Gr
         None => (1, 0),
     });
 
-    groups.truncate(config::MAX_SIGNS);
+    groups.truncate(settings.max_signs);
     groups
 }
 
-/// 可见组的名字，**不截断**到 `MAX_SIGNS` —— 多灯模式下每组一盏灯，截断没有意义。
+/// 可见组的名字，**不截断**到 `max_signs` —— 多灯模式下每组一盏灯，截断没有意义。
 ///
 /// 顺序和 `visible_groups` 一致（置顶在前），只是这里要的是名字。
 fn visible_group_names(settings: &Settings, snapshot: &Snapshot) -> Vec<String> {
@@ -2542,7 +2543,7 @@ fn lamp_specs(app: &tauri::AppHandle, settings: &Settings, snapshot: &Snapshot) 
                     .find(|group| group.name == name)
                     .is_some_and(|group| group.message.is_some());
             let size = if collapsed {
-                settings.folded_size(1, config::more_badge(1))
+                settings.folded_size(1, config::more_badge(1, settings.max_signs))
             } else {
                 settings.window_size(&[config::sign_height(settings.size, has_message, settings.sign_h_mult)])
             };
@@ -2810,16 +2811,16 @@ fn apply_window_size(
             // 暂停角标不在这里：它是灯体内部最上沿的绝对定位徽标
             // （`.lamp-flag`），不占点位，所以切换穿透不该让窗口变宽、把整排灯珠推偏。
             //
-            // **点数和角标都按未截断的可见组数算**：`groups` 已经被 `MAX_SIGNS` 截过，
-            // 拿它的长度喂 `more_badge` 会恒得 0 —— 5 组以上时那枚 `+N` 就被裁掉了
-            // （issue #7）。`collapsed_window_size` 内部会把点数夹到 `MAX_DOTS`。
+            // **点数和角标都按未截断的可见组数算**：`groups` 已经被 `max_signs` 截过，
+            // 拿它的长度喂 `more_badge` 会恒得 0 —— 超过上限时那枚 `+N` 就被裁掉了
+            // （issue #7）。`folded_size` 内部按同一个上限夹点数、`more_badge` 按它判角标。
             // 多灯模式下主灯只剩一颗全局灯，没有「多出来几组」可言。
             let visible = if per_group_active(settings, snapshot) {
                 0
             } else {
                 visible_group_names(settings, snapshot).len()
             };
-            let badges = config::more_badge(visible);
+            let badges = config::more_badge(visible, settings.max_signs);
             settings.folded_size(visible, badges)
         } else {
             settings.window_size(&sign_heights(settings, &groups))
@@ -4265,8 +4266,9 @@ mod tests {
         assert_eq!(names(&settings, &snapshot), ["a", "b", "c"], "权重小的在前，平局保持原顺序");
     }
 
-    /// 置顶不越过别的规则：它能让一组挤进可见名单，但仍然只留 `MAX_SIGNS` 块；
-    /// 而**隐藏优先于置顶** —— 藏起来的组不显示，哪怕置顶了
+    /// 置顶不越过别的规则：它能让一组挤进可见名单，但仍然只留 `max_signs` 块；
+    /// 而**隐藏优先于置顶** —— 藏起来的组不显示，哪怕置顶了。
+    /// 这里显式把上限设成 4（默认已是 6），让「置顶也不越界」这条在这个边界上成立。
     #[test]
     fn pinning_does_not_bypass_hiding_or_the_limit() {
         let snapshot = snapshot(vec![
@@ -4276,7 +4278,7 @@ mod tests {
             group("d", Signal::Idle),
             group("e", Signal::Idle),
         ]);
-        let mut settings = Settings::default();
+        let mut settings = Settings { max_signs: 4, ..Settings::default() };
         settings
             .group_meta
             .insert("e".into(), GroupMeta { name: None, order: Some(0) });

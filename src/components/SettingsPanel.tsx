@@ -3494,6 +3494,27 @@ export function SettingsPanel({ snapshot }: Props) {
                     ))}
                   </div>
                 </Row>
+                {/* 灯牌上限紧跟「大小」：两者都在回答「这盏灯占多少地方」。
+                    选项就是数字本身（1..8），沿用 seg 的浅灰底选中态，不加装饰。
+                    Rust 的 `Settings::max_signs` 读同一个值算窗口几何。 */}
+                <Row
+                  label={m.maxSigns}
+                  hint={m.maxSignsHint}
+                  onReset={resetFor(settings, "max_signs", patch)}
+                >
+                  <div className="seg">
+                    {[4, 5, 6, 7, 8].map((n) => (
+                      <button
+                        key={n}
+                        type="button"
+                        data-active={settings.max_signs === n}
+                        onClick={() => patch({ max_signs: n })}
+                      >
+                        {n}
+                      </button>
+                    ))}
+                  </div>
+                </Row>
                 <Row
                   label={m.shape}
                   hint={m.lookHint}

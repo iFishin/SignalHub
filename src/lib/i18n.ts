@@ -485,6 +485,9 @@ export interface Messages {
   resetLampsEmpty: string;
   resetLampsHint: string;
   size: string;
+  /** 灯牌上限（同时显示几组）。三档 + 说明，超出折成 `+N` 汇总牌。 */
+  maxSigns: string;
+  maxSignsHint: string;
   shape: string;
   palette: string;
   signOpacity: string;
@@ -1786,6 +1789,9 @@ export const MESSAGES: Record<Lang, Messages> = {
     resetLampsHint:
       "把散落在桌面各处的组灯收回屏幕右缘的默认一列，同时清掉拖过的位置记忆；下次新开的灯也会接着这列往下排。不会改变自由拖动的用法，随时可以再拖走。当前没有开着的组灯时只清记忆。灯上右键菜单（空白处或灯珠上）也有同一项。",
     size: "大小",
+    maxSigns: "灯牌上限",
+    maxSignsHint:
+      "灯上同时显示几组，超出的收成末尾一块「+N」汇总牌，点开收件箱仍能看到全部。默认 6 块——同时开五六个会话也不会挤满；调到 8 一眼看全，调到 4 更省地方。牌是往下叠的，调高会让灯变长。",
     shape: "形状",
     palette: "配色方案",
     signOpacity: "背景透明度",
@@ -3014,6 +3020,9 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     resetLampsHint:
       "Bring scattered group lamps back to the default column along the right edge and forget every dragged position; new lamps will join the bottom of that column. Free dragging still works — move them again whenever you like. When no group lamp is open, this only clears the remembered positions. The same action is in the lamp's right-click menu, both on empty space and on a dot.",
     size: "Size",
+    maxSigns: "Visible signs",
+    maxSignsHint:
+      "How many groups show on the lamp at once; the rest collapse into a single \"+N\" summary sign, and the inbox still lists every one. The default is 6 — five or six sessions no longer crowd the lamp. Go to 8 to see them all, or 4 to take less space. Signs stack downward, so a higher limit makes the lamp taller.",
     shape: "Shape",
     palette: "Palette",
     signOpacity: "Sign opacity",

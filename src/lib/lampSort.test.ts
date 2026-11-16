@@ -7,8 +7,9 @@ import {
   labelParts,
   labelPrefOf,
   orderVisible,
+  worstState,
 } from "./lampSort";
-import type { GroupView } from "./types";
+import type { GroupView, SignalState } from "./types";
 import type { GroupMeta } from "./useSettings";
 import { DEFAULTS } from "./useSettings";
 
@@ -285,5 +286,39 @@ describe("会话标题（默认不拼智能体名）", () => {
     expect(labelParts(sessionGroup("id", "ci", "/Users/me/code/SignalHub/"))?.session).toBe(
       "SignalHub",
     );
+  });
+});
+
+describe("worstState（+N 汇总牌的状态色）", () => {
+  /** 造一个指定聚合状态的组。 */
+  function withState(state: SignalState): GroupView {
+    return { ...group(state), aggregate: state };
+  }
+
+  /**
+   * 优先级必须与 Rust `state.rs::Signal::priority` 逐值对齐 —— 被折起来的那堆里
+   * 只要有一个在等人，`+N` 就得是红的，不能让旁边一个 idle 把它冲淡。
+   */
+  it("取最紧急的一个，不看数组顺序", () => {
+    expect(worstState([])).toBe("offline");
+    expect(worstState([withState("idle"), withState("working"), withState("permission")])).toBe(
+      "permission",
+    );
+    // 顺序倒过来结果不变 —— 这条正是「不看数组位置」的证明
+    expect(worstState([withState("permission"), withState("working"), withState("idle")])).toBe(
+      "permission",
+    );
+  });
+
+  it("关键档位的相对顺序与 Rust 一致", () => {
+    // error(50) > permission(40) > attention(30) > working(20) > thinking(15)
+    expect(worstState([withState("working"), withState("error")])).toBe("error");
+    expect(worstState([withState("attention"), withState("permission")])).toBe("permission");
+    expect(worstState([withState("thinking"), withState("working")])).toBe("working");
+    // done(6) 比 idle(2) 高，但都低于任何「在干活/在等人」
+    expect(worstState([withState("idle"), withState("done")])).toBe("done");
+    expect(worstState([withState("done"), withState("stale")])).toBe("done");
+    // stale(1) 刻意低于 idle(2)：活着的会话不该被沉默的盖成灰的
+    expect(worstState([withState("stale"), withState("idle")])).toBe("idle");
   });
 });

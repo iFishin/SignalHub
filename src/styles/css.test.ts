@@ -490,6 +490,53 @@ describe("样式表", () => {
     expect(lampMenuSource).toContain("onClick={preview ? undefined : onClose}");
     expect(lampMenuSource).toContain("preview?: boolean");
   });
+
+  /**
+   * 灯牌上限从硬编码 4 改成设置项，默认 6。前端 `SignalLamp` 的截断、Rust 的
+   * `visible_groups` / 窗口几何必须读**同一个值**，否则会裁掉最后一块牌。
+   * 这里盯住前端这一侧：不许再冒出一个 `= 4` 的常量，也不许漏读 settings。
+   */
+  it("灯牌上限读设置而不是硬编码 4", () => {
+    expect(lampSource).not.toMatch(/const MAX_SIGNS\s*=\s*\d/);
+    expect(lampSource).toContain("settings.max_signs");
+    expect(lampSource).toContain("visible.slice(0, maxSigns)");
+    // 设置页得有这一项，且选中态沿用 seg 的浅灰底（见项目约定）
+    expect(settingsPanelSource).toContain('resetFor(settings, "max_signs", patch)');
+    expect(settingsPanelSource).toContain("patch({ max_signs: n })");
+  });
+
+  /**
+   * `+N` 汇总牌带「被折起来那堆里最紧急的状态色」。这条纯属观感/语义：
+   * 改回去不报错，只会让「折叠后有人在等你」被一枚灰数字藏掉。
+   * 三处渲染（展开牌尾 / 折叠窄板 / 折叠圆点）都要挂 data-state。
+   */
+  it("+N 汇总牌带最紧急状态色", () => {
+    const badges = lampSource.match(/className="(?:sign-more|lamp-dot-more)"/g) ?? [];
+    const withState = lampSource.match(/data-state=\{hiddenWorst\}/g) ?? [];
+    expect(badges.length).toBeGreaterThanOrEqual(3);
+    expect(withState.length).toBeGreaterThanOrEqual(3);
+    // 圆点靠 --state 取色，折叠圆那一枚则靠描边；两种上色方式都在
+    expect(lampCss).toContain(".sign-more-dot");
+    expect(lampCss).toContain("background: var(--state");
+    expect(lampCss).toContain("border-color: var(--state");
+  });
+
+  /**
+   * 折叠 `name` 档里名字解析成空串时（沉默会话不再带 cwd/agent），必须回退到状态词。
+   * 否则那一行只剩左边一颗灯珠、右边空一大截 —— 折叠板按最宽行定宽、其余行拉伸，
+   * 这是纯观感问题，不会报错。钉住「回退存在」且不走居中（居中会让中间行灯珠错位）。
+   */
+  it("折叠 name 档空名字回退状态词，不靠居中", () => {
+    // labelOf 的结果要 trim 后才判空，避免一串空格也算「有名字」
+    expect(lampSource).toContain("labelOf(group, settings.group_meta, labelPref).trim()");
+    expect(lampSource).toMatch(
+      /\.trim\(\)\s*\|\|\s*signalLabel\(lang, group\.aggregate\)/,
+    );
+    // 不许把空行改成 justify-content:center —— 板内其余行的灯珠是左对齐的，
+    // 只有空行居中会让那颗灯珠和上下行错开，比留白更显眼
+    expect(lampCss).not.toContain(".fold-row[data-empty]");
+    expect(lampCss).not.toMatch(/\.fold-row[^{]*\{[^}]*justify-content:\s*center/);
+  });
 });
 
 /**

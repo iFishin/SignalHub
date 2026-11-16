@@ -4,7 +4,39 @@ import {
   type Settings,
   type SignLabel,
 } from "./useSettings";
-import type { GroupView } from "./types";
+import type { GroupView, SignalState } from "./types";
+
+/**
+ * 状态优先级：**与 Rust `state.rs::Signal::priority` 逐值对齐**（数值本身无意义，
+ * 只比顺序）。前端用它回答一个问题：`+N` 汇总牌该染成哪种颜色。
+ *
+ * 这里没有从快照顺序推断，是因为置顶偏好会在 `orderVisible` 里重排组 —— 被折起来
+ * 的那一串里，排第一的不一定最紧急。与其依赖数组位置，不如照搬那张优先级表；
+ * 表很小（10 个状态），改 Rust 那张时必须同步这里，单测会盯着关键几档的相对顺序。
+ */
+const STATE_PRIORITY: Record<SignalState, number> = {
+  off: 0,
+  offline: 0,
+  stale: 1,
+  idle: 2,
+  done: 6,
+  thinking: 15,
+  working: 20,
+  attention: 30,
+  permission: 40,
+  error: 50,
+};
+
+/** 一串组里最紧急的聚合状态，用于给 `+N` 汇总牌上色。空串返回 `offline`。 */
+export function worstState(groups: GroupView[]): SignalState {
+  let worst: SignalState = "offline";
+  for (const group of groups) {
+    if (STATE_PRIORITY[group.aggregate] > STATE_PRIORITY[worst]) {
+      worst = group.aggregate;
+    }
+  }
+  return worst;
+}
 
 /**
  * 置顶排序的比较器。

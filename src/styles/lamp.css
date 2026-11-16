@@ -1135,18 +1135,37 @@ body,
    暂停那枚原来也挤在这儿，让 `.sign-body`（`flex: 1; min-width: 0`）
    先开始省略组名 / 状态；它已经搬到灯体内部最上沿了，见 `.lamp-flag`。 */
 
-/* `+N`：`MAX_SIGNS` 之外还有几组。
+/* `+N`：`max_signs` 之外还有几组。
    牌上看不出服务端截断了，于是灯上能显示出来的比内部状态少 —— 而灯是全局唯一
-   的真相来源，少显示等于说谎。 */
+   的真相来源，少显示等于说谎。
+   0.6.9 起这枚不再是纯灰数字：它带一颗状态色的圆点（`--state` 由 data-state 从
+   state.css 取，颜色是「被折起来的组里最紧急的那个」），折叠后有人等你也能看见。
+   **布局不变**：圆点是行内的小方块、跟着数字走，牌宽高由 `sign_width` /
+   `sign_height` 固定，Rust 的窗口几何一处都不用改。 */
 .sign-more {
   flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--size) * 0.1);
   padding: 0 calc(var(--size) * 0.16);
   border-radius: calc(var(--size) * 0.16);
   background: rgba(255, 255, 255, 0.1);
-  color: var(--sign-muted);
+  color: var(--sign-fg);
   font-size: calc(var(--size) * 0.42 * var(--sign-text, 1));
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+/* 汇总牌上的状态圆点。直径刻意小于灯珠（灯珠 `0.8×size`，这里 `0.34×size`）：
+   它是「那堆里最紧急的状态」的一个提示，不是又一颗跟灯珠抢眼的灯。
+   没有 data-state 时 `--state` 取 state.css 的兜底，不会变成透明。 */
+.sign-more-dot {
+  flex: none;
+  display: inline-block;
+  width: calc(var(--size) * 0.34);
+  height: calc(var(--size) * 0.34);
+  border-radius: 50%;
+  background: var(--state, var(--sign-muted));
 }
 
 /* 暂停监控的**持续可见**提示。
@@ -1233,21 +1252,26 @@ body,
   -webkit-user-select: none;
 }
 
-/* `+N` 是「还有几组没画出来」——**信息，不是状态**，所以不取状态色。
-   早先把它画成透明底 + 浅灰字，本意是别和彩点混成一片；但透明窗口底下是
-   用户的壁纸，浅壁纸上这枚 `#c2c2cb` 几乎看不见（折叠默认竖排后它落在列尾，
-   更显眼）。现在铺一层和牌面同源的深色底 —— 深壁纸上看得见轮廓，浅壁纸上
-   看得见字。它仍只有 `size` 见方，不占更多几何。 */
+/* `+N` 是「还有几组没画出来」。早先特意不取状态色、画成浅灰字，但那把
+   「那堆里有人在等你」也一起藏掉了。0.6.9 起它的**一圈 1px 描边取状态色**
+   （`--state` 由 data-state 从 state.css 来，颜色 = 被折起来那堆里最紧急的状态），
+   字仍用浅色保证深浅壁纸都读得清。圆粒本身只有 `size` 见方，几何一处不动。
+   圈上色而不是塞一颗内点：22px 的圆里同时放点 + 数字会挤成一团。 */
 .lamp-dot-more {
-  border-color: var(--sign-line);
+  border-color: var(--state, var(--sign-line));
   background: var(--sign-bg);
-  color: var(--sign-muted);
+  color: var(--sign-fg);
   font-size: calc(var(--size) * 0.42);
   font-variant-numeric: tabular-nums;
 }
-/* 带文字的窄板本身已经是深色，板里那枚再铺一层牌底只会多出一个圆斑。 */
+/* 折叠圆里那颗内点不画 —— 数字本身已经居中，再塞一颗会溢出。展开态牌尾的
+   `.sign-more` 有横向空间，那边的内点照常显示。 */
+.lamp-dot-more .sign-more-dot {
+  display: none;
+}
+/* 带文字的窄板本身已经是深色，板里那枚再铺一层牌底只会多出一个圆斑；
+   但描边仍要留着上状态色，那是折叠后唯一能看见「堆里有急事」的地方。 */
 .fold-board .lamp-dot-more {
-  border-color: transparent;
   background: transparent;
 }
 

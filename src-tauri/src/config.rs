@@ -37,8 +37,20 @@ fn clamp_mult(value: f32) -> f32 {
 /// 留白是它唯一的容身之处。早先总量 20（每边 10）时角标只能做成 9px，小到像渲染残留。
 pub const LAMP_MARGIN: u16 = 28;
 
-/// 灯球上最多同时显示几块牌。超出的截断 —— 牌按优先级排，所以留下的是最紧急的。
-pub const MAX_SIGNS: usize = 4;
+/// 灯上同时显示几块牌的**硬上限**。实际显示几块由 [`Settings::max_signs`] 决定
+/// （默认 [`DEFAULT_MAX_SIGNS`]）；这个常量只兜住手改坏的配置，不让窗口无限往下长。
+///
+/// 取 8 而不是更大：8 块牌在默认 `size` 下已经约 264px 高，再多是「一盏灯」还是
+/// 「一块屏」就说不清了；真正的多组场景该用 `lamp_layout = per-group`（每组一盏灯，
+/// 上限 `MAX_LAMPS`）。
+pub const MAX_SIGNS: usize = 8;
+
+/// `max_signs` 的默认值。原先硬编码 4，同时开五六个会话时牌面被撑满、只剩一枚
+/// `+N`，用户反馈「不美观」——默认放宽到 6，仍可在设置里调。
+pub const DEFAULT_MAX_SIGNS: usize = 6;
+
+/// `max_signs` 的下限。至少要有一块牌，否则窗口会塌成一条缝、连拖都拖不动。
+pub const MIN_SIGNS: usize = 1;
 
 /// 待审批气泡占的高度（**每一条**）。见 `lib.rs` 的 `approval_area`。
 ///
@@ -80,10 +92,11 @@ pub fn sign_height(size: u16, has_message: bool, h: f32) -> u16 {
     (base as f32 * h).ceil() as u16
 }
 
-/// 折叠形态的圆点个数上限。折叠成一个单纯的灯时，一个组一个点。
+/// 折叠形态的圆点个数**硬上限**。折叠成一个单纯的灯时，一个组一个点。
 ///
 /// 刻意和 `MAX_SIGNS` 取同一个值：折叠只是换了个外形，不该顺带少显示几个组 ——
-/// 那样会让人以为一折叠就把状态弄丢了。
+/// 那样会让人以为一折叠就把状态弄丢了。实际显示点数同样跟着 `Settings::max_signs`
+/// 走（见 `folded_size`）；这里只兜住手改坏的配置。
 pub const MAX_DOTS: usize = MAX_SIGNS;
 
 /// 折叠态最多几枚额外角标：现在只有「还有几组」的 `+N` 一枚。
@@ -185,16 +198,20 @@ pub fn fold_cell_size(size: u16, label: FoldLabel, w: f32, h: f32) -> (u16, u16)
     )
 }
 
-/// 折叠态要不要挂那枚 `+N` 角标：可见组数超过 [`MAX_DOTS`] 时，多出来的那些
-/// 在灯上**一点痕迹都没有** —— 而「有几个智能体在跑」恰恰是这盏灯要回答的问题。
+/// 折叠态要不要挂那枚 `+N` 角标：可见组数超过 `limit`（= `Settings::max_signs`）
+/// 时，多出来的那些在灯上**一点痕迹都没有** —— 而「有几个智能体在跑」恰恰是这盏灯
+/// 要回答的问题。
 ///
 /// 展开态同样的提示直接挂在最后一块牌上（见 `SignalLamp.tsx` 的 `sign-more`），
 /// 折叠态没有牌面可寄住，只能自己占一个点位。
 ///
 /// **两边必须是同一个判断**：前端画几枚，`collapsed_window_size` 的 `badges`
 /// 就得算几枚 —— 少了那枚角标会被窗口右边裁掉，多了会白留一块。
-pub fn more_badge(visible: usize) -> usize {
-    usize::from(visible > MAX_DOTS)
+///
+/// `limit` 由调用方传（而不是在这里读 [`MAX_DOTS`]）：上限是可设置的，判据必须在
+/// 调用点用同一份 `settings.max_signs`，和 `folded_size` 的点数截断同源。
+pub fn more_badge(visible: usize, limit: usize) -> usize {
+    usize::from(visible > limit)
 }
 
 /// 折叠形态的窗口尺寸：N 格按 `axis` 排成一行或一列，每格大小由 `label` 决定。
@@ -1727,6 +1744,13 @@ impl GroupMeta {
 pub struct Settings {
     /// 圆点直径（px）
     pub size: u16,
+    /// 灯上同时显示几块牌（= 几组）。超出的截断、折成 `+N` 汇总牌。
+    ///
+    /// **默认 [`DEFAULT_MAX_SIGNS`]**：原先硬编码 4，同时开五六个会话时牌面被撑满、
+    /// 只剩一枚 `+N`。用户可调到 [`MIN_SIGNS`]..=[`MAX_SIGNS`]；展开态的牌数、折叠态
+    /// 的点数、`+N` 角标的判据、窗口几何全部读这一个值（见 `window_size` / `folded_size`
+    /// / `more_badge` 与前端 `SignalLamp.tsx`）。
+    pub max_signs: usize,
     /// 牌宽倍率。**1.0 = 现状**（`size * 7`）。
     ///
     /// 只作用于**展开态**的牌 —— 折叠态是一排正方形点，长宽倍率对它没有意义
@@ -2283,6 +2307,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             size: DEFAULT_SIZE,
+            max_signs: DEFAULT_MAX_SIGNS,
             // 「原样」。**必须是 1.0**：写成 0.0 就是牌宽归零（红线 3 的经典翻车）。
             sign_w_mult: 1.0,
             sign_h_mult: 1.0,
@@ -2393,6 +2418,7 @@ impl Settings {
     /// 和前端传来的值。
     pub fn clamped(mut self) -> Self {
         self.size = self.size.clamp(MIN_SIZE, MAX_SIZE);
+        self.max_signs = self.max_signs.clamp(MIN_SIGNS, MAX_SIGNS);
         // 倍率先夹紧再往下走：NaN / 无穷 / 手改的离谱值都在这儿被挡掉
         self.sign_w_mult = clamp_mult(self.sign_w_mult);
         self.sign_h_mult = clamp_mult(self.sign_h_mult);
@@ -2653,7 +2679,10 @@ impl Settings {
         // 它直接进窗口总高。0.6.7 起 CSS 把它消化成板内每行的底部留白，
         // 总高公式不变；默认档必须逐字等于原来的 `size / 2`。
         let gap = self.sign_gap.px(self.size);
-        let count = signs.len().clamp(1, MAX_SIGNS) as u16;
+        // 上限取用户设的 `max_signs`（默认 6、硬顶 MAX_SIGNS），不是固定常量 ——
+        // 传进来的 signs 已经是 `visible_groups` 按同一上限截过的，这里再夹一次只是
+        // 兜住手写调用点；两处必须同一个数，否则窗口比牌多留一条缝或少裁一块。
+        let count = signs.len().clamp(1, self.max_signs) as u16;
         let stacked: u16 = signs.iter().take(count as usize).sum();
         let gaps = gap * count.saturating_sub(1);
         (sign_width(self.size, self.sign_w_mult) + LAMP_MARGIN, stacked + gaps + LAMP_MARGIN)
@@ -2663,9 +2692,11 @@ impl Settings {
     /// 将来加一档折叠内容时漏掉一个调用点。几何见 [`collapsed_window_size`]。
     /// 带文字时这是**容量上限**：窄板按实际文字收，二者不必相等（见上面的注释）。
     pub fn folded_size(&self, dots: usize, badges: usize) -> (u16, u16) {
+        // 点数按用户上限先截一次，再交给几何函数按硬顶兜底。前端折叠态也按
+        // `max_signs` 画点数（见 `SignalLamp.tsx` 的 `shown`），这里必须同源。
         collapsed_window_size(
             self.size,
-            dots,
+            dots.min(self.max_signs),
             badges,
             self.fold_axis,
             self.fold_label,
@@ -3123,6 +3154,7 @@ mod tests {
     fn settings_survive_an_export_import_round_trip() {
         let settings = Settings {
             size: 30,
+            max_signs: 5,
             // 新字段设成**非默认值**：全默认的话「漏了字段」这种错看不出来
             sign_w_mult: 1.4,
             sign_h_mult: 0.9,
@@ -4684,10 +4716,51 @@ mod tests {
         let with_message = settings.window_size(&[sign_height(settings.size, true, 1.0)]);
         assert!(with_message.1 > one.1, "有消息的牌多占一行");
 
-        // 超出上限按上限算，不会无限往下长
-        let many = vec![one_line; MAX_SIGNS + 3];
-        let capped = vec![one_line; MAX_SIGNS];
+        // 超出上限按上限算，不会无限往下长。**上限是用户设的 max_signs**
+        // （默认 6），不是硬顶 —— 把上限改成 2，第 3 块起就不该再撑高窗口。
+        let many = vec![one_line; settings.max_signs + 3];
+        let capped = vec![one_line; settings.max_signs];
         assert_eq!(settings.window_size(&many), settings.window_size(&capped));
+
+        let narrow = Settings { max_signs: 2, ..Settings::default() };
+        assert_eq!(
+            narrow.window_size(&[one_line; 5]),
+            narrow.window_size(&[one_line; 2]),
+            "max_signs=2 时第 3 块起不再撑高"
+        );
+        assert!(narrow.window_size(&[one_line; 2]).1 < one.1 * 3, "上限调小窗口确实变矮");
+    }
+
+    /// `max_signs` 是设置里的一项：默认 6、可读写、旧配置（缺这个键）读成默认，
+    /// 手改的越界值被 `clamped()` 夹回范围。前端 `DEFAULTS.max_signs` 必须与默认值一致。
+    #[test]
+    fn max_signs_defaults_round_trips_and_clamps() {
+        assert_eq!(Settings::default().max_signs, DEFAULT_MAX_SIGNS);
+        assert_eq!(DEFAULT_MAX_SIGNS, 6, "默认放宽到 6，别退回旧的 4");
+
+        let json = serde_json::to_string(&Settings::default()).unwrap();
+        assert!(json.contains(&format!(r#""max_signs":{DEFAULT_MAX_SIGNS}"#)), "{json}");
+        let legacy = json.replace(&format!(r#""max_signs":{DEFAULT_MAX_SIGNS},"#), "");
+        assert_eq!(
+            serde_json::from_str::<Settings>(&legacy).unwrap().max_signs,
+            DEFAULT_MAX_SIGNS,
+            "旧配置没有这个键时读成默认"
+        );
+
+        let with = json.replace(
+            &format!(r#""max_signs":{DEFAULT_MAX_SIGNS}"#),
+            r#""max_signs":99"#,
+        );
+        let parsed: Settings = serde_json::from_str(&with).unwrap();
+        assert_eq!(parsed.max_signs, 99, "原样读进来");
+        assert_eq!(parsed.clamped().max_signs, MAX_SIGNS, "越界夹到硬顶");
+        assert_eq!(
+            serde_json::from_str::<Settings>(
+                &json.replace(&format!(r#""max_signs":{DEFAULT_MAX_SIGNS}"#), r#""max_signs":0"#)
+            ).unwrap().clamped().max_signs,
+            MIN_SIGNS,
+            "0 夹到下限，不留空窗口"
+        );
     }
 
     /// 间距档位是外观里**唯一影响几何**的一项：默认档必须逐字等于旧公式
@@ -4846,17 +4919,22 @@ mod tests {
     }
 
     /// 折叠态比点还多的组要靠一枚 `+N` 角标表达。调用点传进来的必须是**未截断**
-    /// 的可见组数 —— 传 `visible_groups` 那种已经截到 `MAX_SIGNS` 的列表长度，
+    /// 的可见组数 —— 传 `visible_groups` 那种已经截到 `max_signs` 的列表长度，
     /// `more_badge` 恒得 0，那枚角标就被窗口裁掉了（issue #7）。
+    ///
+    /// 判据用的是调用点传进来的上限（= `max_signs`），不是固定常量：上限改成 2 时，
+    /// 第 3 组就该触发角标，哪怕硬顶是 8。
     #[test]
     fn groups_beyond_the_dots_get_a_badge_slot() {
         let size = Settings::default().size;
-        assert_eq!(more_badge(MAX_DOTS), 0, "正好装得下时没有角标");
-        assert_eq!(more_badge(MAX_DOTS + 1), 1);
+        assert_eq!(more_badge(MAX_DOTS, MAX_DOTS), 0, "正好装得下时没有角标");
+        assert_eq!(more_badge(MAX_DOTS + 1, MAX_DOTS), 1);
+        assert_eq!(more_badge(3, 2), 1, "上限更低时提前出角标");
+        assert_eq!(more_badge(2, 2), 0);
 
         let visible = MAX_DOTS + 1;
         assert!(
-            horizontal_dots(size, visible, more_badge(visible))
+            horizontal_dots(size, visible, more_badge(visible, MAX_DOTS))
                 > horizontal_dots(size, visible, 0),
             "多出来的那组要占一个点位，否则角标落在窗口外面"
         );
@@ -4896,10 +4974,10 @@ mod tests {
     /// `hidden.length > 0`），所以这条同时也是两边契约的锚。
     #[test]
     fn the_more_badge_appears_only_past_the_dot_limit() {
-        assert_eq!(more_badge(0), 0, "一个组都没有时没有可藏的");
-        assert_eq!(more_badge(MAX_DOTS), 0, "刚好放得下，一枚都不藏");
-        assert_eq!(more_badge(MAX_DOTS + 1), 1, "藏了一个就得说");
-        assert_eq!(more_badge(MAX_DOTS + 10), 1, "藏得再多也只有一枚角标");
+        assert_eq!(more_badge(0, MAX_DOTS), 0, "一个组都没有时没有可藏的");
+        assert_eq!(more_badge(MAX_DOTS, MAX_DOTS), 0, "刚好放得下，一枚都不藏");
+        assert_eq!(more_badge(MAX_DOTS + 1, MAX_DOTS), 1, "藏了一个就得说");
+        assert_eq!(more_badge(MAX_DOTS + 10, MAX_DOTS), 1, "藏得再多也只有一枚角标");
     }
 
     /// 折叠态必须比展开态小 —— 「折叠」的意义就是让出地方

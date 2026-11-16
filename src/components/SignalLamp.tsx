@@ -9,7 +9,7 @@ import { useLang, useMessages, type Messages, type Lang } from "../lib/i18n";
 import { lampVars, resolveShapes, resolveHaloAnimations, toneOf, cornerLights, edgeLightKinds, edgeBlinks, lightBlink, rhythmDelay, type LightContext } from "../lib/lampStyle";
 import { transitions, type SignSignature } from "../lib/lampTransitions";
 import { whyLines } from "../lib/lampWhy";
-import { labelOf, labelPrefOf, orderVisible, type LabelPref } from "../lib/lampSort";
+import { labelOf, labelPrefOf, orderVisible, worstState, type LabelPref } from "../lib/lampSort";
 import { useNow } from "../lib/useNow";
 import { formatRemaining } from "../lib/age";
 import { useToggles } from "../lib/useToggles";
@@ -21,8 +21,6 @@ import type { GroupMeta, Settings } from "../lib/useSettings";
 import type { GroupView, SignalState } from "../lib/types";
 import { meetingTint } from "../lib/rules";
 
-/** 与 Rust 侧 `config::MAX_SIGNS` 一致。超出的牌服务端已经截断。 */
-const MAX_SIGNS = 4;
 /** 超过这个位移就算拖窗口，否则算点击 / 长按。 */
 const DRAG_THRESHOLD_PX = 4;
 /**
@@ -327,6 +325,9 @@ export function SignalLamp({
   // 的 `--bubble-h`）。数错了就是气泡被裁掉一半 —— 而那两个按钮是唯一的出路。
   const pending = approvals?.length ?? 0;
   const { size, quiet, collapsed, show, hidden_groups } = settings;
+  // 灯上同时画几块牌：与 Rust `Settings::max_signs` 读同一个值。截断、折叠点数、
+  // +N 判据全用它，窗口高度也是按它算的 —— 这里多画一块就会被裁掉。
+  const maxSigns = settings.max_signs;
   // 折叠态的两个旋钮。展开态一律不读它们 —— 牌永远是竖着叠的一块板。
   const foldAxis = settings.fold_axis;
   const foldLabel = settings.fold_label;
@@ -625,10 +626,14 @@ export function SignalLamp({
   // 裁掉最后一块牌）—— 所以它住在 `lib/lampSort.ts` 里、有单测盯着，见那边的说明。
   const visible = orderVisible(groups, hidden_groups, settings.group_meta);
 
-  const shown = visible.slice(0, MAX_SIGNS);
+  const shown = visible.slice(0, maxSigns);
   // 被 `+N` 收起来的组。**必须按同样的规则算** —— 牌数和窗口尺寸都依赖「哪几块可见」，
   // 两边算出不同的组就会裁掉最后一块牌。工具提示里要把这些组列出来。
   const hidden = visible.slice(shown.length);
+  // `+N` 汇总牌染成「被折起来的组里最紧急的那一个」的状态色 —— 折叠不能把
+  // 「那堆里有人在等你」这件事藏掉。判据用显式优先级表（见 `worstState`），
+  // 不看数组顺序：置顶偏好会在 `orderVisible` 里重排，排第一的不一定最紧急。
+  const hiddenWorst = worstState(hidden);
 
   // 一组都看不见时也留一块，否则窗口会塌成一条缝 —— 那样既看不见状态，也没法拖它。
   // 名字留空：它不对应任何一个真实的组，右键菜单对它没有意义。
@@ -796,10 +801,19 @@ export function SignalLamp({
     // 折叠内容的四档只改「灯珠旁边那一个词」，灯珠本身一模一样。
     // `name` 走和展开牌同一个 `labelOf`（自定义显示名 / 模板都在里面）；占位牌
     // 没有真实组名，就不写字。`index` 是这一帧可见行从 1 开始的序号。
+    //
+    // **名字解析成空时回退到状态词**：会话沉默很久后上报方可能不再带 cwd/agent，
+    // `labelOf` 就落成空串。折叠板 `.fold-board` 按最宽那行定宽、其余行拉伸到同宽，
+    // 空词的那行只剩左边一颗灯珠、右边空一大截 —— 正是用户报的「左右间隙不一致」。
+    // 回退成状态词（如「沉默」）让每行仍是「灯 + 词」的完整单元，既填掉空白又顺带
+    // 说清这颗灯为什么亮；**不改成居中**，那样中间那行的灯珠会和上下行错开。
+    // 占位牌（group.name 为空、一组都没有）仍无词：它没有真实组，状态词会被误读成
+    // 「某个组在 X」，而且单行的板不会被拉出空白。
     const foldText =
       foldLabel === "name"
         ? group.name
-          ? labelOf(group, settings.group_meta, labelPref)
+          ? labelOf(group, settings.group_meta, labelPref).trim() ||
+            signalLabel(lang, group.aggregate)
           : ""
         : foldLabel === "index"
           ? String(index + 1)
@@ -995,7 +1009,14 @@ export function SignalLamp({
             「真有组上报就自动收起」，加上行内的「看演示」按钮，退出路径够用，
             不值得为它在牌角留一颗常驻的 ×。 */}
         {hidden.length > 0 && index === rows.length - 1 && (
-          <span className="sign-more" title={moreGroupsTip(m, hidden, settings.group_meta, labelPref)}>
+          <span
+            className="sign-more"
+            // 用被折起来那堆里最紧急的状态上色：`--state` 由 state.css 的
+            // `[data-state]` 提供，圆点 / 数字都从它取。折叠不能藏掉「有人在等你」。
+            data-state={hiddenWorst}
+            title={moreGroupsTip(m, hidden, settings.group_meta, labelPref)}
+          >
+            <i className="sign-more-dot" aria-hidden="true" />
             +{hidden.length}
           </span>
         )}
@@ -1105,8 +1126,10 @@ export function SignalLamp({
             <div className="fold-row" data-label={foldLabel}>
               <span
                 className="lamp-dot-more"
+                data-state={hiddenWorst}
                 title={moreGroupsTip(m, hidden, settings.group_meta, labelPref)}
               >
+                <i className="sign-more-dot" aria-hidden="true" />
                 +{hidden.length}
               </span>
               <span className="fold-text" />
@@ -1138,7 +1161,12 @@ export function SignalLamp({
           条件与 Rust 的 `config::more_badge` 是同一个。带文字的窄板档不在这里画：
           它作为板内的最后一格，`+N` 也要和别的行一样对齐。 */}
       {!expanded && foldLabel === "none" && hidden.length > 0 && (
-        <span className="lamp-dot-more" title={moreGroupsTip(m, hidden, settings.group_meta, labelPref)}>
+        <span
+          className="lamp-dot-more"
+          data-state={hiddenWorst}
+          title={moreGroupsTip(m, hidden, settings.group_meta, labelPref)}
+        >
+          <i className="sign-more-dot" aria-hidden="true" />
           +{hidden.length}
         </span>
       )}

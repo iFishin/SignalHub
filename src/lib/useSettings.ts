@@ -384,6 +384,12 @@ export interface QuietHours {
 export interface Settings {
   size: number;
   /**
+   * 灯上同时显示几块牌（= 几组），超出折成 `+N` 汇总牌。
+   * 与 Rust `config::DEFAULT_MAX_SIGNS`（6）同源；clamp 到 [1, 8]。
+   * 展开态牌数、折叠态点数、`+N` 判据都读这一个值。
+   */
+  max_signs: number;
+  /**
    * 牌宽倍率。**1.0 = 原样**。展开态作用在牌上；折叠态只有「带文字」的
    * 窄板用到它 —— 光是一排 / 一列正方形点时，长宽倍率没有意义。
    */
@@ -606,6 +612,8 @@ export interface Settings {
  */
 export const DEFAULTS: Settings = {
   size: 22,
+  // 与 Rust `config::DEFAULT_MAX_SIGNS` 是两处真值，改一处必须同步另一处。
+  max_signs: 6,
   sign_w_mult: 1,
   sign_h_mult: 1,
   lamp_layout: "single",
