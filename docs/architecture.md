@@ -2036,7 +2036,7 @@ keyframes），收益不值 —— 线在闪已经够读出来了。
 
 ### 3.35.17 0.6.8：动图改成「从产品组件逐帧渲染」，另立场景文档
 
-`docs/scenes.md` 新增八段实际操作场景动图，README 顶部 `docs/assets/demo.gif` **一并重画**。触发点是用户那句「要求和真实程序呈现一致」——旧首图是 `scripts/render-demo.swift` 用 AppKit 手绘的，颜色 / 闪烁周期 / 圆角方灯珠都是把 `state.css` 的常量**抄**进 Swift，README 自己也写着「不是录屏、照着代码画」。这种素材改了灯效就会漂移，而且没有任何自动检查能发现。
+`docs/scenes.md` 新增八段实际操作场景动图，README 顶部 `docs/assets/demo.gif` **一并重画**。触发点是用户那句「要求和真实程序呈现一致」——旧首图是 `scripts/render-demo.swift` 用 AppKit 手绘的，颜色 / 闪烁周期 / 圆角方灯珠都是把 `state.css` 的常量**抄**进 Swift；README 当时自己也专门写着「不是录屏、照着代码画」（那段说明后来从 README 移走了）。这种素材改了灯效就会漂移，而且没有任何自动检查能发现。
 
 **帧源不是新画的，是仓库里早有的**：`?window=demo` 独立演示页本来就渲染产品自己的 `SignalLamp` / `InboxWindow` / `LampMenu`，`demoDeepLink()` 的 `&demo=<场景>&step=N` 会暂停在指定帧（注释写明「给 README 动图和视觉核对用」）。`scripts/render-scenes.mjs` 从 `dist/` 起本地服务、用 Chrome 调试通道逐帧截图、ffmpeg 两遍合成 GIF，没有第三方 npm 依赖。录图只做两件事：把演示页的标题 / 场景条 / 图注 / 播放控件移出画面（**产品组件 CSS 一字不改**），以及把语言固定成中文、深浅色固定成深色，免得换台机器录出来不一样。
 
