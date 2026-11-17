@@ -160,9 +160,15 @@ pub struct NativeText {
     /// 快捷键和托盘菜单两条逃生通道都不在时，拒绝开启穿透的报错文案。
     pub pass_through_no_escape: &'static str,
     /// 穿透开着时拒绝进入展示模式（不悄悄替用户改掉一个正在防误点的状态）。
+    /// 这两句**同时**用作系统通知的正文和 `set_stage` 命令的报错 —— 快捷键 / 托盘
+    /// 那条路没有面板可显示错误，通知是它们唯一的可见反馈（见 `lib.rs`）。
     pub stage_no_pass_through: &'static str,
+    /// 上面那句通知的标题。正文只说「先退出穿透再做」，标题说「哪件事没做成」。
+    pub stage_no_pass_through_title: &'static str,
     /// 展示模式开着时拒绝开启穿透（两个强状态会互相踩彼此的瞬态快照）。
     pub stage_pass_through_blocked: &'static str,
+    /// 上面那句通知的标题。
+    pub stage_pass_through_blocked_title: &'static str,
 
     // ---- 手动状态（托盘子菜单 + 牌上那行字）----
     /// 托盘里那个子菜单的标题。
@@ -314,7 +320,9 @@ static ZH: NativeText = NativeText {
     pass_through_title: "已进入点击穿透模式",
     pass_through_no_escape: "没有可用的退出通道（全局快捷键没抢到、托盘菜单也不在），拒绝开启点击穿透",
     stage_no_pass_through: "点击穿透开着时不进入展示模式：先退出穿透，再打开展示模式。",
+    stage_no_pass_through_title: "无法进入展示模式",
     stage_pass_through_blocked: "展示模式开着时不开启点击穿透：先退出展示模式。",
+    stage_pass_through_blocked_title: "无法开启点击穿透",
 
     manual_title: "手动状态",
     manual_focus: "专注 25 分钟",
@@ -362,7 +370,9 @@ static EN: NativeText = NativeText {
     pass_through_title: "Click-through mode is on",
     pass_through_no_escape: "No exit route is available (shortcut not registered, tray menu missing); click-through was not enabled",
     stage_no_pass_through: "Click-through is on; exit it before entering presentation mode.",
+    stage_no_pass_through_title: "Can't enter presentation mode",
     stage_pass_through_blocked: "Presentation mode is on; exit it before enabling click-through.",
+    stage_pass_through_blocked_title: "Can't enable click-through",
 
     manual_title: "Manual state",
     manual_focus: "Focus for 25 minutes",
@@ -464,7 +474,9 @@ mod tests {
             en.tray_stage,
             en.tray_stage_exit,
             en.stage_no_pass_through,
+            en.stage_no_pass_through_title,
             en.stage_pass_through_blocked,
+            en.stage_pass_through_blocked_title,
             en.stage_window_title,
             en.manual_title,
             en.manual_focus,

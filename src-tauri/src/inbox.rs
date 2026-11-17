@@ -39,6 +39,8 @@ const TRAY_GAP: i32 = 6;
 /// 改一处必须同步另一处。
 const SHOWN_EVENT: &str = "signalhub://inbox-shown";
 const HIDDEN_EVENT: &str = "signalhub://inbox-hidden";
+/// 开发者面板把收件箱打开在指定页签（`inbox` / `messages`）。前端字面量必须一致。
+pub const TAB_EVENT: &str = "signalhub://inbox-tab";
 
 /// 打开 / 关闭。灯上圆环菜单、全局快捷键都走这一个入口 —— 「点一下开着就关掉」
 /// 是弹层的直觉，不需要第二个命令。从托盘图标来的走 `toggle_from_tray`。

@@ -13,6 +13,7 @@ export type IconName =
   | "pulse"
   | "clock"
   | "mail"
+  | "list"
   | "eye"
   | "sliders"
   | "layers"
@@ -44,6 +45,8 @@ export const ICONS: Record<IconName, string[]> = {
     "M8 4.7V8l2.4 1.6",
   ],
   mail: ["M2 4h12v8H2z", "M2.4 4.4 8 8.7l5.6-4.3"],
+  // 会话：左边一道竖线 + 三条横线，一眼是「一行一个会话」的清单
+  list: ["M2.6 3.2v9.6", "M5.4 4.8h8", "M5.4 8h8", "M5.4 11.2h8"],
 
   // 灯 / 行为 / 分组
   eye: [

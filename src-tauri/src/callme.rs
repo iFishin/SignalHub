@@ -92,6 +92,14 @@ pub struct CallMeState {
     /// 两边各自的 1、2、3 会按 seq 撞在一起，缓存里会混进上一台机器的留言。
     #[serde(skip)]
     pub origin: String,
+    /// 开发者面板注入假留言时挂起轮询。不落进 JSON —— 前端不需要知道这个开关，
+    /// 它只看 `messages` / `sources`。
+    ///
+    /// 必须有这一位：`poll_once` 在未配置服务器的分支里会清空整个缓存，注入的
+    /// 假留言活不过第一拍。用户一旦填上真地址，下一次轮询自动交还控制权并清掉
+    /// 模拟数据 —— 它是用完即弃的测试脚手架，不该长期挡着真留言。
+    #[serde(skip)]
+    pub dev_hold: bool,
 }
 
 pub type SharedCallMe = Arc<Mutex<CallMeState>>;
@@ -137,6 +145,21 @@ pub fn spawn(app: tauri::AppHandle, settings: crate::SharedSettings, state: Shar
 
 /// 跑一拍。返回「状态有变化」——只有变化才广播，别每 15 秒都推一份相同的快照。
 fn poll_once(config: &CallMeConfig, state: &SharedCallMe) -> bool {
+    // 模拟留言占位期间不拉真服务器。用户填了真地址就立刻交还控制权：清掉假数据、
+    // 让这一拍走正常逻辑，免得 dev 面板用完忘了清、把真留言永久挡在外面。
+    {
+        let mut current = state.lock().expect("callme state poisoned");
+        if current.dev_hold {
+            if !config.enabled() {
+                return false;
+            }
+            current.dev_hold = false;
+            current.messages.clear();
+            current.sources.clear();
+            return true;
+        }
+    }
+
     if !config.enabled() {
         let mut current = state.lock().expect("callme state poisoned");
         if !current.enabled && current.sources.is_empty() && current.messages.is_empty() {
@@ -233,6 +256,80 @@ pub fn merge_messages(cached: &mut Vec<MessageView>, incoming: &[MessageView]) {
         merged.drain(..drop);
     }
     *cached = merged;
+}
+
+/// 开发者面板传进来的一条模拟留言。文案由前端按语言生成，Rust 不掺 i18n。
+#[derive(Debug, Deserialize)]
+pub struct DevMessage {
+    pub title: Option<String>,
+    pub text: String,
+    pub agent: Option<String>,
+    pub context: Option<String>,
+}
+
+/// 模拟留言的来源 id 前缀。清空时整批撤掉，不碰真服务器的数据。
+pub const DEV_SOURCE_PREFIX: &str = "dev:";
+
+/// 用一组假留言占位。返回新快照，广播 `CALLME_EVENT` 是调用方的事 ——
+/// 和 `poll_once` 的分工保持一致：这里只改状态，不碰事件。
+pub fn inject_dev(shared: &SharedCallMe, incoming: Vec<DevMessage>) -> CallMeState {
+    let mut current = shared.lock().expect("callme state poisoned");
+    let now = now_ms();
+    current.dev_hold = true;
+    current.messages.clear();
+    current.sources.clear();
+    current.enabled = true;
+    current.ok = true;
+    current.error = None;
+    current.last_ok_ms = now;
+    current.latency_ms = 0;
+    current.origin.clear();
+
+    for (index, item) in incoming.into_iter().enumerate() {
+        let seq = (index + 1) as u64;
+        let id = format!("{}{}", DEV_SOURCE_PREFIX, seq);
+        current.sources.push(SourceView {
+            id: id.clone(),
+            label: item.agent.clone().unwrap_or_else(|| format!("Dev {}", seq)),
+            note: None,
+            token: String::new(),
+            link: String::new(),
+            created_ms: now,
+            revoked: false,
+            auto_label: false,
+            total: 1,
+            today: 1,
+            last_received_ms: now,
+        });
+        current.messages.push(MessageView {
+            seq,
+            id: format!("dev-message-{}", seq),
+            source_id: id,
+            // 三条留言拉开时间，界面上的「多久以前」才有东西可显示
+            received_ms: now.saturating_sub((index as u64) * 90_000),
+            title: item.title,
+            text: item.text,
+            agent: item.agent,
+            context: item.context,
+        });
+    }
+    current.clone()
+}
+
+/// 撤掉模拟留言。不该留下半套状态：`enabled` 也跟着回 false，
+/// 否则「留言」页会显示「已连接」却一条真留言都没有。
+pub fn clear_dev(shared: &SharedCallMe) -> CallMeState {
+    let mut current = shared.lock().expect("callme state poisoned");
+    current.dev_hold = false;
+    current.messages.clear();
+    current.sources.clear();
+    current.enabled = false;
+    current.ok = false;
+    current.error = None;
+    current.last_ok_ms = 0;
+    current.latency_ms = 0;
+    current.origin.clear();
+    current.clone()
 }
 
 /// 服务器地址归一化。与 `remote::endpoint` 同一套规矩，**但默认 https**：
@@ -659,6 +756,69 @@ mod tests {
         assert_eq!(load_read_at(&path).get("s").copied(), Some(12), "落盘了");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn dev_message(text: &str, agent: Option<&str>) -> DevMessage {
+        DevMessage {
+            title: Some(text.to_string()),
+            text: text.to_string(),
+            agent: agent.map(str::to_string),
+            context: None,
+        }
+    }
+
+    #[test]
+    fn dev_inject_then_clear_restores_empty_state() {
+        let shared = state();
+        let injected = inject_dev(
+            &shared,
+            vec![
+                dev_message("one", Some("assistant")),
+                dev_message("two", None),
+            ],
+        );
+        assert!(injected.dev_hold, "注入期间要挂起轮询，否则假留言活不过一拍");
+        assert!(injected.enabled && injected.ok);
+        assert_eq!(injected.messages.len(), 2);
+        assert_eq!(injected.sources.len(), 2);
+        assert!(injected
+            .messages
+            .iter()
+            .all(|m| m.source_id.starts_with(DEV_SOURCE_PREFIX)));
+        assert!(
+            injected.messages[0].received_ms > injected.messages[1].received_ms,
+            "两条留言要拉开时间，界面才有「多久以前」可显示"
+        );
+
+        let cleared = clear_dev(&shared);
+        assert!(!cleared.dev_hold);
+        assert!(cleared.messages.is_empty() && cleared.sources.is_empty());
+        assert!(!cleared.enabled, "不能留下「已连接但没数据」的半套状态");
+    }
+
+    #[test]
+    fn poll_without_config_keeps_dev_messages() {
+        let shared = state();
+        inject_dev(&shared, vec![dev_message("fake", None)]);
+        // 没配服务器时 poll_once 本来会清空整个缓存；dev 占位必须挡住它
+        assert!(!poll_once(&CallMeConfig::default(), &shared));
+        assert_eq!(shared.lock().unwrap().messages.len(), 1);
+    }
+
+    #[test]
+    fn poll_with_config_hands_back_from_dev_hold() {
+        let shared = state();
+        inject_dev(&shared, vec![dev_message("fake", None)]);
+        let config = CallMeConfig {
+            url: "http://127.0.0.1:1".to_string(),
+            token: "token".to_string(),
+            poll_ms: 15_000,
+        };
+        // dev_hold 分支在发请求之前就返回，所以这里不会真的去连那个端口
+        assert!(poll_once(&config, &shared));
+        let current = shared.lock().unwrap();
+        assert!(!current.dev_hold);
+        assert!(current.messages.is_empty(), "填上真地址后模拟留言要让位");
     }
 
     fn message(seq: u64, text: &str) -> MessageView {

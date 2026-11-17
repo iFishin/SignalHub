@@ -4,6 +4,7 @@ import type { Messages } from "./i18n";
 /** 全局页签。新增功能先在这里登记，搜索、持久化和深链才会一起认识它。 */
 export type Tab =
   | "status"
+  | "sessions"
   | "history"
   | "messages"
   | "look"
@@ -42,6 +43,7 @@ export interface TabGroup {
  */
 export const TAB_GROUP: Record<Tab, GroupId | null> = {
   status: "watch",
+  sessions: "watch",
   history: "watch",
   messages: "watch",
   look: "lamp",
@@ -64,11 +66,32 @@ export function groupForTab(tab: Tab): GroupId | null {
 /** 搜索别名是导航数据，不是界面全文索引。中英混放是有意的。 */
 export const TAB_ALIASES: Record<Tab, string[]> = {
   status: ["状态", "现在", "时间线", "status", "now", "timeline"],
+  sessions: [
+    "会话",
+    "会话管理",
+    "各组的显示",
+    "各组显示",
+    "改名",
+    "置顶",
+    "隐藏",
+    "静音",
+    "删除",
+    "清空",
+    "session",
+    "sessions",
+    "manage",
+    "rename",
+    "pin",
+    "hide",
+    "mute",
+    "delete",
+    "clear",
+  ],
   history: ["历史", "近 7 天", "统计", "今日时长", "history", "stats", "week"],
   messages: ["留言", "收信", "评论", "反馈", "call me", "callme", "message", "feedback"],
-  look: ["外观", "颜色", "形状", "大小", "透明度", "预设", "皮肤", "主题", "效果", "呼吸", "脉冲", "扫光", "渐隐", "光晕", "圆角", "描边", "底色", "字号", "质感", "轮廓", "胶囊", "拱形", "菱形", "方形", "灯珠", "牌形", "上边", "下边", "边灯", "角灯", "六灯位", "边框光", "粗细", "明暗", "会话标题", "标题", "组名", "智能体名", "agent 名称", "穿透角灯", "行尾四格", "第 1 格", "刻线", "短刻", "长刻", "拼接板", "折叠", "折叠排列", "折叠内容", "竖排", "横排", "序号", "状态词", "一颗灯", "look", "color", "size", "preset", "skin", "theme", "effect", "breathe", "pulse", "sweep", "fade", "glow", "radius", "border", "tint", "font", "outline", "diamond", "capsule", "square", "shape", "edge", "corner", "tick", "slot", "board", "fold", "vertical", "horizontal", "index", "frame light", "title", "label", "agent name"],
+  look: ["外观", "颜色", "形状", "大小", "透明度", "预设", "皮肤", "主题", "效果", "呼吸", "脉冲", "扫光", "渐隐", "光晕", "圆角", "描边", "底色", "字号", "质感", "轮廓", "胶囊", "拱形", "菱形", "方形", "灯珠", "牌形", "上边", "下边", "边灯", "角灯", "六灯位", "边框光", "粗细", "明暗", "会话标题", "标题", "智能体名", "agent 名称", "穿透角灯", "行尾四格", "第 1 格", "刻线", "短刻", "长刻", "拼接板", "折叠", "折叠排列", "折叠内容", "竖排", "横排", "序号", "状态词", "一颗灯", "look", "color", "size", "preset", "skin", "theme", "effect", "breathe", "pulse", "sweep", "fade", "glow", "radius", "border", "tint", "font", "outline", "diamond", "capsule", "square", "shape", "edge", "corner", "tick", "slot", "board", "fold", "vertical", "horizontal", "index", "frame light", "title", "label", "agent name"],
   behavior: ["行为", "静默超时", "超时", "安静模式", "点击穿透", "触发", "什么时候亮", "上边", "下边", "左上", "右上", "右下", "左下", "边灯", "角灯", "六灯位", "行尾四格", "第 1 格", "刻线", "短刻", "长刻", "指定状态", "指定时段", "指定时间", "沉默到期", "置顶触发", "behavior", "ttl", "timeout", "trigger", "schedule", "state", "time", "slot", "tick"],
-  groups: ["分组", "置顶", "多灯", "每组分灯", "归位", "灯的位置", "散落", "拖动", "位置记忆", "group", "pin", "lamp count", "reset", "position", "drag"],
+  groups: ["分组", "多灯", "每组分灯", "归位", "灯的位置", "散落", "拖动", "位置记忆", "group", "lamp count", "reset", "position", "drag"],
   alert: ["提醒", "通知", "勿扰", "提示音", "声音", "状态", "alert", "notify", "dnd", "sound", "state"],
   hooks: ["转发", "出站", "webhook", "slack", "ntfy", "wled", "物理灯", "hooks", "forward"],
   connect: ["接入", "智能体", "采集器", "cli", "hook", "token", "局域网", "web 面板", "审批", "诊断", "connect", "agent", "panel"],
@@ -87,6 +110,7 @@ export function tabGroups(m: Messages): TabGroup[] {
       title: m.railWatch,
       entries: [
         { id: "status", label: m.tabStatus, icon: "pulse" },
+        { id: "sessions", label: m.tabSessions, icon: "list" },
         { id: "history", label: m.tabHistory, icon: "clock" },
         { id: "messages", label: m.tabMessages, icon: "mail" },
       ],

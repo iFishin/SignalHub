@@ -1557,9 +1557,11 @@ input[type="color"].style-swatch::-webkit-color-swatch {
   font-size: 11.5px;
 }
 
-/* 会话行尾那枚清除按钮：**只在悬停时露出来** —— 一屏几十行，常亮的一排 ×
-   会把状态本身淹掉。不悬停时也点不到（否则盲点会清掉一个会话）。 */
-.session-clear {
+/* 会话行尾那组操作按钮：**只在悬停时露出来** —— 一屏几十行，常亮的一排图标
+   会把状态本身淹掉。不悬停时也点不到（否则盲点会清掉一个会话）。「会话」页
+   比「状态」页多复制 / 打开目录两枚，但两处共用同一套显隐规则。 */
+.session-clear,
+.session-action {
   align-self: flex-start;
   flex: none;
   padding: 1px 6px;
@@ -1568,7 +1570,9 @@ input[type="color"].style-swatch::-webkit-color-swatch {
 }
 
 .session:hover .session-clear,
-.session-clear:focus-visible {
+.session:hover .session-action,
+.session-clear:focus-visible,
+.session-action:focus-visible {
   opacity: 1;
   pointer-events: auto;
 }

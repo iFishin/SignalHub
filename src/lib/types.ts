@@ -82,7 +82,7 @@ export interface GroupView {
    * 顺序是「项目在前」：牌宽固定、名字一定被截断，而同一个智能体开好几个窗口时
    * 智能体名是重复的，能区分的只有项目名。
    *
-   * 优先级：用户在「外观 → 各组的显示」里改的名字 > 这个 > `name`。
+   * 优先级：用户在「会话 → 各组的显示」里改的名字 > 这个 > `name`。
    * 见 `lib/lampSort.ts` 的 `labelOf`。
    */
   default_label: string | null;

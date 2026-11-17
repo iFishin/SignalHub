@@ -5,7 +5,7 @@ import { motion, useReducedMotion } from "motion/react";
 import { inTauri } from "../lib/env";
 import { requestSettingsTab } from "../lib/settingsIntent";
 import { signalLabel, justFinishedLabel } from "../lib/signals";
-import { useLang, useMessages, type Messages, type Lang } from "../lib/i18n";
+import { useLang, useMessages, type Messages } from "../lib/i18n";
 import { lampVars, resolveShapes, resolveHaloAnimations, toneOf, cornerLights, edgeLightKinds, edgeBlinks, lightBlink, rhythmDelay, type LightContext } from "../lib/lampStyle";
 import { transitions, type SignSignature } from "../lib/lampTransitions";
 import { whyLines } from "../lib/lampWhy";
@@ -126,50 +126,13 @@ function formatAge(sinceMs: number, now: number): string {
   return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
 }
 
-function tooltip(
-  m: Messages,
-  lang: Lang,
-  aggregate: SignalState,
-  groups: GroupView[],
-  meta: Record<string, GroupMeta>,
-  labelPref: LabelPref,
-  extra: string[],
-  /** 一组都没有时那句话说这句 —— 「刚完成 · N 分钟前」顶替「没有智能体在上报」 */
-  emptyLabel: string,
-  /** 按「单击做什么」挑好的那一份提示，免得改了设置之后 tooltip 还在说旧话。 */
-  hint: string,
-): string {
-
-  // 没有组时 tooltip 只剩一句状态。Hints 仍然拼上 —— 空灯球正需要「右键能进设置」。
-  if (groups.length === 0) return [emptyLabel, hint, ...extra].join("\n");
-
-  if (groups.length === 1 && extra.length === 0) {
-    const only = groups[0];
-    const head = `${labelOf(only, meta, labelPref)} · ${signalLabel(lang, only.aggregate)}`;
-    const detail = only.message ? ` — ${only.message}` : "";
-    return `${head}${detail}\n${hint}`;
-  }
-
-  // 多组时把「哪个组在什么状态」列出来 —— 这是多块牌想回答的问题。
-  // 被 `+N` 收起来的组也列在这儿：牌上看不见，tooltip 是全窗口唯一能容纳它的地方，
-  // 否则那块标记只说得出「有更多」，说不出是什么。
-  const listed = groups.map((group) => {
-    const detail = group.message ? ` — ${group.message}` : "";
-    return `${labelOf(group, meta, labelPref)} · ${signalLabel(lang, group.aggregate)}${detail}`;
-  });
-
-  return [
-    ...(groups.length > 1 ? [`${signalLabel(lang, aggregate)}${m.groupsCount(groups.length)}`] : []),
-    ...listed,
-    ...extra,
-    hint,
-  ].join("\n");
-}
-
-/** 「+N」标记的 tooltip：只说得出「还有几组」，说不出是哪几组。
+/** 「+N」标记的悬停说明：只说得出「还有几组」，说得出是哪几组。
  *
- *  单独摘出来是因为它和 `tooltip` 的用途不同（后者是全窗口的悬停说明，
- *  这里是那一枚小标记自己的）—— 复用一个字符串会让语义糊掉。 */
+ *  这是灯上**唯一**保留的原生 `title`。根容器上原来那条全窗口 tooltip 已移除
+ *  （2026-11-17）：折叠态 hover 240ms 就 peek 展开，而系统 tooltip 约 400ms+ 才弹，
+ *  弹出来时牌已展开、正好盖在牌上。展开后牌面自带组名 / 状态 / 消息，那条 tooltip
+ *  本就是冗余遮挡。这条挂在 `+N` 小标记上，说的是牌上确实看不见的信息，留着。
+ *  和已删的那条用途不同 —— 复用一个字符串会让语义糊掉。 */
 function moreGroupsTip(
   m: Messages,
   hidden: GroupView[],
@@ -215,6 +178,11 @@ function progressStyle(group: GroupView): React.CSSProperties | undefined {
  * 就没有存在的理由了 —— 去掉它，点一下灯牌立刻就有反应。
  *
  * 只认主键，所以右键原地就能弹菜单，不会顺带被当成一次点击。
+ *
+ * `onPressStart` 在主键按下那一刻触发，和后续「判成点击还是拖拽」无关 ——
+ * 现在用来取消折叠态的 hover 临时展开：那枚 240ms 定时器若落在系统原生拖拽
+ * 期间才触发，窗口会在 `startDragging` 接管坐标之后突然变大 / 挪位，两者抢
+ * 同一份窗口几何，表现就是不跟手、偏移（多屏 + 吸附时还会被吸到隔壁屏）。
  */
 /** 牌尾那几枚小动作必须**吃掉鼠标事件**。
  *
@@ -225,7 +193,11 @@ function stopMouse(event: React.MouseEvent) {
   event.stopPropagation();
 }
 
-function useDragOrClick(onClick: () => void, onLongPress: () => void) {
+function useDragOrClick(
+  onClick: () => void,
+  onLongPress: () => void,
+  onPressStart: () => void,
+) {
   const origin = useRef<{ x: number; y: number } | null>(null);
   const dragging = useRef(false);
   /** 这一轮按下已经变成长按了 —— 松开时不能再算一次单击。 */
@@ -244,6 +216,9 @@ function useDragOrClick(onClick: () => void, onLongPress: () => void) {
   return {
     onMouseDown: (event: React.MouseEvent) => {
       if (event.button !== 0) return; // 只认主键
+      // 按下即冻结几何：取消还没到点的 peek 定时器、收掉已展开的 peek。
+      // 在 startDragging（移动超阈值之后才调）之前做，拖动期间窗口尺寸就不会变。
+      onPressStart();
       origin.current = { x: event.clientX, y: event.clientY };
       dragging.current = false;
       longPressed.current = false;
@@ -335,7 +310,7 @@ export function SignalLamp({
   const lang = useLang();
   // 穿透也能从托盘和全局快捷键改，所以订阅而不是读一次 —— 配了「穿透」角灯的
   // 那一刻必须立刻跟着变。**牌上那枚常驻的 ban 角标已经删掉了**（0.6.4）：现在
-  // 它只是四角里可选的一枚灯，用户没挂就不显示；状态本身仍进 tooltip / 托盘。
+  // 它只是四角里可选的一枚灯，用户没挂就不显示；状态本身仍能进托盘菜单和右键菜单。
   const toggles = useToggles();
   // 演示里不继承本机的「点击穿透」：那是这台机器的真实状态，不该出现在一段和
   // 产品无关的剧本里。hook 仍然无条件调用（React 规则），只是读的时候盖掉；
@@ -354,7 +329,7 @@ export function SignalLamp({
   // 的状态取。颜色和动画走 lampVars 的 CSS 变量，shape走元素属性 —— 形状不是
   // 「一个值」，没法塞进一个根变量里。
   const shapes = resolveShapes(settings);
-  // 牌上的名字、tooltip 和「+N」那一行必须说同一个名字。标题偏好从整份设置里
+  // 牌上的名字和「+N」那一行必须说同一个名字。标题偏好从整份设置里
   // 只取两项，别的组件（收件箱 / 分组页）也走同一个 `labelPrefOf`。
   const labelPref = labelPrefOf(settings);
 
@@ -397,8 +372,11 @@ export function SignalLamp({
   // 悬停意图：进入后等 `PEEK_DELAY_MS` 才展开（理由见那个常量），移开立刻收回。
   // 定时器单独持一个 ref，不放进 effect —— 它由鼠标事件驱动，不是渲染状态的派生。
   const peekTimer = useRef<number | null>(null);
-  const armPeek = () => {
+  const armPeek = (event?: React.MouseEvent) => {
     if (!collapsed) return;
+    // 按着主键时鼠标又移进灯（拖拽途中常见）不算「停下来查看」：此时若 arm，
+    // 240ms 后会在系统原生拖拽中途展开窗口，和它抢同一份窗口坐标。
+    if (event && event.buttons !== 0) return;
     if (peekTimer.current !== null) window.clearTimeout(peekTimer.current);
     peekTimer.current = window.setTimeout(() => {
       peekTimer.current = null;
@@ -615,7 +593,7 @@ export function SignalLamp({
     else if (settings.click_action === "collapse") toggleCollapsed();
     // "none"：按下 / 松开照常判定，只是不产生动作
   };
-  const drag = useDragOrClick(onClickLamp, () => setMenuOpen(true));
+  const drag = useDragOrClick(onClickLamp, () => setMenuOpen(true), disarmPeek);
 
   // 牌上原来那枚「清除该组」的 × 已撤（见渲染里 `sign` 上方的说明），这条
   // `invoke("clear_group_state")` 的前端入口也就没有调用方了 —— 清除只剩右键菜单
@@ -940,7 +918,7 @@ export function SignalLamp({
         <div className="sign-body">
           <div className="sign-line">
             {show.name && group.name && (
-              /* 组名**只是一段文本**：改名的入口在设置面板（分组 → 各组的显示），
+              /* 组名**只是一段文本**：改名的入口在设置面板（会话 → 各组的显示），
                  也可以从牌的右键菜单「重命名…」直接跳过去。
                  早先点它就能就地改，但那是一次「点一下就进入编辑状态」的交互 ——
                  灯是常驻在桌面上的，误点一下就开始编辑，比改名的便利更碍事。 */
@@ -1001,7 +979,7 @@ export function SignalLamp({
         {/* **牌上不再有任何按钮**（2026-11-10）。原来这里挂着一枚悬停出现的
             ×（「清除该组的状态」），撤掉它有两条理由：
             1. 常驻窗口上的一枚 × 读起来就是「关掉这块牌」，而它做的事只是清一个
-               状态 —— 文案得靠 tooltip 纠正，那说明形状本身说错了话；
+               状态 —— 形状本身说错了话；
             2. 它所在的右上角正是当年 `tr` 那枚角灯的落点（0.6.7 起挪到行尾
                第 2 格），一悬停就盖住一盏读者刚配好的灯。
             清除没丢：牌上右键 → 「清除」走同一条 `clear_group`（原生菜单
@@ -1089,14 +1067,10 @@ export function SignalLamp({
       // 五档动效。旧版 `[data-lively]` 那批规则现在归 `[data-effect="breathe"]`，
       // 其余四档各有一套；系统「减少动态效果」时 CSS 把五档一律降级成静止。
       data-effect={effect}
-      title={
-        preview
-          ? undefined
-          : tooltip(m, lang, aggregate, groups, settings.group_meta, labelPref, [
-              paused ? m.lampPaused : "",
-              passThrough ? m.lampPassThrough : "",
-            ].filter((line) => line !== ""), emptyLabel, m.lampHint[settings.click_action])
-      }
+      // 根容器上**不挂 title**（2026-11-17）：折叠态 hover 240ms 就 peek 展开，
+      // 系统原生 tooltip 约 400ms+ 才弹，弹时牌已展开、正好盖在牌上。展开后牌面
+      // 自带组名 / 状态 / 消息，那条全窗口说明是纯冗余遮挡，已整体移除。
+      // 折起来的组名仍有 `+N` 自己那条 title（见下），不是信息全丢。
       // 折叠态被指着时临时展开（见上），移开 / 超时收回。**进入带延迟**：
       // 路过不该把窗口撑开；移开不延迟，立刻收回去。
       onMouseEnter={armPeek}
@@ -1150,7 +1124,7 @@ export function SignalLamp({
           用线性的 `Icon` 而不是 `⏸` 字符：那个字形在 9px 下只是一团墨。
           **穿透的 `ban` 角标 0.6.4 起不再画**：它成了「四角挂什么」里可选的一枚
           （`.sign-corner[data-kind="passthrough"]`），挂不挂由用户定；开启穿透时
-          那条一次性通知、tooltip 的一行文字和托盘菜单仍然在。 */}
+          那条一次性通知和托盘菜单仍然在。 */}
       {flag && (
         <span className="lamp-flag" data-state={aggregate} title={flagTitle}>
           <Icon name="pause" size={9} />

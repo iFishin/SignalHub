@@ -283,6 +283,7 @@ export interface Messages {
   railConnect: string;
   railHelp: string;
   tabStatus: string;
+  tabSessions: string;
   tabHistory: string;
   tabMessages: string;
   /** 「历史」页的正文 */
@@ -309,12 +310,14 @@ export interface Messages {
   systemTabGeneral: string;
   systemTabUpdate: string;
   systemTabData: string;
+  systemTabDeveloper: string;
   /**
    * 每个全局页签的一句任务说明（统一页头的第二行）。键集和
    * lib/settingsNavigation.ts 的 Tab 一致，新增页签时 TS 会提醒这里补文案。
    */
   pageHint: Record<
     | "status"
+    | "sessions"
     | "history"
     | "messages"
     | "look"
@@ -1017,6 +1020,37 @@ export interface Messages {
     enter: string;
     hint: string;
   };
+  /** 设置 → 系统 → 开发者：给集成方自测用的模拟数据面板。 */
+  dev: {
+    caution: string;
+    clearSessions: string;
+    clearedSessions: (count: number) => string;
+    stateTitle: string;
+    stateHint: string;
+    ttlLabel: string;
+    ttlShort: string;
+    ttlMedium: string;
+    ttlLong: string;
+    scenarioTitle: string;
+    scenarioHint: string;
+    scenarioNames: Record<string, string>;
+    lightsTitle: string;
+    lightsHint: string;
+    lightNames: Record<string, string>;
+    inboxTitle: string;
+    inboxHint: string;
+    openInbox: string;
+    messagesTitle: string;
+    messagesHint: string;
+    injectMessages: string;
+    clearMessages: string;
+    messageEntries: {
+      title: string;
+      text: string;
+      agent: string;
+      context: string;
+    }[];
+  };
   language: string;
   langAuto: string;
   langZh: string;
@@ -1074,9 +1108,7 @@ export interface Messages {
 
   quit: string;
 
-  // 灯球 tooltip
-  /** 灯上的悬停说明按「单击做什么」分三份，免得改了设置之后提示还在说旧话。 */
-  lampHint: { collapse: string; inbox: string; none: string };
+  // 灯球
   /**
    * 空状态：「刚完成 · N 分钟前」。
    *
@@ -1091,7 +1123,6 @@ export interface Messages {
    * 它才会重新开始催」，而不是「它已经这样多久了」。不新增元素，也不新增一行字。
    */
   snoozeLeft: (age: string) => string;
-  groupsCount: (n: number) => string;
   /** 截断标记的 tooltip：「+3」指的是哪几组 */
   moreGroups: (n: number) => string;
   /** 折叠切换的一次性反馈 */
@@ -1101,7 +1132,16 @@ export interface Messages {
   lampPaused: string;
   /** 会话行尾那枚 × 的悬停提示 */
   clearSessionHint: string;
-  lampPassThrough: string;
+  /** 「会话」页：列表、行尾操作和批量清空 */
+  sessionListTitle: string;
+  sessionListEmpty: string;
+  sessionCopyId: string;
+  sessionCopied: string;
+  sessionOpenDir: string;
+  sessionClearAll: string;
+  sessionClearAllConfirm: (n: number) => string;
+  sessionClearAllDone: (n: number) => string;
+  sessionClearAllHint: string;
   /** 「+N」截断后，tooltip 里列出被收起来的组之前的引导 */
   moreGroupsLead: string;
 
@@ -1385,6 +1425,7 @@ export const MESSAGES: Record<Lang, Messages> = {
     railConnect: "连接",
     railHelp: "帮助",
     tabStatus: "状态",
+    tabSessions: "会话",
     tabHistory: "历史",
     tabMessages: "留言",
     historyTitle: "近 7 天",
@@ -1409,8 +1450,10 @@ export const MESSAGES: Record<Lang, Messages> = {
     systemTabGeneral: "通用",
     systemTabUpdate: "更新与诊断",
     systemTabData: "数据",
+    systemTabDeveloper: "开发者",
     pageHint: {
       status: "现在怎么样：正在跑什么、最近发生了什么。",
+      sessions: "管理当前上报的会话：看消息、复制标识、打开目录、清掉不需要的会话，以及各组怎么显示。",
       history: "过去几天发生了什么：今日复盘、洞察、时长和审批记录。",
       messages: "外面的智能体通过 Call Me 链接发来的留言，展开即已读。",
       look: "灯长什么样：尺寸、形态、配色，以及牌面的质感。",
@@ -1573,7 +1616,7 @@ export const MESSAGES: Record<Lang, Messages> = {
       },
       cornerPassthrough: {
         title: "连「点不进去」也能占一格",
-        body: "第 1 格那枚近白竖条是「点击穿透」：开着的时候它出现，关掉就整个消失。原先窗口右上角那枚常驻的禁止图标已经撤掉了 —— 要不要看这个状态、放在第几格，现在由你在「外观 → 边框光」的六行里定。状态本身仍在 tooltip 和托盘菜单里。",
+        body: "第 1 格那枚近白竖条是「点击穿透」：开着的时候它出现，关掉就整个消失。原先窗口右上角那枚常驻的禁止图标已经撤掉了 —— 要不要看这个状态、放在第几格，现在由你在「外观 → 边框光」的六行里定。状态本身仍在托盘菜单和开启时的通知里。",
       },
       lightTriggerState: {
         title: "九种条件，六行各判各的",
@@ -2035,7 +2078,7 @@ export const MESSAGES: Record<Lang, Messages> = {
     groupByCwd: "按目录",
     groupBySession: "按会话",
     groupByHint:
-      "这一项定的是**有哪些组**（下面那一项定的是这些组摆成几盏灯，两件事）。「不分组」：所有不带 group 的上报归到同一块牌。「按目录」：一个工作目录一块牌，每个项目各占一行。「按会话」：一个会话一块牌 —— 同一个智能体并行开几个窗口 / worktree 时，它们的状态各不相同，只有按会话分才看得出来。三种都只是兜底：上报自己带了 group 的仍然听它的，也是改完从下一次上报开始生效。按目录时分组名就是那条路径；按会话时不会把会话 id 画在牌上，默认显示成「目录末段 · 智能体」（项目在前，因为牌上的名字会被截断，而同一个智能体开好几个窗口时只有项目名能区分它们）。想换别的名字，改下面「各组的显示」。",
+      "这一项定的是**有哪些组**（下面那一项定的是这些组摆成几盏灯，两件事）。「不分组」：所有不带 group 的上报归到同一块牌。「按目录」：一个工作目录一块牌，每个项目各占一行。「按会话」：一个会话一块牌 —— 同一个智能体并行开几个窗口 / worktree 时，它们的状态各不相同，只有按会话分才看得出来。三种都只是兜底：上报自己带了 group 的仍然听它的，也是改完从下一次上报开始生效。按目录时分组名就是那条路径；按会话时不会把会话 id 画在牌上，默认显示成「目录末段 · 智能体」（项目在前，因为牌上的名字会被截断，而同一个智能体开好几个窗口时只有项目名能区分它们）。想换别的名字，去「会话」页的「各组的显示」。",
     port: "端口",
     apiTitle: "接口速查",
     apiToken: "Token",
@@ -2319,6 +2362,66 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       enter: "进入展示模式",
       hint: "在鼠标所在的那块屏上铺一张大屏看板，方便远距离看或会议投屏。只显示组名、状态和持续时长，不搬收件箱详情、审批或命令；进入时收起临时的悬停展开与圆环菜单，退出后原样恢复。点击穿透开着时不会进入。",
     },
+    dev: {
+      caution:
+        "这里的会话和留言都是模拟的，名字带 dev: 前缀，退出设置后仍会挂在灯上直到到期。用完点一下「清空模拟会话」，别让假数据混进你真在用的会话里。",
+      clearSessions: "清空模拟会话",
+      clearedSessions: (count) => `已清掉 ${count} 个模拟会话`,
+      stateTitle: "单个状态",
+      stateHint:
+        "推一条模拟上报，看灯珠、边灯、角灯按这个状态怎么变。几个按钮共用同一个会话，连着点就是在给一个会话切状态，不会叠出好几块牌。off 不在列表里 —— 上报它等于清掉会话，不是让灯变色。",
+      ttlLabel: "存活时间",
+      ttlShort: "20 秒",
+      ttlMedium: "2 分钟",
+      ttlLong: "10 分钟",
+      scenarioTitle: "一键铺开会话",
+      scenarioHint:
+        "一次摆出几块牌，验证聚合、折叠、+N 和收件箱的多行排版。再点一次同一场景会覆盖旧的那批。",
+      scenarioNames: {
+        solo: "一个会话",
+        daily: "日常三个",
+        every: "七种状态",
+        needsYou: "等你处理",
+      },
+      lightsTitle: "边灯与角灯",
+      lightsHint:
+        "直接改灯位设置，画出来的就是产品真实行为。它不会自动还原 —— 想恢复自己的配置，去「外观」页重新调。",
+      lightNames: {
+        none: "全关",
+        edges: "上下边线 + 四角状态",
+        attention: "只在需要你时亮",
+        everything: "全部灯位",
+      },
+      inboxTitle: "收件箱",
+      inboxHint:
+        "先铺开「等你处理」，再打开面板，就能看到几行真实的待办排版；审批、离开摘要、留言页签都在同一扇窗里。",
+      openInbox: "打开收件箱",
+      messagesTitle: "留言板",
+      messagesHint:
+        "不配服务器也能看留言页长什么样。注入期间会挂起真服务器的轮询；一旦填上真地址，模拟留言会自动让位。",
+      injectMessages: "注入三条留言",
+      clearMessages: "撤掉模拟留言",
+      messageEntries: [
+        {
+          title: "新的设计稿",
+          text: "把新的配色试了一版，灯牌在浅色壁纸上也看得清。",
+          agent: "设计助手",
+          context: "来自设计评审",
+        },
+        {
+          title: "部署完成",
+          text: "预发布环境已经更新，日志里没有错误。",
+          agent: "发布助手",
+          context: "来自流水线",
+        },
+        {
+          title: "一条旧留言",
+          text: "上周那个问题已经关掉了，留在这里方便对照。",
+          agent: "项目助手",
+          context: "来自归档",
+        },
+      ],
+    },
     language: "语言",
     langAuto: "跟随系统",
     langZh: "中文",
@@ -2376,21 +2479,24 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
 
     quit: "退出 SignalHub",
 
-    lampHint: {
-      collapse: "单击折叠 / 展开 · 长按呼出圆环菜单 · 右键牌面是单组菜单 / 空白处是灯菜单",
-      inbox: "单击打开收件箱 · 长按呼出圆环菜单 · 右键牌面是单组菜单 / 空白处是灯菜单",
-      none: "单击不做事 · 长按呼出圆环菜单 · 右键牌面是单组菜单 / 空白处是灯菜单",
-    },
     justFinished: (minutes) =>
       minutes < 1 ? "刚完成 · 刚刚" : `刚完成 · ${minutes} 分钟前`,
     snoozeLeft: (age) => `${age} 后`,
-    groupsCount: (n) => `（${n} 组）`,
     moreGroups: (n) => `还有 ${n} 组`,
     expandNow: "已展开",
     collapseNow: "已折叠",
     lampPaused: "已暂停监控",
     clearSessionHint: "清掉这个会话（智能体下次上报会回来）",
-    lampPassThrough: "点击穿透",
+    sessionListTitle: "当前会话",
+    sessionListEmpty: "还没有会话在上报。",
+    sessionCopyId: "复制会话 ID",
+    sessionCopied: "已复制",
+    sessionOpenDir: "打开工作目录",
+    sessionClearAll: "清空全部会话",
+    sessionClearAllConfirm: (n) => `确认清空 ${n} 个会话`,
+    sessionClearAllDone: (n) => `已清空 ${n} 个会话`,
+    sessionClearAllHint:
+      "只清掉当前上报中的会话，不会动分组偏好、隐藏 / 静音名单或留言；智能体下次上报会照常回来。按钮点一下只是翻到确认，再点一下才真的清。",
     moreGroupsLead: "被收起来的组：",
 
     lampMenuInbox: "收件箱",
@@ -2619,6 +2725,7 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     railConnect: "Connections",
     railHelp: "Help",
     tabStatus: "Status",
+    tabSessions: "Sessions",
     tabHistory: "History",
     tabMessages: "Messages",
     historyTitle: "Last 7 days",
@@ -2643,8 +2750,11 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     systemTabGeneral: "General",
     systemTabUpdate: "Update & diagnostics",
     systemTabData: "Data",
+    systemTabDeveloper: "Developer",
     pageHint: {
       status: "What's happening right now: running sessions and recent events.",
+      sessions:
+        "Manage reporting sessions: read messages, copy IDs, open working directories, clear sessions you no longer need, and choose how groups are displayed.",
       history: "The past few days: today's recap, insights, durations and approvals.",
       messages: "Notes from outside agents via your Call Me links. Expanding marks them read.",
       look: "What the lamp looks like: size, form, colour, and the texture of the sign.",
@@ -2803,7 +2913,7 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
       },
       cornerPassthrough: {
         title: "Even “you can't click it” gets a slot",
-        body: "The near-white vertical strip in Slot 1 is click-through: it appears while enabled and vanishes entirely when off. The old always-on ban badge in the window corner is gone — whether to show this state, and in which slot, is now one of the six rows under Appearance → Frame light. The state is still in the tooltip and tray menu.",
+        body: "The near-white vertical strip in Slot 1 is click-through: it appears while enabled and vanishes entirely when off. The old always-on ban badge in the window corner is gone — whether to show this state, and in which slot, is now one of the six rows under Appearance → Frame light. The state is still in the tray menu and in the notification shown when it turns on.",
       },
       lightTriggerState: {
         title: "Nine conditions, six independent rows",
@@ -3559,6 +3669,66 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
       enter: "Enter presentation mode",
       hint: "Fills the screen under the cursor with a large board for reading at a distance or projecting in a meeting. It shows only group names, states and how long they have held \u2014 no inbox details, approvals or commands. Entering it folds away the temporary hover expansion and the ring menu, and restores both on exit. It will not open while click-through is on.",
     },
+    dev: {
+      caution:
+        "Sessions and notes here are all simulated and named with a dev: prefix. They stay on the lamp until they expire, even after you close settings. Use Clear simulated sessions when you are done so fake data never mixes with real sessions.",
+      clearSessions: "Clear simulated sessions",
+      clearedSessions: (count) => `Cleared ${count} simulated ${count === 1 ? "session" : "sessions"}`,
+      stateTitle: "Single state",
+      stateHint:
+        "Push one simulated report and watch the lamp bead, edge light and corner lights react. All the buttons share one session, so clicking several in a row switches that session's state instead of piling up signs. off is absent on purpose: reporting it clears the session rather than changing the lamp colour.",
+      ttlLabel: "Lifetime",
+      ttlShort: "20 seconds",
+      ttlMedium: "2 minutes",
+      ttlLong: "10 minutes",
+      scenarioTitle: "Lay out sessions",
+      scenarioHint:
+        "Put several signs up at once to check aggregation, folding, the +N badge and multi-row inbox layout. Applying the same scenario again replaces the previous batch.",
+      scenarioNames: {
+        solo: "One session",
+        daily: "Three everyday ones",
+        every: "All seven states",
+        needsYou: "Needs your hand",
+      },
+      lightsTitle: "Edge and corner lights",
+      lightsHint:
+        "This changes the light settings directly, so what you see is the product's real behaviour. It is not restored automatically — go back to Appearance to get your own layout back.",
+      lightNames: {
+        none: "All off",
+        edges: "Top and bottom lines + four state corners",
+        attention: "Only when you are needed",
+        everything: "Every slot",
+      },
+      inboxTitle: "Inbox",
+      inboxHint:
+        "Apply Needs your hand first, then open the panel to see real multi-row to-do layout. Approvals, the away summary and the notes tab all live in the same window.",
+      openInbox: "Open inbox",
+      messagesTitle: "Notes",
+      messagesHint:
+        "See the notes tab without configuring a server. Injection suspends real-server polling; as soon as you fill in a real address, the simulated notes step aside.",
+      injectMessages: "Inject three notes",
+      clearMessages: "Remove simulated notes",
+      messageEntries: [
+        {
+          title: "New design draft",
+          text: "Tried a new palette; the signs stay readable on light wallpapers.",
+          agent: "Design assistant",
+          context: "From design review",
+        },
+        {
+          title: "Deploy finished",
+          text: "Staging is updated and the logs are clean.",
+          agent: "Release assistant",
+          context: "From the pipeline",
+        },
+        {
+          title: "An older note",
+          text: "Last week's issue is closed; kept here for reference.",
+          agent: "Project assistant",
+          context: "From archive",
+        },
+      ],
+    },
     language: "Language",
     langAuto: "System",
     langZh: "中文",
@@ -3616,21 +3786,24 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
 
     quit: "Quit SignalHub",
 
-    lampHint: {
-      collapse: "Click to collapse / expand · long-press for the radial menu · right-click a sign for its group menu, empty space for the lamp menu",
-      inbox: "Click to open the inbox · long-press for the radial menu · right-click a sign for its group menu, empty space for the lamp menu",
-      none: "Click does nothing · long-press for the radial menu · right-click a sign for its group menu, empty space for the lamp menu",
-    },
     justFinished: (minutes) =>
       minutes < 1 ? "Just finished · moments ago" : `Just finished · ${minutes} min ago`,
     snoozeLeft: (age) => `in ${age}`,
-    groupsCount: (n) => ` (${plural(n, "group", "groups")})`,
     moreGroups: (n) => `+${n} more`,
     expandNow: "Expanded",
     collapseNow: "Collapsed",
     lampPaused: "Monitoring paused",
     clearSessionHint: "Clear this session (the agent will report again next time)",
-    lampPassThrough: "Click-through",
+    sessionListTitle: "Current sessions",
+    sessionListEmpty: "No sessions are reporting yet.",
+    sessionCopyId: "Copy session ID",
+    sessionCopied: "Copied",
+    sessionOpenDir: "Open working directory",
+    sessionClearAll: "Clear all sessions",
+    sessionClearAllConfirm: (n) => `Clear ${n} session${n === 1 ? "" : "s"}?`,
+    sessionClearAllDone: (n) => `Cleared ${n} session${n === 1 ? "" : "s"}`,
+    sessionClearAllHint:
+      "Only clears sessions that are reporting right now. Group preferences, hidden/muted lists and notes are untouched; agents will report again next time. The first click only arms the confirmation — click again to actually clear.",
     moreGroupsLead: "Hidden groups: ",
 
     lampMenuInbox: "Inbox",

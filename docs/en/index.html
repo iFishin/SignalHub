@@ -30,6 +30,7 @@
       <a href="#daily">Features</a>
       <a href="#personal">Personalise</a>
       <a href="#demo">In action</a>
+      <a href="#scenes">Scenes</a>
       <a href="#start">Get started</a>
       <a class="nav-cta" href="https://github.com/iFishin/SignalHub/releases/latest">Download</a>
       <a class="lang" href="../" lang="zh-CN" aria-label="中文版">中文</a>
@@ -253,12 +254,8 @@
                alt="SignalHub lamp loop: idle, thinking, working, permission, attention, error, done, stale, offline, then quiet mode">
           <figcaption>
             <strong>Fig. 1　Ten looks of the default light effects.</strong>
-            Not a hand-drawn mockup: every frame renders the app's real lamp component from the
-            build output, so colours, blink timings and the rounded-square <code>permission</code>
-            dot follow <code>state.css</code> / <code>lamp.css</code>. The data is scripted.
-            The ten shots run idle → thinking → working → permission → attention → error → done →
-            stale → offline → quiet. Real interactions:
-            <a href="https://github.com/iFishin/SignalHub/blob/main/docs/scenes.md">Scenes in practice</a>.
+            Idle → thinking → working → permission → attention → error → done → stale →
+            offline → quiet, in one loop.
           </figcaption>
         </figure>
         <figure class="reveal">
@@ -282,6 +279,70 @@
         showing only what the lamp already knows — group names, states, how long they have held.
         <code>Esc</code> brings everything back.
       </p>
+    </div>
+  </section>
+
+  <!-- Eight ready-made clips, ordered by "when you'll run into this". Same product
+       components and scripted data as the demo page; the captions translate, the
+       UI in the clips is Chinese with no words to read. Step-by-step: scenes.md. -->
+  <section class="band on-white" id="scenes">
+    <div class="wrap">
+      <div class="band-head reveal">
+        <span class="kicker">In practice</span>
+        <h2>What it looks like when it matters</h2>
+        <p class="sub">
+          The loop above is the light-effect overview. The eight clips below are ordered by
+          <em>when you will run into them</em> — connecting an agent, waiting on approval, going
+          quiet, tucking the lamp away, opening the inbox, someone leaving a note. Every frame
+          renders the real product component from the build output, not a screen recording or a
+          mockup. The <a href="https://github.com/iFishin/SignalHub/blob/main/docs/scenes.md">scenes doc</a>
+          walks through what each frame corresponds to.
+        </p>
+      </div>
+
+      <div class="scene-grid">
+        <figure class="reveal">
+          <img src="../assets/scenes/day.gif" loading="lazy" width="720" height="420"
+               alt="A day in the life: idle, thinking, three groups working, waiting for approval, approved, done, then an empty lamp that still remembers">
+          <figcaption><strong>1　A day in the life</strong>How the lamp breathes once an agent is connected.</figcaption>
+        </figure>
+        <figure class="reveal">
+          <img src="../assets/scenes/asking.gif" loading="lazy" width="720" height="420"
+               alt="Attention flashing amber, red and amber and green together, and the hard strobe of an error">
+          <figcaption><strong>2　When it wants you</strong>Telling amber, red and an error apart at a glance.</figcaption>
+        </figure>
+        <figure class="reveal">
+          <img src="../assets/scenes/silence.gif" loading="lazy" width="720" height="420"
+               alt="Going grey after half an hour, a shrinking ring showing time left, and 'no agents reporting' after the sign disappears">
+          <figcaption><strong>3　When it goes quiet</strong>Grey does not mean idle — the thin ring is a countdown.</figcaption>
+        </figure>
+        <figure class="reveal">
+          <img src="../assets/scenes/tucked.gif" loading="lazy" width="720" height="420"
+               alt="Quiet mode fading signs out, clicking to fold into one column of lights, and the folded light still flashing on completion">
+          <figcaption><strong>4　Tucked away</strong>Less desk space, without turning alerts off.</figcaption>
+        </figure>
+        <figure class="reveal">
+          <img src="../assets/scenes/look.gif" loading="lazy" width="720" height="420"
+               alt="Six light slots each picking a drawing style, marks vanishing when their condition is false, then a one-click switch to the Neon skin">
+          <figcaption><strong>5　Speaking in light</strong>Six slots each answer one yes/no question.</figcaption>
+        </figure>
+        <figure class="reveal">
+          <img src="../assets/scenes/inbox.gif" loading="lazy" width="720" height="420"
+               alt="A red sign pointing the way, four inbox sections, a truncated command that can only be rejected, an away summary, snooze, and the empty state">
+          <figcaption><strong>6　Inbox &amp; approvals</strong>The lamp only says something is up; the detail is in the panel.</figcaption>
+        </figure>
+        <figure class="reveal">
+          <img src="../assets/scenes/callme.gif" loading="lazy" width="720" height="420"
+               alt="The lamp still green, an unread dot on the messages tab, opening a note's source, and the 'no server configured' empty state">
+          <figcaption><strong>7　Call Me notes</strong>Someone left you a note — but it is not a task.</figcaption>
+        </figure>
+        <figure class="reveal">
+          <img src="../assets/scenes/menu.gif" loading="lazy" width="720" height="420"
+               alt="Normal signs, long-press for the radial menu, the pause item turning into resume, then folding back into a column of lights">
+          <figcaption><strong>8　Lamp gestures</strong>Click to fold, long-press for the ring, drag to move.</figcaption>
+        </figure>
+      </div>
+      <p class="scene-note reveal">The clips use scripted data and the dark demo stage is not your wallpaper — the real lamp is translucent, always-on-top and floats on your desktop. System notifications, pinning and dragging are not shown; run <code>npm run tauri dev</code> to see a real window.</p>
     </div>
   </section>
 

@@ -380,7 +380,8 @@ pub fn handle(app: &AppHandle, id: &str) -> bool {
     // 不带上组名：翻到那一页、列表按名字排着，比自动滚到某一行更容易理解
     // （而且 Tauri 的原生菜单没法可靠地滚到某一行，做到一半反而是骗人）。
     if id == RENAME {
-        crate::reveal_settings_tab(app, "groups");
+        // 改名输入框随「各组的显示」搬到了「会话」页（原来是「分组」）。
+        crate::reveal_settings_tab(app, "sessions");
         return true;
     }
 

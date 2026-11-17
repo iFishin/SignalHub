@@ -3,7 +3,7 @@ import type { GroupMeta } from "./useSettings";
 /**
  * 改某一组的**显示名**，返回新的 `group_meta`。
  *
- * 唯一入口是设置 →「分组」→「各组的显示」里的输入框（`SettingsPanel.tsx`）。0.6.3
+ * 唯一入口是设置 →「会话」→「各组的显示」里的输入框（`SettingsPanel.tsx`）。0.6.3
  * 之前灯上那块牌也能就地改名，撤掉了（灯面不该是可交互的，见 `menu.rs` 的 `RENAME`）；
  * 算法留在这里而不是搬进组件，是因为它有三条规则、有单测，和「谁调用它」无关。
  *

@@ -30,6 +30,7 @@
       <a href="#daily">功能</a>
       <a href="#personal">个性化</a>
       <a href="#demo">演示</a>
+      <a href="#scenes">实战场景</a>
       <a href="#start">开始用</a>
       <a class="nav-cta" href="https://github.com/iFishin/SignalHub/releases/latest">下载</a>
       <a class="lang" href="en/" lang="en" aria-label="English version">EN</a>
@@ -244,10 +245,8 @@
                alt="SignalHub 悬浮灯循环演示：空闲、推理、执行、等待授权、需要关注、出错、完成、沉默、离线，最后收进安静模式">
           <figcaption>
             <strong>图 1　默认灯效的十种样子。</strong>
-            这不是手绘示意图：每一帧都从构建产物里渲染产品自己的灯牌组件，颜色、闪烁节奏、
-            圆角方灯珠跟着 <code>state.css</code> / <code>lamp.css</code> 走，喂进去的是演示数据。
-            十个镜头依次是空闲、推理、执行、等待授权、需要关注、出错、完成、沉默、离线与安静模式。
-            实际操作画面见 <a href="https://github.com/iFishin/SignalHub/blob/main/docs/scenes.md">场景文档</a>。
+            空闲 → 推理 → 执行 → 授权 → 关注 → 出错 → 完成 → 沉默 → 离线 → 安静模式，
+            一轮看完。
           </figcaption>
         </figure>
         <figure class="reveal">
@@ -267,6 +266,66 @@
         可以暂停、单步、重播。演完还能顺着页底那颗「进入展示模式」看<strong>真那一份</strong>：
         同一套版式铺满整块屏，只放灯牌本来就有的组名、状态和时长，按 <code>Esc</code> 原样回来。
       </p>
+    </div>
+  </section>
+
+  <!-- 实战场景：八段现成动图，按「什么时候遇到」排。数据和组件都和演示页同源，
+       这里只做展示，不重复造图；逐帧解说在 scenes.md。 -->
+  <section class="band on-white" id="scenes">
+    <div class="wrap">
+      <div class="band-head reveal">
+        <span class="kicker">In practice</span>
+        <h2>真遇上时，它长这样</h2>
+        <p class="sub">
+          上面那条是灯效总览；下面八段按「什么时候会遇到」排——接上智能体、等授权、断线、收进角落、
+          看收件箱、有人留言……每段都是从构建产物里的产品组件逐帧渲染，不是录屏也不是手绘。
+          点开<a href="https://github.com/iFishin/SignalHub/blob/main/docs/scenes.md">场景文档</a>可看每一帧对应什么操作。
+        </p>
+      </div>
+
+      <div class="scene-grid">
+        <figure class="reveal">
+          <img src="assets/scenes/day.gif" loading="lazy" width="720" height="420"
+               alt="一天的节奏：空闲、推理、多组执行、等待授权、批准、完成，最后空状态仍记得刚完成">
+          <figcaption><strong>1　一天的节奏</strong>接上之后，灯怎么呼吸。</figcaption>
+        </figure>
+        <figure class="reveal">
+          <img src="assets/scenes/asking.gif" loading="lazy" width="720" height="420"
+               alt="需要关注、红黄绿同屏、出错频闪三种状态">
+          <figcaption><strong>2　有事要你</strong>黄、红、出错怎么一眼分开。</figcaption>
+        </figure>
+        <figure class="reveal">
+          <img src="assets/scenes/silence.gif" loading="lazy" width="720" height="420"
+               alt="半小时没消息转灰、圆环随剩余时间缩短、牌消失后显示没有智能体上报">
+          <figcaption><strong>3　它不说话了</strong>灰不等于空闲，细环就是倒计时。</figcaption>
+        </figure>
+        <figure class="reveal">
+          <img src="assets/scenes/tucked.gif" loading="lazy" width="720" height="420"
+               alt="安静模式下牌几乎透明、单击折叠成一列灯、完成时照样闪">
+          <figcaption><strong>4　收起来的样子</strong>少占桌面，不等于关掉提醒。</figcaption>
+        </figure>
+        <figure class="reveal">
+          <img src="assets/scenes/look.gif" loading="lazy" width="720" height="420"
+               alt="六个灯位各挑画法、条件不成立就不画、最后一键换成霓虹皮肤">
+          <figcaption><strong>5　用光说话</strong>六个灯位各自回答一个是非题。</figcaption>
+        </figure>
+        <figure class="reveal">
+          <img src="assets/scenes/inbox.gif" loading="lazy" width="720" height="420"
+               alt="红灯指路、收件箱四段分组、截断命令只能拒绝、离开摘要、推迟十五分钟、空态">
+          <figcaption><strong>6　收件箱与审批</strong>灯只说有事，细节在面板里。</figcaption>
+        </figure>
+        <figure class="reveal">
+          <img src="assets/scenes/callme.gif" loading="lazy" width="720" height="420"
+               alt="灯仍绿、留言页签未读红点、打开出处、还没配服务器的空态">
+          <figcaption><strong>7　Call Me 留言</strong>有人找你，但不是「有事要你办」。</figcaption>
+        </figure>
+        <figure class="reveal">
+          <img src="assets/scenes/menu.gif" loading="lazy" width="720" height="420"
+               alt="常态牌、长按半秒呼出圆环、暂停后同一项写成继续、收起回折叠态">
+          <figcaption><strong>8　灯上的手势</strong>单击折叠、长按圆环、拖动挪位。</figcaption>
+        </figure>
+      </div>
+      <p class="scene-note reveal">动图是剧本数据、深色底是演示舞台；真实的灯是透明、置顶、叠在桌面上的。没有画进来的系统通知、置顶与拖动，要跑 <code>npm run tauri dev</code> 看真窗口。</p>
     </div>
   </section>
 

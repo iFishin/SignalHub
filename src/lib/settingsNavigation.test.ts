@@ -127,12 +127,25 @@ describe("设置页签导航", () => {
 
   // 「全部归位」挂在「分组」页（和「一盏灯 / 每组分灯」同一节），别名写错页
   // 的表现是搜到了、点进去却找不到按钮 —— 界面上看不出任何报错。
-  it("搜「归位」落在分组页，中英别名都在", () => {
+  // 「各组的显示」随会话页一起搬出了分组页。搜这些词若仍落在分组页，点进去
+  // 看不到改名 / 置顶 / 隐藏 / 静音那一节 —— 界面上没有任何报错，最难查。
+  it("搜「各组的显示 / 置顶 / 静音」落在会话页，不再落到分组页", () => {
+    for (const q of ["会话", "各组的显示", "各组显示", "置顶", "静音", "session", "rename"]) {
+      expect(matchesTab("sessions", zh.tabSessions, q)).toBe(true);
+    }
+    for (const q of ["置顶", "各组显示", "rename"]) {
+      expect(matchesTab("groups", zh.tabGroups, q)).toBe(false);
+    }
+    expect(TAB_GROUP.sessions).toBe("watch");
+  });
+
+  it("「归位」与「会话」是两页，别名也各自分开", () => {
     for (const q of ["归位", "灯的位置", "位置记忆", "reset", "position"]) {
       expect(matchesTab("groups", zh.tabGroups, q)).toBe(true);
     }
     expect(matchesTab("groups", zh.tabGroups, "  RESET  ")).toBe(true);
     expect(matchesTab("look", zh.tabLook, "归位")).toBe(false);
+    expect(matchesTab("sessions", zh.tabSessions, "归位")).toBe(false);
   });
 
   it("归位的五段文案两种语言都齐，英文那份不含中文", () => {

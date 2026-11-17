@@ -264,6 +264,107 @@ fn send_test_report(
     Ok(mutate(&app, &store, |guard, now| guard.apply(now, req, ttl)))
 }
 
+/// 开发者工具注入的会话一律带这个前缀，一键清空时按它整批撤走，
+/// 不会碰用户真实在用的会话。前端拼 session 名时必须用同一个字符串。
+const DEV_SESSION_PREFIX: &str = "dev:";
+/// 开发者能设的最长 TTL。面板只给三档（20s / 2min / 10min），这里是 Rust 侧的
+/// 兜底：手滑传个天文数字不该让一块假牌永远挂在灯上。
+const MAX_DEV_TTL_MS: u64 = 30 * 60 * 1000;
+
+/// 「系统 → 开发者」的模拟上报。和 `set_state` 分开是因为诉求不同：那个是
+/// 「立刻切到某状态」的快捷键，这里要一次摆出多个具名会话（多块牌 / 折叠 /
+/// `+N` / 收件箱几行），所以 session、group、message、TTL 都由调用方给。
+///
+/// 走的仍是同一条 `mutate` → `notify` 链路：聚合、窗口几何、事件推送全都验得到。
+#[tauri::command]
+fn dev_report(
+    app: tauri::AppHandle,
+    store: tauri::State<'_, SharedStore>,
+    state: String,
+    session: String,
+    group: String,
+    message: Option<String>,
+    ttl_ms: Option<u64>,
+) -> Result<Snapshot, String> {
+    let req = Report {
+        state: Signal::parse(&state)?,
+        session: Some(session),
+        group: Some(group),
+        agent: Some("dev".into()),
+        source: Some("custom".into()),
+        cwd: None,
+        message,
+        ttl_ms: ttl_ms.map(|ms| ms.min(MAX_DEV_TTL_MS)),
+        pid: None,
+        machine: None,
+    };
+    let ttl = report_ttl(&app, &req);
+    Ok(mutate(&app, &store, |guard, now| guard.apply(now, req, ttl)))
+}
+
+/// 清掉所有模拟会话。和 `clear_session` 一样顺手忘掉挂在它们名下的审批 ——
+/// 会话没了，那张待批的卡片不能再留在收件箱里。
+#[tauri::command]
+fn dev_clear_sessions(app: tauri::AppHandle) -> usize {
+    let store = app.state::<SharedStore>();
+    let (sessions, removed, snapshot) = {
+        let mut guard = store.lock().expect("state store poisoned");
+        let now = Instant::now();
+        let sessions: Vec<String> = guard
+            .snapshot()
+            .all_sessions()
+            .filter(|s| s.id.starts_with(DEV_SESSION_PREFIX))
+            .map(|s| s.id.clone())
+            .collect();
+        let mut removed = 0;
+        for session in &sessions {
+            let (was_removed, _) = guard.remove_session(session, now);
+            if was_removed {
+                removed += 1;
+            }
+        }
+        (sessions, removed, guard.snapshot())
+    };
+    if !sessions.is_empty() {
+        notify::push(&app, &snapshot);
+    }
+    let approvals = app.state::<approvals::SharedApprovals>();
+    for session in &sessions {
+        approvals.forget_session(session);
+    }
+    removed
+}
+
+/// 往留言页塞一组模拟留言（不配服务器也能看）。文案由前端按当前语言给。
+#[tauri::command]
+fn dev_callme_inject(
+    app: tauri::AppHandle,
+    messages: Vec<callme::DevMessage>,
+) -> callme::CallMeState {
+    let shared = app.state::<callme::SharedCallMe>();
+    let snapshot = callme::inject_dev(shared.inner(), messages);
+    let _ = app.emit(callme::CALLME_EVENT, snapshot.clone());
+    snapshot
+}
+
+/// 撤掉模拟留言，把 Call Me 的状态恢复成「什么都没配」。
+/// 开发者面板：打开收件箱并停在指定页签。先发页签事件、再 show —— 反过来
+/// 用户会看到一次「收件箱 → 留言」的闪跳。静态窗口的 webview 一直在监听，
+/// 所以事件不会丢。
+#[tauri::command]
+fn dev_open_inbox(app: tauri::AppHandle, tab: String) {
+    let _ = app.emit(inbox::TAB_EVENT, tab);
+    inbox::show(&app);
+}
+
+#[tauri::command]
+fn dev_callme_clear(app: tauri::AppHandle) -> callme::CallMeState {
+    let shared = app.state::<callme::SharedCallMe>();
+    let snapshot = callme::clear_dev(shared.inner());
+    let _ = app.emit(callme::CALLME_EVENT, snapshot.clone());
+    snapshot
+}
+
 #[tauri::command]
 fn set_paused(
     app: tauri::AppHandle,
@@ -847,7 +948,13 @@ fn set_pass_through_impl(app: &tauri::AppHandle, enabled: bool) -> Result<(), St
     // 展示模式正拿着这两个字段的 `stage_previous` 快照准备退出时恢复；用户按了
     // 穿透键也看不出任何变化（灯被大屏盖住了）。直接拒绝，比留半套状态好。
     if enabled && stage_on(app) {
-        return Err(lang::text(lang).stage_pass_through_blocked.to_string());
+        // 和展示模式那边一样，在**状态机拒绝点**发通知而不是在某一个入口发：
+        // 托盘 / 全局快捷键 / 设置页三条路都汇到这里，快捷键那条没有面板可以
+        // 显示错误，通知是它唯一的可见反馈。设置页会同时看到页内错误和这条
+        // 通知 —— 页内那条是持久的，这条是立刻出现在桌面上的，不算重复。
+        let t = lang::text(lang);
+        alerts::send_message(app, t.stage_pass_through_blocked_title, t.stage_pass_through_blocked);
+        return Err(t.stage_pass_through_blocked.to_string());
     }
 
     let windows = app.webview_windows();
@@ -946,7 +1053,13 @@ pub(crate) fn set_stage_impl(app: &tauri::AppHandle, enabled: bool) -> Result<()
             return Ok(());
         }
         stage::StagePlan::RefusePassThrough => {
-            return Err(lang::text(lang).stage_no_pass_through.to_string());
+            // 在状态机拒绝点发，而不是只给快捷键打日志：命令 / 托盘 / 快捷键 /
+            // 设置页四条入口都汇到这里，其中后两条没有面板显示 Err。通知是系统
+            // 级横幅，穿透状态下照样弹（穿透只让灯窗忽略指针，不影响通知中心），
+            // 而且几秒后自己消失，不用收。文案和 Err 用同一份，不会说两套话。
+            let t = lang::text(lang);
+            alerts::send_message(app, t.stage_no_pass_through_title, t.stage_no_pass_through);
+            return Err(t.stage_no_pass_through.to_string());
         }
         stage::StagePlan::Enter | stage::StagePlan::Exit => {}
     }
@@ -1383,6 +1496,59 @@ fn clear_session(app: tauri::AppHandle, session: String) -> bool {
     app.state::<approvals::SharedApprovals>()
         .forget_session(&session);
     removed
+}
+
+/// 清掉当前所有会话（设置 →「会话」→「清空全部」）。
+///
+/// 和 [`clear_session`] 走同一个 `Store::remove_session`，所以 TTL、宽限期、
+/// 快照重算、通知推送、审批登记表的清理全都一致 —— 这里只是按当前会话列表
+/// 逐条调用。清掉的是**上报中的会话**，不是设置里的分组偏好、隐藏/静音名单
+/// 或留言；智能体下一次上报会照常回来。
+#[tauri::command]
+fn clear_all_sessions(app: tauri::AppHandle) -> usize {
+    let store = app.state::<SharedStore>();
+    let (sessions, removed, snapshot) = {
+        let mut guard = store.lock().expect("state store poisoned");
+        let now = Instant::now();
+        let sessions: Vec<String> = guard
+            .snapshot()
+            .all_sessions()
+            .map(|session| session.id.clone())
+            .collect();
+        let mut removed = 0;
+        for session in &sessions {
+            let (was_removed, _) = guard.remove_session(session, now);
+            if was_removed {
+                removed += 1;
+            }
+        }
+        (sessions, removed, guard.snapshot())
+    };
+    if !sessions.is_empty() {
+        notify::push(&app, &snapshot);
+    }
+    let approvals = app.state::<approvals::SharedApprovals>();
+    for session in &sessions {
+        approvals.forget_session(session);
+    }
+    removed
+}
+
+/// 在文件管理器里打开某个会话的工作目录（设置 →「会话」行尾的目录按钮）。
+///
+/// 路径来自上报数据，不能假设它还存在：目录被移走、或者会话来自另一台机器
+/// （前端会藏起这个按钮，但命令本身仍要挡住）时给出一句人话，而不是让系统
+/// 弹一个「找不到路径」。
+#[tauri::command]
+fn open_session_dir(path: String) -> Result<(), String> {
+    let path = Path::new(path.trim());
+    if path.as_os_str().is_empty() {
+        return Err("这个会话没有上报工作目录".to_string());
+    }
+    if !path.is_dir() {
+        return Err(format!("工作目录不在了：{}", path.display()));
+    }
+    open::reveal(&path.to_string_lossy()).map_err(|err| format!("打开失败: {err}"))
 }
 
 /// 最近上报过的消息，从旧到新。前端要倒序显示就自己 reverse。
@@ -3470,6 +3636,11 @@ pub fn run() {
             get_state,
             set_state,
             send_test_report,
+            dev_report,
+            dev_clear_sessions,
+            dev_callme_inject,
+            dev_callme_clear,
+            dev_open_inbox,
             set_paused,
             get_settings,
             state_ttl_defaults,
@@ -3543,6 +3714,8 @@ pub fn run() {
             reset_lamp_positions,
             set_lamp_menu,
             clear_session,
+            clear_all_sessions,
+            open_session_dir,
             test_hooks,
             open_group_menu,
             open_lamp_menu,

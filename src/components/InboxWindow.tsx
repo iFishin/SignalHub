@@ -63,6 +63,8 @@ const LAST_SEEN_KEY = "signalhub.inbox.lastSeen";
 /** 与 Rust `inbox.rs` 里那两个 emit 的名字是两处真值，改一处必须同步另一处。 */
 const SHOWN_EVENT = "signalhub://inbox-shown";
 const HIDDEN_EVENT = "signalhub://inbox-hidden";
+/** 开发者面板指定打开在哪个页签（Rust `inbox::TAB_EVENT`）。 */
+const TAB_EVENT = "signalhub://inbox-tab";
 
 function readLastSeen(): number | null {
   try {
@@ -106,6 +108,21 @@ export function InboxWindow({ snapshot, approvals, decide }: Props) {
   const lang = useLang();
   const settings = useSettings();
   const [tab, setTab] = useState<PanelTab>("inbox");
+  // 开发者面板能把窗口打开在指定页签。静态窗口的 webview 常驻，事件先于 show()
+  // 发出也不会丢（见 lib.rs::dev_open_inbox）。只认两个已知值，免得外部乱传
+  // 把面板切进一个没有对应视图的状态。
+  useEffect(() => {
+    if (!inTauri) return;
+    let unlisten: (() => void) | undefined;
+    listen<string>(TAB_EVENT, (event) => {
+      if (event.payload === "inbox" || event.payload === "messages") {
+        setTab(event.payload);
+      }
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => unlisten?.();
+  }, []);
   // 留言页签上的未读数要用它，所以订阅放在壳里、往下传 state —— 两个页签不会
   // 各自记一份「读到第几条」。
   const { state: callmeState, refresh: refreshCallMe } = useCallMe();

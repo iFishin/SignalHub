@@ -474,6 +474,19 @@ figcaption {
 figcaption strong { color: var(--ink); font-weight: 650; }
 .flow-note { margin: 26px 0 0; color: var(--ink-2); font-size: 15px; }
 
+/* 实战场景动图墙：八段从产品组件逐帧渲染，讲「什么时候会遇到」。
+   两列、1px 细边框由 figure img 自己的规则提供 —— 不叠卡片底、不加投影，
+   沿用站点其余部分的扁平语言。懒加载，避免一进页就拉 2MB 动图。 */
+.scene-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 40px 32px;
+}
+.scene-grid figure { min-width: 0; }
+.scene-grid figcaption { margin-top: 12px; line-height: 1.65; }
+.scene-grid figcaption strong { display: block; margin-bottom: 3px; }
+.scene-note { margin: 32px 0 0; color: var(--muted); font-size: 14px; }
+
 /* 开始用：三栏不叠卡片，1px 分隔 + 代码块 */
 .install {
   display: grid;
@@ -521,6 +534,7 @@ figcaption strong { color: var(--ink); font-weight: 650; }
 @media (max-width: 620px) {
   .wrap { width: min(1140px, calc(100% - 32px)); }
   .top .wrap { height: 60px; }
+  .scene-grid { grid-template-columns: minmax(0, 1fr); gap: 32px; }
   .brand .tag { display: none; }
   .hero { padding-top: 40px; }
   .hero h1 { font-size: clamp(2.1rem, 9vw, 2.8rem); }

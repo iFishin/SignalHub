@@ -104,6 +104,17 @@ import {
   type SignalState,
   type Snapshot,
 } from "../lib/types";
+import {
+  DEV_LIGHT_IDS,
+  DEV_LIGHT_PRESETS,
+  DEV_SCENARIOS,
+  DEV_SESSION_PREFIX,
+  DEV_STATES,
+  DEV_TTL_MS,
+  DEV_TTLS,
+  devSessionId,
+  type DevTtl,
+} from "../lib/devScenarios";
 
 /**
  * 给「在自己的事件钩子里调」那一类智能体抄的那条命令。
@@ -1973,7 +1984,12 @@ export function SettingsPanel({ snapshot }: Props) {
   // 记住、重开回主子页」—— 不写 localStorage，重启自然回默认。
   const [connectSub, setConnectSub] = useState<"agents" | "sources" | "network">("agents");
   const [callmeSub, setCallmeSub] = useState<"links" | "server">("links");
-  const [systemSub, setSystemSub] = useState<"general" | "update" | "data">("general");
+  const [systemSub, setSystemSub] = useState<
+    "general" | "update" | "data" | "developer"
+  >("general");
+  /** 开发者面板的 TTL 档位、清空回执。都不是偏好，不落盘。 */
+  const [devTtl, setDevTtl] = useState<DevTtl>("short");
+  const [devNotice, setDevNotice] = useState("");
   /**
    * 外观页的三个子页。
    *
@@ -2916,6 +2932,248 @@ export function SettingsPanel({ snapshot }: Props) {
       ),
     );
 
+  /**
+   * 会话列表的共用渲染。「状态」页只回答「现在发生了什么」（紧凑、只有清除
+   * 按钮），「会话」页管这些会话（多两枚行尾动作）。两处看的是同一批会话，
+   * 分成两段 JSX 就会在改状态点 / 消息截断时漏掉一边，而用户看不出区别。
+   */
+  const renderSessionGroups = (full: boolean) =>
+    snapshot.groups.length === 0 ? (
+      <div className="section">
+        <p className="empty">{full ? m.sessionListEmpty : m.emptySessions}</p>
+        {!full && (
+          <>
+            {/* 空态是「第一次用」最可能撞上的地方，所以手册的入口放在这里 ——
+                只挂在左栏里等于等人自己去找。 */}
+            <div className="row">
+              <span>{m.guideEntry}</span>
+              <button type="button" className="btn" onClick={() => setTab("guide")}>
+                {m.tabGuide}
+              </button>
+            </div>
+            {/* 还没接上任何东西的时候，「先看一遍」比「先读一遍」门槛低。 */}
+            <div className="row">
+              <span className="muted-text">{m.demoCtaHint}</span>
+              <button type="button" className="btn" onClick={() => setTab("demo")}>
+                {m.demoCta}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    ) : (
+      snapshot.groups.map((group) => {
+        const hidden = settings.hidden_groups.includes(group.name);
+        const label = labelOf(group, settings.group_meta, labelPrefOf(settings));
+        return (
+          <div className="group" key={group.name} data-hidden={hidden}>
+            <div className="group-head" data-state={group.aggregate}>
+              <span className="state-dot" />
+              <span className="group-name" title={group.name}>
+                {label}
+              </span>
+              {/* 显示名和原始组名不一样时就把原始组名也标出来 —— 用户得知道
+                  它对应的是哪一路上报，否则灯上那个名字到底是谁就说不清了。
+                  两种情况下会不一样：用户自己改过名，或者这是按会话分组
+                  自动起的默认名（原始名是个会话 id）。 */}
+              {label !== group.name && (
+                <span className="group-raw" title={group.name}>
+                  {group.name}
+                </span>
+              )}
+              <span className="group-meta">
+                {signalLabel(lang, group.aggregate)} · {m.sessions(group.sessions.length)}
+              </span>
+            </div>
+            <ul className="sessions">
+              {group.sessions.map((session) => (
+                <li key={session.id} className="session" data-state={session.state}>
+                  <span className="state-dot" />
+                  {/* 窄面板里挤成一行会把 id 压没，所以状态/来源单独放上行 */}
+                  <div className="session-body">
+                    <div className="session-line">
+                      <span className="id mono">{session.id}</span>
+                      <span className="meta">
+                        {signalLabel(lang, session.state)}
+                        {session.agent ? ` · ${session.agent}` : ""}
+                        {session.machine ? ` · ${session.machine}` : ""}
+                      </span>
+                    </div>
+                    {session.message && <div className="message">{session.message}</div>}
+                  </div>
+                  {full && (
+                    <>
+                      <button
+                        type="button"
+                        className="btn btn-tiny session-action"
+                        title={
+                          copied === `session:${session.id}`
+                            ? m.sessionCopied
+                            : m.sessionCopyId
+                        }
+                        aria-label={m.sessionCopyId}
+                        onClick={() => copy(`session:${session.id}`, session.id)}
+                      >
+                        <Icon name="copy" size={12} />
+                      </button>
+                      {/* 远程会话的 cwd 在对端机器上，在本机打开只会指向一个碰巧
+                          同名的目录（或者什么都不打开）—— 和收件箱里那条
+                          「跳转到终端」用同一个判据。 */}
+                      {session.cwd && !session.machine && (
+                        <button
+                          type="button"
+                          className="btn btn-tiny session-action"
+                          title={m.sessionOpenDir}
+                          aria-label={m.sessionOpenDir}
+                          onClick={() => {
+                            setError(null);
+                            invoke("open_session_dir", { path: session.cwd }).catch(reported);
+                          }}
+                        >
+                          <Icon name="external" size={12} />
+                        </button>
+                      )}
+                    </>
+                  )}
+                  {/* 会话粒度的清除。比牌上那枚细一档：一组里跑着三个会话、
+                      卡住一个时，不必把另外两个也清掉。 */}
+                  <button
+                    type="button"
+                    className="btn btn-tiny session-clear"
+                    title={m.clearSessionHint}
+                    onClick={() => clearSession(session.id)}
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        );
+      })
+    );
+
+  /**
+   * 「各组的显示」整节。原先在「分组」页，随会话管理一起搬到「会话」页 ——
+   * 改名的右键菜单也跟着改了落点（menu.rs 的 RENAME）。两页各放一份会让
+   * 置顶 / 隐藏 / 静音的判据分叉，所以只留这一个渲染函数。
+   */
+  const renderGroupDisplay = () => (
+    <div className="section">
+      <div className="section-title">{m.groupDisplayTitle}</div>
+      {knownGroups.length === 0 ? (
+        <p className="muted-text">{m.groupDisplayEmpty}</p>
+      ) : (
+        <>
+          {(settings.hidden_groups.length > 0 || settings.muted_groups.length > 0) && (
+            <div className="row hidden-summary">
+              <span className="muted-text">
+                {settings.hidden_groups.length > 0 &&
+                  m.hiddenOnLamp(settings.hidden_groups.length)}
+                {settings.hidden_groups.length > 0 &&
+                  settings.muted_groups.length > 0 &&
+                  " · "}
+                {settings.muted_groups.length > 0 &&
+                  m.mutedGroups(settings.muted_groups.length)}
+              </span>
+              <button
+                type="button"
+                className="btn btn-tiny"
+                onClick={() => patch({ hidden_groups: [], muted_groups: [] })}
+              >
+                {m.restoreAll}
+              </button>
+            </div>
+          )}
+
+          {knownGroups.map((name) => {
+            const meta = settings.group_meta[name];
+            // 这一组在灯上实际会显示成什么 —— 用户得先看见它，才知道自己在改什么
+            const label = meta?.name ?? defaultLabels.get(name) ?? name;
+            return (
+              <div className="group" key={name}>
+                <div className="group-head">
+                  <span className="group-name" title={name}>
+                    {label}
+                  </span>
+                  {/* 显示名和原始组名不一样时就把原始组名标出来，理由同状态页 */}
+                  {label !== name && (
+                    <span className="group-raw" title={name}>
+                      {name}
+                    </span>
+                  )}
+                </div>
+                <div className="group-edit">
+                  <input
+                    className="input input-tiny"
+                    spellCheck={false}
+                    placeholder={m.displayNamePlaceholder(label)}
+                    value={
+                      nameDraft?.group === name
+                        ? nameDraft.value
+                        : (meta?.name ?? "")
+                    }
+                    /* 聚焦时把**此刻显示的名字**填进框里。它就在右边的灰色
+                       占位里明摆着，不填的话用户得照着它重敲一遍。填进来的
+                       这个值同时充当「动没动过」的判据（`nameChanged`）。 */
+                    onFocus={() =>
+                      setNameDraft((draft) =>
+                        draft?.group === name
+                          ? draft
+                          : { group: name, value: label, seed: label },
+                      )
+                    }
+                    onChange={(event) =>
+                      setNameDraft((draft) => ({
+                        group: name,
+                        value: event.target.value,
+                        seed: draft?.group === name ? draft.seed : label,
+                      }))
+                    }
+                    onBlur={commitNameDraft}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") event.currentTarget.blur();
+                    }}
+                  />
+                  <label className="pin" title={m.pinHint}>
+                    <span className="muted-text">{m.pin}</span>
+                    <Switch on={meta?.order != null} onChange={(on) => setPinned(name, on)} />
+                  </label>
+                  {/* 「隐藏」和「静音」各是一个开关 —— 原先它们在状态页上是
+                      两个「点一下恢复」的徽标加一个「静音」按钮，三种控件
+                      表达两个布尔量。 */}
+                  <label className="pin" title={m.hiddenBadgeHint}>
+                    <span className="muted-text">{m.hidden}</span>
+                    <Switch
+                      on={settings.hidden_groups.includes(name)}
+                      onChange={(on) => setHidden(name, on)}
+                    />
+                  </label>
+                  <label className="pin" title={m.muteHint}>
+                    <span className="muted-text">{m.muted}</span>
+                    <Switch
+                      on={settings.muted_groups.includes(name)}
+                      onChange={(on) => setMuted(name, on)}
+                    />
+                  </label>
+                </div>
+              </div>
+            );
+          })}
+        </>
+      )}
+    </div>
+  );
+
+  // 清空全部是**两段式**：第一下只翻到确认，第二下才真清。一屏几十行里
+  // 混着「× 清单个」，紧挨着的「清空全部」若一点就执行，误触的代价太大。
+  const [clearAllArmed, setClearAllArmed] = useState(false);
+  const [clearAllNotice, setClearAllNotice] = useState("");
+  useEffect(() => {
+    setClearAllArmed(false);
+    setClearAllNotice("");
+  }, [tab]);
+
   // 每个页签的内容。写成函数而不是子组件，是为了免去把十几个 prop 一路传下去。
   const page = () => {
     switch (tab) {
@@ -2999,89 +3257,9 @@ export function SettingsPanel({ snapshot }: Props) {
 
             {/* 这一页只回答「现在发生了什么」。改显示名、置顶、隐藏、静音这些都是
                 **写入偏好**，和这里只读的实时状态刷新频率、心智模型都不同 ——
-                它们搬去了「外观」页的「各组的显示」。 */}
-            {snapshot.groups.length === 0 ? (
-              <div className="section">
-                <p className="empty">{m.emptySessions}</p>
-                {/* 空态是「第一次用」最可能撞上的地方，所以手册的入口放在这里 ——
-                    只挂在左栏里等于等人自己去找。 */}
-                <div className="row">
-                  <span>{m.guideEntry}</span>
-                  <button type="button" className="btn" onClick={() => setTab("guide")}>
-                    {m.tabGuide}
-                  </button>
-                </div>
-                {/* 还没接上任何东西的时候，「先看一遍」比「先读一遍」门槛低。 */}
-                <div className="row">
-                  <span className="muted-text">{m.demoCtaHint}</span>
-                  <button type="button" className="btn" onClick={() => setTab("demo")}>
-                    {m.demoCta}
-                  </button>
-                </div>
-              </div>
-            ) : (
-              snapshot.groups.map((group) => {
-                const hidden = settings.hidden_groups.includes(group.name);
-                const label = labelOf(group, settings.group_meta, labelPrefOf(settings));
-                return (
-                  <div className="group" key={group.name} data-hidden={hidden}>
-                    <div className="group-head" data-state={group.aggregate}>
-                      <span className="state-dot" />
-                      <span className="group-name" title={group.name}>
-                        {label}
-                      </span>
-                      {/* 显示名和原始组名不一样时就把原始组名也标出来 —— 用户得知道
-                          它对应的是哪一路上报，否则灯上那个名字到底是谁就说不清了。
-                          两种情况下会不一样：用户自己改过名，或者这是按会话分组
-                          自动起的默认名（原始名是个会话 id）。 */}
-                      {label !== group.name && (
-                        <span className="group-raw" title={group.name}>
-                          {group.name}
-                        </span>
-                      )}
-                      <span className="group-meta">
-                        {signalLabel(lang, group.aggregate)} ·{" "}
-                        {m.sessions(group.sessions.length)}
-                      </span>
-                    </div>
-                    <ul className="sessions">
-                      {group.sessions.map((session) => (
-                        <li
-                          key={session.id}
-                          className="session"
-                          data-state={session.state}
-                        >
-                          <span className="state-dot" />
-                          {/* 窄面板里挤成一行会把 id 压没，所以状态/来源单独放上行 */}
-                          <div className="session-body">
-                            <div className="session-line">
-                              <span className="id mono">{session.id}</span>
-                              <span className="meta">
-                                {signalLabel(lang, session.state)}
-                                {session.agent ? ` · ${session.agent}` : ""}
-                              </span>
-                            </div>
-                            {session.message && (
-                              <div className="message">{session.message}</div>
-                            )}
-                          </div>
-                          {/* 会话粒度的清除。比牌上那枚细一档：一组里跑着三个会话、
-                              卡住一个时，不必把另外两个也清掉。 */}
-                          <button
-                            type="button"
-                            className="btn btn-tiny session-clear"
-                            title={m.clearSessionHint}
-                            onClick={() => clearSession(session.id)}
-                          >
-                            ×
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                );
-              })
-            )}
+                它们搬去了「会话」页。会话列表本身仍留在这里一眼可读，管理动作
+                （复制 / 打开目录 / 清空全部）才去那一页。 */}
+            {renderSessionGroups(false)}
 
             {/* 最近消息：灯上只有每个会话**当前**那条，这一节回答「刚才发生了什么」。
                 放在最后 —— 它是回顾，不如上面的实时状态要紧。 */}
@@ -3659,7 +3837,7 @@ export function SettingsPanel({ snapshot }: Props) {
                     **名字里写什么**。默认只显示会话 / 项目名 —— `SignalHub · workbuddy`
                     在固定牌宽里几乎每次都被截成 `SignalHub · w…`，留下的是噪音、
                     切掉的才是区分度。想看智能体名或自己写模板都在这儿，逐组改名
-                    仍然优先（见「分组 → 各组的显示」）。 */}
+                    仍然优先（见「会话 → 各组的显示」）。 */}
                 <div className="section-title">{m.signLabelTitle}</div>
                 <p className="hint">{m.signLabelHint}</p>
                 <Row
@@ -4034,9 +4212,55 @@ export function SettingsPanel({ snapshot }: Props) {
           </>
         );
 
-      // 各组的显示：显示名 / 置顶 / 隐藏 / 静音。**独立成页**是因为它是整个面板里
-      // 唯一**随会话数变长**的一节（按会话分组时一个会话一行），而「灯长什么样」
-      // 是固定的九行 —— 混在一起，后者会被前者一点点推走。
+      // 「会话」页：会话管理 + 各组显示。左栏入口紧挨「状态」—— 看到某条会话
+      // 不对劲，下一步就在这里处理它，不必去「灯 → 分组」翻名字和开关。
+      case "sessions": {
+        const currentCount = snapshot.groups.reduce(
+          (sum, group) => sum + group.sessions.length,
+          0,
+        );
+        return (
+          <>
+            <PageHeader title={m.tabSessions} hint={m.pageHint.sessions} />
+
+            <div className="section section-flush">
+              <div className="row">
+                <span>
+                  {m.sessionListTitle} · {m.sessions(currentCount)}
+                </span>
+                <button
+                  type="button"
+                  className="btn btn-tiny"
+                  disabled={currentCount === 0}
+                  onClick={() => {
+                    setError(null);
+                    if (!clearAllArmed) {
+                      setClearAllArmed(true);
+                      return;
+                    }
+                    invoke<number>("clear_all_sessions")
+                      .then((removed) => {
+                        setClearAllArmed(false);
+                        setClearAllNotice(m.sessionClearAllDone(removed));
+                        window.setTimeout(() => setClearAllNotice(""), 2500);
+                      })
+                      .catch(reported);
+                  }}
+                >
+                  {clearAllArmed
+                    ? m.sessionClearAllConfirm(currentCount)
+                    : m.sessionClearAll}
+                </button>
+              </div>
+              <p className="hint">{clearAllNotice || m.sessionClearAllHint}</p>
+            </div>
+
+            {renderSessionGroups(true)}
+            {renderGroupDisplay()}
+          </>
+        );
+      }
+
       case "groups":
         return (
           <>
@@ -4130,116 +4354,9 @@ export function SettingsPanel({ snapshot }: Props) {
               )}
             </div>
 
-            <div className="section">
-              <div className="section-title">{m.groupDisplayTitle}</div>
-              {knownGroups.length === 0 ? (
-                <p className="muted-text">{m.groupDisplayEmpty}</p>
-              ) : (
-                <>
-                  {(settings.hidden_groups.length > 0 ||
-                    settings.muted_groups.length > 0) && (
-                    <div className="row hidden-summary">
-                      <span className="muted-text">
-                        {settings.hidden_groups.length > 0 &&
-                          m.hiddenOnLamp(settings.hidden_groups.length)}
-                        {settings.hidden_groups.length > 0 &&
-                          settings.muted_groups.length > 0 &&
-                          " · "}
-                        {settings.muted_groups.length > 0 &&
-                          m.mutedGroups(settings.muted_groups.length)}
-                      </span>
-                      <button
-                        type="button"
-                        className="btn btn-tiny"
-                        onClick={() =>
-                          patch({ hidden_groups: [], muted_groups: [] })
-                        }
-                      >
-                        {m.restoreAll}
-                      </button>
-                    </div>
-                  )}
-
-                  {knownGroups.map((name) => {
-                    const meta = settings.group_meta[name];
-                    // 这一组在灯上实际会显示成什么 —— 用户得先看见它，才知道自己在改什么
-                    const label = meta?.name ?? defaultLabels.get(name) ?? name;
-                    return (
-                      <div className="group" key={name}>
-                        <div className="group-head">
-                          <span className="group-name" title={name}>
-                            {label}
-                          </span>
-                          {/* 显示名和原始组名不一样时就把原始组名标出来，理由同状态页 */}
-                          {label !== name && (
-                            <span className="group-raw" title={name}>
-                              {name}
-                            </span>
-                          )}
-                        </div>
-                        <div className="group-edit">
-                          <input
-                            className="input input-tiny"
-                            spellCheck={false}
-                            placeholder={m.displayNamePlaceholder(label)}
-                            value={
-                              nameDraft?.group === name
-                                ? nameDraft.value
-                                : (meta?.name ?? "")
-                            }
-                            /* 聚焦时把**此刻显示的名字**填进框里。它就在右边的灰色
-                               占位里明摆着，不填的话用户得照着它重敲一遍。填进来的
-                               这个值同时充当「动没动过」的判据（`nameChanged`）。 */
-                            onFocus={() =>
-                              setNameDraft((draft) =>
-                                draft?.group === name
-                                  ? draft
-                                  : { group: name, value: label, seed: label },
-                              )
-                            }
-                            onChange={(event) =>
-                              setNameDraft((draft) => ({
-                                group: name,
-                                value: event.target.value,
-                                seed: draft?.group === name ? draft.seed : label,
-                              }))
-                            }
-                            onBlur={commitNameDraft}
-                            onKeyDown={(event) => {
-                              if (event.key === "Enter") event.currentTarget.blur();
-                            }}
-                          />
-                          <label className="pin" title={m.pinHint}>
-                            <span className="muted-text">{m.pin}</span>
-                            <Switch
-                              on={meta?.order != null}
-                              onChange={(on) => setPinned(name, on)}
-                            />
-                          </label>
-                          {/* 「隐藏」和「静音」各是一个开关 —— 原先它们在状态页上是
-                              两个「点一下恢复」的徽标加一个「静音」按钮，三种控件
-                              表达两个布尔量。 */}
-                          <label className="pin" title={m.hiddenBadgeHint}>
-                            <span className="muted-text">{m.hidden}</span>
-                            <Switch
-                              on={settings.hidden_groups.includes(name)}
-                              onChange={(on) => setHidden(name, on)}
-                            />
-                          </label>
-                          <label className="pin" title={m.muteHint}>
-                            <span className="muted-text">{m.muted}</span>
-                            <Switch
-                              on={settings.muted_groups.includes(name)}
-                              onChange={(on) => setMuted(name, on)}
-                            />
-                          </label>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </>
-              )}
-            </div>
+            {/* 「各组的显示」（改名 / 置顶 / 隐藏 / 静音）随会话管理一起搬去了
+                「会话」页：它是唯一会随会话数变长的一节，留在这一页会把上面
+                三项固定控件越推越远。 */}
           </>
         );
 
@@ -5957,6 +6074,7 @@ export function SettingsPanel({ snapshot }: Props) {
                 { id: "general" as const, label: m.systemTabGeneral },
                 { id: "update" as const, label: m.systemTabUpdate },
                 { id: "data" as const, label: m.systemTabData },
+                { id: "developer" as const, label: m.systemTabDeveloper },
               ]}
             />
 
@@ -6242,6 +6360,179 @@ export function SettingsPanel({ snapshot }: Props) {
                     </button>
                   </div>
                   <p className="hint">{backupNotice ?? m.configBackupHint}</p>
+                </div>
+              </LocalPanel>
+            )}
+
+            {/* 开发者面板。所有按钮走的是产品自己的上报 / 设置 / 面板链路，
+                不是另画一层假界面 —— 看到的就是真实行为。模拟会话一律带
+                `dev:` 前缀（Rust 侧按它整批清），用完一键撤走。 */}
+            {systemSub === "developer" && (
+              <LocalPanel id="developer">
+                <p className="hint">{m.dev.caution}</p>
+
+                <div className="section">
+                  <div className="section-title">{m.dev.stateTitle}</div>
+                  <div className="row-start">
+                    {DEV_STATES.map((state) => (
+                      <button
+                        key={state}
+                        type="button"
+                        className="btn btn-tiny"
+                        onClick={() => {
+                          setError(null);
+                          setDevNotice("");
+                          invoke("dev_report", {
+                            state,
+                            // 同一个 session 反复上报 = 一个会话在切状态；若每个
+                            // 状态各占一个 session，旧的还没到期时聚合取最高，点
+                            // working 看到的仍是之前 error 的红色。
+                            session: `${DEV_SESSION_PREFIX}state`,
+                            group: "dev",
+                            message: signalLabel(lang, state),
+                            ttlMs: DEV_TTL_MS[devTtl],
+                          }).catch(reported);
+                        }}
+                      >
+                        {signalLabel(lang, state)}
+                      </button>
+                    ))}
+                  </div>
+                  <Row label={m.dev.ttlLabel}>
+                    <div className="seg">
+                      {DEV_TTLS.map((id) => (
+                        <button
+                          key={id}
+                          type="button"
+                          data-active={devTtl === id}
+                          onClick={() => setDevTtl(id)}
+                        >
+                          {id === "short"
+                            ? m.dev.ttlShort
+                            : id === "medium"
+                              ? m.dev.ttlMedium
+                              : m.dev.ttlLong}
+                        </button>
+                      ))}
+                    </div>
+                  </Row>
+                  <p className="hint">{m.dev.stateHint}</p>
+                </div>
+
+                <div className="section">
+                  <div className="section-title">{m.dev.scenarioTitle}</div>
+                  <div className="row-start">
+                    {DEV_SCENARIOS.map((scenario) => (
+                      <button
+                        key={scenario.id}
+                        type="button"
+                        className="btn btn-tiny"
+                        onClick={() => {
+                          setError(null);
+                          setDevNotice("");
+                          Promise.all(
+                            scenario.sessions.map((spec) =>
+                              invoke("dev_report", {
+                                state: spec.state,
+                                session: devSessionId(spec),
+                                group: spec.group,
+                                message: spec.message,
+                                ttlMs: DEV_TTL_MS[devTtl],
+                              }),
+                            ),
+                          ).catch(reported);
+                        }}
+                      >
+                        {m.dev.scenarioNames[scenario.id] ?? scenario.id}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="hint">{m.dev.scenarioHint}</p>
+                </div>
+
+                <div className="section">
+                  <div className="section-title">{m.dev.lightsTitle}</div>
+                  <div className="row-start">
+                    {DEV_LIGHT_IDS.map((id) => (
+                      <button
+                        key={id}
+                        type="button"
+                        className="btn btn-tiny"
+                        onClick={() => patch({ sign_lights: DEV_LIGHT_PRESETS[id]! })}
+                      >
+                        {m.dev.lightNames[id] ?? id}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="hint">{m.dev.lightsHint}</p>
+                </div>
+
+                <div className="section">
+                  <div className="section-title">{m.dev.inboxTitle}</div>
+                  <div className="row-start">
+                    <button
+                      type="button"
+                      className="btn btn-tiny"
+                      onClick={() => {
+                        setError(null);
+                        invoke("dev_open_inbox", { tab: "inbox" }).catch(reported);
+                      }}
+                    >
+                      {m.dev.openInbox}
+                    </button>
+                  </div>
+                  <p className="hint">{m.dev.inboxHint}</p>
+                </div>
+
+                <div className="section">
+                  <div className="section-title">{m.dev.messagesTitle}</div>
+                  <div className="row-start">
+                    <button
+                      type="button"
+                      className="btn btn-tiny"
+                      onClick={() => {
+                        setError(null);
+                        invoke("dev_callme_inject", {
+                          messages: m.dev.messageEntries,
+                        })
+                          .then(() =>
+                            invoke("dev_open_inbox", { tab: "messages" }),
+                          )
+                          .catch(reported);
+                      }}
+                    >
+                      {m.dev.injectMessages}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-tiny"
+                      onClick={() => {
+                        setError(null);
+                        invoke("dev_callme_clear").catch(reported);
+                      }}
+                    >
+                      {m.dev.clearMessages}
+                    </button>
+                  </div>
+                  <p className="hint">{m.dev.messagesHint}</p>
+                </div>
+
+                <div className="section">
+                  <div className="row-start">
+                    <button
+                      type="button"
+                      className="btn btn-tiny"
+                      onClick={() => {
+                        setError(null);
+                        invoke<number>("dev_clear_sessions")
+                          .then((count) => setDevNotice(m.dev.clearedSessions(count)))
+                          .catch(reported);
+                      }}
+                    >
+                      {m.dev.clearSessions}
+                    </button>
+                    {devNotice && <span className="hint">{devNotice}</span>}
+                  </div>
                 </div>
               </LocalPanel>
             )}
