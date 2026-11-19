@@ -1,16 +1,22 @@
 //! 自动更新。
 //!
-//! **只在 macOS 上真正生效**（判据是 [`SUPPORTED`]）。原因分两半，一半在上游、
-//! 一半在「没验过」：
+//! **macOS 与 Windows 的 NSIS 安装版**支持自动更新（判据是 [`supported`]）。Linux
+//! 与 Windows 的 portable 版返回 `supported: false`，界面维持「手动下载」并如实说明。
 //!
-//! - **上游**：插件装更新要用 `zip`，而它要求的 `zip = "^4"` 被 crates.io 全量 yank
-//!   了（见 `Cargo.toml` 的依赖注释）—— Windows 那条路因此技术上做不了。
-//! - **没验过**：Linux 的 AppImage 那条路其实走得通（更新包是**没压缩**的 ELF，
-//!   不吃 `zip` feature），但 deb 装的那份要靠 `dpkg -i` 提权（普通用户跑不动），
-//!   而两条路都没在真机上验过。**在能动真机验收之前不打开** —— 好过一个「点了报
-//!   权限错」的按钮。
+//! - **Windows**：更新包是**裸 `setup.exe`**（见 `latest.json` 的 `windows-x86_64`），
+//!   插件的 `extract_exe` 路径直接认 PE 文件、**不吃 `zip` feature** —— 所以 `Cargo.toml`
+//!   里 updater 仍用 `default-features = false`，没把那个历史上的 yank 依赖请回来。
+//!   安装器由 NSIS 打出来，updater 调起它替换自己；**portable 是解压即用的裸包，没有
+//!   安装器身份**，判据是 `bundle_type()`：NSIS 安装版返回 `Some(Nsis)`，portable 是
+//!   `None`（见 `tauri_utils::platform::bundle_type`）。给 portable 显示一个点了没反应的
+//!   「安装」按钮没有意义，宁可明说手动下载。
+//! - **Linux**：AppImage 那条路走得通（更新包是没压缩的 ELF），但 deb 那份要靠
+//!   `dpkg -i` 提权，两条路都没在真机验过。**在能动真机验收之前不打开**。
 //!
-//! 于是 Linux / Windows 上返回 `supported: false`，界面维持「手动下载」并如实说明。
+//! **自定义更新源 / 代理**（`Settings::update_endpoint` / `update_proxy` /
+//! `update_no_proxy`）：内网连不上 GitHub、或者公司给了更新镜像时用。它们只作用于
+//! 更新请求，经 `updater_builder()` 逐次构建；**公钥仍是编译进去的那把**，指向镜像
+//! 不会让出验签这道门。三项全空 / false 就是加它们之前的行为。
 //!
 //! 三条边界（是产品判断，不是实现细节）：
 //!
@@ -22,11 +28,13 @@
 //! 3. **验签用的是 Tauri 的密钥对**（`tauri.conf.json` 里的公钥），和 Apple 证书
 //!    是两套完全独立的东西。校验的是「这个包确实是我们发的」，不是「Apple 认识我们」。
 
+use crate::config::Settings;
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_updater::UpdaterExt;
+use tauri_plugin_updater::{Updater, UpdaterExt};
+use url::Url;
 
 /// 检查结果变了就推这个事件（前端 `useUpdate.ts` 里的字面量必须与之一致）
 pub const UPDATE_EVENT: &str = "signalhub://update";
@@ -34,13 +42,41 @@ pub const UPDATE_EVENT: &str = "signalhub://update";
 /// 下载进度事件名。同上的契约。
 pub const PROGRESS_EVENT: &str = "signalhub://update-progress";
 
-/// 这个平台能不能自动更新。**只有 macOS** —— 理由（上游的 zip + Linux 没验过）
-/// 见模块头。
+/// 这个平台 / 这份安装能不能自动更新。判据见模块头。
 ///
-/// 要打开 Linux：`cfg!(any(target_os = "macos", target_os = "linux"))`，但先把
-/// AppImage / deb 两条路在真机上跑通（AppImage 要能替换正在跑的那个文件，deb 要
-/// 处理 `dpkg -i` 的权限）。
-pub const SUPPORTED: bool = cfg!(target_os = "macos");
+/// 不是常量：Windows 上 portable（裸包）和安装版（NSIS）是同一份二进制，只能靠
+/// `bundle_type()` 在运行时区分。要打开 Linux：先看模块头那两条真机验收。
+pub fn supported() -> bool {
+    if cfg!(target_os = "macos") {
+        return true;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // `Some(Nsis)` = 安装版；`None` = portable 裸包（见模块头）
+        return matches!(
+            tauri::utils::platform::bundle_type(),
+            Some(tauri::utils::config::BundleType::Nsis)
+        );
+    }
+    #[allow(unreachable_code)]
+    false
+}
+
+/// 为什么这份安装不能用自动更新 —— 摆到界面上，而不是只显示一句「不支持」。
+/// portable 那条尤其要说清「换安装版就能用」，否则用户会以为功能整个不存在。
+pub fn unsupported_reason() -> &'static str {
+    #[cfg(target_os = "windows")]
+    if !supported() {
+        return "免安装版（portable）没有安装器身份，无法自动替换自己。请到发布页下载 -setup.exe 安装版，之后即可在设置里一键更新。";
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = supported();
+        return "Linux 的自动更新还没在真机上验收过（deb 需要管理员权限）。请到发布页手动下载 AppImage 或 deb。";
+    }
+    #[allow(unreachable_code)]
+    ""
+}
 
 /// 启动后多久查第一次。
 ///
@@ -68,6 +104,9 @@ pub struct UpdateState {
     pub checked_at_ms: u64,
     /// 上次**手动**检查的失败原因；成功后清空
     pub error: Option<String>,
+    /// `supported: false` 时为什么 —— portable 换安装版就能用，Linux 是没验过。
+    /// 支持的平台上是空串。
+    pub unsupported_reason: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -87,9 +126,48 @@ pub struct Progress {
 
 pub type SharedUpdate = Arc<Mutex<UpdateState>>;
 
+/// 读当前设置里的更新源 / 代理，构造这一次的 updater。
+///
+/// 每次查 / 装都**重新读设置**而不是缓存：用户在面板里改完端点，下一次「检查更新」
+/// 就该走新的。三项为空 / false 时等价于 `app.updater()` —— 插件配置里那条 GitHub
+/// 端点 + 系统代理，公网用户的观感和加设置之前一字不差。
+///
+/// `no_proxy` 优先于 `proxy`（与插件自身的 `else if` 顺序一致），免得「勾了忽略系统
+/// 代理却还带着手填的代理」这种自相矛盾的状态。
+fn build_updater(app: &AppHandle) -> Result<Updater, String> {
+    let (endpoint, proxy, no_proxy) = {
+        let guard = app
+            .try_state::<Arc<Mutex<Arc<Settings>>>>()
+            .ok_or_else(|| "设置状态尚未就绪".to_string())?;
+        let settings = guard.lock().expect("settings poisoned");
+        (
+            settings.update_endpoint.clone(),
+            settings.update_proxy.clone(),
+            settings.update_no_proxy,
+        )
+    };
+
+    let mut builder = app.updater_builder();
+    if !endpoint.is_empty() {
+        let url = Url::parse(&endpoint)
+            .map_err(|err| format!("更新源地址不是有效的 URL: {err}"))?;
+        builder = builder
+            .endpoints(vec![url])
+            .map_err(|err| format!("更新源地址不可用: {err}"))?;
+    }
+    if no_proxy {
+        builder = builder.no_proxy();
+    } else if !proxy.is_empty() {
+        let url =
+            Url::parse(&proxy).map_err(|err| format!("代理地址不是有效的 URL: {err}"))?;
+        builder = builder.proxy(url);
+    }
+    builder.build().map_err(|err| err.to_string())
+}
+
 /// 查一次，**网络错误原样返回**。由调用方决定是记日志还是摆给用户看（见模块头）。
 async fn query(app: &AppHandle) -> Result<Option<Available>, String> {
-    let updater = app.updater().map_err(|err| err.to_string())?;
+    let updater = build_updater(app)?;
     match updater.check().await {
         Ok(Some(update)) => Ok(Some(Available {
             version: update.version.clone(),
@@ -106,7 +184,12 @@ async fn query(app: &AppHandle) -> Result<Option<Available>, String> {
 /// 版本号。非 macOS 上永远不会走到 `refresh`，只靠它填的话那边会一直空着。
 fn stamp(app: &AppHandle, state: &mut UpdateState) {
     state.current = app.package_info().version.to_string();
-    state.supported = SUPPORTED;
+    state.supported = supported();
+    state.unsupported_reason = if state.supported {
+        String::new()
+    } else {
+        unsupported_reason().to_string()
+    };
 }
 
 /// 查一次并写进共享状态，顺手推给界面。
@@ -114,8 +197,8 @@ fn stamp(app: &AppHandle, state: &mut UpdateState) {
 /// `silent` = 自动那条路（失败只留日志、不写进 `error`）。
 async fn refresh(app: &AppHandle, silent: bool) -> UpdateState {
     let shared = app.state::<SharedUpdate>();
-    if !SUPPORTED {
-        // 不支持的平台上连网都不必碰：界面只会看到 `supported: false`
+    if !supported() {
+        // 不支持的平台 / 安装版上连网都不必碰：界面只会看到 `supported: false`
         let mut state = UpdateState::default();
         stamp(app, &mut state);
         return state;
@@ -181,12 +264,12 @@ pub async fn check_update(app: AppHandle) -> UpdateState {
 /// **只有用户点了才会走到这里**（红线：默认不自动装）。过程中推下载进度。
 #[tauri::command]
 pub async fn install_update(app: AppHandle) -> Result<(), String> {
-    if !SUPPORTED {
+    if !supported() {
         // 界面不该显示这个按钮；真被调到就说清楚为什么，不要装作在装
-        return Err("这个平台暂不支持自动更新，请到发布页手动下载".to_string());
+        return Err(unsupported_reason().to_string());
     }
 
-    let updater = app.updater().map_err(|err| err.to_string())?;
+    let updater = build_updater(&app)?;
     // 重新查一次（见 `UpdateState` 的注释）：装的是此刻的最新版
     let update = updater
         .check()
@@ -224,9 +307,9 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
 
 /// 启动后自动查：先等 [`FIRST_CHECK_DELAY`]，之后每 [`CHECK_INTERVAL`] 一次。
 ///
-/// 只要 macOS；别的平台连任务都不起。整条路是**静默**的（见模块头的第 2 条）。
+/// 只有支持自动更新的平台 / 安装版才起任务。整条路是**静默**的（模块头第 2 条）。
 pub fn spawn_auto_check(app: AppHandle) {
-    if !SUPPORTED {
+    if !supported() {
         return;
     }
     tauri::async_runtime::spawn(async move {

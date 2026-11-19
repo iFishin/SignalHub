@@ -19,6 +19,8 @@ export type UpdateState = {
   checked_at_ms: number;
   /** 上次**手动**检查的失败原因（自动那次的失败不写进来，见 update.rs） */
   error: string | null;
+  /** supported=false 时为什么（portable 换安装版 / Linux 没验过） */
+  unsupported_reason: string;
 };
 
 const INITIAL: UpdateState = {
@@ -27,6 +29,7 @@ const INITIAL: UpdateState = {
   available: null,
   checked_at_ms: 0,
   error: null,
+  unsupported_reason: "",
 };
 
 export type UpdateApi = {

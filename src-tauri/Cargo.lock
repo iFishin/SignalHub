@@ -3637,6 +3637,7 @@ version = "0.6.10"
 dependencies = [
  "axum",
  "getrandom 0.3.4",
+ "notify-rust",
  "objc2",
  "objc2-app-kit",
  "serde",
@@ -3653,6 +3654,7 @@ dependencies = [
  "tauri-plugin-window-state",
  "tokio",
  "ureq",
+ "url",
  "windows",
  "windows-registry",
  "windows-sys 0.61.2",

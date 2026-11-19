@@ -1776,6 +1776,18 @@ pub struct Settings {
     pub quiet: bool,
     /// 需要你注意（授权 / 关注 / 出错）时弹系统通知。
     pub notify: bool,
+    /// 让**状态告警**常驻到手动关闭（Windows / Linux）。
+    ///
+    /// 只作用于 `alerts::send_alert` 那条路：`send_message`（例如「已进入穿透
+    /// 模式」）和 `send_timer` 仍会自动消失 —— 那些是通告，钉在屏幕上只会碍事。
+    ///
+    /// **macOS 上这个开关不改变发送方式**：系统的 `alertStyle` 是只读的，app
+    /// 不能把横幅改成需要手动关闭的「提醒」样式（Apple 明确不允许覆盖用户偏好，
+    /// `notify-rust` 也写明 macOS 不支持设 timeout）。界面会如实说明并给一个
+    /// 「打开系统通知设置」的入口，而不是摆一个假开关。
+    ///
+    /// 默认关：改的是通知的停留方式，不该在升级时突然改变所有人的观感。
+    pub notify_persistent: bool,
     /// 哪些状态变化时弹系统通知 —— `notify` 总开关之下的**一层过滤**。
     ///
     /// 默认就是加这个字段之前的行为（`DEFAULT_NOTIFY_STATES`），所以从旧版本
@@ -2008,6 +2020,28 @@ pub struct Settings {
     /// `/v1/approvals`。这道开关管的是「我们自己的页面会不会把详情画出来」，
     /// 不是「别人能不能拿」。真正的门仍然是 token。
     pub web_approve: bool,
+    /// 更新源：自定义 `latest.json` 的地址。**默认空 = 用 `tauri.conf.json` 里那条 GitHub**。
+    ///
+    /// 内网场景：连不上 GitHub、或者公司给了一台更新镜像时，在这里填镜像地址。
+    /// 它只换「去哪儿问有没有新版」，**不换公钥** —— 签名仍用编译进去的那把校验，
+    /// 所以指向镜像不会把验签这道门让出去。必须是 `https://`（插件的硬约束，
+    /// `dangerousInsecureTransportProtocol` 没开），否则检查会如实报错。
+    #[serde(default)]
+    pub update_endpoint: String,
+    /// 更新用的代理地址，例如 `http://127.0.0.1:7890`。**默认空 = 跟随系统代理**。
+    ///
+    /// 插件已开 `system-proxy`，Windows / macOS 会读系统代理设置，reqwest 也认
+    /// `HTTP_PROXY` / `HTTPS_PROXY` 环境变量。只有在系统代理不对（或没配、但更新
+    /// 必须走某一台代理）时才填这里。和 `update_no_proxy` 互斥：后者优先。
+    #[serde(default)]
+    pub update_proxy: String,
+    /// **忽略系统代理**直连更新源。默认 false。
+    ///
+    /// 内网里更新源就在本地 / 内网，`HTTP_PROXY` 却把它当外网请求发走、回一句
+    /// `502`（`remote.rs` 对上报已经做过同样的规避，这里是同一类问题）。勾上之后
+    /// 插件对更新请求调 `no_proxy()`，连 `update_proxy` 一起不用。
+    #[serde(default)]
+    pub update_no_proxy: bool,
     /// 其他机器 —— **多机中枢**（见 `docs/plan-multi-machine.md`）。
     ///
     /// 我们是**拉**的一方：每 `machine_poll_ms` 去每台机器的 `GET /v1/state` 取一次
@@ -2319,6 +2353,7 @@ impl Default for Settings {
             snap_to_edge: false,
             quiet: true,
             notify: true,
+            notify_persistent: false,
             notify_when: default_notify_when(),
             webhook_url: None,
             hooks: Vec::new(),
@@ -2396,6 +2431,10 @@ impl Default for Settings {
             // 多机中枢默认一台都不配 —— 空数组 = 一条请求都不发
             machines: Vec::new(),
             machine_poll_ms: default_machine_poll_ms(),
+            // 更新默认走 GitHub + 系统代理：三个字段全空 / false 就是加它们之前的行为
+            update_endpoint: String::new(),
+            update_proxy: String::new(),
+            update_no_proxy: false,
             // Call Me 默认关闭：地址为空 → 轮询线程一个请求都不发
             callme: CallMeConfig::default(),
             // 旧版配置里没有这个字段 —— 默认折叠，升级不让单击改行为
@@ -2561,6 +2600,10 @@ impl Settings {
             .callme
             .poll_ms
             .clamp(MIN_CALLME_POLL_MS, MAX_CALLME_POLL_MS);
+        // 更新源 / 代理：去首尾空白（从界面粘贴 URL 时带个空格很常见），并给一个
+        // 长度上限 —— 它们是每次检查更新都要解析的 URL，不该让手改的配置撑成几 MB。
+        self.update_endpoint = self.update_endpoint.trim().chars().take(2048).collect();
+        self.update_proxy = self.update_proxy.trim().chars().take(2048).collect();
         self
     }
 
@@ -3162,11 +3205,17 @@ mod tests {
             lamp_layout: LampLayout::PerGroup,
             always_on_top: false,
             snap_to_edge: true,
+            // 更新源三项同样设成非默认值：漏了字段的话往返测试看不出来
+            update_endpoint: "https://mirror.example/latest.json".to_string(),
+            update_proxy: "http://127.0.0.1:7890".to_string(),
+            update_no_proxy: true,
             approve_tools: true,
             collect_backup: true,
             collect_meeting: true,
             quiet: false,
             notify: false,
+            // 非默认（默认 false）：漏了这个字段的话往返测试看不出来
+            notify_persistent: true,
             hooks: vec![
                 Hook {
                     when: vec!["permission".into(), "error".into()],
@@ -4432,6 +4481,27 @@ mod tests {
         assert_eq!(settings.devices.len(), 2);
         assert_eq!(settings.devices[0].host, "192.168.1.50");
         assert_eq!(settings.devices[1].host, "");
+    }
+
+    /// 更新源 / 代理：默认空（= 内置 GitHub + 系统代理，公网行为不变），
+    /// clamped 去首尾空白并截断。半截 URL 不该因为粘贴带空格就写进配置。
+    #[test]
+    fn update_source_defaults_are_noop_and_clamped() {
+        let defaults = Settings::default();
+        assert_eq!(defaults.update_endpoint, "");
+        assert_eq!(defaults.update_proxy, "");
+        assert!(!defaults.update_no_proxy);
+
+        let clamped = Settings {
+            update_endpoint: format!("  https://mirror.example/latest.json  {}", "x".repeat(3000)),
+            update_proxy: "  http://127.0.0.1:7890\t".to_string(),
+            ..Settings::default()
+        }
+        .clamped();
+        assert!(clamped.update_endpoint.starts_with("https://mirror.example/"));
+        assert!(!clamped.update_endpoint.starts_with(' '));
+        assert_eq!(clamped.update_endpoint.chars().count(), 2048);
+        assert_eq!(clamped.update_proxy, "http://127.0.0.1:7890");
     }
 
     #[test]

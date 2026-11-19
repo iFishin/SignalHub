@@ -16,30 +16,22 @@ name: Release
 # 以后拿到证书，在下面 `tauri-action` 那一步前面补 codesign / notarytool / signtool
 # 三步即可，其余不用动。
 #
-# ---- 自动更新：接了，但只有 macOS 真的能用（2026-10）-------------------------
+# ---- 自动更新：macOS + Windows 安装版，Linux / portable 手动（2026-11）--------
 #
-# 五步都做完了（配置在 src-tauri 的四处：`Cargo.toml` 的依赖、`lib.rs` 的
-# `.plugin()` 与三条命令、`tauri.conf.json` 的 `plugins.updater` +
-# `createUpdaterArtifacts`、`capabilities/default.json` 的 `updater:default`）。
+# 配置在 src-tauri 的四处：`Cargo.toml` 的依赖、`lib.rs` 的 `.plugin()` 与三条命令、
+# `tauri.conf.json` 的 `plugins.updater` + `createUpdaterArtifacts`、
+# `capabilities/default.json` 的 `updater:default`。客户端判据是 `update::supported()`
+# （运行时判：macOS 恒真，Windows 看 `bundle_type() == Nsis`，其余假）。
 #
-# **但只有 macOS 装得上。** 理由要分两半说，别把话说错：
-#
-#   - **Windows：上游这关过不去。** `tauri-plugin-updater` 的 `zip` feature 要求
-#     `zip = "^4"`，而 2026-08 的 RUSTSEC-2025-0168（解包时路径规范化不当 → 任意写
-#     文件）之后，crates.io 上**所有 zip ≤ 9.0.2 都被 yank 了**，只剩 9.0.3 / 9.0.4，
-#     `^4` 无解 —— 带上这个 feature 连依赖都解析不出来（CI 会直接挂在 cargo fetch
-#     上）。Windows 的更新包就是 `zip` 那种，所以那条路做不了。
-#   - **Linux：做得通，但没验过。** `latest.json` 里 `linux-x86_64-appimage` 指的是
-#     **没压缩的 ELF AppImage**（查过 v0.2.4 的实际产物），不吃 `zip` feature；
-#     可是 deb 装的那份要靠 `dpkg -i` 提权（普通用户跑不动），而两条路都没在真机
-#     验过 —— 先不开，好过一个「点了报权限错」的按钮。
-#   - **macOS：完整可用。** 更新包 `.app.tar.gz` 只用 `flate2` + `tar`，这两个在插件
-#     里是**非可选**依赖，和那个 feature 无关（含 minisign 验签）。
-#
-# 于是 `Cargo.toml` 里写的是 `default-features = false`，判据是 `update::SUPPORTED`
-# （只有 macOS），界面在别的平台如实说「请手动下载」+ 给一个「打开发布页」。
-# **上游把 zip 提到 ^9 之后**把那行 `default-features = false` 收回即可；**Linux 要
-# 打开**则是把 `SUPPORTED` 改一行，但先把 AppImage / deb 两条路在真机上跑通。
+#   - **macOS + Windows 安装版：可用。** macOS 更新包 `.app.tar.gz` 只用 flate2 + tar；
+#     Windows 更新包是**裸 `setup.exe`**（见 `latest.json` 的 `windows-x86_64`），
+#     插件 `extract_exe` 直接认 PE 文件。两样都不吃 `zip` feature，所以 `Cargo.toml`
+#     至今 `default-features = false` —— 不必把历史上被 yank 过的 zip 请回来。
+#     （另：zip 4.x 现已恢复可用，但没有理由为一个用不上的 feature 重新加依赖。）
+#   - **Windows portable：不行。** 解压即用的裸包没有安装器身份，updater 只会调起
+#     NSIS/MSI 安装器替换自己，portable 无此路可走。界面如实说「换 -setup.exe 安装版」。
+#   - **Linux：没验过。** AppImage 那条走得通（没压缩的 ELF），但 deb 要 `dpkg -i`
+#     提权；真机验收前不开，好过一个「点了报权限错」的按钮。
 #
 # 签名用的密钥对（minisign）**和 Apple / Windows 代码签名证书是两套完全独立的东西**
 # —— 所以没有证书也能做自动更新。校验的是「这个包确实是我们发的」，不是「Apple 认识
@@ -47,7 +39,10 @@ name: Release
 # 拦**（见 docs/plan-round3.md 的 R5 一节）。
 #
 # `latest.json` **不用手工准备**：`tauri-action` 在 `createUpdaterArtifacts` 打开之后
-# 会自动生成并随着产物一起传上去。
+# 会自动生成并随着产物一起传上去。但它的 `notes` 字段默认空 —— 末尾那个 `finalize`
+# job 在所有平台传完之后把发布说明的「本次更新」段写进 notes，让客户端更新页的
+# 「这次改了什么」有内容。放在矩阵**之后**是为了只有一个写入者，避免四个 job
+# 并发覆盖 `latest.json`。
 #
 # 私钥在 `~/.tauri/signalhub-updater.key`（**绝不要提交进仓库**，也不要贴进任何对话
 # 里），密码在旁边那个 `.password` 文件；两者只存在于本机 + 这个仓库的 GitHub Secret。
@@ -274,3 +269,74 @@ jobs:
           $zip = "SignalHub_${{ needs.create-release.outputs.version }}_x64_portable.zip"
           Compress-Archive -Path $stage -DestinationPath $zip
           gh release upload "${{ needs.create-release.outputs.tag }}" $zip --clobber
+
+  # 把发布说明写进 `latest.json` 的 `notes`，客户端更新页的「这次改了什么」才读得到。
+  #
+  # 为什么单独成 job 且 `needs: [build]`：tauri-action 在**每个**平台都会生成并上传
+  # 一份 `latest.json`（内容是合并后的全平台清单），四个 job 并发写同一个资产。若把
+  # 注入塞进 build 里，先写完的那份会被后上传的裸版本覆盖，notes 又空了。放在矩阵
+  # 之后就只有一个写入者。
+  finalize:
+    needs: [create-release, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 把发布说明的「本次更新」段注入 latest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.create-release.outputs.tag }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, urllib.request
+
+          tag = os.environ["TAG"]
+          # release-body.md 的格式是固定的：从「### 本次更新（x.y.z）」开始，
+          # 到「### 安装」之前的「详见 … README」那段是给更新页看的正文。
+          # 后面那两节（安装 / 命令行）是给网页发布页的，太长且不适合塞进小面板。
+          body = pathlib.Path(".github/release-body.md").read_text(encoding="utf-8")
+          start = body.find("### 本次更新")
+          end = body.find("### 安装")
+          if start == -1 or end == -1 or end < start:
+              raise SystemExit("release-body.md 的段落标记变了，无法提取发布说明")
+          notes = body[start:end].strip()
+          # 去掉段尾那条「详见 architecture.md … README」——那是给发布页读者跳文档用的，
+          # 更新面板里没有对应的入口语境。
+          cut = notes.rfind("\n详见\n")
+          if cut != -1:
+              notes = notes[:cut].strip()
+
+          # 通过 GitHub API 拿最新那份 latest.json（raw 地址带缓存，可能读到旧的）。
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/iFishin/SignalHub/releases/tags/{tag}",
+              headers={"Accept": "application/vnd.github+json",
+                       "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                       "User-Agent": "signalhub-release-finalize"},
+          )
+          release = json.load(urllib.request.urlopen(req))
+          asset = next((a for a in release["assets"] if a["name"] == "latest.json"), None)
+          if asset is None:
+              raise SystemExit("Release 里没有 latest.json，构建可能没上传更新包")
+
+          req = urllib.request.Request(
+              asset["url"],
+              headers={"Accept": "application/octet-stream",
+                       "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                       "User-Agent": "signalhub-release-finalize"},
+          )
+          manifest = json.load(urllib.request.urlopen(req))
+          manifest["notes"] = notes
+          pathlib.Path("latest.json").write_text(
+              json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+          )
+          print(f"latest.json 的 notes 已填：{len(notes)} 字符")
+
+          # 同名资产先删再传：GitHub 不支持直接改资产内容。
+          import subprocess
+          subprocess.run(["gh", "release", "delete-asset", tag, "latest.json"], check=True)
+          subprocess.run(
+              ["gh", "release", "upload", tag, "latest.json", "--clobber"], check=True
+          )
+          PY

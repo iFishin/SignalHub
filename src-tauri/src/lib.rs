@@ -611,6 +611,40 @@ fn open_releases() -> Result<(), String> {
     open::open(RELEASES_URL).map_err(|err| format!("打开浏览器失败: {err}"))
 }
 
+/// 当前系统，给界面决定「常驻通知」这类平台相关开关显示成什么样。
+///
+/// 前端没有平台信息也不该去嗅探 UA —— 一条 IPC 比 `navigator.userAgent` 可靠。
+#[tauri::command]
+fn get_os() -> &'static str {
+    #[cfg(target_os = "macos")]
+    return "macos";
+    #[cfg(target_os = "windows")]
+    return "windows";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    return "linux";
+}
+
+/// 打开系统的通知设置页。macOS 上用来把「横幅」改成「提醒」（常驻的前提）。
+///
+/// 地址是写死的，不走 `open_url` 的 scheme 白名单：那道白名单是给智能体自报的
+/// 不可信 URL 准备的，`x-apple.systempreferences:` / `ms-settings:` 本来就不在
+/// http/https 里，也没必要为这两个常量放宽它。
+#[tauri::command]
+fn open_notification_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let result = open::open("x-apple.systempreferences:com.apple.preference.notifications");
+    #[cfg(target_os = "windows")]
+    let result = open::open("ms-settings:notifications");
+    // Linux 没有统一入口（各桌面环境自己一套），界面上也不会显示这个按钮。
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let result = Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "no unified notification settings page",
+    ));
+
+    result.map_err(|err| format!("打开通知设置失败: {err}"))
+}
+
 /// 用系统默认浏览器打开一个 http/https 地址。
 ///
 /// 目标是 Call Me 留言里智能体自报的 `context`（「我是在这个页面读到链接的」），
@@ -3582,7 +3616,7 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         // 只用来选文件（拿路径）。读写和校验都在 Rust 侧的命令里。
         .plugin(tauri_plugin_dialog::init())
-        // 自动更新。**目前只在 macOS 上真正生效**（见 update.rs 顶部）。
+        // 自动更新。macOS 与 Windows 的 NSIS 安装版生效（见 update.rs 顶部）。
         .plugin(tauri_plugin_updater::Builder::new().build())
         // 设置排在最前：前端发出的第一条命令就是 `get_settings`，它必须已经在了
         // （issue #24，见 `run()` 开头那段注释）
@@ -3650,6 +3684,8 @@ pub fn run() {
             get_endpoint,
             open_docs,
             open_releases,
+            open_notification_settings,
+            get_os,
             open_url,
             open_app_dir,
             open_settings,

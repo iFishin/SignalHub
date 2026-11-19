@@ -72,7 +72,7 @@ Three channels that do not rely on colour: permission and error dots are **round
 
 **Inbox & approvals** — long-press the lamp or `⌃⌥I` to open, ordered "needs you → running → just finished → idle": allow / deny, jump to the terminal tab, mute, clear, or "tell me when it's done", plus a one-line summary when you return after 10+ minutes away. "Approve from the lamp" moves Claude Code's confirmation onto the lamp (**off by default**); dangerous commands need an 800 ms hold, truncated ones can only be denied, and it **never answers "Allow" on your behalf**.
 
-**Notifications** — fired when a state newly becomes "needs permission / attention / error", only on the transition and only after it persists 5 seconds (both configurable). Mute per group, set quiet hours, add a sound; clicking the notice opens the project folder. Three presets: re-push to your phone after an approval sticks for 60 s, hold notices while an agent is working, and turn the meeting sign blue and silent during a call.
+**Notifications** — fired when a state newly becomes "needs permission / attention / error", only on the transition and only after it persists 5 seconds (both configurable). Mute per group, set quiet hours, add a sound; clicking the notice opens the project folder. On Windows / Linux these can **stay on screen until dismissed**; on macOS you pick the alert style in System Settings. Three presets: re-push to your phone after an approval sticks for 60 s, hold notices while an agent is working, and turn the meeting sign blue and silent during a call.
 
 **Presentation mode** — `⌥⌘P` fills the screen under the cursor with a large board: one matching lamp dot per group beside its name, state and duration, readable from three metres away. It only draws what the lamp already knows (no command text or messages), so projecting it is redaction by construction. Off by default, never automatic, no sleep prevention; `Esc` or the tray exits. Mutually exclusive with click-through.
 
@@ -127,7 +127,7 @@ The `signalhub` command **ships inside the app** — no separate install. To use
 ln -sfn /Applications/SignalHub.app/Contents/MacOS/signalhub /usr/local/bin/signalhub
 ```
 
-**Updating:** macOS has in-app updates since 0.2.4 (Settings → System → Updates & diagnostics; nothing installs until you click). Linux and Windows are manual downloads for now — the unpacking library Windows needs was pulled upstream, and the Linux path has not been verified on real hardware (see [.github/release-body.md](.github/release-body.md)). Pushing a `v` tag builds all four platforms — see [release.yml](.github/workflows/release.yml).
+**Updating:** in-app updates work on macOS and on the Windows `-setup.exe` installer build (Settings → System → Updates & diagnostics; nothing installs until you click). Linux and the Windows portable build are manual downloads for now (portable has no installer identity to replace itself, and the Linux path has not been verified on real hardware). The same page also accepts a **custom update source and proxy** for networks that can't reach GitHub or that run an update mirror (leave blank for the default GitHub; the signature key is unchanged). Pushing a `v` tag builds all four platforms — see [release.yml](.github/workflows/release.yml).
 
 ## Running from source
 
@@ -244,7 +244,7 @@ Deployment: [docs/callme.md](docs/callme.md). API: [docs/api.md §9](docs/api.md
 
 Done: the floating lamp, aggregation and TTL, the HTTP API and CLI, settings, one-click setup for ten agents, notifications, approvals, presentation mode, multiple machines, the phone panel, forwarding, WLED, Call Me, stats and history, session management — see the per-release records in §3.35 of the [architecture docs](docs/architecture.md).
 
-To do: code signing and notarization (the steps have a place reserved in [release.yml](.github/workflows/release.yml) — fill them in once you have certificates). Full pending work, unverified items and known limits: [docs/backlog.md](docs/backlog.md). macOS has in-app updates (manual trigger); Linux and Windows do not — the reasoning lives in [update.rs](src-tauri/src/update.rs).
+To do: code signing and notarization (the steps have a place reserved in [release.yml](.github/workflows/release.yml) — fill them in once you have certificates). Full pending work, unverified items and known limits: [docs/backlog.md](docs/backlog.md). In-app updates (manual trigger) work on macOS and the Windows installer build; Linux and Windows portable don't — the reasoning lives in [update.rs](src-tauri/src/update.rs).
 
 ## License
 

@@ -707,6 +707,12 @@ export interface Messages {
   notifyWhen: string;
   notifyWhenHint: string;
   soundWithNotify: string;
+  /** 重要告警常驻（Windows / Linux） */
+  notifyPersistent: string;
+  notifyPersistentHint: string;
+  /** macOS 上系统不让 app 决定停留方式，只能如实说明并引导改系统设置 */
+  notifyPersistentMac: string;
+  openNotificationSettings: string;
   alertAfter: string;
   alertAfterHint: string;
   quietHours: string;
@@ -1086,6 +1092,15 @@ export interface Messages {
   updateNotes: string;
   updateHint: string;
   updateUnsupported: string;
+  /** 自定义更新源 / 代理（内网） */
+  updateSourceTitle: string;
+  updateEndpoint: string;
+  updateEndpointHint: string;
+  updateProxy: string;
+  updateProxyHint: string;
+  updateNoProxy: string;
+  updateNoProxyHint: string;
+  updateSourceHint: string;
   updateFailed: (reason: string) => string;
   openReleases: string;
 
@@ -2046,6 +2061,12 @@ export const MESSAGES: Record<Lang, Messages> = {
     notifyWhenHint:
       "只在整体状态变成这几个时弹。一个都不选就不弹 —— 想彻底关掉用上面那个总开关。和「转发」的状态过滤是同一套判断，只是「转发」默认不筛、这里默认只筛需要你处理的那三个。",
     soundWithNotify: "通知带提示音",
+    notifyPersistent: "重要告警常驻",
+    notifyPersistentHint:
+      "等授权、需要注意、出错这几条会一直挂在屏幕上，直到你手动关掉；「已进入穿透模式」这类通告仍会自动消失。默认关。",
+    notifyPersistentMac:
+      "macOS 不允许应用决定通知的停留方式：横幅会自动消失，只有你在系统设置里把 SignalHub 的通知样式改成「提醒」，它才会一直挂着到手动关闭。可以点下面的按钮直接过去改。",
+    openNotificationSettings: "打开系统通知设置",
     alertAfter: "持续多久才提醒",
     alertAfterHint: "状态要持续这么久才弹通知，一闪而过的忽略掉",
     quietHours: "勿扰时段",
@@ -2456,8 +2477,19 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     updateNotes: "这次改了什么",
     updateHint:
       "更新不会自动装：只有点了「下载并安装」才会下载、验签、替换并重启。启动后每天静默查一次，失败只写日志、不打扰你。",
-    updateUnsupported:
-      "这个平台暂时只能手动下载。Windows 上装更新要用的那个压缩库被上游全量撤下了；Linux 上两种装法还没在真机上验过（deb 那份还要管理员权限）。宁可说清楚，也不摆一个点了会报错的按钮。",
+    updateUnsupported: "这个版本暂时只能手动下载：",
+    updateSourceTitle: "更新源与代理",
+    updateEndpoint: "更新源地址",
+    updateEndpointHint:
+      "自定义 latest.json 的地址。留空 = 用内置的 GitHub 发布页，公网用户不用动。内网连不上 GitHub、或有公司更新镜像时填这里；只换去哪儿问，不改验签的公钥。必须是 https 地址。",
+    updateProxy: "代理地址",
+    updateProxyHint:
+      "例如 http://127.0.0.1:7890。留空 = 跟随系统代理（Windows / macOS 会自动认，也认 HTTP_PROXY 环境变量）。只有系统代理不对时才填。",
+    updateNoProxy: "忽略系统代理，直连更新源",
+    updateNoProxyHint:
+      "更新源本来就在内网时勾上：有些公司代理会把内网地址当外网请求、回一个 502。勾上后上面填的代理也不再用。",
+    updateSourceHint:
+      "改完不用重启，下一次「检查更新」就按新地址走。三项都留空 / 不勾，和加这些设置之前完全一样。",
     updateFailed: (reason) => `检查失败：${reason}`,
     openReleases: "打开发布页",
 
@@ -3349,6 +3381,12 @@ signalhub watch --until done --timeout 10m   # CI 里等某个状态`,
     notifyWhenHint:
       "Only notify when the overall state becomes one of these. None selected means never — use the switch above to turn notifications off entirely. Same filter as in Forwarding; the difference is only the default (that one filters nothing, this one starts on the three that need you).",
     soundWithNotify: "Sound with notification",
+    notifyPersistent: "Keep important alerts on screen",
+    notifyPersistentHint:
+      "Approval, attention and error alerts stay on screen until you dismiss them; notices like “pass-through is on” still disappear on their own. Off by default.",
+    notifyPersistentMac:
+      "macOS does not let an app decide how long a notification stays: banners disappear on their own. Only if you set SignalHub's alert style to “Alert” in System Settings will it stay until dismissed. The button below takes you there.",
+    openNotificationSettings: "Open notification settings",
     alertAfter: "Alert after",
     alertAfterHint: "A state must last this long before notifying; brief ones are ignored",
     quietHours: "Quiet hours",
@@ -3763,8 +3801,19 @@ signalhub watch --until done --timeout 10m   # wait for a state in CI`,
     updateNotes: "What's new",
     updateHint:
       "Updates are never installed on their own: nothing is downloaded until you click download, and the app verifies the signature, swaps itself in, and restarts. It also checks silently once a day; failures only go to the log.",
-    updateUnsupported:
-      "Automatic updates aren't available on this platform yet — download manually from the releases page. On Windows the archive library the updater needs was yanked upstream; on Linux neither install path has been verified on real hardware (the .deb needs root). Better to say so than to show a button that errors out.",
+    updateUnsupported: "Manual download only for this build: ",
+    updateSourceTitle: "Update source & proxy",
+    updateEndpoint: "Update source URL",
+    updateEndpointHint:
+      "Custom latest.json address. Leave blank to use the built-in GitHub releases (what public users want). Fill this in on networks that can't reach GitHub, or when your company runs an update mirror. It changes where we ask, never the signature key. Must be an https URL.",
+    updateProxy: "Proxy address",
+    updateProxyHint:
+      "e.g. http://127.0.0.1:7890. Leave blank to follow system proxy (picked up automatically on Windows/macOS, and from HTTP_PROXY). Only fill this if the system proxy is wrong.",
+    updateNoProxy: "Ignore system proxy, connect directly",
+    updateNoProxyHint:
+      "Turn this on when the update source is already on your LAN: some corporate proxies treat private addresses as outbound and return 502. The proxy above is ignored too when this is on.",
+    updateSourceHint:
+      "No restart needed — the next “Check for updates” uses the new values. All three left blank is exactly the old behavior.",
     updateFailed: (reason) => `Check failed: ${reason}`,
     openReleases: "Open releases page",
 

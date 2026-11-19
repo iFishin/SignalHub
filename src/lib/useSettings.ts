@@ -406,6 +406,12 @@ export interface Settings {
   /** 需要你注意时弹系统通知。 */
   notify: boolean;
   /**
+   * 状态告警常驻到手动关闭（仅 Windows / Linux；macOS 由用户在系统设置里选样式）。
+   *
+   * 只影响「需要你处理」的状态告警，「已进入穿透模式」这类通告仍会自动消失。
+   */
+  notify_persistent: boolean;
+  /**
    * 哪些状态变化时弹系统通知 —— `notify` 总开关之下的一层过滤。
    *
    * **空数组 = 一条都不弹**，和 `hooks[].when` 的「空 = 不过滤」刻意不同：那里
@@ -594,6 +600,12 @@ export interface Settings {
    * 决定了「对端掉线后多久在灯上显形」。
    */
   machine_poll_ms: number;
+  /** 自定义更新源 `latest.json` 地址。空 = 用内置的 GitHub（与 Rust 侧同源）。 */
+  update_endpoint: string;
+  /** 更新代理地址，例如 `http://127.0.0.1:7890`。空 = 跟随系统代理。 */
+  update_proxy: string;
+  /** 更新时忽略系统代理直连。优先于 `update_proxy`。 */
+  update_no_proxy: boolean;
   /**
    * Call Me：自部署的收信服务器。**默认空 = 一条请求都不发。**
    *
@@ -621,6 +633,7 @@ export const DEFAULTS: Settings = {
   snap_to_edge: false,
   quiet: true,
   notify: true,
+  notify_persistent: false,
   // 和 Rust 的 `config::DEFAULT_NOTIFY_STATES` 必须一致：这里是「加这个开关之前
   // 的行为」，也是界面上 ↺ 要回到的那三个。
   notify_when: ["permission", "attention", "error"],
@@ -689,6 +702,9 @@ export const DEFAULTS: Settings = {
   web_approve: false,
   machines: [],
   machine_poll_ms: 2000,
+  update_endpoint: "",
+  update_proxy: "",
+  update_no_proxy: false,
   callme: { url: "", token: "", poll_ms: 15_000 },
 };
 

@@ -682,7 +682,7 @@ HTTP 的 `DELETE /v1/sessions/{id}` 用的是同一个 `Store::remove_session`�
 | 灯 | 外观 | **顶部实时预览**，紧接着一条**三格等宽的分区切换**（基础 / 质感 / 边框光，吸顶），下面才是三页内容。**基础**：五套皮肤、四套尺寸预设、形态、大小、灯珠形状六档、配色、背景透明度、牌宽 / 牌高倍率、牌间距、闪烁节奏、效果五档、牌上显示哪几段（含圆点）、**会话标题**三档（默认只显示会话名 / 会话 · 智能体 / 自定义模板）。**质感**：圆角、**牌的轮廓四档**、描边 / 牌底 / 字号 / 字体 / 分层。**边框光**：上边 / 下边各挑画法，四角各挂什么（六选一含「点击穿透」），各带闪烁开关，加粗细 / 明暗 / 颜色三把尺子 —— 改的就是预览里那两块牌的边和角。「基础」页末尾是**可折叠的「逐个状态覆盖」**（10 行的颜色 / 形状 / 节奏表，默认收起）。0.6.6 之前这里只有「基础 / 质感」两格小标签，皮肤与边框光常驻在它们**上面**，于是切换只管得到后半页、还长得像页脚链接（见 §3.16） |
 | 灯 | 行为 | 静默超时、单击主操作、安静模式、贴边吸附、点击穿透、保持在最前、托盘跟随状态，**静默超时之后紧跟着「边框光什么时候亮」**：和外观页同名的**六行**，每行一个九档条件下拉、各存各的；只要有一行用了带参数的档位，就补一组全槽共用的状态选择器 / 时段输入 —— 全是「它怎么动 / 什么时候亮」，一个像素的外观都没有 |
 | 灯 | 分组 | **怎么分组**（不分组 / 按目录 / 按会话）+ **摆成几盏灯**（一盏灯 / 每组分灯）+ 归位。各组的显示已搬到「会话」页（见 §3.35.24） |
-| 通知 | 提醒 | 需要时弹通知、通知带提示音、**系统通知权限状态**、持续多久才提醒、勿扰时段 |
+| 通知 | 提醒 | 需要时弹通知、通知带提示音、**重要告警常驻**（Windows / Linux；macOS 只给系统设置入口）、**系统通知权限状态**、持续多久才提醒、勿扰时段 |
 | 通知 | 转发 | 出站钩子列表（多条、可过滤、支持本地命令），每条可选**服务预设**（决定 body 形状）与**自定义请求头**（鉴权）；**发送测试**一个按钮把已配置的各发一遍 |
 | 开始用 | 接入 | 把智能体接上（检测 + 一键接入 / 卸载）→ 只用命令行的那几家 → 一键诊断 → **试一下** → 局域网访问 |
 | 开始用 | 指南 | 手册：这是什么、三步接上、接口速查、不工作了怎么办 |
@@ -918,16 +918,20 @@ hook 上报是「一次 HTTP」。app 没在运行时（重启电脑、退出 ap
 
 **验签用的是 Tauri 自己的密钥对**（minisign）：公钥在 `tauri.conf.json` 的 `plugins.updater.pubkey`，私钥只在 GitHub Secret 里，构建时由 `tauri-action` 那一步的 env 传进去。它和 Apple / Windows 的代码签名证书是**两套完全独立的东西** —— 校验的是「这个包确实是我们发的」，不是「Apple 认识我们」，所以没有证书也能做自动更新。
 
-**只有 macOS 真的能用，另外两个平台如实说「请手动下载」。** 理由要分两半说，别把话说错：
+**macOS 与 Windows 的 NSIS 安装版能用，Linux 与 Windows portable 如实说「请手动下载」。** 判据是运行时的 `update::supported()`，不是一个编译期常量 —— Windows 上 portable 和安装版是**同一份二进制**，只能靠 `bundle_type()` 区分（`Some(Nsis)` = 安装版，`None` = 解压即用的裸包）。给 portable 摆一个点了没反应的「安装」按钮没有意义，它说得明白：换 `-setup.exe` 安装版就能用了。
 
-- **Windows 是上游卡住的**：插件的 `zip` feature 要求 `zip = "^4"`，而 2026-08 的 RUSTSEC-2025-0168（解包时路径规范化不当 → 任意写文件）之后，crates.io 上**所有 zip ≤ 9.0.2 都被 yank 了**，`^4` 无解 —— 带着这个 feature 连依赖都解析不出来。Windows 的更新包就是 `zip` 那种，所以那条路技术上做不了。
-- **Linux 是「做得通但没验过」**：查过 v0.2.4 的实际产物，`latest.json` 里 `linux-x86_64-appimage` 指的是**没压缩的 ELF AppImage**，不吃 `zip` feature，那条路其实走得通；但 deb 装的那份要靠 `dpkg -i` 提权（普通用户跑不动，会变成一个「点了报权限错」的按钮），而两条路都没在真机验过。**在能动真机验收之前不打开。**
+- **Windows 安装版**：更新包是**裸 `setup.exe`**（查 `latest.json` 的 `windows-x86_64` 条目，指向的是 4MB 的 `SignalHub_x.y.z_x64-setup.exe`，不是 zip）。插件 `extract()` 里 `infer::app::is_exe(bytes)` 这条**不吃 `zip` feature**，直接把 PE 文件写到临时目录、调 NSIS 安装器替换自己。
+- **Linux 是「做得通但没验过」**：`linux-x86_64-appimage` 指的是**没压缩的 ELF AppImage**，同样不吃 `zip` feature；但 deb 那份要靠 `dpkg -i` 提权（普通用户跑不动，会变成「点了报权限错」）。**真机验收前不打开。**
 
-macOS 的 `.app.tar.gz` 只用 `flate2` + `tar`（插件里的**非可选**依赖），和那个 feature 无关，所以那条路完整可用。`Cargo.toml` 里因此写的是 `default-features = false`，判据是 `update::SUPPORTED`（只有 macOS）；**上游把 zip 提到 ^9 之后**把那行收回去，**Linux 要打开**则是改 `SUPPORTED` 一行（先把两条装法在真机上跑通）。界面按 `supported` 分流：不支持的平台不给「下载并安装」，只给一个「打开发布页」（`open_releases`）—— 说清楚之后总得给个去处。
+**关于「zip 被 yank」——那是过时的结论，别再写进文档**。`Cargo.toml` 至今 `default-features = false` 不是为了绕开 yank：2026-11 查 crates.io，zip 4.0.0–4.6.1 全部可用、无一 yanked；不开只是因为两条更新路径都用不上它，没必要为一个空 feature 多编一份依赖。
+
+**自定义更新源 / 代理**（0.6.11）：`Settings::update_endpoint` / `update_proxy` / `update_no_proxy` 三项，放在「系统 → 更新与诊断」，解决内网连不上 GitHub、或公司给了更新镜像的场景。`build_updater()` 每次查 / 装都重新读设置，用 `app.updater_builder()` 逐次构建并按需调 `endpoints()` / `proxy()` / `no_proxy()`；三项全空 / false 时等价于 `app.updater()`，公网用户观感不变。`no_proxy` 优先于 `proxy`（和插件自己的 `else if` 顺序一致）。**公钥仍是编译进去的那把** —— 指向镜像只换「去哪儿问」，不让出验签这道门；代价是端点必须是 `https://`（插件的 `dangerousInsecureTransportProtocol` 没开，http 会如实报错）。`clamped()` 里对两个 URL 去首尾空白、截到 2048 字符，避免半截地址被写盘。
+
+界面按 `supported` 分流：不支持的平台不给「下载并安装」，只给「打开发布页」+ Rust 返回的 `unsupported_reason`（portable 说换安装版、Linux 说没验过）。**发布说明**：`latest.json` 的 `notes` 由 release.yml 末尾的 `finalize` job 在所有平台传完后从 `release-body.md` 的「本次更新」段注入 —— 放在矩阵之后是为了只有一个写入者，否则并发上传会把 notes 覆盖回空。
 
 **点「下载并安装」时会重新查一次**，而不是装「十分钟前看到的那一版」。代价是多一次网络往返，换来的是「装的一定是此刻的最新版」，也省掉了把插件的 `Update` 对象跨命令存起来（那东西带着 HTTP 客户端和一堆内部状态）。装完走 `app.restart()`：不重启的话跑着的还是旧二进制，用户点了「安装并重启」却什么都没变。
 
-**界面上的版本号是「运行时事实」，不是检查结果**（`update::stamp`）：非 macOS 上永远不会走到网络那一步，只靠检查去填的话那边会一直空着。
+**界面上的版本号是「运行时事实」，不是检查结果**（`update::stamp`）：不支持自动更新的平台上永远不会走到网络那一步，只靠检查去填的话那边会一直空着。
 
 还有一条**只能真机验**的：未签名的 macOS 应用被更新替换之后，Gatekeeper 会不会拦。验过之前不要对外说 macOS 上自动更新可用（见 `docs/plan-round3.md` 的 R5）。
 
@@ -2165,6 +2169,24 @@ Windows / Linux 走另一条路：任务栏是 topmost、X11 面板只认 `_NET_
 
 **真窗口待验**：`npm run tauri dev` → 状态页与会话页对照看同一条会话的显示是否一致；逐行试复制 / 打开目录（含远程会话不显示后者）、清空全部的两段式确认；灯上右键「重命名…」应翻到会话页并落在该组输入框。Agent 环境验不了真窗口和系统文件管理器。
 
+### 3.35.25 重要告警常驻：绕开插件的移动端 API，按平台分别落地
+
+**需求边界是「需要你处理」的那几条**。开的不是「所有通知都不消失」——「已进入穿透模式」、定时器到点、watch 提醒这类通告钉在屏幕上只会碍事。所以 `show()` 的分流条件写成纯函数 `wants_persistent(action_type, setting)`：只有带 `ACTION_TYPE_ID` 的状态告警 + 用户开了 `notify_persistent` 才走常驻，其它一律照旧。单测把「通告即使开关打开也不常驻」钉住。
+
+**最大的坑：插件的 `.ongoing()` 在桌面端是空操作。** `tauri-plugin-notification` 2.6.0 的 `NotificationBuilder::ongoing()` 确实存在，`models.rs` 里也真有这个字段，但桌面端 `NotificationBuilder::build()` 只搬 title / body / icon / sound / actions —— `ongoing` 从头到尾没被读过。它是移动端 API。照着文档调它，通知照样几秒消失，而且没有任何报错。**结论：桌面端要常驻必须绕过插件。**
+
+**三个平台能力不一样，不能假装有统一解**：
+
+- **Linux / XDG**：`notify-rust` 的 `Urgency::Critical` 语义就是「不会超时」，再显式给 `Timeout::Never`（DBus 的 expire=0）兜底。通知服务器不遵守的话仍然会消失 —— 这是桌面环境的自由，应用管不了。
+- **Windows**：`notify-rust` 把 `Urgency::Critical` 映射成 `tauri-winrt-notification` 的 `Scenario::Reminder` —— 预展开、一直挂到用户手动关掉。Reminder 不像 `Alarm` / `IncomingCall` 那样循环放声音，所以提示音仍是普通的一声。AUMID 判据照抄插件 `desktop.rs`：安装版设 `app.config().identifier`，dev 目录不设（不设就会退回 PowerShell 身份，通知来源显示不对）。
+- **macOS**：**做不到，不是没接**。系统的 `UNNotificationSettings.alertStyle` 是只读的，Apple 明确说偏好由用户控制、app 不能覆盖；`notify-rust` 也写明 macOS 不支持手动设 timeout。横幅几秒消失、然后留在通知中心，只有用户在系统设置里把 SignalHub 改成「提醒」样式才会常驻到手动关闭。界面**不摆假开关**，只显示这段说明 + 「打开系统通知设置」按钮（`x-apple.systempreferences:com.apple.preference.notifications`）。Windows 也给了同名按钮（`ms-settings:notifications`）；Linux 没有统一入口，按钮不显示。
+
+**绕过插件的代价是按钮回调要自己接**。插件的 `on_action` 不会再触发，所以 `show_persistent` 起一条线程用 `notify-rust` 的 `wait_for_response` 等交互。为避免和插件那条路分叉，两侧最终都汇到同一个 `perform_action(app, action_id)` —— 加新动作时不可能只改一边。这条线程会一直挂到用户关掉通知（常驻的本意），每条常驻告警一条，量级和告警节流后的条数相同。
+
+**默认值是关**：改的是通知的停留方式，不该在升级时突然改变所有人的观感。旧配置缺 `notify_persistent` 时 serde 退回 false。
+
+**真窗口待验**：Linux 上确认桌面环境是否遵守 Critical / expire=0；Windows 安装版和 portable 各发一条，确认 toast 挂住不消失、「已知晓 / 静音」按钮和点本体都还走原来的逻辑；macOS 点按钮跳到通知设置、把样式改成「提醒」后看是否常驻。Agent 环境弹不出真系统通知。
+
 ## 4. 悬浮窗实现
 
 ### 4.1 窗口配置
@@ -2524,7 +2546,7 @@ SignalHub/
 | 9c | 设置面板的通用件：说明跟着行写、每行「恢复默认」↺（判据是 `DEFAULTS`）、外观页的实时预览（`--sign-alpha` 挪进 `lampVars`）（见 §3.6.1） | ✅ 已完成 |
 | 9d | 每个状态的停留时长可调（`styles.<状态>.ttl_ms`，三级优先在 `state_ttl`，没有「永不过期」那一档）（见 §3.6.1） | ✅ 已完成 |
 | 9e | 降级通道：hook 连不上时攒进 `spool.jsonl`，app 启动时按原时刻补进状态机（顺带修掉「连接失败从来不记日志」）（见 §3.23） | ✅ 已完成 |
-| 9f | 自动更新：macOS 上检查 + 下载 + 验签 + 安装（装永远由用户点，自动检查失败静默），其余平台如实说「请手动下载」（上游 `zip` 被 yank，见 §3.24） | ✅ 已完成（仅 macOS） |
+| 9f | 自动更新：macOS 与 Windows 安装版检查 + 下载 + 验签 + 安装（装永远由用户点，自动检查失败静默），Linux / portable 如实说「请手动下载」（见 §3.24） | ✅ 已完成（macOS + Windows 安装版；Windows 待真机验） |
 
 三处偏离原计划的地方，都记在这里以免以后当成疏漏：
 

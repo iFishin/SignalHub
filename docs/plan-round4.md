@@ -61,7 +61,7 @@
 
 ## 2. 现状盘点（避免重复提案）
 
-**已经有**：8 个 agent 接入（Claude Code / Codex / Cursor / Gemini / Goose / opencode / Pi / Hermes）；多信号灯 + 分组 + 拖拽排序 + 就地改名；悬停摘要 + 右键菜单（灯 / 组两级）；暂停；离线补报（spool）；转发（HTTP + 本地命令 + 日志 200 条）；桌面通知 + 声音 + 通知权限；统计 + 历史（按天）；时间线；双语；自动更新（仅 macOS）。
+**已经有**：8 个 agent 接入（Claude Code / Codex / Cursor / Gemini / Goose / opencode / Pi / Hermes）；多信号灯 + 分组 + 拖拽排序 + 就地改名；悬停摘要 + 右键菜单（灯 / 组两级）；暂停；离线补报（spool）；转发（HTTP + 本地命令 + 日志 200 条）；桌面通知 + 声音 + 通知权限；统计 + 历史（按天）；时间线；双语；自动更新（0.6.11 起 macOS 与 Windows 安装版，portable / Linux 手动）。
 
 **缺口**（本计划要补的）：
 | 缺口 | 影响 |

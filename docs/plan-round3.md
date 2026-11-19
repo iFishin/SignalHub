@@ -391,6 +391,12 @@ RUSTSEC-2025-0168 之后被全量 yank，`^4` 无解）；Linux 是**「做得�
 `dpkg -i` 提权，两条路都没在真机验）。所以 `update::SUPPORTED` 只有 macOS，
 其余平台界面如实说「请手动下载」+ 给一个「打开发布页」。
 
+> **后来的更正（0.6.11）**：上面这一段是当时的结论，别再拿它当现状。zip 4.x
+> 后来全部解除 yank；而 Windows 更新包实际是**裸 `setup.exe`**，插件的 `extract_exe`
+> 根本不吃 zip feature —— 于是 Windows **安装版**（`bundle_type() == Nsis`）也开了自动
+> 更新，`SUPPORTED` 改成运行时的 `supported()`。portable 仍手动（无安装器身份），Linux
+> 仍未验。当前真值见 `docs/architecture.md` §3.24 与 `src-tauri/src/update.rs` 模块头。
+
 ### R6 Linux 出包：验过什么
 
 CI 四个 job 全绿（macOS ×2 / Windows / Linux），产物 14 个（含 `latest.json` 与各平台的

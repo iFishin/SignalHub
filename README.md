@@ -72,7 +72,7 @@ signalhub working --session demo      # 或者自己报一条状态
 
 **收件箱与审批** —— 长按灯或 `⌃⌥I` 打开，按「需要你 → 运行中 → 刚刚完成 → 空闲」列会话：允许 / 拒绝、跳转到对应终端标签页、静音、清掉、「跑完叫我」，离开超过 10 分钟回来还有一句话摘要。「从灯上审批」把 Claude Code 的确认框搬到灯上（**默认关**），危险命令要按住 800ms，看不全的命令只给拒绝，**永远不替你说「允许」**。
 
-**通知** —— 进入「需要授权 / 关注 / 出错」时弹一条，只在跃迁时弹一次、要持续 5 秒才弹（均可调）。可按组静音、设勿扰时段、加提示音；点通知本体直接打开项目目录。还有三条预设：授权卡住 60 秒补推手机、有会话在跑时静音、开会时会议牌变蓝并静音。
+**通知** —— 进入「需要授权 / 关注 / 出错」时弹一条，只在跃迁时弹一次、要持续 5 秒才弹（均可调）。可按组静音、设勿扰时段、加提示音；点通知本体直接打开项目目录。Windows / Linux 可让这几条**常驻到手动关闭**，macOS 由你在系统设置里把通知样式改成「提醒」。还有三条预设：授权卡住 60 秒补推手机、有会话在跑时静音、开会时会议牌变蓝并静音。
 
 **展示模式** —— `⌥⌘P` 在鼠标所在屏幕铺一张大屏看板，每块牌一颗同源灯珠 + 组名 / 状态 / 时长，三米外也读得出。只放灯本来就有的语义（不搬命令正文和消息），投屏天然脱敏。默认关、不自动、不防休眠，`Esc` 或托盘退出；与点击穿透互斥。
 
@@ -131,7 +131,7 @@ xattr -dr com.apple.quarantine /Applications/SignalHub.app
 ln -sfn /Applications/SignalHub.app/Contents/MacOS/signalhub /usr/local/bin/signalhub
 ```
 
-**更新**：macOS 版从 0.2.4 起支持**应用内更新**（设置 →「系统 → 更新与诊断」页会显示有没有新版本，「下载并安装」点了才装，默认不自动装）。Linux 和 Windows 这一版还只能手动下载 —— Windows 要用的解包库被上游全量撤下了，Linux 侧还没在真机上验收过（原因写在 [.github/release-body.md](.github/release-body.md)）。打一个 `v` 开头的 tag 就会自动出四个平台的包，见 [release.yml](.github/workflows/release.yml)。
+**更新**：macOS 与 Windows 的 `-setup.exe` 安装版支持**应用内更新**（设置 →「系统 → 更新与诊断」页会显示有没有新版本，点了「下载并安装」才装，默认不自动装）。Linux 与 Windows 的 portable 免安装版只能手动下载（portable 没有安装器身份，无法自己替换自己；Linux 那条还没在真机上验过）。同一页还能填**自定义更新源与代理**，供内网连不上 GitHub、或公司提供更新镜像时使用（留空就是默认的 GitHub，验签公钥不变）。打一个 `v` 开头的 tag 就会自动出四个平台的包，见 [release.yml](.github/workflows/release.yml)。
 
 ## 从源码运行
 
@@ -248,7 +248,7 @@ docker run -d -p 8080:8080 -e CALLME_ADMIN_TOKEN="$(openssl rand -hex 24)" \
 
 已完成：悬浮灯、状态聚合与 TTL、HTTP 接口与 CLI、设置面板、十家智能体一键接入、通知、审批、展示模式、多机、手机面板、转发、WLED、Call Me、统计与历史、会话管理等，详见[架构文档](docs/architecture.md)的 §3.35 逐次改动记录。
 
-待做：签名与公证（步骤位置留在 [release.yml](.github/workflows/release.yml)，拿到证书就能填）。完整的待办、待验收与已知边界见 [docs/backlog.md](docs/backlog.md)。macOS 已接应用内更新（手动触发）；Linux / Windows 还没接，理由写在 [update.rs](src-tauri/src/update.rs) 模块头。
+待做：签名与公证（步骤位置留在 [release.yml](.github/workflows/release.yml)，拿到证书就能填）。完整的待办、待验收与已知边界见 [docs/backlog.md](docs/backlog.md)。macOS 和 Windows 安装版已接应用内更新（手动触发）；Linux / Windows portable 还不能 —— 理由写在 [update.rs](src-tauri/src/update.rs) 模块头。
 
 ## 许可证
 

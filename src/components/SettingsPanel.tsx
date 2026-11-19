@@ -2109,6 +2109,36 @@ export function SettingsPanel({ snapshot }: Props) {
   // 也不再折叠：六行比四行更需要一眼看全。
   // 发布说明默认收起：它是**可选阅读**（想知道改了什么才看），不该把系统页撑长
   const [notesOpen, setNotesOpen] = useState(false);
+  // 常驻通知在 macOS 上被系统挡着，界面要如实说明而不是摆一个假开关。
+  // 平台从 Rust 问（UA 嗅探不可靠）；非 Tauri 的测试环境留空，按「支持」渲染。
+  const [os, setOs] = useState("");
+  useEffect(() => {
+    if (!inTauri) return;
+    invoke<string>("get_os").then(setOs).catch(() => setOs(""));
+  }, []);
+  // 更新源 / 代理：草稿 + 失焦提交（同机器 / 设备那一套）。半截 URL 不写盘，
+  // 免得后台那次每日静默检查读到 `https:/` 这种东西、在日志里留一条看不懂的失败。
+  const [updateDraft, setUpdateDraft] = useState({
+    endpoint: settings.update_endpoint,
+    proxy: settings.update_proxy,
+  });
+  // 设置从 Rust 回来（首次加载 / 导入配置）时把草稿对齐，否则界面会停在旧值。
+  useEffect(() => {
+    setUpdateDraft({
+      endpoint: settings.update_endpoint,
+      proxy: settings.update_proxy,
+    });
+  }, [settings.update_endpoint, settings.update_proxy]);
+  const commitUpdateDraft = (field: "endpoint" | "proxy") => {
+    const next = updateDraft[field].trim();
+    if (field === "endpoint") {
+      if (next === settings.update_endpoint) return;
+      patch({ update_endpoint: next });
+    } else {
+      if (next === settings.update_proxy) return;
+      patch({ update_proxy: next });
+    }
+  };
   // 收起时那一行摘要要用：有几个状态被单独设过。判据和表里那个 `stateOverridden`
   // 是同一个（见它的说明），所以摘要和表格不可能对不上。
   const perStateCount = SIGNALS.filter((state) => stateOverridden(settings.styles[state])).length;
@@ -4414,6 +4444,57 @@ export function SettingsPanel({ snapshot }: Props) {
               <Switch on={settings.sound} onChange={(on) => patch({ sound: on })} />
             </Row>
 
+            {/* 常驻只给「需要你处理」的状态告警。macOS 上系统不让 app 决定
+                通知停留方式，不摆一个点了没反应的假开关，只说清楚 + 给入口。 */}
+            {os === "macos" ? (
+              <>
+                <p className="hint">{m.notifyPersistentMac}</p>
+                <div className="row-start">
+                  <button
+                    type="button"
+                    className="btn btn-tiny"
+                    onClick={() =>
+                      invoke("open_notification_settings").catch((err) =>
+                        console.error("open_notification_settings 失败", err)
+                      )
+                    }
+                  >
+                    {m.openNotificationSettings}
+                  </button>
+                </div>
+              </>
+            ) : (
+              settings.notify && (
+                <>
+                  <Row
+                    label={m.notifyPersistent}
+                    onReset={resetFor(settings, "notify_persistent", patch)}
+                  >
+                    <Switch
+                      on={settings.notify_persistent}
+                      onChange={(on) => patch({ notify_persistent: on })}
+                    />
+                  </Row>
+                  <p className="hint">{m.notifyPersistentHint}</p>
+                  {os === "windows" && (
+                    <div className="row-start">
+                      <button
+                        type="button"
+                        className="btn btn-tiny"
+                        onClick={() =>
+                          invoke("open_notification_settings").catch((err) =>
+                            console.error("open_notification_settings 失败", err)
+                          )
+                        }
+                      >
+                        {m.openNotificationSettings}
+                      </button>
+                    </div>
+                  )}
+                </>
+              )
+            )}
+
             {/* 通知关着的时候不显示权限状态 —— 那时候它不说明任何问题 */}
             {settings.notify && <NotifyPermission m={m} enabled={settings.notify} />}
 
@@ -6284,7 +6365,12 @@ export function SettingsPanel({ snapshot }: Props) {
                     </>
                   ) : (
                     <>
-                      <p className="hint">{m.updateUnsupported}</p>
+                      {/* 原因由 Rust 按平台 / 安装版给出：portable 说「换安装版」，
+                          Linux 说「没验过」，而不是一句笼统的「不支持」。 */}
+                      <p className="hint">
+                        {m.updateUnsupported}
+                        {update.state.unsupported_reason}
+                      </p>
                       <div className="row-start">
                         <button
                           type="button"
@@ -6296,6 +6382,63 @@ export function SettingsPanel({ snapshot }: Props) {
                       </div>
                     </>
                   )}
+                </div>
+
+                {/* 内网 / 代理：连不上 GitHub、或公司给了更新镜像时用。公网三项全空，
+                    和加这些设置之前一字不差。放在更新区下面而不是「接入」页 —— 它改的是
+                    更新这一个出口，不是上报。 */}
+                <div className="section">
+                  <div className="row">
+                    <span>{m.updateSourceTitle}</span>
+                  </div>
+                  <input
+                    className="input mono"
+                    spellCheck={false}
+                    placeholder={m.updateEndpoint}
+                    aria-label={m.updateEndpoint}
+                    title={m.updateEndpointHint}
+                    value={updateDraft.endpoint}
+                    onChange={(event) =>
+                      setUpdateDraft((draft) => ({
+                        ...draft,
+                        endpoint: event.target.value,
+                      }))
+                    }
+                    onBlur={() => commitUpdateDraft("endpoint")}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") event.currentTarget.blur();
+                    }}
+                  />
+                  <p className="hint">{m.updateEndpointHint}</p>
+                  <input
+                    className="input mono"
+                    spellCheck={false}
+                    placeholder={m.updateProxy}
+                    aria-label={m.updateProxy}
+                    title={m.updateProxyHint}
+                    value={updateDraft.proxy}
+                    onChange={(event) =>
+                      setUpdateDraft((draft) => ({
+                        ...draft,
+                        proxy: event.target.value,
+                      }))
+                    }
+                    onBlur={() => commitUpdateDraft("proxy")}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") event.currentTarget.blur();
+                    }}
+                  />
+                  <p className="hint">{m.updateProxyHint}</p>
+                  <Row label={m.updateNoProxy} hint={m.updateNoProxyHint}>
+                    <Switch
+                      on={settings.update_no_proxy}
+                      onChange={(on) => patch({ update_no_proxy: on })}
+                      disabled={!settings.update_endpoint && !settings.update_proxy}
+                      title={m.updateNoProxyHint}
+                      label={m.updateNoProxy}
+                    />
+                  </Row>
+                  <p className="hint">{m.updateSourceHint}</p>
                 </div>
               </LocalPanel>
             )}

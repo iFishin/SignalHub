@@ -435,10 +435,22 @@ pub fn send_timer(app: &tauri::AppHandle, title: &str, body: &str, sound: bool) 
     show(app, title, body, sound, None);
 }
 
+/// 该不该把这条通知发成常驻的。**只有状态告警有这个待遇**。
+///
+/// 抽成纯函数是为了钉住「通告和定时器不受影响」—— 用户开常驻是想盯着「需要
+/// 你处理」的那几条，不是让「已进入穿透模式」也钉在屏幕上。
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn wants_persistent(action_type: Option<&str>, setting: bool) -> bool {
+    setting && action_type == Some(ACTION_TYPE_ID)
+}
+
 /// 通知的统一出口：标题 + 正文 + 可选的提示音和动作类型，再 show。
 ///
 /// 抽这一层是因为两条路径（告警 / 通告）走的是同一个 builder 链，只是声音和
 /// 按钮不同，把 `.title().body().show()` 抄两遍迟早会分叉。
+///
+/// **常驻分流也只在这里做一次**：只有「带动作的状态告警」+ 用户开了
+/// `notify_persistent` 才走 `show_persistent`，通告 / 定时器不受影响。
 fn show(
     app: &tauri::AppHandle,
     title: &str,
@@ -446,6 +458,12 @@ fn show(
     sound: bool,
     action_type: Option<&str>,
 ) {
+    #[cfg(any(windows, all(unix, not(target_os = "macos"))))]
+    if wants_persistent(action_type, app.state::<crate::SharedSettings>().lock().expect("settings poisoned").notify_persistent) {
+        show_persistent(app, title, body, sound);
+        return;
+    }
+
     let mut builder = app.notification().builder().title(title).body(body);
     if let Some(name) = sound_name(sound) {
         builder = builder.sound(name);
@@ -456,6 +474,81 @@ fn show(
 
     if let Err(err) = builder.show() {
         eprintln!("[signalhub] 发送通知失败: {err}");
+    }
+}
+
+/// 发一条**不自动消失**的状态告警（Windows / Linux）。
+///
+/// 为什么不能直接给插件的 builder 加 `.ongoing()`：那个字段是移动端的，桌面端
+/// `NotificationBuilder::build()` 只搬 title / body / icon / sound / actions，
+/// `ongoing` 从头到尾没被读过 —— 调了也不会常驻，还看不出错。
+///
+/// 这里绕过插件，直接用它底层同一个 `notify-rust` 发：
+/// - XDG / Linux：`Urgency::Critical` 的语义就是「不会超时」，再显式给
+///   `Timeout::Never`（expire=0）兜底。
+/// - Windows：`Urgency::Critical` 被映射成 `Scenario::Reminder`（预展开、一直
+///   挂着直到手动关掉）。Reminder 不像 Alarm 那样循环放声音。
+///
+/// macOS 不走这里：系统的 alertStyle 只读、不支持手动设 timeout，横幅必然自动
+/// 消失。那边继续用插件，界面如实说明并引导用户去系统设置改成「提醒」。
+///
+/// 代价是按钮回调不再走插件的 `on_action`，得自己起线程等交互 —— 但两条路最终
+/// 都汇到 [`perform_action`]，行为不会分叉。
+#[cfg(any(windows, all(unix, not(target_os = "macos"))))]
+fn show_persistent(app: &tauri::AppHandle, title: &str, body: &str, sound: bool) {
+    use notify_rust::{NotificationResponse, Timeout, Urgency};
+
+    let mut notification = notify_rust::Notification::new();
+    notification
+        .summary(title)
+        .body(body)
+        .urgency(Urgency::Critical)
+        .timeout(Timeout::Never);
+
+    #[cfg(windows)]
+    {
+        // 和插件 desktop.rs 的判据一致：安装版才设 AUMID，dev 目录不设。
+        // 不设的话 notify-rust 会退回 PowerShell 的身份，通知来源就不对了。
+        if let Ok(exe) = tauri::utils::platform::current_exe() {
+            if let Some(dir) = exe.parent().and_then(|p| p.to_str()) {
+                if !dir.ends_with("target/debug") && !dir.ends_with("target/release") {
+                    notification.app_id(&app.config().identifier);
+                }
+            }
+        }
+    }
+
+    // 顺序契约和 `action_defs` 里一样：确认在前、静音在后。
+    for (id, label) in action_defs(&crate::lang::text(crate::current_lang(app))) {
+        notification.action(id, label);
+    }
+    if let Some(name) = sound_name(sound) {
+        notification.sound_name(name);
+    }
+
+    let handle = match notification.show() {
+        Ok(handle) => handle,
+        Err(err) => {
+            eprintln!("[signalhub] 发送常驻通知失败: {err}");
+            return;
+        }
+    };
+
+    // wait_for_response 会一直阻塞到用户点了按钮 / 关掉通知，必须放在线程里，
+    // 否则 send_alert 会把状态推送链整条堵住。
+    let app = app.clone();
+    if let Err(err) = std::thread::Builder::new()
+        .name("alert-action".into())
+        .spawn(move || {
+            let _ = handle.wait_for_response(|response: &NotificationResponse| match response {
+                NotificationResponse::Default => perform_action(&app, "tap"),
+                NotificationResponse::Action(id) => perform_action(&app, id),
+                // 用户直接关掉通知 = 「知道了」，但既然没有明确动作就不改状态。
+                NotificationResponse::Closed(_) | NotificationResponse::Reply(_) => {}
+            });
+        })
+    {
+        eprintln!("[signalhub] 常驻通知的动作监听没起来: {err}");
     }
 }
 
@@ -514,19 +607,29 @@ pub fn wire_actions(app: &tauri::AppHandle) {
 
     let handle = app.clone();
     if let Err(err) = notification.on_action(move |performed| {
-        let Some(target) = handle.state::<LastAlert>().get() else {
-            return;
-        };
-        match classify(performed.action_id()) {
-            Some(AlertAction::Reveal) => reveal(&target),
-            // 空分支是刻意的：系统点按钮时已经把这条通知收起来了，应用这边
-            // 没有状态要改。不静音、不清灯、也不取消重复提醒 —— 见 ACTION_ACK。
-            Some(AlertAction::Acknowledge) => {}
-            Some(AlertAction::Mute) => mute(&handle, &target),
-            None => {}
-        }
+        perform_action(&handle, performed.action_id());
     }) {
         eprintln!("[signalhub] 注册通知动作处理函数失败: {err}");
+    }
+}
+
+/// 把一次通知交互落到应用状态上。
+///
+/// 抽出来是因为现在有**两个**回调来源：插件的 `on_action`（macOS + 未开常驻时
+/// 的 Windows/Linux），以及常驻告警走 notify-rust 时自己起的等待线程（见
+/// `show_persistent`）。两处各写一遍 `match` 的话，加一种动作时必然会漏掉其中
+/// 一条路，而漏掉的那种表现是「点了按钮没反应」——不报错，极难发现。
+fn perform_action(app: &tauri::AppHandle, action_id: &str) {
+    let Some(target) = app.state::<LastAlert>().get() else {
+        return;
+    };
+    match classify(action_id) {
+        Some(AlertAction::Reveal) => reveal(&target),
+        // 空分支是刻意的：系统点按钮时已经把这条通知收起来了，应用这边
+        // 没有状态要改。不静音、不清灯、也不取消重复提醒 —— 见 ACTION_ACK。
+        Some(AlertAction::Acknowledge) => {}
+        Some(AlertAction::Mute) => mute(app, &target),
+        None => {}
     }
 }
 
@@ -1273,6 +1376,21 @@ mod tests {
         assert_eq!(classify("tap"), Some(AlertAction::Reveal));
         assert_eq!(classify("reveal"), None, "旧的按钮 id 不该再被接住");
         assert_eq!(classify("something else"), None);
+    }
+
+    /// 常驻只给状态告警，不给通告 / 定时器：开关打开时也不能让「已进入穿透
+    /// 模式」那种消息钉在屏幕上。
+    #[test]
+    fn persistent_applies_only_to_status_alerts() {
+        assert!(!wants_persistent(Some(ACTION_TYPE_ID), false));
+        assert!(wants_persistent(Some(ACTION_TYPE_ID), true));
+        assert!(!wants_persistent(None, true));
+        assert!(!wants_persistent(Some("other.type"), true));
+    }
+
+    #[test]
+    fn persistent_is_off_by_default() {
+        assert!(!crate::config::Settings::default().notify_persistent);
     }
 
     /// 两种语言都得有这枚按钮，且不能把中文漏进英文界面。

@@ -63,21 +63,19 @@ tauri-plugin-global-shortcut = "2"
 # 自动更新。**签名用的是 Tauri 自己的密钥对**（不是 Apple / Windows 证书），
 # 校验的是「这个包确实是我们发的」，不是「Apple 认识我们」—— 所以没有证书也能做。
 #
-# ⚠️ 关掉了默认的 `zip` feature，这一条必须解释清楚（`default-features = false`）：
-# 那个 feature 会拉进 `dep:zip`（Windows 装更新时解包用），而它要求 `zip = "^4"`
-# —— 2026-08 的 RUSTSEC-2025-0168（解包时路径规范化不当，可任意写文件）之后，
-# crates.io 上**所有 zip ≤ 9.0.2 都被 yank 了**，只剩 9.0.3 / 9.0.4，`^4` 无解，
-# 带上这个 feature 连依赖都解析不出来。
+# ⚠️ 关掉了默认的 `zip` feature，这一条要解释清楚（`default-features = false`）：
+# 那个 feature 会拉进 `dep:zip`，但**当前用不上** —— macOS 的 `.app.tar.gz` 走
+# `flate2` + `tar`（插件里的非可选依赖），Windows 的更新包是**裸 `setup.exe`**，
+# 插件 `extract_exe` 用 `infer` 认 PE 文件直接装（见 `latest.json` 的
+# `windows-x86_64` 条目与 updater 源码的 `extract()`）。两条路都不吃 zip。
 #
-# 好在 macOS 的更新包 `.app.tar.gz` 走的是 `flate2` + `tar`，而这两个在插件里是
-# **非可选**依赖，和这个 feature 无关 —— 所以 macOS 那条路完整可用。
+# 历史上这里的说法是「zip 4.x 被全量 yank，所以 Windows 做不了」—— 那条已经过时：
+# 2026-11 查 crates.io，4.0.0–4.6.1 全部可用、无一 yanked。但没有理由为一个用不上的
+# feature 重新把依赖请回来，所以 `default-features = false` 保持不动。
 #
-# 另外两个平台**不是「都被 yank 卡住」**，别把话说错：
-#   - Windows：更新包就是 `zip` 那种，没有这个 feature 装不了 —— 上游这关过不去。
-#   - Linux：`linux-x86_64-appimage` 指的是**没压缩的 ELF AppImage**（查过 v0.2.4
-#     的实际产物），那条路走得通；但 deb 装的那份是靠 `dpkg -i` 提权的（普通用户
-#     跑不动），而且两条路都没在真机验过 —— 所以先不开。
-# 判据是 `update::SUPPORTED`（只有 macOS）。等有人能收 Linux 的验收，改那一行即可。
+# 判据是 `update::supported()`（运行时判：macOS 恒真，Windows 看 `bundle_type() ==
+# Nsis` 区分安装版与 portable，其余假）。Linux 的 AppImage 走得通、deb 要 `dpkg -i`
+# 提权，两条都没真机验过 —— 有人能验再打开。
 tauri-plugin-updater = { version = "2", default-features = false, features = [
   "rustls-tls",
   "system-proxy",
@@ -98,6 +96,17 @@ getrandom = "0.3"
 # HTTPS。选 rustls 而不是 native-tls 是因为后者在 Linux 上要系统 libssl，
 # 跨平台构建会多一道坎。
 ureq = { version = "3", default-features = false, features = ["rustls"] }
+
+# 自定义更新源 / 代理：把设置里的字符串解析成插件 `endpoints()` / `proxy()` 要的
+# `Url`。必须放在主 `[dependencies]` 段（放 Windows 段里 macOS / Linux 会编不过）。
+# 版本跟插件传递的那个一致（已在锁文件里，不新增依赖树）。
+url = "2"
+
+# 常驻告警：tauri-plugin-notification 的 `.ongoing()` 只管移动端，桌面端的
+# `build()` 根本不读那个字段。Windows/Linux 要「不自动消失」只能绕过插件，
+# 直接用它底层同一个 notify-rust 4.18 发（版本已在锁文件里，不新增依赖树）。
+# 设 Urgency::Critical：XDG 上不超时，Windows 上映射成 Scenario::Reminder。
+notify-rust = "4.18"
 
 # 展示模式在 macOS 上要「藏起 Dock 与菜单栏」。这件事 tao 不管：它连
 # `presentationOptions` 都没碰过，而 `set_fullscreen` 会被译成 `toggleFullScreen:`
@@ -133,7 +142,6 @@ windows = { version = "0.62", features = [
   "Win32_UI_Shell_PropertiesSystem",
 ] }
 windows-registry = "0.6"
-
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
